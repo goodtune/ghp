@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -87,12 +88,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Always allowed - it returns the authenticated user info.
 	} else if repo == "" {
 		writeError(w, http.StatusForbidden, "Cannot determine target repository from request path")
-		h.logRequest(pt, r.Method, apiPath, "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+		h.logRequest(r.Context(), pt, r.Method, apiPath, "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	} else if !strings.EqualFold(repo, pt.Repository) {
 		writeError(w, http.StatusForbidden,
 			fmt.Sprintf("Token is scoped to %s, not %s", pt.Repository, repo))
-		h.logRequest(pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+		h.logRequest(r.Context(), pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
 
@@ -100,7 +101,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	permission, level := EndpointScope(r.Method, apiPath)
 	if permission == "" {
 		writeError(w, http.StatusForbidden, "Unrecognized API endpoint")
-		h.logRequest(pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+		h.logRequest(r.Context(), pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
 
@@ -116,7 +117,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !scopes.HasPermission(permission, level) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, pt.Repository))
-			h.logRequest(pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+			h.logRequest(r.Context(), pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
 		}
 	}
@@ -137,7 +138,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to record token usage", "error", err)
 	}
 
-	h.logRequest(pt, r.Method, apiPath, repo, status, time.Since(start), "proxy_request")
+	h.logRequest(r.Context(), pt, r.Method, apiPath, repo, status, time.Since(start), "proxy_request")
 }
 
 func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, start time.Time) {
@@ -156,7 +157,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		h.logger.Error("failed to record token usage", "error", err)
 	}
 
-	h.logRequest(pt, r.Method, "/graphql", pt.Repository, status, time.Since(start), "proxy_request")
+	h.logRequest(r.Context(), pt, r.Method, "/graphql", pt.Repository, status, time.Since(start), "proxy_request")
 }
 
 func (h *Handler) getGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {
@@ -238,7 +239,7 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, g
 	return resp.StatusCode
 }
 
-func (h *Handler) logRequest(pt *database.ProxyToken, method, path, repo string, status int, dur time.Duration, action string) {
+func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, method, path, repo string, status int, dur time.Duration, action string) {
 	h.logger.Info(action,
 		"token_id", pt.ID,
 		"user_id", pt.UserID,
@@ -263,7 +264,7 @@ func (h *Handler) logRequest(pt *database.ProxyToken, method, path, repo string,
 	tokenID := pt.ID
 	entry.ProxyTokenID = &tokenID
 
-	if err := h.store.CreateAuditEntry(nil, entry); err != nil {
+	if err := h.store.CreateAuditEntry(ctx, entry); err != nil {
 		h.logger.Error("failed to create audit entry", "error", err)
 	}
 }
