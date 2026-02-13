@@ -68,7 +68,7 @@ func (s *Server) Run(ctx context.Context) error {
 	authHandler := auth.NewHandler(s.cfg, store, enc, s.logger)
 	proxyHandler := proxy.NewHandler(tokenSvc, store, enc, s.logger)
 	api := NewAPI(s.cfg, store, tokenSvc, authHandler, s.logger)
-	webUI := web.NewHandler(authHandler, s.logger)
+	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
 
 	// Build HTTP mux.
 	mux := http.NewServeMux()
