@@ -89,18 +89,19 @@ token. When the agent makes a GitHub API call, the proxy:
 3. Injects the real GitHub credentials (stored server-side, encrypted at rest)
 4. Forwards the request to `api.github.com` and returns the response
 
-```
-Agent                        ghp                         GitHub
-(GH_TOKEN=ghp_xxx)          (scope check +              (api.github.com)
-(GH_HOST=proxy.local)        credential injection)
-      │                          │                          │
-      │─── GET /api/v3/... ─────▶│                          │
-      │                          │── validate token         │
-      │                          │── check scope            │
-      │                          │── inject real credential  │
-      │                          │─── GET /repos/... ───────▶│
-      │                          │◀── 200 OK ───────────────│
-      │◀── 200 OK ──────────────│                          │
+```mermaid
+sequenceDiagram
+    participant Agent as Agent<br/>(GH_TOKEN=ghp_xxx<br/>GH_HOST=proxy.local)
+    participant ghp as ghp<br/>(scope check +<br/>credential injection)
+    participant GitHub as GitHub<br/>(api.github.com)
+
+    Agent->>ghp: GET /api/v3/repos/...
+    ghp->>ghp: Validate token
+    ghp->>ghp: Check scope
+    ghp->>ghp: Inject real credential
+    ghp->>GitHub: GET /repos/...
+    GitHub-->>ghp: 200 OK
+    ghp-->>Agent: 200 OK
 ```
 
 The proxy supports both the REST API (`/api/v3/*`) and GraphQL API (`/api/graphql`).
