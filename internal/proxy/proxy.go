@@ -66,11 +66,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Determine the actual API path.
-	// Requests come in as /api/v3/... or /api/graphql.
+	// Requests come in as /api/v3/... or /api/graphql (GHE-style),
+	// or directly as /... or /graphql (when proxied as api.github.com virtualhost).
 	apiPath := r.URL.Path
 	if strings.HasPrefix(apiPath, "/api/v3") {
 		apiPath = strings.TrimPrefix(apiPath, "/api/v3")
-	} else if apiPath == "/api/graphql" {
+	} else if apiPath == "/api/graphql" || apiPath == "/graphql" {
 		// GraphQL handled separately.
 		h.handleGraphQL(w, r, pt, start)
 		return

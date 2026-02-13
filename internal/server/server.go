@@ -93,7 +93,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	httpServer := &http.Server{
-		Handler: mux,
+		Handler: hostRoutingHandler(mux, proxyHandler),
 	}
 
 	// Start metrics server if enabled.
@@ -148,6 +148,24 @@ func (s *Server) createListener() (net.Listener, error) {
 
 	// TCP.
 	return net.Listen("tcp", addr)
+}
+
+// hostRoutingHandler routes requests based on the Host header.
+// If the host is api.github.com (as when ghp is deployed as a virtualhost),
+// all requests are sent directly to the proxy handler. Otherwise, the
+// standard mux is used.
+func hostRoutingHandler(mux *http.ServeMux, proxyHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if host == "api.github.com" {
+			proxyHandler.ServeHTTP(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func notifySystemd(state string) {
