@@ -6,7 +6,7 @@ test.describe("Dashboard", () => {
     await loginTestUser(context);
   });
 
-  test("renders dashboard with user info", async ({ page }) => {
+  test("renders dashboard with user info", async ({ page }, testInfo) => {
     await page.goto("/");
 
     await expect(page).toHaveTitle("ghp — Dashboard");
@@ -21,6 +21,11 @@ test.describe("Dashboard", () => {
     await expect(
       page.locator('button:has-text("Sign out")')
     ).toBeVisible();
+
+    await testInfo.attach("dashboard-overview", {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
   });
 
   test("shows Create Token section with form fields", async ({ page }) => {

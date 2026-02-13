@@ -6,7 +6,7 @@ test.describe("Token management", () => {
     await loginTestUser(context);
   });
 
-  test("can create a token via the form", async ({ page }) => {
+  test("can create a token via the form", async ({ page }, testInfo) => {
     await page.goto("/");
 
     // Fill in the form.
@@ -14,6 +14,11 @@ test.describe("Token management", () => {
     await page.fill("#scopes", "contents:read,pulls:write");
     await page.selectOption("#duration", "24h");
     await page.fill("#session", "playwright-test-session");
+
+    await testInfo.attach("token-form-filled", {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
 
     // Click Create Token.
     await page.click('button:has-text("Create Token")');
@@ -30,6 +35,11 @@ test.describe("Token management", () => {
     await expect(tokenDisplay).toContainText(
       "This token will only be shown once"
     );
+
+    await testInfo.attach("token-created", {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
   });
 
   test("created token appears in the Active Tokens list", async ({
@@ -52,7 +62,7 @@ test.describe("Token management", () => {
     await expect(tokenList).toContainText("Active");
   });
 
-  test("can revoke a token", async ({ page }) => {
+  test("can revoke a token", async ({ page }, testInfo) => {
     await page.goto("/");
 
     // Create a token.
@@ -73,6 +83,11 @@ test.describe("Token management", () => {
 
     // After revoking, the token should show as Revoked.
     await expect(page.locator("#token-list")).toContainText("Revoked");
+
+    await testInfo.attach("token-revoked", {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
   });
 
   test("shows validation when required fields are missing", async ({

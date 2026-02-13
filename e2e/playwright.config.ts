@@ -4,12 +4,13 @@ const baseURL = process.env.GHP_BASE_URL || "http://localhost:8080";
 
 export default defineConfig({
   testDir: "./tests",
+  outputDir: "./test-results",
   timeout: 30_000,
   retries: 0,
   use: {
     baseURL,
     headless: true,
-    screenshot: "only-on-failure",
+    screenshot: "on",
     trace: "retain-on-failure",
   },
   projects: [
@@ -18,5 +19,9 @@ export default defineConfig({
       use: { browserName: "chromium" },
     },
   ],
-  reporter: [["list"], ["html", { open: "never" }]],
+  reporter: [
+    ["list"],
+    ["json", { outputFile: "./test-results/results.json" }],
+    ["html", { open: "never" }],
+  ],
 });

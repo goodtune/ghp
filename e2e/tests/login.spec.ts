@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("Login page", () => {
-  test("renders the login page with branding", async ({ page }) => {
+  test("renders the login page with branding", async ({ page }, testInfo) => {
     await page.goto("/login");
 
     // Check page title.
@@ -12,6 +12,11 @@ test.describe("Login page", () => {
     await expect(page.locator("p")).toContainText(
       "GitHub Proxy for Autonomous Coding Agents"
     );
+
+    await testInfo.attach("login-page", {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
   });
 
   test("has a Sign in with GitHub button linking to OAuth", async ({
