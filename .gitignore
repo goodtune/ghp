@@ -30,6 +30,9 @@ go.work.sum
 # Built binary
 /ghp
 
+# Local database
+/ghp.db
+
 # Editor/IDE
 # .idea/
 # .vscode/
