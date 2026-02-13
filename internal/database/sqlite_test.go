@@ -110,7 +110,7 @@ func TestProxyTokenCRUD(t *testing.T) {
 		RefreshToken:          "enc_refresh",
 		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
 		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
-		Scopes:                "user:email",
+		Scopes:                "",
 	}
 	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
 		t.Fatal(err)

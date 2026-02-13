@@ -66,7 +66,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// Create services.
 	tokenSvc := token.NewService(store, s.cfg.Tokens.MaxDuration)
 	authHandler := auth.NewHandler(s.cfg, store, enc, s.logger)
-	proxyHandler := proxy.NewHandler(tokenSvc, store, enc, s.logger)
+	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, s.logger)
 	api := NewAPI(s.cfg, store, tokenSvc, authHandler, s.logger)
 	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
 

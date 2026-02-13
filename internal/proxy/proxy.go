@@ -7,21 +7,26 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/token"
 )
 
 const (
-	githubAPIBase = "https://api.github.com"
+	githubAPIBase    = "https://api.github.com"
+	githubTokenURL   = "https://github.com/login/oauth/access_token"
+	tokenRefreshSkew = 5 * time.Minute
 )
 
 // Handler is the reverse proxy HTTP handler.
 type Handler struct {
+	cfg          *config.Config
 	tokenService *token.Service
 	store        database.Store
 	encryptor    *crypto.Encryptor
@@ -30,8 +35,9 @@ type Handler struct {
 }
 
 // NewHandler creates a new reverse proxy handler.
-func NewHandler(ts *token.Service, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
+func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
 	return &Handler{
+		cfg:          cfg,
 		tokenService: ts,
 		store:        store,
 		encryptor:    enc,
@@ -158,6 +164,17 @@ func (h *Handler) getGitHubToken(r *http.Request, pt *database.ProxyToken) (stri
 		return "", fmt.Errorf("github token not found")
 	}
 
+	// If the access token expires soon, attempt a refresh.
+	if time.Until(gt.AccessTokenExpiresAt) < tokenRefreshSkew {
+		newToken, err := h.refreshGitHubToken(r.Context(), gt)
+		if err != nil {
+			h.logger.Warn("github token refresh failed, using existing token",
+				"token_id", gt.ID, "error", err)
+		} else {
+			return newToken, nil
+		}
+	}
+
 	// Decrypt the access token.
 	plaintext, err := h.encryptor.Decrypt(gt.AccessToken)
 	if err != nil {
@@ -165,6 +182,91 @@ func (h *Handler) getGitHubToken(r *http.Request, pt *database.ProxyToken) (stri
 	}
 
 	return plaintext, nil
+}
+
+// tokenRefreshResponse represents the JSON response from GitHub's OAuth token endpoint.
+type tokenRefreshResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	Error        string `json:"error"`
+	ErrorDesc    string `json:"error_description"`
+}
+
+// refreshGitHubToken exchanges a refresh token for a new access token via
+// GitHub's OAuth token endpoint. On success it persists the new encrypted
+// tokens and returns the new plaintext access token.
+func (h *Handler) refreshGitHubToken(ctx context.Context, gt *database.GitHubToken) (string, error) {
+	refreshPlaintext, err := h.encryptor.Decrypt(gt.RefreshToken)
+	if err != nil {
+		return "", fmt.Errorf("decrypting refresh token: %w", err)
+	}
+
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {h.cfg.GitHub.ClientID},
+		"client_secret": {h.cfg.GitHub.ClientSecret},
+		"refresh_token": {refreshPlaintext},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, githubTokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("creating refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("executing refresh request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading refresh response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("refresh endpoint returned %d: %s", resp.StatusCode, body)
+	}
+
+	var tokenResp tokenRefreshResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return "", fmt.Errorf("parsing refresh response: %w", err)
+	}
+
+	if tokenResp.Error != "" {
+		return "", fmt.Errorf("refresh error: %s: %s", tokenResp.Error, tokenResp.ErrorDesc)
+	}
+
+	// Encrypt and persist the new tokens.
+	encAccess, err := h.encryptor.Encrypt(tokenResp.AccessToken)
+	if err != nil {
+		return "", fmt.Errorf("encrypting new access token: %w", err)
+	}
+
+	encRefresh, err := h.encryptor.Encrypt(tokenResp.RefreshToken)
+	if err != nil {
+		return "", fmt.Errorf("encrypting new refresh token: %w", err)
+	}
+
+	now := time.Now()
+	gt.AccessToken = encAccess
+	gt.RefreshToken = encRefresh
+	gt.AccessTokenExpiresAt = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	// GitHub refresh tokens are valid for 6 months; update to 6 months from now.
+	gt.RefreshTokenExpiresAt = now.Add(6 * 30 * 24 * time.Hour)
+
+	if err := h.store.UpsertGitHubToken(ctx, gt); err != nil {
+		return "", fmt.Errorf("persisting refreshed token: %w", err)
+	}
+
+	h.logger.Info("github token refreshed",
+		"token_id", gt.ID,
+		"expires_at", gt.AccessTokenExpiresAt.Format(time.RFC3339))
+
+	return tokenResp.AccessToken, nil
 }
 
 func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, githubToken string) int {

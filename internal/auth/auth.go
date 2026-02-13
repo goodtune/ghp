@@ -168,7 +168,7 @@ func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	h.states[state] = time.Now().Add(10 * time.Minute)
 	h.stateMu.Unlock()
 
-	url := fmt.Sprintf("https://github.com/login/oauth/authorize?client_id=%s&state=%s&scope=user:email",
+	url := fmt.Sprintf("https://github.com/login/oauth/authorize?client_id=%s&state=%s",
 		h.cfg.GitHub.ClientID, state)
 
 	// If the request accepts JSON (CLI), return the URL; otherwise redirect.
@@ -181,6 +181,15 @@ func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
+	// Handle GitHub App installation callback.
+	// When a user installs the app, GitHub redirects here with installation_id
+	// and setup_action params instead of the OAuth code/state.
+	if r.URL.Query().Get("installation_id") != "" {
+		h.logger.Info("github_app_installed", "installation_id", r.URL.Query().Get("installation_id"), "action", r.URL.Query().Get("setup_action"))
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+
 	code := r.URL.Query().Get("code")
 	state := r.URL.Query().Get("state")
 
@@ -258,7 +267,7 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		RefreshToken:          encRefresh,
 		AccessTokenExpiresAt:  time.Now().Add(time.Duration(expiresIn) * time.Second),
 		RefreshTokenExpiresAt: time.Now().Add(6 * 30 * 24 * time.Hour), // ~6 months
-		Scopes:                "user:email",
+		Scopes:                "",
 	}
 	if err := h.store.UpsertGitHubToken(r.Context(), gt); err != nil {
 		h.logger.Error("Failed to store GitHub token", "error", err)
@@ -377,7 +386,7 @@ func (h *Handler) handleTestLogin(w http.ResponseWriter, r *http.Request) {
 		RefreshToken:          encDummy,
 		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
 		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
-		Scopes:                "user:email",
+		Scopes:                "",
 	}
 	if err := h.store.UpsertGitHubToken(r.Context(), gt); err != nil {
 		h.logger.Error("failed to create test github token", "error", err)
