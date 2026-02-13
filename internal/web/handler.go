@@ -35,17 +35,12 @@ func NewHandler(ah *auth.Handler, logger *slog.Logger) *Handler {
 
 // RegisterRoutes adds web UI routes to the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /", h.handleIndex)
+	mux.HandleFunc("GET /{$}", h.handleIndex)
 	mux.HandleFunc("GET /login", h.handleLogin)
 	mux.Handle("GET /static/", http.FileServerFS(staticFS))
 }
 
 func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-
 	session := h.auth.GetSession(r)
 	if session == nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
