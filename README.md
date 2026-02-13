@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/octobear.png" width="200" alt="ghp logo">
+  <img src="assets/octobear.png" width="300" alt="ghp logo">
 </p>
 
 # ghp
