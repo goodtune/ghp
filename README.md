@@ -19,6 +19,7 @@ GitHub credentials.
 
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
+- [Web UI](#web-ui)
 - [Production Deployment](#production-deployment)
 - [CLI](#cli)
 - [Configuration](#configuration)
@@ -103,6 +104,22 @@ Agent                        ghp                         GitHub
 ```
 
 The proxy supports both the REST API (`/api/v3/*`) and GraphQL API (`/api/graphql`).
+
+## Web UI
+
+The server includes a built-in web dashboard at `/` for managing tokens and viewing audit logs. Users authenticate via GitHub OAuth (or `/auth/test-login` in dev mode).
+
+### Admin Panel
+
+The `/admin` page is available to users with the `admin` role and provides:
+
+- **Users** — list all registered users with their GitHub ID, role, and creation date
+- **All Tokens** — view and revoke tokens across all users
+- **Audit Log** — browse the full audit trail of proxied requests
+
+In dev mode, navigating to `/admin` without a session shows a test-login form that authenticates directly as an admin — no manual `curl` required.
+
+Admins are configured via the `admins` list in the config file (GitHub usernames).
 
 ## Production Deployment
 
@@ -296,5 +313,6 @@ npx playwright test
 ```
 
 Dev mode (`GHP_DEV_MODE=true`) enables the `/auth/test-login` endpoint, which
-creates a test session without requiring GitHub OAuth. See [Quick Start](#quick-start)
-for a full dev setup.
+creates a test session without requiring GitHub OAuth. The `/admin` page also
+shows a built-in login form in dev mode for quick admin access. See
+[Quick Start](#quick-start) for a full dev setup.
