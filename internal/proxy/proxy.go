@@ -81,33 +81,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		apiPath = "/"
 	}
 
-	// Extract repository from path.
+	// Extract repository from path (if this is a /repos/ path).
 	repo := ExtractRepoFromPath(apiPath)
 
-	// For /user endpoint, skip repo check.
-	if apiPath == "/user" {
-		// Always allowed - it returns the authenticated user info.
-	} else if repo == "" {
-		writeError(w, http.StatusForbidden, "Cannot determine target repository from request path")
-		h.logRequest(r.Context(), pt, r.Method, apiPath, "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
-		return
-	} else if !strings.EqualFold(repo, pt.Repository) {
+	// If a repo is identified, enforce the token's repository scope.
+	if repo != "" && !strings.EqualFold(repo, pt.Repository) {
 		writeError(w, http.StatusForbidden,
 			fmt.Sprintf("Token is scoped to %s, not %s", pt.Repository, repo))
 		h.logRequest(r.Context(), pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
 
-	// Check endpoint permission scope.
+	// Check endpoint permission scope for known endpoints.
+	// Unrecognized endpoints are forwarded — GitHub's token handles access.
 	permission, level := EndpointScope(r.Method, apiPath)
-	if permission == "" {
-		writeError(w, http.StatusForbidden, "Unrecognized API endpoint")
-		h.logRequest(r.Context(), pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
-		return
-	}
-
-	// "metadata:read" is always implicitly allowed.
-	if permission != "metadata" {
+	if permission != "" && permission != "metadata" {
 		scopes, err := database.ParseScopes(pt.Scopes)
 		if err != nil {
 			h.logger.Error("failed to parse token scopes", "error", err)
