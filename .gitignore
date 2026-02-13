@@ -27,6 +27,15 @@ go.work.sum
 # env file
 .env
 
+# Built binary
+/ghp
+
+# GoReleaser output
+/dist/
+
+# Local database
+/ghp.db
+
 # Editor/IDE
 # .idea/
 # .vscode/

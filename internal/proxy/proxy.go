@@ -1,0 +1,300 @@
+package proxy
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/goodtune/ghp/internal/crypto"
+	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/token"
+)
+
+const (
+	githubAPIBase = "https://api.github.com"
+)
+
+// Handler is the reverse proxy HTTP handler.
+type Handler struct {
+	tokenService *token.Service
+	store        database.Store
+	encryptor    *crypto.Encryptor
+	logger       *slog.Logger
+	client       *http.Client
+}
+
+// NewHandler creates a new reverse proxy handler.
+func NewHandler(ts *token.Service, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
+	return &Handler{
+		tokenService: ts,
+		store:        store,
+		encryptor:    enc,
+		logger:       logger,
+		client: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}
+}
+
+// ServeHTTP handles proxied requests.
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
+	// Extract the ghp_ token from the Authorization header.
+	ghpToken := extractToken(r)
+	if ghpToken == "" {
+		writeError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
+		return
+	}
+
+	// Resolve the token.
+	pt, err := h.tokenService.Resolve(r.Context(), ghpToken)
+	if err != nil {
+		h.logger.Warn("token resolution failed", "error", err)
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if pt == nil {
+		writeError(w, http.StatusUnauthorized, "Invalid token")
+		return
+	}
+
+	// Determine the actual API path.
+	// Requests come in as /api/v3/... or /api/graphql.
+	apiPath := r.URL.Path
+	if strings.HasPrefix(apiPath, "/api/v3") {
+		apiPath = strings.TrimPrefix(apiPath, "/api/v3")
+	} else if apiPath == "/api/graphql" {
+		// GraphQL handled separately.
+		h.handleGraphQL(w, r, pt, start)
+		return
+	}
+
+	if apiPath == "" {
+		apiPath = "/"
+	}
+
+	// Extract repository from path.
+	repo := ExtractRepoFromPath(apiPath)
+
+	// For /user endpoint, skip repo check.
+	if apiPath == "/user" {
+		// Always allowed - it returns the authenticated user info.
+	} else if repo == "" {
+		writeError(w, http.StatusForbidden, "Cannot determine target repository from request path")
+		h.logRequest(pt, r.Method, apiPath, "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+		return
+	} else if !strings.EqualFold(repo, pt.Repository) {
+		writeError(w, http.StatusForbidden,
+			fmt.Sprintf("Token is scoped to %s, not %s", pt.Repository, repo))
+		h.logRequest(pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+		return
+	}
+
+	// Check endpoint permission scope.
+	permission, level := EndpointScope(r.Method, apiPath)
+	if permission == "" {
+		writeError(w, http.StatusForbidden, "Unrecognized API endpoint")
+		h.logRequest(pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+		return
+	}
+
+	// "metadata:read" is always implicitly allowed.
+	if permission != "metadata" {
+		scopes, err := database.ParseScopes(pt.Scopes)
+		if err != nil {
+			h.logger.Error("failed to parse token scopes", "error", err)
+			writeError(w, http.StatusInternalServerError, "Internal error")
+			return
+		}
+
+		if !scopes.HasPermission(permission, level) {
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, pt.Repository))
+			h.logRequest(pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+			return
+		}
+	}
+
+	// Get the real GitHub access token.
+	githubToken, err := h.getGitHubToken(r, pt)
+	if err != nil {
+		h.logger.Error("failed to get GitHub token", "error", err)
+		writeError(w, http.StatusInternalServerError, "Failed to retrieve GitHub credentials")
+		return
+	}
+
+	// Forward the request to GitHub.
+	status := h.forwardRequest(w, r, apiPath, githubToken)
+
+	// Record usage.
+	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
+		h.logger.Error("failed to record token usage", "error", err)
+	}
+
+	h.logRequest(pt, r.Method, apiPath, repo, status, time.Since(start), "proxy_request")
+}
+
+func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, start time.Time) {
+	// For GraphQL, we forward the request and check the token's scopes in a simplified manner.
+	// Full GraphQL query parsing is complex; for now, we require that the token has at least one scope.
+	githubToken, err := h.getGitHubToken(r, pt)
+	if err != nil {
+		h.logger.Error("failed to get GitHub token for GraphQL", "error", err)
+		writeError(w, http.StatusInternalServerError, "Failed to retrieve GitHub credentials")
+		return
+	}
+
+	status := h.forwardRequest(w, r, "/graphql", githubToken)
+
+	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
+		h.logger.Error("failed to record token usage", "error", err)
+	}
+
+	h.logRequest(pt, r.Method, "/graphql", pt.Repository, status, time.Since(start), "proxy_request")
+}
+
+func (h *Handler) getGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {
+	gt, err := h.store.GetGitHubTokenByID(r.Context(), pt.GitHubTokenID)
+	if err != nil {
+		return "", fmt.Errorf("loading github token: %w", err)
+	}
+	if gt == nil {
+		return "", fmt.Errorf("github token not found")
+	}
+
+	// Decrypt the access token.
+	plaintext, err := h.encryptor.Decrypt(gt.AccessToken)
+	if err != nil {
+		return "", fmt.Errorf("decrypting github token: %w", err)
+	}
+
+	return plaintext, nil
+}
+
+func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, githubToken string) int {
+	targetURL := githubAPIBase + path
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to create upstream request")
+		return http.StatusInternalServerError
+	}
+
+	// Copy relevant headers.
+	for _, key := range []string{"Content-Type", "Accept", "User-Agent"} {
+		if v := r.Header.Get(key); v != "" {
+			proxyReq.Header.Set(key, v)
+		}
+	}
+
+	// Set the real GitHub token.
+	proxyReq.Header.Set("Authorization", "Bearer "+githubToken)
+
+	resp, err := h.client.Do(proxyReq)
+	if err != nil {
+		h.logger.Error("upstream request failed", "error", err)
+		writeError(w, http.StatusBadGateway, "Upstream request failed")
+		return http.StatusBadGateway
+	}
+	defer resp.Body.Close()
+
+	// Copy rate limit headers for observability.
+	for _, key := range []string{
+		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Used",
+	} {
+		if v := resp.Header.Get(key); v != "" {
+			w.Header().Set(key, v)
+		}
+	}
+
+	// Log rate limit info.
+	if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "" {
+		if n, err := strconv.Atoi(remaining); err == nil {
+			h.logger.Debug("github rate limit", "remaining", n, "limit", resp.Header.Get("X-RateLimit-Limit"))
+		}
+	}
+
+	// Copy other response headers.
+	for key, vals := range resp.Header {
+		if strings.HasPrefix(key, "X-GitHub") || key == "Link" || key == "Content-Type" {
+			for _, v := range vals {
+				w.Header().Add(key, v)
+			}
+		}
+	}
+
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+
+	return resp.StatusCode
+}
+
+func (h *Handler) logRequest(pt *database.ProxyToken, method, path, repo string, status int, dur time.Duration, action string) {
+	h.logger.Info(action,
+		"token_id", pt.ID,
+		"user_id", pt.UserID,
+		"session", pt.SessionID,
+		"repo", repo,
+		"method", method,
+		"path", path,
+		"status", status,
+		"duration_ms", dur.Milliseconds(),
+	)
+
+	entry := &database.AuditEntry{
+		UserID:     pt.UserID,
+		Action:     action,
+		Method:     method,
+		Path:       path,
+		Repository: repo,
+		StatusCode: status,
+		DurationMS: int(dur.Milliseconds()),
+		SessionID:  pt.SessionID,
+	}
+	tokenID := pt.ID
+	entry.ProxyTokenID = &tokenID
+
+	if err := h.store.CreateAuditEntry(nil, entry); err != nil {
+		h.logger.Error("failed to create audit entry", "error", err)
+	}
+}
+
+// extractToken extracts the ghp_ token from the Authorization header.
+// Supports both "token ghp_xxx" and "Bearer ghp_xxx" formats.
+func extractToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		return ""
+	}
+
+	parts := strings.SplitN(auth, " ", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+
+	scheme := strings.ToLower(parts[0])
+	tok := parts[1]
+
+	if (scheme == "token" || scheme == "bearer") && strings.HasPrefix(tok, token.Prefix) {
+		return tok
+	}
+	return ""
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message":           message,
+		"documentation_url": "https://docs.github.com/rest",
+	})
+}

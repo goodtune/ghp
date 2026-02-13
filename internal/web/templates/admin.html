@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ghp — Admin</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+        header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 0; border-bottom: 1px solid #30363d; margin-bottom: 2rem; }
+        header h1 { font-size: 1.25rem; color: #f0f6fc; }
+        .user-info { display: flex; align-items: center; gap: 1rem; }
+        .user-info span { color: #8b949e; }
+        .btn { display: inline-block; background: #238636; color: #fff; padding: 0.5rem 1rem; border-radius: 6px; text-decoration: none; font-weight: 600; border: none; cursor: pointer; font-size: 0.875rem; }
+        .btn:hover { background: #2ea043; }
+        .btn-danger { background: #da3633; }
+        .btn-danger:hover { background: #f85149; }
+        .btn-secondary { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; }
+        .btn-secondary:hover { background: #30363d; }
+        .section { margin-bottom: 2rem; }
+        .section h2 { font-size: 1.1rem; color: #f0f6fc; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #30363d; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #21262d; font-size: 0.875rem; }
+        th { color: #8b949e; font-weight: 600; }
+        .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+        .badge-active { background: rgba(35,134,54,0.2); color: #3fb950; }
+        .badge-expired { background: rgba(218,54,51,0.2); color: #f85149; }
+        .badge-revoked { background: rgba(139,148,158,0.2); color: #8b949e; }
+        .empty { text-align: center; color: #8b949e; padding: 2rem; }
+        a.link { color: #58a6ff; text-decoration: none; }
+        a.link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ghp <span style="color:#8b949e;font-weight:400">/ admin</span></h1>
+            <div class="user-info">
+                <span>{{ .Username }} ({{ .Role }})</span>
+                <a href="/" class="btn btn-secondary">Dashboard</a>
+                <button class="btn btn-secondary" onclick="logout()">Sign out</button>
+            </div>
+        </header>
+
+        <div class="section">
+            <h2>Users</h2>
+            <div id="users-list"></div>
+        </div>
+
+        <div class="section">
+            <h2>All Tokens</h2>
+            <div id="all-tokens"></div>
+        </div>
+
+        <div class="section">
+            <h2>Audit Log</h2>
+            <div id="audit-log"></div>
+        </div>
+    </div>
+
+    <script>
+        async function api(method, path, body) {
+            const opts = { method, headers: { 'Content-Type': 'application/json' } };
+            if (body) opts.body = JSON.stringify(body);
+            const resp = await fetch(path, opts);
+            return resp.json();
+        }
+
+        async function loadUsers() {
+            const users = await api('GET', '/api/users');
+            const container = document.getElementById('users-list');
+
+            if (!Array.isArray(users) || users.length === 0) {
+                container.innerHTML = '<div class="empty">No users found</div>';
+                return;
+            }
+
+            let html = '<table><tr><th>Username</th><th>GitHub ID</th><th>Role</th><th>Created</th><th></th></tr>';
+            for (const u of users) {
+                const created = new Date(u.created_at).toLocaleString();
+                html += '<tr>';
+                html += '<td>' + esc(u.username) + '</td>';
+                html += '<td>' + (u.github_id || '-') + '</td>';
+                html += '<td>' + esc(u.role) + '</td>';
+                html += '<td>' + created + '</td>';
+                html += '<td><a class="link" href="#" onclick="loadUserTokens(\'' + u.id + '\', \'' + esc(u.username) + '\'); return false;">View tokens</a></td>';
+                html += '</tr>';
+            }
+            html += '</table>';
+            container.innerHTML = html;
+        }
+
+        async function loadUserTokens(userId, username) {
+            const tokens = await api('GET', '/api/users/' + userId + '/tokens');
+            const container = document.getElementById('all-tokens');
+
+            if (!Array.isArray(tokens) || tokens.length === 0) {
+                container.innerHTML = '<div class="empty">No tokens for ' + esc(username) + '</div>';
+                return;
+            }
+
+            container.innerHTML = '<p style="color:#8b949e;margin-bottom:0.5rem">Showing tokens for <strong>' + esc(username) + '</strong></p>' + renderTokenTable(tokens);
+        }
+
+        async function loadAllTokens() {
+            const tokens = await api('GET', '/api/tokens?all=true');
+            const container = document.getElementById('all-tokens');
+
+            if (!Array.isArray(tokens) || tokens.length === 0) {
+                container.innerHTML = '<div class="empty">No tokens found</div>';
+                return;
+            }
+
+            container.innerHTML = renderTokenTable(tokens);
+        }
+
+        function renderTokenTable(tokens) {
+            let html = '<table><tr><th>Prefix</th><th>Repository</th><th>Scopes</th><th>Session</th><th>Status</th><th>Requests</th><th>Expires</th><th></th></tr>';
+            for (const t of tokens) {
+                const now = new Date();
+                const expires = new Date(t.expires_at);
+                let status, badge;
+                if (t.revoked_at) { status = 'Revoked'; badge = 'badge-revoked'; }
+                else if (expires < now) { status = 'Expired'; badge = 'badge-expired'; }
+                else { status = 'Active'; badge = 'badge-active'; }
+
+                const scopes = typeof t.scopes === 'string' ? t.scopes : JSON.stringify(t.scopes);
+                html += '<tr>';
+                html += '<td>' + esc(t.token_prefix) + '...</td>';
+                html += '<td>' + esc(t.repository || '') + '</td>';
+                html += '<td>' + esc(scopes) + '</td>';
+                html += '<td>' + esc(t.session_id || '-') + '</td>';
+                html += '<td><span class="badge ' + badge + '">' + status + '</span></td>';
+                html += '<td>' + (t.request_count || 0) + '</td>';
+                html += '<td>' + expires.toLocaleString() + '</td>';
+                html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" onclick="revokeToken(\'' + t.id + '\')">Revoke</button>' : '') + '</td>';
+                html += '</tr>';
+            }
+            html += '</table>';
+            return html;
+        }
+
+        async function revokeToken(id) {
+            if (!confirm('Revoke this token?')) return;
+            await api('DELETE', '/api/tokens/' + id);
+            loadAllTokens();
+        }
+
+        async function loadAudit() {
+            const entries = await api('GET', '/api/audit');
+            const container = document.getElementById('audit-log');
+
+            if (!Array.isArray(entries) || entries.length === 0) {
+                container.innerHTML = '<div class="empty">No audit entries</div>';
+                return;
+            }
+
+            let html = '<table><tr><th>Time</th><th>Action</th><th>Method</th><th>Path</th><th>Repository</th><th>Status</th><th>Duration</th></tr>';
+            for (const e of entries.slice(0, 100)) {
+                const ts = new Date(e.timestamp).toLocaleString();
+                html += '<tr>';
+                html += '<td>' + ts + '</td>';
+                html += '<td>' + esc(e.action) + '</td>';
+                html += '<td>' + esc(e.method || '-') + '</td>';
+                html += '<td>' + esc(e.path || '-') + '</td>';
+                html += '<td>' + esc(e.repository || '-') + '</td>';
+                html += '<td>' + (e.status_code || '-') + '</td>';
+                html += '<td>' + (e.duration_ms ? e.duration_ms + 'ms' : '-') + '</td>';
+                html += '</tr>';
+            }
+            html += '</table>';
+            container.innerHTML = html;
+        }
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        async function logout() {
+            await api('POST', '/auth/logout');
+            window.location.href = '/login';
+        }
+
+        loadUsers();
+        loadAllTokens();
+        loadAudit();
+    </script>
+</body>
+</html>
