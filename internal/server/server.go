@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
@@ -103,7 +102,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Graceful shutdown.
-	shutdownCtx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
+	shutdownCtx, cancel := signal.NotifyContext(ctx, shutdownSignals()...)
 	defer cancel()
 
 	go func() {
@@ -112,14 +111,8 @@ func (s *Server) Run(ctx context.Context) error {
 		httpServer.Shutdown(context.Background())
 	}()
 
-	// Handle SIGUSR1 for log file reopening.
-	sigUSR1 := make(chan os.Signal, 1)
-	signal.Notify(sigUSR1, syscall.SIGUSR1)
-	go func() {
-		for range sigUSR1 {
-			s.logger.Info("received SIGUSR1, reopening log files")
-		}
-	}()
+	// Platform-specific signal handling (e.g. SIGUSR1 on Unix).
+	setupPlatformSignals(s.logger)
 
 	s.logger.Info("server_ready", "listen", s.cfg.Server.Listen, "msg", "ready to accept connections")
 

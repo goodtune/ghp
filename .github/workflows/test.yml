@@ -110,7 +110,7 @@ jobs:
         if: always()
         run: |
           if [ -n "$SERVER_PID" ]; then
-            kill $SERVER_PID 2>/dev/null || true
+            kill "$SERVER_PID" 2>/dev/null || true
           fi
 
       - name: Upload screenshots and report

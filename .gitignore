@@ -30,6 +30,9 @@ go.work.sum
 # Built binary
 /ghp
 
+# GoReleaser output
+/dist/
+
 # Local database
 /ghp.db
 
