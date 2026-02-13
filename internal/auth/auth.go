@@ -67,6 +67,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/github/callback", h.handleGitHubCallback)
 	mux.HandleFunc("POST /auth/logout", h.handleLogout)
 	mux.HandleFunc("GET /auth/status", h.handleStatus)
+
+	// Dev-mode only: test login endpoint that bypasses GitHub OAuth.
+	if h.cfg.DevMode {
+		h.logger.Warn("dev mode enabled: /auth/test-login endpoint is active")
+		mux.HandleFunc("POST /auth/test-login", h.handleTestLogin)
+	}
 }
 
 // GetSession returns the session for the given request, or nil.
@@ -142,6 +148,12 @@ func (h *Handler) createSession(userID, username, role string) string {
 		ExpiresAt: time.Now().Add(SessionDuration),
 	}
 	return token
+}
+
+// CreateTestSession creates a session for E2E testing without OAuth.
+// Returns the session token that should be set as the ghp_session cookie.
+func (h *Handler) CreateTestSession(userID, username, role string) string {
+	return h.createSession(userID, username, role)
 }
 
 func (h *Handler) deleteSession(token string) {
@@ -313,6 +325,75 @@ func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"username":      session.Username,
 		"role":          session.Role,
 		"user_id":       session.UserID,
+	})
+}
+
+// handleTestLogin creates a test user and session without GitHub OAuth.
+// Only available when DevMode is enabled. This must never be used in production.
+func (h *Handler) handleTestLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Role     string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Username == "" {
+		req.Username = "testuser"
+	}
+	if req.Role == "" {
+		req.Role = "user"
+	}
+
+	// Create or find the test user.
+	user := &database.User{
+		GitHubID:       99999,
+		GitHubUsername:  req.Username,
+		GitHubEmail:    req.Username + "@test.local",
+		Role:           req.Role,
+	}
+	if err := h.store.UpsertUser(r.Context(), user); err != nil {
+		h.logger.Error("failed to create test user", "error", err)
+		http.Error(w, "Failed to create test user", http.StatusInternalServerError)
+		return
+	}
+
+	// Create a dummy GitHub token so token creation works.
+	encDummy, _ := h.encryptor.Encrypt("gho_test_dummy_token")
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encDummy,
+		RefreshToken:          encDummy,
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+		Scopes:                "user:email",
+	}
+	if err := h.store.UpsertGitHubToken(r.Context(), gt); err != nil {
+		h.logger.Error("failed to create test github token", "error", err)
+		http.Error(w, "Failed to create test GitHub token", http.StatusInternalServerError)
+		return
+	}
+
+	// Create session.
+	sessionToken := h.createSession(user.ID, user.GitHubUsername, user.Role)
+
+	// Set cookie.
+	http.SetCookie(w, &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    sessionToken,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(SessionDuration.Seconds()),
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"session_token": sessionToken,
+		"username":      user.GitHubUsername,
+		"user_id":       user.ID,
+		"role":          user.Role,
 	})
 }
 

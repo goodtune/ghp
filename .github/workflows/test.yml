@@ -1,0 +1,127 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Go unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build binary
+        run: CGO_ENABLED=0 go build -o ghp ./cmd/ghp
+
+      - name: Verify binary runs
+        run: ./ghp version
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghp-binary
+          path: ghp
+          retention-days: 1
+
+  e2e-tests:
+    name: Playwright E2E tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ghp-binary
+
+      - name: Make binary executable
+        run: chmod +x ./ghp
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Playwright dependencies
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Generate encryption key
+        id: enckey
+        run: echo "key=$(openssl rand -hex 32)" >> "$GITHUB_OUTPUT"
+
+      - name: Run database migrations
+        env:
+          GHP_DATABASE_DRIVER: sqlite
+          GHP_DATABASE_DSN: /tmp/ghp-test.db
+        run: ./ghp migrate
+
+      - name: Start ghp server
+        env:
+          GHP_DATABASE_DRIVER: sqlite
+          GHP_DATABASE_DSN: /tmp/ghp-test.db
+          GHP_ENCRYPTION_KEY: ${{ steps.enckey.outputs.key }}
+          GHP_SERVER_LISTEN: ":8080"
+          GHP_DEV_MODE: "true"
+          GHP_GITHUB_CLIENT_ID: "test-client-id"
+          GHP_GITHUB_CLIENT_SECRET: "test-client-secret"
+        run: |
+          ./ghp serve &
+          SERVER_PID=$!
+          echo "SERVER_PID=$SERVER_PID" >> "$GITHUB_ENV"
+
+          # Wait for server to be ready.
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/auth/status > /dev/null 2>&1; then
+              echo "Server is ready"
+              break
+            fi
+            if ! kill -0 $SERVER_PID 2>/dev/null; then
+              echo "Server process died"
+              exit 1
+            fi
+            echo "Waiting for server... ($i/30)"
+            sleep 1
+          done
+
+      - name: Run Playwright tests
+        working-directory: e2e
+        env:
+          GHP_BASE_URL: http://localhost:8080
+        run: npx playwright test
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -n "$SERVER_PID" ]; then
+            kill $SERVER_PID 2>/dev/null || true
+          fi
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
+          retention-days: 7
+
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: e2e/test-results/
+          retention-days: 7

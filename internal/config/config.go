@@ -24,6 +24,10 @@ type Config struct {
 	Admins   []string       `koanf:"admins"`
 
 	EncryptionKey string `koanf:"encryption_key"`
+
+	// DevMode enables test-only endpoints (e.g. /auth/test-login).
+	// Must never be enabled in production.
+	DevMode bool `koanf:"dev_mode"`
 }
 
 type GitHubConfig struct {
