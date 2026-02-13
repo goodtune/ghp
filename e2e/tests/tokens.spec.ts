@@ -62,7 +62,9 @@ test.describe("Token management", () => {
     await expect(tokenList).toContainText("Active");
   });
 
-  test("can revoke a token", async ({ page }, testInfo) => {
+  test("can revoke a token", async ({ context, page }, testInfo) => {
+    // Use a unique user so tokens from other tests don't interfere.
+    await loginTestUser(context, { username: "revoke-test-user" });
     await page.goto("/");
 
     // Create a token.
@@ -74,7 +76,7 @@ test.describe("Token management", () => {
     // Accept the confirmation dialog.
     page.on("dialog", (dialog) => dialog.accept());
 
-    // Click Revoke.
+    // Click Revoke — there should be exactly one since this is a fresh user.
     const revokeBtn = page.locator(
       '#token-list button:has-text("Revoke")'
     );

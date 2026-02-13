@@ -346,9 +346,19 @@ func (h *Handler) handleTestLogin(w http.ResponseWriter, r *http.Request) {
 		req.Role = "user"
 	}
 
-	// Create or find the test user.
+	// Create or find the test user. Derive a unique GitHub ID from the username
+	// so different test usernames create distinct users with separate tokens.
+	var ghID int64
+	for _, c := range req.Username {
+		ghID = ghID*31 + int64(c)
+	}
+	if ghID < 0 {
+		ghID = -ghID
+	}
+	ghID += 900000 // offset to avoid collisions with real GitHub IDs
+
 	user := &database.User{
-		GitHubID:       99999,
+		GitHubID:       ghID,
 		GitHubUsername:  req.Username,
 		GitHubEmail:    req.Username + "@test.local",
 		Role:           req.Role,

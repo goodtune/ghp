@@ -115,10 +115,23 @@ func Load(path string) (*Config, error) {
 	}
 
 	// Environment variable overrides: GHP_GITHUB_CLIENT_ID -> github.client_id
+	// Only the first underscore separates the section from the field name;
+	// subsequent underscores are preserved as literal characters in field names
+	// (e.g. GHP_GITHUB_CLIENT_ID -> github.client_id, GHP_DEV_MODE -> dev_mode).
 	if err := k.Load(env.Provider("GHP_", ".", func(s string) string {
 		s = strings.TrimPrefix(s, "GHP_")
 		s = strings.ToLower(s)
-		s = strings.ReplaceAll(s, "_", ".")
+		if i := strings.Index(s, "_"); i > 0 {
+			section, field := s[:i], s[i+1:]
+			switch section {
+			case "github", "database", "server", "tokens", "logging", "metrics", "otel":
+				// Handle 3-level nesting for logging.file.*
+				if section == "logging" && strings.HasPrefix(field, "file_") {
+					return "logging.file." + field[len("file_"):]
+				}
+				return section + "." + field
+			}
+		}
 		return s
 	}), nil); err != nil {
 		return nil, fmt.Errorf("loading env vars: %w", err)

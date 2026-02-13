@@ -48,7 +48,9 @@ test.describe("Dashboard", () => {
     ).toBeVisible();
   });
 
-  test("shows Active Tokens section", async ({ page }) => {
+  test("shows Active Tokens section", async ({ context, page }) => {
+    // Use a unique user so tokens from other tests don't interfere.
+    await loginTestUser(context, { username: "dashboard-empty-tokens" });
     await page.goto("/");
 
     await expect(
