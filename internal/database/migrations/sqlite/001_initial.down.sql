@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS proxy_tokens;
+DROP TABLE IF EXISTS github_tokens;
+DROP TABLE IF EXISTS users;

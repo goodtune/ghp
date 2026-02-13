@@ -27,6 +27,9 @@ go.work.sum
 # env file
 .env
 
+# Built binary
+/ghp
+
 # Editor/IDE
 # .idea/
 # .vscode/
