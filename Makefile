@@ -1,4 +1,4 @@
-.PHONY: build test vet lint check clean run migrate
+.PHONY: build test vet lint check clean run migrate man
 
 # Build configuration
 BINARY  := ghp
@@ -35,3 +35,7 @@ run: build
 ## migrate: run database migrations (pass CONFIG=path/to/config.yaml)
 migrate: build
 	./$(BINARY) migrate $(if $(CONFIG),--config $(CONFIG))
+
+## man: generate man pages
+man: build
+	./$(BINARY) doc --output doc/man1
