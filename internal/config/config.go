@@ -17,6 +17,7 @@ type Config struct {
 	GitHub   GitHubConfig   `koanf:"github"`
 	Database DatabaseConfig `koanf:"database"`
 	Server   ServerConfig   `koanf:"server"`
+	TLS      TLSConfig      `koanf:"tls"`
 	Tokens   TokensConfig   `koanf:"tokens"`
 	Logging  LoggingConfig  `koanf:"logging"`
 	Metrics  MetricsConfig  `koanf:"metrics"`
@@ -30,11 +31,21 @@ type Config struct {
 	DevMode bool `koanf:"dev_mode"`
 }
 
+type TLSConfig struct {
+	Certificates []CertificateConfig `koanf:"certificates"`
+}
+
+type CertificateConfig struct {
+	CertFile string `koanf:"cert_file"`
+	KeyFile  string `koanf:"key_file"`
+}
+
 type GitHubConfig struct {
 	AppID          int64  `koanf:"app_id"`
 	ClientID       string `koanf:"client_id"`
 	ClientSecret   string `koanf:"client_secret"`
 	PrivateKeyFile string `koanf:"private_key_file"`
+	EnterpriseSlug string `koanf:"enterprise_slug"`
 }
 
 type DatabaseConfig struct {
@@ -44,6 +55,9 @@ type DatabaseConfig struct {
 
 type ServerConfig struct {
 	Listen                  string `koanf:"listen"`
+	HTTPSListen             string `koanf:"https_listen"`
+	HTTPListen              string `koanf:"http_listen"`
+	ManagementHost          string `koanf:"management_host"`
 	SystemdSocketActivation bool   `koanf:"systemd_socket_activation"`
 	BaseURL                 string `koanf:"base_url"`
 }
@@ -124,7 +138,7 @@ func Load(path string) (*Config, error) {
 		if i := strings.Index(s, "_"); i > 0 {
 			section, field := s[:i], s[i+1:]
 			switch section {
-			case "github", "database", "server", "tokens", "logging", "metrics", "otel":
+			case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel":
 				// Handle 3-level nesting for logging.file.*
 				if section == "logging" && strings.HasPrefix(field, "file_") {
 					return "logging.file." + field[len("file_"):]
