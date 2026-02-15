@@ -2,12 +2,14 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
 
+	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/token"
 )
 
@@ -57,6 +59,82 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSl
 	}
 
 	return proxy
+}
+
+// ScopeEnforcer resolves a ghp_ token string to the full ProxyToken record
+// so that repository and permission scopes can be checked.
+type ScopeEnforcer interface {
+	Resolve(ctx context.Context, ghpToken string) (*database.ProxyToken, error)
+}
+
+// NewScopedPassthroughHandler wraps a passthrough reverse proxy with git smart
+// HTTP scope enforcement. For requests carrying a ghp_ token that match a git
+// smart HTTP path, the token's repository and permission scopes are verified
+// before the request is forwarded. Non-git paths and non-ghp_ tokens pass
+// through unchanged.
+func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, logger *slog.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ghpTok := extractGhpToken(r)
+		if ghpTok == "" {
+			inner.ServeHTTP(w, r)
+			return
+		}
+
+		repo, permission, level := GitSmartHTTPScope(r.Method, r.URL.Path, r.URL.RawQuery)
+		if permission == "" {
+			// Not a git smart HTTP path — pass through with token resolution only.
+			inner.ServeHTTP(w, r)
+			return
+		}
+
+		// Resolve the full proxy token for scope checking.
+		pt, err := enforcer.Resolve(r.Context(), ghpTok)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("git scope enforcement: token resolution failed", "error", err)
+			}
+			writeError(w, http.StatusUnauthorized, "Invalid token")
+			return
+		}
+		if pt == nil {
+			writeError(w, http.StatusUnauthorized, "Invalid token")
+			return
+		}
+
+		// Enforce repository scope.
+		if !strings.EqualFold(repo, pt.Repository) {
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("Token is scoped to %s, not %s", pt.Repository, repo))
+			return
+		}
+
+		// Enforce permission scope.
+		scopes, err := database.ParseScopes(pt.Scopes)
+		if err != nil {
+			if logger != nil {
+				logger.Error("git scope enforcement: failed to parse scopes", "error", err)
+			}
+			writeError(w, http.StatusInternalServerError, "Internal error")
+			return
+		}
+		if !scopes.HasPermission(permission, level) {
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, pt.Repository))
+			return
+		}
+
+		// Scope checks passed — forward with resolved token.
+		realToken, err := resolver.ResolveToGitHubToken(r.Context(), ghpTok)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
+			}
+			writeError(w, http.StatusUnauthorized, "Token resolution failed")
+			return
+		}
+		r.Header.Set("Authorization", "Bearer "+realToken)
+		inner.ServeHTTP(w, r)
+	})
 }
 
 // NewCopilotPassthroughHandler creates a transparent reverse proxy for

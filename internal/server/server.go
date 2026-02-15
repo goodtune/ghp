@@ -94,8 +94,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Create passthrough handlers for github.com and *.githubcopilot.com.
 	resolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc)
-	githubPassthrough := proxy.NewPassthroughHandler(
+	githubInner := proxy.NewPassthroughHandler(
 		"https://github.com", resolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
+	githubPassthrough := proxy.NewScopedPassthroughHandler(
+		githubInner, tokenSvc, resolver, s.logger)
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 

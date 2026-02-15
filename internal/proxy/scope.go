@@ -100,6 +100,53 @@ func init() {
 	}
 }
 
+// gitSmartHTTPPattern matches /{owner}/{repo}.git/... paths used by git smart HTTP.
+var gitSmartHTTPPattern = regexp.MustCompile(`^/([^/]+/[^/]+)\.git/(.+)$`)
+
+// GitSmartHTTPScope extracts the repository, permission, and level from a git
+// smart HTTP request path. Returns empty strings for non-git paths.
+//
+// Git smart HTTP paths:
+//   - GET  /{owner}/{repo}.git/info/refs?service=git-upload-pack  → contents:read
+//   - POST /{owner}/{repo}.git/git-upload-pack                    → contents:read
+//   - GET  /{owner}/{repo}.git/info/refs?service=git-receive-pack → contents:write
+//   - POST /{owner}/{repo}.git/git-receive-pack                   → contents:write
+func GitSmartHTTPScope(method, path, query string) (repo, permission, level string) {
+	m := gitSmartHTTPPattern.FindStringSubmatch(path)
+	if m == nil {
+		return "", "", ""
+	}
+	repo = m[1]
+	suffix := m[2]
+
+	switch {
+	case suffix == "git-receive-pack" && method == "POST":
+		return repo, "contents", "write"
+	case suffix == "git-upload-pack" && method == "POST":
+		return repo, "contents", "read"
+	case suffix == "info/refs":
+		// The service query parameter determines the operation.
+		service := parseServiceParam(query)
+		switch service {
+		case "git-receive-pack":
+			return repo, "contents", "write"
+		case "git-upload-pack":
+			return repo, "contents", "read"
+		}
+	}
+	return repo, "", ""
+}
+
+// parseServiceParam extracts the "service" value from a raw query string.
+func parseServiceParam(query string) string {
+	for _, part := range strings.Split(query, "&") {
+		if strings.HasPrefix(part, "service=") {
+			return strings.TrimPrefix(part, "service=")
+		}
+	}
+	return ""
+}
+
 // EndpointScope returns the permission and level required for a given method and path.
 // Returns empty strings if the endpoint is not recognized.
 func EndpointScope(method, path string) (permission, level string) {
