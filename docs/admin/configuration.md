@@ -21,8 +21,7 @@ the `GHP_` prefix.
 | `GHP_GITHUB_ENTERPRISE_SLUG` | Enterprise slug for access restriction header | |
 | `GHP_TOKENS_DEFAULT_DURATION` | Default token lifetime | `24h` |
 | `GHP_TOKENS_MAX_DURATION` | Maximum token lifetime | `168h` |
-| `GHP_METRICS_ENABLED` | Enable Prometheus `/metrics` endpoint | `false` |
-| `GHP_METRICS_LISTEN` | Metrics listener address (separate port) | `:9090` |
+| `GHP_METRICS_ENABLED` | Enable Prometheus `/metrics` endpoint on management host | `false` |
 | `GHP_DEV_MODE` | Enable test endpoints (never use in production) | `false` |
 
 ## Full YAML Reference
@@ -60,8 +59,7 @@ logging:
     path: "/var/log/ghp/ghp.log"
 
 metrics:
-  enabled: false
-  listen: ":9090"
+  enabled: false               # serves /metrics on the management host
 
 admins:
   - "alice"

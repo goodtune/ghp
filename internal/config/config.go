@@ -78,8 +78,7 @@ type LogFileConfig struct {
 }
 
 type MetricsConfig struct {
-	Enabled bool   `koanf:"enabled"`
-	Listen  string `koanf:"listen"`
+	Enabled bool `koanf:"enabled"`
 }
 
 type OTELConfig struct {
@@ -108,7 +107,6 @@ func Defaults() *Config {
 		},
 		Metrics: MetricsConfig{
 			Enabled: false,
-			Listen:  ":9090",
 		},
 		OTEL: OTELConfig{
 			Protocol: "grpc",

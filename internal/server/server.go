@@ -15,8 +15,8 @@ import (
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
-	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/proxy"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/goodtune/ghp/internal/token"
 	"github.com/goodtune/ghp/internal/web"
 )
@@ -83,6 +83,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// Web UI routes.
 	webUI.RegisterRoutes(mux)
 
+	// Metrics route (on management mux, not on GitHub-facing virtualhosts).
+	if s.cfg.Metrics.Enabled {
+		mux.Handle("/metrics", promhttp.Handler())
+	}
+
 	// Proxy routes — these catch /api/v3/* and /api/graphql.
 	mux.Handle("/api/v3/", proxyHandler)
 	mux.Handle("/api/graphql", proxyHandler)
@@ -102,11 +107,6 @@ func (s *Server) Run(ctx context.Context) error {
 		mgmtHandler:    mux,
 		managementHost: s.cfg.Server.ManagementHost,
 	})
-
-	// Start metrics server if enabled.
-	if s.cfg.Metrics.Enabled {
-		go metrics.Serve(s.cfg.Metrics.Listen, s.logger)
-	}
 
 	// Platform-specific signal handling (e.g. SIGUSR1 on Unix).
 	setupPlatformSignals(s.logger)
