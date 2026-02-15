@@ -249,7 +249,7 @@ func newHostDispatch(cfg hostDispatchConfig) http.Handler {
 			cfg.githubHandler.ServeHTTP(w, r)
 		case host == "githubcopilot.com" || strings.HasSuffix(host, ".githubcopilot.com"):
 			cfg.copilotHandler.ServeHTTP(w, r)
-		case strings.EqualFold(host, cfg.managementHost):
+		case cfg.managementHost == "" || strings.EqualFold(host, cfg.managementHost):
 			cfg.mgmtHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
