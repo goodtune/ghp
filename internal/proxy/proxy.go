@@ -52,14 +52,27 @@ func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
+	// Determine the actual API path.
+	// Requests come in as /api/v3/... or /api/graphql (GHE-style),
+	// or directly as /... or /graphql (when proxied as api.github.com virtualhost).
+	apiPath := r.URL.Path
+	if strings.HasPrefix(apiPath, "/api/v3") {
+		apiPath = strings.TrimPrefix(apiPath, "/api/v3")
+	}
+	if apiPath == "" {
+		apiPath = "/"
+	}
+
 	// Extract the ghp_ token from the Authorization header.
+	// If the token is not a ghp_ token, forward the request transparently
+	// to GitHub with the original credentials intact.
 	ghpToken := extractToken(r)
 	if ghpToken == "" {
-		writeError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
+		h.forwardPassthrough(w, r, apiPath)
 		return
 	}
 
-	// Resolve the token.
+	// Resolve the ghp_ token.
 	pt, err := h.tokenService.Resolve(r.Context(), ghpToken)
 	if err != nil {
 		h.logger.Warn("token resolution failed", "error", err)
@@ -71,20 +84,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine the actual API path.
-	// Requests come in as /api/v3/... or /api/graphql (GHE-style),
-	// or directly as /... or /graphql (when proxied as api.github.com virtualhost).
-	apiPath := r.URL.Path
-	if strings.HasPrefix(apiPath, "/api/v3") {
-		apiPath = strings.TrimPrefix(apiPath, "/api/v3")
-	} else if apiPath == "/api/graphql" || apiPath == "/graphql" {
-		// GraphQL handled separately.
+	// GraphQL handled separately.
+	if apiPath == "/api/graphql" || apiPath == "/graphql" {
 		h.handleGraphQL(w, r, pt, start)
 		return
-	}
-
-	if apiPath == "" {
-		apiPath = "/"
 	}
 
 	// Extract repository from path (if this is a /repos/ path).
@@ -267,6 +270,53 @@ func (h *Handler) refreshGitHubToken(ctx context.Context, gt *database.GitHubTok
 		"expires_at", gt.AccessTokenExpiresAt.Format(time.RFC3339))
 
 	return tokenResp.AccessToken, nil
+}
+
+// forwardPassthrough forwards a request to GitHub transparently, preserving
+// the original Authorization header. Used for non-ghp_ tokens (e.g. gho_*,
+// ghp_* from other systems, or personal access tokens) so they reach GitHub
+// without interference.
+func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, path string) {
+	targetURL := githubAPIBase + path
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to create upstream request")
+		return
+	}
+
+	// Copy relevant headers including the original Authorization.
+	for _, key := range []string{"Authorization", "Content-Type", "Accept", "User-Agent"} {
+		if v := r.Header.Get(key); v != "" {
+			proxyReq.Header.Set(key, v)
+		}
+	}
+
+	// Inject enterprise access restriction header if configured.
+	if h.cfg.GitHub.EnterpriseSlug != "" {
+		proxyReq.Header.Set("sec-GitHub-allowed-enterprise", h.cfg.GitHub.EnterpriseSlug)
+	}
+
+	resp, err := h.client.Do(proxyReq)
+	if err != nil {
+		h.logger.Error("upstream passthrough request failed", "error", err)
+		writeError(w, http.StatusBadGateway, "Upstream request failed")
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy response headers.
+	for key, vals := range resp.Header {
+		for _, v := range vals {
+			w.Header().Add(key, v)
+		}
+	}
+
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, githubToken string) int {

@@ -51,6 +51,70 @@ func TestForwardRequest_EnterpriseHeader(t *testing.T) {
 	}
 }
 
+func TestServeHTTP_NonGhpTokenPassthrough(t *testing.T) {
+	// A non-ghp_ token (e.g. gho_xxx) should be forwarded to GitHub as-is,
+	// not rejected with 401.
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg: &config.Config{
+			GitHub: config.GitHubConfig{
+				EnterpriseSlug: "acme",
+			},
+		},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo/pulls", nil)
+	req.Header.Set("Authorization", "Bearer gho_realtoken123")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusUnauthorized {
+		t.Fatalf("non-ghp token should not be rejected, got 401")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if ct.lastReq == nil {
+		t.Fatal("no request forwarded to upstream")
+	}
+	// Original token should be preserved.
+	gotAuth := ct.lastReq.Header.Get("Authorization")
+	if gotAuth != "Bearer gho_realtoken123" {
+		t.Errorf("expected original token preserved, got %q", gotAuth)
+	}
+	// Enterprise header should still be injected.
+	gotEnt := ct.lastReq.Header.Get("sec-GitHub-allowed-enterprise")
+	if gotEnt != "acme" {
+		t.Errorf("expected enterprise header 'acme', got %q", gotEnt)
+	}
+}
+
+func TestServeHTTP_NoAuthHeader(t *testing.T) {
+	// A request with no Authorization header should also be forwarded
+	// (GitHub will return its own 401 if needed).
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:    &config.Config{},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/user", nil)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusUnauthorized {
+		t.Fatalf("missing auth should be forwarded, not rejected locally")
+	}
+	if ct.lastReq == nil {
+		t.Fatal("no request forwarded to upstream")
+	}
+}
+
 func TestForwardRequest_NoEnterpriseHeader(t *testing.T) {
 	ct := &captureTransport{}
 	h := &Handler{
