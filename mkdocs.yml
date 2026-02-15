@@ -1,0 +1,51 @@
+site_name: ghp
+site_description: GitHub Proxy for Autonomous Coding Agents
+repo_url: https://github.com/goodtune/ghp
+repo_name: goodtune/ghp
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - tables
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - How It Works: how-it-works.md
+  - Administration:
+    - Installation: admin/installation.md
+    - Configuration: admin/configuration.md
+    - Deployment: admin/deployment.md
+    - GitHub App Setup: admin/github-app.md
+  - CLI Reference:
+    - Overview: cli/index.md
+    - ghp serve: cli/serve.md
+    - ghp migrate: cli/migrate.md
+    - ghp auth: cli/auth.md
+    - ghp token: cli/token.md
+  - Web UI: web-ui.md
+  - Development: development.md
