@@ -93,7 +93,13 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	httpServer := &http.Server{
-		Handler: hostRoutingHandler(mux, proxyHandler),
+		Handler: newHostDispatch(hostDispatchConfig{
+			apiHandler:     proxyHandler,
+			githubHandler:  http.NotFoundHandler(),
+			copilotHandler: http.NotFoundHandler(),
+			mgmtHandler:    mux,
+			managementHost: s.cfg.Server.ManagementHost,
+		}),
 	}
 
 	// Start metrics server if enabled.
@@ -150,21 +156,34 @@ func (s *Server) createListener() (net.Listener, error) {
 	return net.Listen("tcp", addr)
 }
 
-// hostRoutingHandler routes requests based on the Host header.
-// If the host is api.github.com (as when ghp is deployed as a virtualhost),
-// all requests are sent directly to the proxy handler. Otherwise, the
-// standard mux is used.
-func hostRoutingHandler(mux *http.ServeMux, proxyHandler http.Handler) http.Handler {
+type hostDispatchConfig struct {
+	apiHandler     http.Handler
+	githubHandler  http.Handler
+	copilotHandler http.Handler
+	mgmtHandler    http.Handler
+	managementHost string
+}
+
+// newHostDispatch creates a handler that routes requests by Host header.
+func newHostDispatch(cfg hostDispatchConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
 		}
-		if host == "api.github.com" {
-			proxyHandler.ServeHTTP(w, r)
-			return
+
+		switch {
+		case host == "api.github.com":
+			cfg.apiHandler.ServeHTTP(w, r)
+		case host == "github.com":
+			cfg.githubHandler.ServeHTTP(w, r)
+		case host == "githubcopilot.com" || strings.HasSuffix(host, ".githubcopilot.com"):
+			cfg.copilotHandler.ServeHTTP(w, r)
+		case strings.EqualFold(host, cfg.managementHost):
+			cfg.mgmtHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
 		}
-		mux.ServeHTTP(w, r)
 	})
 }
 
