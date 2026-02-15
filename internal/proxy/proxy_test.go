@@ -1,13 +1,18 @@
 package proxy
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/crypto"
+	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/token"
 )
 
 // captureTransport records the last request sent through it and responds with 200.
@@ -136,5 +141,116 @@ func TestForwardRequest_NoEnterpriseHeader(t *testing.T) {
 	got := ct.lastReq.Header.Get("sec-GitHub-allowed-enterprise")
 	if got != "" {
 		t.Errorf("expected no enterprise header, got %q", got)
+	}
+}
+
+// newScopedHandler creates a Handler with a real token.Service backed by SQLite,
+// issues a ghp_ token scoped to the given repository and scopes, and returns
+// the handler plus the plaintext token.
+func newScopedHandler(t *testing.T, repo string, scopes map[string]string) (*Handler, string) {
+	t.Helper()
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 1, GitHubUsername: "testuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("real-github-pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Repository:    repo,
+		Scopes:        scopes,
+		Duration:      24 * time.Hour,
+		SessionID:     "test-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:          &config.Config{},
+		tokenService: tokenSvc,
+		store:        store,
+		encryptor:    enc,
+		logger:       slog.Default(),
+		client:       &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+	return h, result.Token
+}
+
+func TestServeHTTP_GhpToken_WrongRepository(t *testing.T) {
+	// A ghp_ token scoped to goodtune/ghp must be rejected when used
+	// against a different repository (goodtune/pac-proxy).
+	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
+		"contents": "read",
+		"issues":   "read",
+		"pulls":    "read",
+	})
+
+	req := httptest.NewRequest("POST", "http://api.github.com/repos/goodtune/pac-proxy/pulls/1/comments", strings.NewReader(`{"body":"hello"}`))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for wrong repository, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "scoped to goodtune/ghp") {
+		t.Errorf("expected error to mention scoped repository, got: %s", body)
+	}
+	if !strings.Contains(body, "goodtune/pac-proxy") {
+		t.Errorf("expected error to mention requested repository, got: %s", body)
+	}
+}
+
+func TestServeHTTP_GhpToken_ReadOnlyDeniesWrite(t *testing.T) {
+	// A ghp_ token scoped to goodtune/ghp with read-only pulls permission
+	// must be rejected when attempting to write (POST a PR comment).
+	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
+		"contents": "read",
+		"issues":   "read",
+		"pulls":    "read",
+	})
+
+	req := httptest.NewRequest("POST", "http://api.github.com/repos/goodtune/ghp/pulls/1/comments", strings.NewReader(`{"body":"hello"}`))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for read-only token attempting write, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "pulls:write") {
+		t.Errorf("expected error to mention required pulls:write permission, got: %s", body)
 	}
 }
