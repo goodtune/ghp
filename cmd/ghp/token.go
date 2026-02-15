@@ -85,16 +85,6 @@ func newTokenCmd() *cobra.Command {
 			fmt.Printf("\nConfigure your agent:\n")
 			fmt.Printf("  export GH_TOKEN=%s\n", result["token"])
 
-			serverHost := cfg.ServerURL
-			// Strip protocol.
-			for _, prefix := range []string{"https://", "http://"} {
-				if len(serverHost) > len(prefix) && serverHost[:len(prefix)] == prefix {
-					serverHost = serverHost[len(prefix):]
-					break
-				}
-			}
-			fmt.Printf("  export GH_HOST=%s\n", serverHost)
-
 			return nil
 		},
 	}
