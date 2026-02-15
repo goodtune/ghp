@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -86,49 +87,118 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/v3/", proxyHandler)
 	mux.Handle("/api/graphql", proxyHandler)
 
-	// Create listener.
-	ln, err := s.createListener()
-	if err != nil {
-		return fmt.Errorf("creating listener: %w", err)
-	}
+	// Create passthrough handlers for github.com and *.githubcopilot.com.
+	resolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc)
+	githubPassthrough := proxy.NewPassthroughHandler(
+		"https://github.com", resolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
+	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
+		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 
-	httpServer := &http.Server{
-		Handler: newHostDispatch(hostDispatchConfig{
-			apiHandler:     proxyHandler,
-			githubHandler:  http.NotFoundHandler(),
-			copilotHandler: http.NotFoundHandler(),
-			mgmtHandler:    mux,
-			managementHost: s.cfg.Server.ManagementHost,
-		}),
-	}
+	// Build host dispatch with access logging on GitHub-facing handlers.
+	dispatch := newHostDispatch(hostDispatchConfig{
+		apiHandler:     accessLogHandler(proxyHandler, s.logger),
+		githubHandler:  accessLogHandler(githubPassthrough, s.logger),
+		copilotHandler: accessLogHandler(copilotPassthrough, s.logger),
+		mgmtHandler:    mux,
+		managementHost: s.cfg.Server.ManagementHost,
+	})
 
 	// Start metrics server if enabled.
 	if s.cfg.Metrics.Enabled {
 		go metrics.Serve(s.cfg.Metrics.Listen, s.logger)
 	}
 
-	// Graceful shutdown.
+	// Platform-specific signal handling (e.g. SIGUSR1 on Unix).
+	setupPlatformSignals(s.logger)
+
+	// TLS mode: https_listen configured with certificates.
+	if s.cfg.Server.HTTPSListen != "" {
+		return s.serveTLS(ctx, dispatch)
+	}
+
+	// Legacy mode: plain HTTP on single port (no TLS).
+	return s.servePlain(ctx, dispatch)
+}
+
+// serveTLS starts an HTTPS server with TLS termination and an optional
+// HTTP redirect server. It blocks until shutdown.
+func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
+	tlsCfg, err := loadTLSConfig(&s.cfg.TLS)
+	if err != nil {
+		return fmt.Errorf("loading TLS config: %w", err)
+	}
+	if tlsCfg == nil {
+		return fmt.Errorf("https_listen configured but no TLS certificates provided")
+	}
+
+	httpsLn, err := net.Listen("tcp", s.cfg.Server.HTTPSListen)
+	if err != nil {
+		return fmt.Errorf("listening on %s: %w", s.cfg.Server.HTTPSListen, err)
+	}
+	tlsLn := tls.NewListener(httpsLn, tlsCfg)
+
+	httpsServer := &http.Server{Handler: handler}
+
+	// Start HTTP redirect server if configured.
+	var httpServer *http.Server
+	if s.cfg.Server.HTTPListen != "" {
+		httpLn, err := net.Listen("tcp", s.cfg.Server.HTTPListen)
+		if err != nil {
+			return fmt.Errorf("listening on %s: %w", s.cfg.Server.HTTPListen, err)
+		}
+		httpServer = &http.Server{Handler: httpsRedirectHandler()}
+		go httpServer.Serve(httpLn)
+	}
+
+	// Graceful shutdown for both servers.
 	shutdownCtx, cancel := signal.NotifyContext(ctx, shutdownSignals()...)
 	defer cancel()
+	go func() {
+		<-shutdownCtx.Done()
+		s.logger.Info("server_shutdown", "msg", "shutting down")
+		httpsServer.Shutdown(context.Background())
+		if httpServer != nil {
+			httpServer.Shutdown(context.Background())
+		}
+	}()
 
+	s.logger.Info("server_ready",
+		"https_listen", s.cfg.Server.HTTPSListen,
+		"http_listen", s.cfg.Server.HTTPListen,
+		"msg", "ready to accept connections")
+	notifySystemd("READY=1")
+
+	if err := httpsServer.Serve(tlsLn); err != http.ErrServerClosed {
+		return fmt.Errorf("server error: %w", err)
+	}
+	notifySystemd("STOPPING=1")
+	return nil
+}
+
+// servePlain starts a plain HTTP server (legacy mode, no TLS). It blocks
+// until shutdown.
+func (s *Server) servePlain(ctx context.Context, handler http.Handler) error {
+	ln, err := s.createListener()
+	if err != nil {
+		return fmt.Errorf("creating listener: %w", err)
+	}
+
+	httpServer := &http.Server{Handler: handler}
+
+	shutdownCtx, cancel := signal.NotifyContext(ctx, shutdownSignals()...)
+	defer cancel()
 	go func() {
 		<-shutdownCtx.Done()
 		s.logger.Info("server_shutdown", "msg", "shutting down")
 		httpServer.Shutdown(context.Background())
 	}()
 
-	// Platform-specific signal handling (e.g. SIGUSR1 on Unix).
-	setupPlatformSignals(s.logger)
-
 	s.logger.Info("server_ready", "listen", s.cfg.Server.Listen, "msg", "ready to accept connections")
-
-	// Notify systemd if available.
 	notifySystemd("READY=1")
 
 	if err := httpServer.Serve(ln); err != http.ErrServerClosed {
 		return fmt.Errorf("server error: %w", err)
 	}
-
 	notifySystemd("STOPPING=1")
 	return nil
 }
