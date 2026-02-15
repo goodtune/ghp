@@ -59,6 +59,36 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSl
 	return proxy
 }
 
+// NewCopilotPassthroughHandler creates a transparent reverse proxy for
+// *.githubcopilot.com traffic. The original Host header is preserved so the
+// correct subdomain reaches the real Copilot service. No token interception
+// is performed.
+// The upstream parameter sets the network destination (scheme + host:port).
+// The transport parameter allows callers to supply a custom RoundTripper;
+// pass nil to use http.DefaultTransport.
+func NewCopilotPassthroughHandler(upstream string, enterpriseSlug string, logger *slog.Logger, transport http.RoundTripper) http.Handler {
+	target, _ := url.Parse(upstream)
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			originalHost := req.Host
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.Host = originalHost
+
+			if enterpriseSlug != "" {
+				req.Header.Set("sec-GitHub-allowed-enterprise", enterpriseSlug)
+			}
+		},
+	}
+
+	if transport != nil {
+		proxy.Transport = transport
+	}
+
+	return proxy
+}
+
 // extractGhpToken checks for a ghp_ prefixed token in the Authorization header.
 func extractGhpToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")

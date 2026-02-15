@@ -93,6 +93,51 @@ func TestPassthroughHandler_EnterpriseHeader(t *testing.T) {
 	}
 }
 
+func TestCopilotPassthroughHandler(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "api.githubcopilot.com" {
+			t.Errorf("expected host api.githubcopilot.com, got %q", r.Host)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler := NewCopilotPassthroughHandler(upstream.URL, "", nil, tlsTransport(upstream))
+
+	req := httptest.NewRequest("GET", "http://api.githubcopilot.com/some/path", nil)
+	req.Host = "api.githubcopilot.com"
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestCopilotPassthroughHandler_EnterpriseHeader(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ent := r.Header.Get("sec-GitHub-allowed-enterprise")
+		if ent != "my-enterprise" {
+			t.Errorf("expected enterprise header 'my-enterprise', got %q", ent)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler := NewCopilotPassthroughHandler(upstream.URL, "my-enterprise", nil, tlsTransport(upstream))
+
+	req := httptest.NewRequest("GET", "http://api.githubcopilot.com/", nil)
+	req.Host = "api.githubcopilot.com"
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
 // tlsTransport returns an http.RoundTripper that trusts the test server's cert.
 func tlsTransport(ts *httptest.Server) http.RoundTripper {
 	return &http.Transport{
