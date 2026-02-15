@@ -291,6 +291,11 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, g
 	// Set the real GitHub token.
 	proxyReq.Header.Set("Authorization", "Bearer "+githubToken)
 
+	// Inject enterprise access restriction header if configured.
+	if h.cfg.GitHub.EnterpriseSlug != "" {
+		proxyReq.Header.Set("sec-GitHub-allowed-enterprise", h.cfg.GitHub.EnterpriseSlug)
+	}
+
 	resp, err := h.client.Do(proxyReq)
 	if err != nil {
 		h.logger.Error("upstream request failed", "error", err)
