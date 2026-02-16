@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
@@ -149,7 +150,13 @@ func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
 			return fmt.Errorf("listening on %s: %w", s.cfg.Server.HTTPListen, err)
 		}
 		httpServer = &http.Server{Handler: httpsRedirectHandler()}
-		go httpServer.Serve(httpLn)
+		go func() {
+			if err := httpServer.Serve(httpLn); err != nil && err != http.ErrServerClosed {
+				s.logger.Error("http_redirect_server_error",
+					"listen_addr", s.cfg.Server.HTTPListen,
+					"err", err)
+			}
+		}()
 	}
 
 	// Graceful shutdown for both servers.
@@ -158,9 +165,11 @@ func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
 	go func() {
 		<-shutdownCtx.Done()
 		s.logger.Info("server_shutdown", "msg", "shutting down")
-		httpsServer.Shutdown(context.Background())
+		timeout, tcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer tcancel()
+		httpsServer.Shutdown(timeout)
 		if httpServer != nil {
-			httpServer.Shutdown(context.Background())
+			httpServer.Shutdown(timeout)
 		}
 	}()
 
@@ -171,6 +180,9 @@ func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
 	notifySystemd("READY=1")
 
 	if err := httpsServer.Serve(tlsLn); err != http.ErrServerClosed {
+		if httpServer != nil {
+			httpServer.Close()
+		}
 		return fmt.Errorf("server error: %w", err)
 	}
 	notifySystemd("STOPPING=1")
@@ -192,7 +204,9 @@ func (s *Server) servePlain(ctx context.Context, handler http.Handler) error {
 	go func() {
 		<-shutdownCtx.Done()
 		s.logger.Info("server_shutdown", "msg", "shutting down")
-		httpServer.Shutdown(context.Background())
+		timeout, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		httpServer.Shutdown(timeout)
 	}()
 
 	s.logger.Info("server_ready", "listen", s.cfg.Server.Listen, "msg", "ready to accept connections")

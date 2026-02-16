@@ -87,13 +87,28 @@ func generateTestCert(t *testing.T, dir, hostname string) (certFile, keyFile str
 	certPath := filepath.Join(dir, hostname+".pem")
 	keyPath := filepath.Join(dir, hostname+"-key.pem")
 
-	certOut, _ := os.Create(certPath)
-	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
+		certOut.Close()
+		t.Fatal(err)
+	}
 	certOut.Close()
 
-	keyDER, _ := x509.MarshalECPrivateKey(key)
-	keyOut, _ := os.Create(keyPath)
-	pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyOut, err := os.Create(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}); err != nil {
+		keyOut.Close()
+		t.Fatal(err)
+	}
 	keyOut.Close()
 
 	return certPath, keyPath
