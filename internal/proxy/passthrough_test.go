@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -282,6 +283,106 @@ func TestScopedPassthrough_NonGitPath_PassesThrough(t *testing.T) {
 	// Should pass through (inner handler returns 200).
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200 for non-git path, got %d", rr.Code)
+	}
+}
+
+// basicAuth encodes credentials as a Basic auth header value per RFC 7617.
+// GitHub documents this format as "x-access-token:<token>" for Git HTTP access.
+func basicAuth(username, password string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
+}
+
+func TestPassthroughHandler_BasicAuth_GhpToken(t *testing.T) {
+	// Git clients (e.g. via `gh auth git-credential`) send credentials using
+	// HTTP Basic auth: base64("x-access-token:<token>"). The proxy must
+	// recognise a ghp_ token in this format and resolve it to the real
+	// GitHub credential before forwarding upstream.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer real-github-token" {
+			t.Errorf("expected rewritten auth header, got %q", auth)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	resolver := &mockTokenResolver{token: "real-github-token"}
+	handler := NewPassthroughHandler(upstream.URL, resolver, "", nil, tlsTransport(upstream))
+
+	ghpToken := token.Prefix + "abc123"
+	req := httptest.NewRequest("GET", "http://github.com/org/repo.git/info/refs", nil)
+	req.Header.Set("Authorization", basicAuth("x-access-token", ghpToken))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestScopedPassthrough_BasicAuth_GitFetch_Allowed(t *testing.T) {
+	// A ghp_ token delivered via Basic auth (x-access-token:<token>) should
+	// be recognised and subject to the same scope enforcement as Bearer tokens.
+	handler, ghpToken := newScopedPassthrough(t, "goodtune/ghp", map[string]string{
+		"contents": "read",
+	})
+
+	req := httptest.NewRequest("GET", "http://github.com/goodtune/ghp.git/info/refs?service=git-upload-pack", nil)
+	req.Header.Set("Authorization", basicAuth("x-access-token", ghpToken))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for Basic auth read token fetching, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestScopedPassthrough_BasicAuth_GitPush_InsufficientPermission(t *testing.T) {
+	// A ghp_ token sent via Basic auth with only contents:read must still
+	// be rejected for git-receive-pack (push requires contents:write).
+	handler, ghpToken := newScopedPassthrough(t, "goodtune/ghp", map[string]string{
+		"contents": "read",
+	})
+
+	req := httptest.NewRequest("POST", "http://github.com/goodtune/ghp.git/git-receive-pack", nil)
+	req.Header.Set("Authorization", basicAuth("x-access-token", ghpToken))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for read-only Basic auth token attempting push, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "contents:write") {
+		t.Errorf("expected error to mention required contents:write permission, got: %s", body)
+	}
+}
+
+func TestScopedPassthrough_BasicAuth_GitPush_WrongRepository(t *testing.T) {
+	// A ghp_ token sent via Basic auth scoped to goodtune/ghp must be
+	// rejected when used against a different repository.
+	handler, ghpToken := newScopedPassthrough(t, "goodtune/ghp", map[string]string{
+		"contents": "write",
+	})
+
+	req := httptest.NewRequest("POST", "http://github.com/goodtune/pac-proxy.git/git-receive-pack", nil)
+	req.Header.Set("Authorization", basicAuth("x-access-token", ghpToken))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for wrong repository via Basic auth, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "goodtune/ghp") {
+		t.Errorf("expected error to mention scoped repository, got: %s", body)
+	}
+	if !strings.Contains(body, "goodtune/pac-proxy") {
+		t.Errorf("expected error to mention requested repository, got: %s", body)
 	}
 }
 

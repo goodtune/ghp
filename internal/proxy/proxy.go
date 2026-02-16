@@ -66,7 +66,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Extract the ghp_ token from the Authorization header.
 	// If the token is not a ghp_ token, forward the request transparently
 	// to GitHub with the original credentials intact.
-	ghpToken := extractToken(r)
+	ghpToken := extractGhpToken(r)
 	if ghpToken == "" {
 		h.forwardPassthrough(w, r, apiPath)
 		return
@@ -415,27 +415,6 @@ func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, metho
 	}
 }
 
-// extractToken extracts the ghp_ token from the Authorization header.
-// Supports both "token ghp_xxx" and "Bearer ghp_xxx" formats.
-func extractToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		return ""
-	}
-
-	parts := strings.SplitN(auth, " ", 2)
-	if len(parts) != 2 {
-		return ""
-	}
-
-	scheme := strings.ToLower(parts[0])
-	tok := parts[1]
-
-	if (scheme == "token" || scheme == "bearer") && strings.HasPrefix(tok, token.Prefix) {
-		return tok
-	}
-	return ""
-}
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

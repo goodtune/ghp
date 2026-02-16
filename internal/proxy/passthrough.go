@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -168,6 +169,8 @@ func NewCopilotPassthroughHandler(upstream string, enterpriseSlug string, logger
 }
 
 // extractGhpToken checks for a ghp_ prefixed token in the Authorization header.
+// Supports "Bearer ghp_xxx", "token ghp_xxx", and Basic auth with
+// username "x-access-token" and a ghp_ password (as used by git credential helpers).
 func extractGhpToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
@@ -178,9 +181,19 @@ func extractGhpToken(r *http.Request) string {
 		return ""
 	}
 	scheme := strings.ToLower(parts[0])
-	tok := parts[1]
-	if (scheme == "token" || scheme == "bearer") && strings.HasPrefix(tok, token.Prefix) {
-		return tok
+	credential := parts[1]
+	if (scheme == "token" || scheme == "bearer") && strings.HasPrefix(credential, token.Prefix) {
+		return credential
+	}
+	if scheme == "basic" {
+		decoded, err := base64.StdEncoding.DecodeString(credential)
+		if err != nil {
+			return ""
+		}
+		user, pass, ok := strings.Cut(string(decoded), ":")
+		if ok && strings.EqualFold(user, "x-access-token") && strings.HasPrefix(pass, token.Prefix) {
+			return pass
+		}
 	}
 	return ""
 }
