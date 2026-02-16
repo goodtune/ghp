@@ -66,7 +66,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Extract the ghp_ token from the Authorization header.
 	// If the token is not a ghp_ token, forward the request transparently
 	// to GitHub with the original credentials intact.
-	ghpToken := extractGhpToken(r)
+	ghpToken, rewriteAuth := extractGhpToken(r)
 	if ghpToken == "" {
 		h.forwardPassthrough(w, r, apiPath)
 		return
@@ -86,7 +86,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// GraphQL handled separately.
 	if apiPath == "/api/graphql" || apiPath == "/graphql" {
-		h.handleGraphQL(w, r, pt, start)
+		h.handleGraphQL(w, r, pt, rewriteAuth, start)
 		return
 	}
 
@@ -129,7 +129,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forward the request to GitHub.
-	status := h.forwardRequest(w, r, apiPath, githubToken)
+	status := h.forwardRequest(w, r, apiPath, rewriteAuth(githubToken))
 
 	// Record usage.
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
@@ -139,7 +139,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.logRequest(r.Context(), pt, r.Method, apiPath, repo, status, time.Since(start), "proxy_request")
 }
 
-func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, start time.Time) {
+func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, rewriteAuth func(string) string, start time.Time) {
 	// For GraphQL, we forward the request and check the token's scopes in a simplified manner.
 	// Full GraphQL query parsing is complex; for now, we require that the token has at least one scope.
 	githubToken, err := h.getGitHubToken(r, pt)
@@ -149,7 +149,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		return
 	}
 
-	status := h.forwardRequest(w, r, "/graphql", githubToken)
+	status := h.forwardRequest(w, r, "/graphql", rewriteAuth(githubToken))
 
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 		h.logger.Error("failed to record token usage", "error", err)
@@ -319,7 +319,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	io.Copy(w, resp.Body)
 }
 
-func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, githubToken string) int {
+func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader string) int {
 	targetURL := githubAPIBase + path
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
@@ -338,8 +338,8 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, g
 		}
 	}
 
-	// Set the real GitHub token.
-	proxyReq.Header.Set("Authorization", "Bearer "+githubToken)
+	// Set the resolved Authorization header (scheme preserved from original request).
+	proxyReq.Header.Set("Authorization", authHeader)
 
 	// Inject enterprise access restriction header if configured.
 	if h.cfg.GitHub.EnterpriseSlug != "" {

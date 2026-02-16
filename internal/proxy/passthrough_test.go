@@ -52,28 +52,56 @@ func TestPassthroughHandler_NoAuth(t *testing.T) {
 	}
 }
 
-func TestPassthroughHandler_GhpToken(t *testing.T) {
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if auth != "Bearer real-github-token" {
-			t.Errorf("expected rewritten auth, got %q", auth)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
+func TestPassthroughHandler_GhpToken_SchemePreserved(t *testing.T) {
+	// The proxy must preserve the original Authorization scheme when
+	// rewriting a ghp_ token to the real GitHub credential.
+	ghpTok := token.Prefix + "abc123"
+	tests := []struct {
+		name       string
+		authHeader string
+		wantScheme string
+	}{
+		{
+			name:       "Bearer",
+			authHeader: "Bearer " + ghpTok,
+			wantScheme: "Bearer real-github-token",
+		},
+		{
+			name:       "token",
+			authHeader: "token " + ghpTok,
+			wantScheme: "token real-github-token",
+		},
+		{
+			name:       "Basic",
+			authHeader: basicAuth("x-access-token", ghpTok),
+			wantScheme: basicAuth("x-access-token", "real-github-token"),
+		},
+	}
 
-	resolver := &mockTokenResolver{token: "real-github-token"}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				auth := r.Header.Get("Authorization")
+				if auth != tt.wantScheme {
+					t.Errorf("expected %q, got %q", tt.wantScheme, auth)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
 
-	handler := NewPassthroughHandler(upstream.URL, resolver, "", nil, tlsTransport(upstream))
+			resolver := &mockTokenResolver{token: "real-github-token"}
+			handler := NewPassthroughHandler(upstream.URL, resolver, "", nil, tlsTransport(upstream))
 
-	req := httptest.NewRequest("GET", "http://github.com/org/repo.git/info/refs", nil)
-	req.Header.Set("Authorization", "Bearer "+token.Prefix+"abc123")
-	rr := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", "http://github.com/org/repo.git/info/refs", nil)
+			req.Header.Set("Authorization", tt.authHeader)
+			rr := httptest.NewRecorder()
 
-	handler.ServeHTTP(rr, req)
+			handler.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rr.Code)
+			}
+		})
 	}
 }
 
@@ -292,34 +320,8 @@ func basicAuth(username, password string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
 }
 
-func TestPassthroughHandler_BasicAuth_GhpToken(t *testing.T) {
-	// Git clients (e.g. via `gh auth git-credential`) send credentials using
-	// HTTP Basic auth: base64("x-access-token:<token>"). The proxy must
-	// recognise a ghp_ token in this format and resolve it to the real
-	// GitHub credential before forwarding upstream.
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if auth != "Bearer real-github-token" {
-			t.Errorf("expected rewritten auth header, got %q", auth)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	resolver := &mockTokenResolver{token: "real-github-token"}
-	handler := NewPassthroughHandler(upstream.URL, resolver, "", nil, tlsTransport(upstream))
-
-	ghpToken := token.Prefix + "abc123"
-	req := httptest.NewRequest("GET", "http://github.com/org/repo.git/info/refs", nil)
-	req.Header.Set("Authorization", basicAuth("x-access-token", ghpToken))
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
-	}
-}
+// TestPassthroughHandler_BasicAuth_GhpToken is now covered by
+// TestPassthroughHandler_GhpToken_SchemePreserved (Basic subtest).
 
 func TestScopedPassthrough_BasicAuth_GitFetch_Allowed(t *testing.T) {
 	// A ghp_ token delivered via Basic auth (x-access-token:<token>) should

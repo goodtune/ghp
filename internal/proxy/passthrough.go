@@ -40,7 +40,7 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSl
 			}
 
 			if resolver != nil {
-				if ghpTok := extractGhpToken(req); ghpTok != "" {
+				if ghpTok, rewriteAuth := extractGhpToken(req); ghpTok != "" {
 					realToken, err := resolver.ResolveToGitHubToken(req.Context(), ghpTok)
 					if err != nil {
 						if logger != nil {
@@ -49,7 +49,7 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSl
 						req.Header.Del("Authorization")
 						return
 					}
-					req.Header.Set("Authorization", "Bearer "+realToken)
+					req.Header.Set("Authorization", rewriteAuth(realToken))
 				}
 			}
 		},
@@ -75,7 +75,7 @@ type ScopeEnforcer interface {
 // through unchanged.
 func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ghpTok := extractGhpToken(r)
+		ghpTok, rewriteAuth := extractGhpToken(r)
 		if ghpTok == "" {
 			inner.ServeHTTP(w, r)
 			return
@@ -133,7 +133,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			writeError(w, http.StatusUnauthorized, "Token resolution failed")
 			return
 		}
-		r.Header.Set("Authorization", "Bearer "+realToken)
+		r.Header.Set("Authorization", rewriteAuth(realToken))
 		inner.ServeHTTP(w, r)
 	})
 }
@@ -171,29 +171,37 @@ func NewCopilotPassthroughHandler(upstream string, enterpriseSlug string, logger
 // extractGhpToken checks for a ghp_ prefixed token in the Authorization header.
 // Supports "Bearer ghp_xxx", "token ghp_xxx", and Basic auth with
 // username "x-access-token" and a ghp_ password (as used by git credential helpers).
-func extractGhpToken(r *http.Request) string {
+//
+// Returns the plaintext ghp_ token and a rewrite function that builds a new
+// Authorization header value preserving the original scheme.
+func extractGhpToken(r *http.Request) (string, func(realToken string) string) {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
-		return ""
+		return "", nil
 	}
 	parts := strings.SplitN(auth, " ", 2)
 	if len(parts) != 2 {
-		return ""
+		return "", nil
 	}
 	scheme := strings.ToLower(parts[0])
+	originalScheme := parts[0] // preserve original casing
 	credential := parts[1]
 	if (scheme == "token" || scheme == "bearer") && strings.HasPrefix(credential, token.Prefix) {
-		return credential
+		return credential, func(realToken string) string {
+			return originalScheme + " " + realToken
+		}
 	}
 	if scheme == "basic" {
 		decoded, err := base64.StdEncoding.DecodeString(credential)
 		if err != nil {
-			return ""
+			return "", nil
 		}
 		user, pass, ok := strings.Cut(string(decoded), ":")
 		if ok && strings.EqualFold(user, "x-access-token") && strings.HasPrefix(pass, token.Prefix) {
-			return pass
+			return pass, func(realToken string) string {
+				return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+realToken))
+			}
 		}
 	}
-	return ""
+	return "", nil
 }
