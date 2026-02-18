@@ -199,7 +199,7 @@ func extractGhpToken(r *http.Request) (string, func(realToken string) string) {
 		user, pass, ok := strings.Cut(string(decoded), ":")
 		if ok && strings.EqualFold(user, "x-access-token") && strings.HasPrefix(pass, token.Prefix) {
 			return pass, func(realToken string) string {
-				return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+realToken))
+				return originalScheme + " " + base64.StdEncoding.EncodeToString([]byte(user+":"+realToken))
 			}
 		}
 	}

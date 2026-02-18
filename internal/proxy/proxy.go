@@ -296,7 +296,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 		"Proxy-Authenticate":  true,
 		"Proxy-Authorization": true,
 		"Te":                  true,
-		"Trailers":            true,
+		"Trailer":             true,
 		"Transfer-Encoding":   true,
 		"Upgrade":             true,
 	}

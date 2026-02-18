@@ -501,7 +501,7 @@ the `GHP_` prefix.
 | `GHP_TOKENS_DEFAULT_DURATION` | Default token lifetime | `24h` |
 | `GHP_TOKENS_MAX_DURATION` | Maximum token lifetime | `168h` |
 | `GHP_METRICS_ENABLED` | Enable Prometheus `/metrics` endpoint | `false` |
-| `GHP_METRICS_LISTEN` | Metrics listener address (separate port) | `:9090` |
+| ~~`GHP_METRICS_LISTEN`~~ | ~~Metrics listener address~~ (removed — `/metrics` is now served on the management mux) | |
 | `GHP_DEV_MODE` | Enable test endpoints (never use in production) | `false` |
 
 ## Full YAML Reference
@@ -540,7 +540,7 @@ logging:
 
 metrics:
   enabled: false
-  listen: ":9090"
+  # listen field removed — /metrics is served on the management mux
 
 admins:
   - "alice"
