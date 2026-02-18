@@ -63,6 +63,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		apiPath = "/"
 	}
 
+	// Normalize GraphQL path before routing — both GHE-style /api/graphql
+	// and direct /graphql resolve to /graphql for upstream GitHub.
+	if apiPath == "/api/graphql" {
+		apiPath = "/graphql"
+	}
+
 	// Extract the ghp_ token from the Authorization header.
 	// If the token is not a ghp_ token, forward the request transparently
 	// to GitHub with the original credentials intact.
@@ -85,7 +91,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// GraphQL handled separately.
-	if apiPath == "/api/graphql" || apiPath == "/graphql" {
+	if apiPath == "/graphql" {
 		h.handleGraphQL(w, r, pt, rewriteAuth, start)
 		return
 	}

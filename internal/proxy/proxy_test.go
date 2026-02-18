@@ -299,3 +299,33 @@ func TestServeHTTP_BasicAuth_GhpToken_ScopeEnforcement(t *testing.T) {
 		t.Errorf("expected error to mention required pulls:write permission, got: %s", body)
 	}
 }
+
+func TestServeHTTP_NonGhpToken_GraphQLPathNormalization(t *testing.T) {
+	// GHE-style GraphQL requests (/api/graphql) with non-ghp_ tokens should be
+	// normalized to /graphql before forwarding to api.github.com, preventing
+	// requests to the non-existent https://api.github.com/api/graphql endpoint.
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:    &config.Config{},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("POST", "http://api.github.com/api/graphql", strings.NewReader(`{"query":"{ viewer { login } }"}`))
+	req.Header.Set("Authorization", "Bearer gho_realtoken123")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if ct.lastReq == nil {
+		t.Fatal("no request forwarded to upstream")
+	}
+	// Verify the request was sent to /graphql, not /api/graphql.
+	if ct.lastReq.URL.Path != "/graphql" {
+		t.Errorf("expected path /graphql, got %s", ct.lastReq.URL.Path)
+	}
+}
