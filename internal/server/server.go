@@ -148,6 +148,7 @@ func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
 	if s.cfg.Server.HTTPListen != "" {
 		httpLn, err := net.Listen("tcp", s.cfg.Server.HTTPListen)
 		if err != nil {
+			tlsLn.Close()
 			return fmt.Errorf("listening on %s: %w", s.cfg.Server.HTTPListen, err)
 		}
 		httpServer = &http.Server{Handler: httpsRedirectHandler()}
