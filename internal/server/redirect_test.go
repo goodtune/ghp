@@ -15,8 +15,8 @@ func TestHTTPSRedirectHandler(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusMovedPermanently {
-		t.Fatalf("expected 301, got %d", rr.Code)
+	if rr.Code != http.StatusPermanentRedirect {
+		t.Fatalf("expected 308, got %d", rr.Code)
 	}
 
 	loc := rr.Header().Get("Location")

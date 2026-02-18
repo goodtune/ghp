@@ -180,7 +180,7 @@ func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
 		"msg", "ready to accept connections")
 	notifySystemd("READY=1")
 
-	if err := httpsServer.ServeTLS(tlsLn, "", ""); err != http.ErrServerClosed {
+	if err := httpsServer.Serve(tlsLn); err != http.ErrServerClosed {
 		if httpServer != nil {
 			httpServer.Close()
 		}

@@ -327,8 +327,11 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	}
 	defer resp.Body.Close()
 
-	// Copy response headers.
+	// Copy response headers, filtering out hop-by-hop headers.
 	for key, vals := range resp.Header {
+		if hopByHop[http.CanonicalHeaderKey(key)] {
+			continue
+		}
 		for _, v := range vals {
 			w.Header().Add(key, v)
 		}

@@ -1,6 +1,5 @@
 # Multi-Virtualhost Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Transform ghp from a single-port reverse-proxy-dependent service into a direct-listening TLS termination point that routes four virtualhosts: `api.github.com`, `github.com`, `*.githubcopilot.com`, and a configurable management host.
 
