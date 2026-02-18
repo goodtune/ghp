@@ -15,7 +15,10 @@ func loadTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 		return nil, nil
 	}
 
-	tlsCfg := &tls.Config{}
+	tlsCfg := &tls.Config{
+		// Enable HTTP/2 via ALPN negotiation.
+		NextProtos: []string{"h2", "http/1.1"},
+	}
 
 	for _, cc := range cfg.Certificates {
 		cert, err := tls.LoadX509KeyPair(cc.CertFile, cc.KeyFile)
