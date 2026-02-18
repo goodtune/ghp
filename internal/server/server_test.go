@@ -62,23 +62,6 @@ func TestHostDispatch(t *testing.T) {
 		})
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.host, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/", nil)
-			req.Host = tt.host
-			rr := httptest.NewRecorder()
-			dispatch.ServeHTTP(rr, req)
-
-			body := rr.Body.String()
-			if tt.expected == "" {
-				if rr.Code != http.StatusNotFound {
-					t.Errorf("expected 404, got %d", rr.Code)
-				}
-			} else if body != tt.expected {
-				t.Errorf("host %s: expected %q, got %q", tt.host, tt.expected, body)
-			}
-		})
-	}
 }
 
 func TestHostDispatch_EmptyManagementHost(t *testing.T) {

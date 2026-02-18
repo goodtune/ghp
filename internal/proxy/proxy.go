@@ -288,10 +288,24 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 		return
 	}
 
-	// Copy relevant headers including the original Authorization.
-	for _, key := range []string{"Authorization", "Content-Type", "Accept", "User-Agent"} {
-		if v := r.Header.Get(key); v != "" {
-			proxyReq.Header.Set(key, v)
+	// Copy all request headers, skipping hop-by-hop headers so the
+	// passthrough is truly transparent for non-ghp_ credentials.
+	hopByHop := map[string]bool{
+		"Connection":          true,
+		"Keep-Alive":          true,
+		"Proxy-Authenticate":  true,
+		"Proxy-Authorization": true,
+		"Te":                  true,
+		"Trailers":            true,
+		"Transfer-Encoding":   true,
+		"Upgrade":             true,
+	}
+	for key, vals := range r.Header {
+		if hopByHop[http.CanonicalHeaderKey(key)] {
+			continue
+		}
+		for _, v := range vals {
+			proxyReq.Header.Add(key, v)
 		}
 	}
 
