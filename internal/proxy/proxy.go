@@ -59,6 +59,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(apiPath, "/api/v3") {
 		apiPath = strings.TrimPrefix(apiPath, "/api/v3")
 	}
+	if apiPath == "/api/graphql" {
+		apiPath = "/graphql"
+	}
 	if apiPath == "" {
 		apiPath = "/"
 	}

@@ -140,7 +140,8 @@ func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
 	}
 	tlsLn := tls.NewListener(httpsLn, tlsCfg)
 
-	httpsServer := &http.Server{Handler: handler}
+	// Set TLSConfig so HTTP/2 is auto-configured by net/http.
+	httpsServer := &http.Server{Handler: handler, TLSConfig: tlsCfg}
 
 	// Start HTTP redirect server if configured.
 	var httpServer *http.Server
@@ -179,7 +180,7 @@ func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
 		"msg", "ready to accept connections")
 	notifySystemd("READY=1")
 
-	if err := httpsServer.Serve(tlsLn); err != http.ErrServerClosed {
+	if err := httpsServer.ServeTLS(tlsLn, "", ""); err != http.ErrServerClosed {
 		if httpServer != nil {
 			httpServer.Close()
 		}
