@@ -181,7 +181,7 @@ markdown_extensions:
           format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
-  - admonitions
+  - admonition
   - tables
 
 nav:
