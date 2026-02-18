@@ -59,17 +59,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(apiPath, "/api/v3") {
 		apiPath = strings.TrimPrefix(apiPath, "/api/v3")
 	}
+	// Normalize GraphQL path before routing — both GHE-style /api/graphql
+	// and direct /graphql resolve to /graphql for upstream GitHub.
 	if apiPath == "/api/graphql" {
 		apiPath = "/graphql"
 	}
 	if apiPath == "" {
 		apiPath = "/"
-	}
-
-	// Normalize GraphQL path before routing — both GHE-style /api/graphql
-	// and direct /graphql resolve to /graphql for upstream GitHub.
-	if apiPath == "/api/graphql" {
-		apiPath = "/graphql"
 	}
 
 	// Extract the ghp_ token from the Authorization header.
