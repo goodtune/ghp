@@ -36,6 +36,12 @@ go.work.sum
 # Local database
 /ghp.db
 
+# Generated man pages
+doc/man1/
+
+# MkDocs output
+site/
+
 # Editor/IDE
 # .idea/
 # .vscode/

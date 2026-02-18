@@ -1,13 +1,9 @@
-// Package metrics exposes a Prometheus /metrics endpoint on a separate port.
+// Package metrics registers Prometheus metrics for ghp.
 package metrics
 
 import (
-	"log/slog"
-	"net/http"
-
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
@@ -52,14 +48,3 @@ var (
 		Help: "Total number of GitHub token refresh attempts.",
 	}, []string{"user", "status"})
 )
-
-// Serve starts the Prometheus metrics server on the given address.
-func Serve(addr string, logger *slog.Logger) {
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
-
-	logger.Info("metrics server starting", "listen", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		logger.Error("metrics server failed", "error", err)
-	}
-}

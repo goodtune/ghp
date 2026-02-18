@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,13 +10,14 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
-	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/proxy"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/goodtune/ghp/internal/token"
 	"github.com/goodtune/ghp/internal/web"
 )
@@ -82,47 +84,139 @@ func (s *Server) Run(ctx context.Context) error {
 	// Web UI routes.
 	webUI.RegisterRoutes(mux)
 
+	// Metrics route (on management mux, not on GitHub-facing virtualhosts).
+	if s.cfg.Metrics.Enabled {
+		mux.Handle("/metrics", promhttp.Handler())
+	}
+
 	// Proxy routes — these catch /api/v3/* and /api/graphql.
 	mux.Handle("/api/v3/", proxyHandler)
 	mux.Handle("/api/graphql", proxyHandler)
 
-	// Create listener.
+	// Create passthrough handlers for github.com and *.githubcopilot.com.
+	resolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc)
+	githubInner := proxy.NewPassthroughHandler(
+		"https://github.com", resolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
+	githubPassthrough := proxy.NewScopedPassthroughHandler(
+		githubInner, tokenSvc, resolver, s.logger)
+	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
+		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
+
+	// Build host dispatch with access logging on GitHub-facing handlers.
+	dispatch := newHostDispatch(hostDispatchConfig{
+		apiHandler:     accessLogHandler(proxyHandler, s.logger),
+		githubHandler:  accessLogHandler(githubPassthrough, s.logger),
+		copilotHandler: accessLogHandler(copilotPassthrough, s.logger),
+		mgmtHandler:    mux,
+		managementHost: s.cfg.Server.ManagementHost,
+	})
+
+	// Platform-specific signal handling (e.g. SIGUSR1 on Unix).
+	setupPlatformSignals(s.logger)
+
+	// TLS mode: https_listen configured with certificates.
+	if s.cfg.Server.HTTPSListen != "" {
+		return s.serveTLS(ctx, dispatch)
+	}
+
+	// Legacy mode: plain HTTP on single port (no TLS).
+	return s.servePlain(ctx, dispatch)
+}
+
+// serveTLS starts an HTTPS server with TLS termination and an optional
+// HTTP redirect server. It blocks until shutdown.
+func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
+	tlsCfg, err := loadTLSConfig(&s.cfg.TLS)
+	if err != nil {
+		return fmt.Errorf("loading TLS config: %w", err)
+	}
+	if tlsCfg == nil {
+		return fmt.Errorf("https_listen configured but no TLS certificates provided")
+	}
+
+	httpsLn, err := net.Listen("tcp", s.cfg.Server.HTTPSListen)
+	if err != nil {
+		return fmt.Errorf("listening on %s: %w", s.cfg.Server.HTTPSListen, err)
+	}
+	tlsLn := tls.NewListener(httpsLn, tlsCfg)
+
+	// Set TLSConfig so HTTP/2 is auto-configured by net/http.
+	httpsServer := &http.Server{Handler: handler, TLSConfig: tlsCfg}
+
+	// Start HTTP redirect server if configured.
+	var httpServer *http.Server
+	if s.cfg.Server.HTTPListen != "" {
+		httpLn, err := net.Listen("tcp", s.cfg.Server.HTTPListen)
+		if err != nil {
+			tlsLn.Close()
+			return fmt.Errorf("listening on %s: %w", s.cfg.Server.HTTPListen, err)
+		}
+		httpServer = &http.Server{Handler: httpsRedirectHandler()}
+		go func() {
+			if err := httpServer.Serve(httpLn); err != nil && err != http.ErrServerClosed {
+				s.logger.Error("http_redirect_server_error",
+					"listen_addr", s.cfg.Server.HTTPListen,
+					"err", err)
+			}
+		}()
+	}
+
+	// Graceful shutdown for both servers.
+	shutdownCtx, cancel := signal.NotifyContext(ctx, shutdownSignals()...)
+	defer cancel()
+	go func() {
+		<-shutdownCtx.Done()
+		s.logger.Info("server_shutdown", "msg", "shutting down")
+		timeout, tcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer tcancel()
+		httpsServer.Shutdown(timeout)
+		if httpServer != nil {
+			httpServer.Shutdown(timeout)
+		}
+	}()
+
+	s.logger.Info("server_ready",
+		"https_listen", s.cfg.Server.HTTPSListen,
+		"http_listen", s.cfg.Server.HTTPListen,
+		"msg", "ready to accept connections")
+	notifySystemd("READY=1")
+
+	if err := httpsServer.Serve(tlsLn); err != http.ErrServerClosed {
+		if httpServer != nil {
+			httpServer.Close()
+		}
+		return fmt.Errorf("server error: %w", err)
+	}
+	notifySystemd("STOPPING=1")
+	return nil
+}
+
+// servePlain starts a plain HTTP server (legacy mode, no TLS). It blocks
+// until shutdown.
+func (s *Server) servePlain(ctx context.Context, handler http.Handler) error {
 	ln, err := s.createListener()
 	if err != nil {
 		return fmt.Errorf("creating listener: %w", err)
 	}
 
-	httpServer := &http.Server{
-		Handler: hostRoutingHandler(mux, proxyHandler),
-	}
+	httpServer := &http.Server{Handler: handler}
 
-	// Start metrics server if enabled.
-	if s.cfg.Metrics.Enabled {
-		go metrics.Serve(s.cfg.Metrics.Listen, s.logger)
-	}
-
-	// Graceful shutdown.
 	shutdownCtx, cancel := signal.NotifyContext(ctx, shutdownSignals()...)
 	defer cancel()
-
 	go func() {
 		<-shutdownCtx.Done()
 		s.logger.Info("server_shutdown", "msg", "shutting down")
-		httpServer.Shutdown(context.Background())
+		timeout, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		httpServer.Shutdown(timeout)
 	}()
 
-	// Platform-specific signal handling (e.g. SIGUSR1 on Unix).
-	setupPlatformSignals(s.logger)
-
 	s.logger.Info("server_ready", "listen", s.cfg.Server.Listen, "msg", "ready to accept connections")
-
-	// Notify systemd if available.
 	notifySystemd("READY=1")
 
 	if err := httpServer.Serve(ln); err != http.ErrServerClosed {
 		return fmt.Errorf("server error: %w", err)
 	}
-
 	notifySystemd("STOPPING=1")
 	return nil
 }
@@ -150,21 +244,34 @@ func (s *Server) createListener() (net.Listener, error) {
 	return net.Listen("tcp", addr)
 }
 
-// hostRoutingHandler routes requests based on the Host header.
-// If the host is api.github.com (as when ghp is deployed as a virtualhost),
-// all requests are sent directly to the proxy handler. Otherwise, the
-// standard mux is used.
-func hostRoutingHandler(mux *http.ServeMux, proxyHandler http.Handler) http.Handler {
+type hostDispatchConfig struct {
+	apiHandler     http.Handler
+	githubHandler  http.Handler
+	copilotHandler http.Handler
+	mgmtHandler    http.Handler
+	managementHost string
+}
+
+// newHostDispatch creates a handler that routes requests by Host header.
+func newHostDispatch(cfg hostDispatchConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
 		}
-		if host == "api.github.com" {
-			proxyHandler.ServeHTTP(w, r)
-			return
+
+		switch {
+		case host == "api.github.com":
+			cfg.apiHandler.ServeHTTP(w, r)
+		case host == "github.com":
+			cfg.githubHandler.ServeHTTP(w, r)
+		case host == "githubcopilot.com" || strings.HasSuffix(host, ".githubcopilot.com"):
+			cfg.copilotHandler.ServeHTTP(w, r)
+		case cfg.managementHost == "" || strings.EqualFold(host, cfg.managementHost):
+			cfg.mgmtHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
 		}
-		mux.ServeHTTP(w, r)
 	})
 }
 

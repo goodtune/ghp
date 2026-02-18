@@ -191,24 +191,35 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	code := r.URL.Query().Get("code")
+	setupAction := r.URL.Query().Get("setup_action")
 	state := r.URL.Query().Get("state")
 
-	if code == "" || state == "" {
-		http.Error(w, "Missing code or state", http.StatusBadRequest)
+	if code == "" {
+		http.Error(w, "Missing code parameter", http.StatusBadRequest)
 		return
 	}
 
-	// Validate state.
-	h.stateMu.Lock()
-	expiry, ok := h.states[state]
-	if ok {
-		delete(h.states, state)
-	}
-	h.stateMu.Unlock()
+	// When GitHub redirects after app installation/authorization it sends
+	// code + setup_action but no state parameter. Skip state validation in
+	// that case — the code exchange itself authenticates the request.
+	if setupAction == "" {
+		if state == "" {
+			http.Error(w, "Missing state parameter", http.StatusBadRequest)
+			return
+		}
 
-	if !ok || time.Now().After(expiry) {
-		http.Error(w, "Invalid or expired state", http.StatusBadRequest)
-		return
+		// Validate state.
+		h.stateMu.Lock()
+		expiry, ok := h.states[state]
+		if ok {
+			delete(h.states, state)
+		}
+		h.stateMu.Unlock()
+
+		if !ok || time.Now().After(expiry) {
+			http.Error(w, "Invalid or expired state", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Exchange code for access token.

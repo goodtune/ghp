@@ -40,6 +40,42 @@ func TestEndpointScope(t *testing.T) {
 	}
 }
 
+func TestGitSmartHTTPScope(t *testing.T) {
+	tests := []struct {
+		method    string
+		path      string
+		query     string
+		wantRepo  string
+		wantPerm  string
+		wantLevel string
+	}{
+		// Clone/fetch via info/refs.
+		{"GET", "/goodtune/ghp.git/info/refs", "service=git-upload-pack", "goodtune/ghp", "contents", "read"},
+		// Push via info/refs.
+		{"GET", "/goodtune/ghp.git/info/refs", "service=git-receive-pack", "goodtune/ghp", "contents", "write"},
+		// Clone/fetch via POST.
+		{"POST", "/goodtune/ghp.git/git-upload-pack", "", "goodtune/ghp", "contents", "read"},
+		// Push via POST.
+		{"POST", "/goodtune/ghp.git/git-receive-pack", "", "goodtune/ghp", "contents", "write"},
+		// info/refs without service param — repo detected but no permission.
+		{"GET", "/goodtune/ghp.git/info/refs", "", "goodtune/ghp", "", ""},
+		// Non-git path.
+		{"GET", "/goodtune/ghp/pulls", "", "", "", ""},
+		// Path without .git suffix.
+		{"GET", "/goodtune/ghp/info/refs", "service=git-upload-pack", "", "", ""},
+		// info/refs with extra query params.
+		{"GET", "/org/repo.git/info/refs", "foo=bar&service=git-upload-pack&baz=1", "org/repo", "contents", "read"},
+	}
+
+	for _, tt := range tests {
+		repo, perm, level := GitSmartHTTPScope(tt.method, tt.path, tt.query)
+		if repo != tt.wantRepo || perm != tt.wantPerm || level != tt.wantLevel {
+			t.Errorf("GitSmartHTTPScope(%q, %q, %q) = (%q, %q, %q), want (%q, %q, %q)",
+				tt.method, tt.path, tt.query, repo, perm, level, tt.wantRepo, tt.wantPerm, tt.wantLevel)
+		}
+	}
+}
+
 func TestExtractRepoFromPath(t *testing.T) {
 	tests := []struct {
 		path string
