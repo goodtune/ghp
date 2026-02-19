@@ -22,13 +22,22 @@ First, authenticate with the ghp server:
 
     ghp auth login
 
-Then create a scoped token:
+Then create a scoped proxy token:
 
     ghp token create \
       --repo owner/repo \
       --scope contents:read,pulls:write \
       --duration 48h \
       --session "my-coding-session"
+
+Admins can also create agent tokens backed by a GitHub App installation
+(see [GitHub App Setup](admin/github-app.md) for server configuration):
+
+    ghp token create \
+      --type agent \
+      --installation-id 12345678 \
+      --repos owner/repo1,owner/repo2 \
+      --scope contents:read,pulls:write
 
 ## Configure Your Agent
 
