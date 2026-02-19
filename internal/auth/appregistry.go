@@ -24,12 +24,13 @@ type AppRegistry struct {
 
 // NewSingleAppRegistry creates a registry with a single legacy app (no slug).
 func NewSingleAppRegistry(app *AppInfo) *AppRegistry {
-	app.Slug = ""
-	if app.DisplayName == "" {
-		app.DisplayName = "GitHub"
+	cp := *app
+	cp.Slug = ""
+	if cp.DisplayName == "" {
+		cp.DisplayName = "GitHub"
 	}
 	return &AppRegistry{
-		apps:  map[string]*AppInfo{"": app},
+		apps:  map[string]*AppInfo{"": &cp},
 		slugs: []string{""},
 		multi: false,
 	}
@@ -61,10 +62,18 @@ func NewMultiAppRegistry(apps []*AppInfo) (*AppRegistry, error) {
 func (r *AppRegistry) Get(slug string) (*AppInfo, bool) {
 	if !r.multi {
 		a, ok := r.apps[""]
-		return a, ok
+		if !ok {
+			return nil, false
+		}
+		cp := *a
+		return &cp, true
 	}
 	a, ok := r.apps[slug]
-	return a, ok
+	if !ok {
+		return nil, false
+	}
+	cp := *a
+	return &cp, true
 }
 
 // Default returns the default (or only) app. In single-app mode this is the
@@ -73,14 +82,18 @@ func (r *AppRegistry) Default() *AppInfo {
 	if len(r.slugs) == 0 {
 		return nil
 	}
-	return r.apps[r.slugs[0]]
+	a := r.apps[r.slugs[0]]
+	cp := *a
+	return &cp
 }
 
 // List returns all registered apps in order.
 func (r *AppRegistry) List() []*AppInfo {
 	out := make([]*AppInfo, 0, len(r.slugs))
 	for _, s := range r.slugs {
-		out = append(out, r.apps[s])
+		a := r.apps[s]
+		cp := *a
+		out = append(out, &cp)
 	}
 	return out
 }

@@ -193,6 +193,9 @@ func (c *Config) Validate() error {
 		if c.GitHub.ClientID != "" || c.GitHub.ClientSecret != "" {
 			return fmt.Errorf("github.client_id and github.client_secret must not be set locally when vault is enabled (app credentials come from vault)")
 		}
+		if c.GitHub.EnterpriseSlug != "" {
+			return fmt.Errorf("github.enterprise_slug must not be set locally when vault is enabled (it will be read from vault)")
+		}
 	}
 	return nil
 }

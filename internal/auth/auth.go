@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,10 @@ type Handler struct {
 	// OAuth state tokens (short-lived, in-memory).
 	stateMu sync.Mutex
 	states  map[string]*oauthState
+
+	// Configurable URLs for testing.
+	tokenURL string // GitHub OAuth token exchange URL
+	userURL  string // GitHub user API URL
 }
 
 // NewHandler creates a new auth handler.
@@ -180,7 +185,7 @@ func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	appSlug := r.URL.Query().Get("app")
 	app, ok := h.apps.Get(appSlug)
 	if !ok {
-		http.Error(w, fmt.Sprintf("Unknown app: %s", appSlug), http.StatusBadRequest)
+		http.Error(w, "Unknown app", http.StatusBadRequest)
 		return
 	}
 
@@ -249,6 +254,9 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		appSlug = st.AppSlug
+	} else {
+		// setup_action callbacks have no state; use the default app.
+		appSlug = h.apps.Default().Slug
 	}
 
 	app, ok := h.apps.Get(appSlug)
@@ -471,10 +479,18 @@ type githubUser struct {
 }
 
 func (h *Handler) exchangeCode(code, clientID, clientSecret string) (accessToken, refreshToken string, expiresIn int, err error) {
-	body := fmt.Sprintf("client_id=%s&client_secret=%s&code=%s",
-		clientID, clientSecret, code)
+	body := url.Values{
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+		"code":          {code},
+	}.Encode()
 
-	req, err := http.NewRequest("POST", "https://github.com/login/oauth/access_token",
+	tokenURL := h.tokenURL
+	if tokenURL == "" {
+		tokenURL = "https://github.com/login/oauth/access_token"
+	}
+
+	req, err := http.NewRequest("POST", tokenURL,
 		strings.NewReader(body))
 	if err != nil {
 		return "", "", 0, err
@@ -509,7 +525,11 @@ func (h *Handler) exchangeCode(code, clientID, clientSecret string) (accessToken
 }
 
 func (h *Handler) getGitHubUser(accessToken string) (*githubUser, error) {
-	req, err := http.NewRequest("GET", "https://api.github.com/user", nil)
+	userURL := h.userURL
+	if userURL == "" {
+		userURL = "https://api.github.com/user"
+	}
+	req, err := http.NewRequest("GET", userURL, nil)
 	if err != nil {
 		return nil, err
 	}

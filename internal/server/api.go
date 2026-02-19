@@ -112,7 +112,12 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		} else {
 			gt, err = a.store.GetGitHubToken(r.Context(), session.UserID)
 		}
-		if err != nil || gt == nil {
+		if err != nil {
+			a.logger.Error("failed to get GitHub token", "error", err, "user_id", session.UserID, "app", req.App)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error retrieving GitHub token"})
+			return
+		}
+		if gt == nil {
 			msg := "No GitHub token found. Please re-authenticate."
 			if req.App != "" {
 				msg = "No GitHub token found for app '" + req.App + "'. Please authorise with this app first."

@@ -307,6 +307,162 @@ func TestAuditLog(t *testing.T) {
 	}
 }
 
+func TestGetGitHubTokenForApp_ExistingApp(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	user := &User{GitHubID: 100, GitHubUsername: "dave", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two tokens for the same user, different apps.
+	gt1 := &GitHubToken{
+		UserID:                user.ID,
+		AppSlug:               "app-a",
+		AccessToken:           "enc_a",
+		RefreshToken:          "ref_a",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	gt2 := &GitHubToken{
+		UserID:                user.ID,
+		AppSlug:               "app-b",
+		AccessToken:           "enc_b",
+		RefreshToken:          "ref_b",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertGitHubToken(ctx, gt2); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetGitHubTokenForApp(ctx, user.ID, "app-a")
+	if err != nil {
+		t.Fatalf("GetGitHubTokenForApp: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected token, got nil")
+	}
+	if got.AccessToken != "enc_a" {
+		t.Errorf("AccessToken = %q, want enc_a", got.AccessToken)
+	}
+	if got.AppSlug != "app-a" {
+		t.Errorf("AppSlug = %q, want app-a", got.AppSlug)
+	}
+}
+
+func TestGetGitHubTokenForApp_WrongApp(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	user := &User{GitHubID: 101, GitHubUsername: "eve", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	gt := &GitHubToken{
+		UserID:                user.ID,
+		AppSlug:               "app-x",
+		AccessToken:           "enc_x",
+		RefreshToken:          "ref_x",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetGitHubTokenForApp(ctx, user.ID, "nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for nonexistent app, got %+v", got)
+	}
+}
+
+func TestGetGitHubTokenForApp_WrongUser(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	user := &User{GitHubID: 102, GitHubUsername: "frank", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	gt := &GitHubToken{
+		UserID:                user.ID,
+		AppSlug:               "app-y",
+		AccessToken:           "enc_y",
+		RefreshToken:          "ref_y",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetGitHubTokenForApp(ctx, "wrong-user-id", "app-y")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for wrong user, got %+v", got)
+	}
+}
+
+func TestUpsertGitHubToken_MultiApp(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	user := &User{GitHubID: 103, GitHubUsername: "grace", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	// First upsert.
+	gt := &GitHubToken{
+		UserID:                user.ID,
+		AppSlug:               "app-z",
+		AccessToken:           "enc_old",
+		RefreshToken:          "ref_old",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second upsert with same (user_id, app_slug) should update, not insert.
+	gt2 := &GitHubToken{
+		UserID:                user.ID,
+		AppSlug:               "app-z",
+		AccessToken:           "enc_new",
+		RefreshToken:          "ref_new",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should only find one token.
+	got, err := store.GetGitHubTokenForApp(ctx, user.ID, "app-z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected token")
+	}
+	if got.AccessToken != "enc_new" {
+		t.Errorf("AccessToken = %q, want enc_new (should have been updated)", got.AccessToken)
+	}
+}
+
 // Ensure temporary files are cleaned up.
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())

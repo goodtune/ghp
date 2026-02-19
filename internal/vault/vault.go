@@ -15,16 +15,37 @@
 package vault
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+// validSlug matches slugs that start with an alphanumeric character
+// followed by alphanumerics, dots, underscores, or hyphens.
+var validSlug = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
+// validateSlug checks that a slug is safe for use in Vault paths.
+func validateSlug(slug string) error {
+	if slug == "" {
+		return fmt.Errorf("slug must not be empty")
+	}
+	if strings.Contains(slug, "..") {
+		return fmt.Errorf("slug must not contain '..'")
+	}
+	if !validSlug.MatchString(slug) {
+		return fmt.Errorf("invalid slug %q: must match %s", slug, validSlug.String())
+	}
+	return nil
+}
 
 // AppSecret holds the credentials for a single GitHub App stored in Vault.
 type AppSecret struct {
@@ -101,11 +122,23 @@ func NewClient(cfg Config, logger *slog.Logger) (*Client, error) {
 	return c, nil
 }
 
-// login authenticates to Vault using the AppRole method and stores the token.
-func (c *Client) login(ctx context.Context) error {
-	body := fmt.Sprintf(`{"role_id":%q,"secret_id":%q}`, c.roleID, c.secretID)
+// loginLocked authenticates to Vault using the AppRole method and stores the token.
+// The caller must hold c.mu (write lock).
+func (c *Client) loginLocked(ctx context.Context) error {
+	payload := struct {
+		RoleID   string `json:"role_id"`
+		SecretID string `json:"secret_id"`
+	}{
+		RoleID:   c.roleID,
+		SecretID: c.secretID,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshaling login body: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.addr+"/v1/auth/approle/login", strings.NewReader(body))
+		c.addr+"/v1/auth/approle/login", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -136,13 +169,25 @@ func (c *Client) login(ctx context.Context) error {
 		return fmt.Errorf("parsing vault auth response: %w", err)
 	}
 
-	c.mu.Lock()
+	if result.Auth.ClientToken == "" {
+		return fmt.Errorf("vault returned empty client_token")
+	}
+	if result.Auth.LeaseDuration <= 0 {
+		return fmt.Errorf("vault returned invalid lease_duration: %d", result.Auth.LeaseDuration)
+	}
+
 	c.token = result.Auth.ClientToken
 	c.tokenTTL = time.Now().Add(time.Duration(result.Auth.LeaseDuration) * time.Second)
-	c.mu.Unlock()
 
 	c.logger.Info("vault_authenticated", "ttl_seconds", result.Auth.LeaseDuration)
 	return nil
+}
+
+// login acquires a write lock and authenticates to Vault.
+func (c *Client) login(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.loginLocked(ctx)
 }
 
 // ensureToken re-authenticates if the current token is close to expiry.
@@ -155,8 +200,16 @@ func (c *Client) ensureToken(ctx context.Context) error {
 		return nil
 	}
 
+	// Acquire write lock and double-check TTL to avoid thundering herd.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if time.Until(c.tokenTTL) > 30*time.Second {
+		return nil
+	}
+
 	c.logger.Info("vault_token_renewing", "msg", "vault token near expiry, re-authenticating")
-	return c.login(ctx)
+	return c.loginLocked(ctx)
 }
 
 // readKV2 reads a secret from the KV v2 engine at the given path.
@@ -203,6 +256,10 @@ func (c *Client) readKV2(ctx context.Context, path string) (map[string]interface
 		return nil, fmt.Errorf("parsing vault response for %s: %w", path, err)
 	}
 
+	if result.Data.Data == nil {
+		return nil, fmt.Errorf("vault secret at %s/%s has no data", c.prefix, path)
+	}
+
 	return result.Data.Data, nil
 }
 
@@ -237,7 +294,7 @@ func (c *Client) listKV2(ctx context.Context, path string) ([]string, error) {
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil // no keys
+		return nil, fmt.Errorf("vault path not found: %s/%s", c.prefix, path)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("vault list returned %d for %s: %s", resp.StatusCode, path, body)
@@ -272,6 +329,10 @@ func (c *Client) GetEncryptionKey(ctx context.Context) (string, error) {
 
 // GetApp reads a single GitHub App secret from Vault at {prefix}/apps/{slug}.
 func (c *Client) GetApp(ctx context.Context, slug string) (*AppSecret, error) {
+	if err := validateSlug(slug); err != nil {
+		return nil, fmt.Errorf("invalid app slug: %w", err)
+	}
+
 	data, err := c.readKV2(ctx, "apps/"+slug)
 	if err != nil {
 		return nil, fmt.Errorf("reading app %q from vault: %w", slug, err)
@@ -284,7 +345,16 @@ func (c *Client) GetApp(ctx context.Context, slug string) (*AppSecret, error) {
 		case float64:
 			app.AppID = int64(n)
 		case json.Number:
-			i, _ := n.Int64()
+			i, err := n.Int64()
+			if err != nil {
+				return nil, fmt.Errorf("app %q has invalid app_id %v: %w", slug, n, err)
+			}
+			app.AppID = i
+		case string:
+			i, err := strconv.ParseInt(n, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("app %q has non-numeric app_id %q: %w", slug, n, err)
+			}
 			app.AppID = i
 		}
 	}
@@ -351,15 +421,10 @@ func (c *Client) LoadAllApps(ctx context.Context) ([]*AppSecret, error) {
 	for _, slug := range slugs {
 		app, err := c.GetApp(ctx, slug)
 		if err != nil {
-			c.logger.Error("vault_app_load_failed", "slug", slug, "error", err)
-			continue
+			return nil, fmt.Errorf("loading app %q: %w", slug, err)
 		}
 		apps = append(apps, app)
 		c.logger.Info("vault_app_loaded", "slug", slug, "app_id", app.AppID, "display_name", app.DisplayName)
-	}
-
-	if len(apps) == 0 {
-		return nil, fmt.Errorf("no valid GitHub Apps loaded from vault")
 	}
 
 	return apps, nil
