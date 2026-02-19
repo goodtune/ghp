@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,14 +15,14 @@ import (
 	"github.com/goodtune/ghp/internal/token"
 )
 
-// TokenResolver resolves a ghp_ token to a real GitHub access token.
+// TokenResolver resolves a client token (ghx_/gha_) to a real GitHub access token.
 type TokenResolver interface {
-	ResolveToGitHubToken(ctx context.Context, ghpToken string) (string, error)
+	ResolveToGitHubToken(ctx context.Context, clientToken string) (string, error)
 }
 
 // NewPassthroughHandler creates a transparent reverse proxy to the given
-// upstream URL. If a ghp_ token is found in the Authorization header, it
-// is resolved and replaced with the real GitHub credential.
+// upstream URL. If a client token (ghx_/gha_) is found in the Authorization
+// header, it is resolved and replaced with the real GitHub credential.
 // If enterpriseSlug is non-empty, the sec-GitHub-allowed-enterprise header
 // is injected on every request.
 // The transport parameter allows callers to supply a custom RoundTripper
@@ -40,8 +41,8 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSl
 			}
 
 			if resolver != nil {
-				if ghpTok, rewriteAuth := extractGhpToken(req); ghpTok != "" {
-					realToken, err := resolver.ResolveToGitHubToken(req.Context(), ghpTok)
+				if clientTok, rewriteAuth := extractClientToken(req); clientTok != "" {
+					realToken, err := resolver.ResolveToGitHubToken(req.Context(), clientTok)
 					if err != nil {
 						if logger != nil {
 							logger.Warn("passthrough token resolution failed", "error", err)
@@ -62,21 +63,21 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSl
 	return proxy
 }
 
-// ScopeEnforcer resolves a ghp_ token string to the full ProxyToken record
+// ScopeEnforcer resolves a client token string to the full ProxyToken record
 // so that repository and permission scopes can be checked.
 type ScopeEnforcer interface {
-	Resolve(ctx context.Context, ghpToken string) (*database.ProxyToken, error)
+	Resolve(ctx context.Context, clientToken string) (*database.ProxyToken, error)
 }
 
 // NewScopedPassthroughHandler wraps a passthrough reverse proxy with git smart
-// HTTP scope enforcement. For requests carrying a ghp_ token that match a git
-// smart HTTP path, the token's repository and permission scopes are verified
-// before the request is forwarded. Non-git paths and non-ghp_ tokens pass
-// through unchanged.
+// HTTP scope enforcement. For requests carrying a client token (ghx_/gha_) that
+// match a git smart HTTP path, the token's repository and permission scopes are
+// verified before the request is forwarded. Non-git paths and non-client tokens
+// pass through unchanged.
 func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ghpTok, rewriteAuth := extractGhpToken(r)
-		if ghpTok == "" {
+		clientTok, rewriteAuth := extractClientToken(r)
+		if clientTok == "" {
 			inner.ServeHTTP(w, r)
 			return
 		}
@@ -89,7 +90,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		}
 
 		// Resolve the full proxy token for scope checking.
-		pt, err := enforcer.Resolve(r.Context(), ghpTok)
+		pt, err := enforcer.Resolve(r.Context(), clientTok)
 		if err != nil {
 			if logger != nil {
 				logger.Warn("git scope enforcement: token resolution failed", "error", err)
@@ -103,9 +104,9 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		}
 
 		// Enforce repository scope.
-		if !strings.EqualFold(repo, pt.Repository) {
+		if !repositoryAllowed(repo, pt.Repositories) {
 			writeError(w, http.StatusForbidden,
-				fmt.Sprintf("Token is scoped to %s, not %s", pt.Repository, repo))
+				fmt.Sprintf("Token is not scoped to %s", repo))
 			return
 		}
 
@@ -120,12 +121,12 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		}
 		if !scopes.HasPermission(permission, level) {
 			writeError(w, http.StatusForbidden,
-				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, pt.Repository))
+				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
 			return
 		}
 
 		// Scope checks passed — forward with resolved token.
-		realToken, err := resolver.ResolveToGitHubToken(r.Context(), ghpTok)
+		realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
 		if err != nil {
 			if logger != nil {
 				logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
@@ -168,13 +169,13 @@ func NewCopilotPassthroughHandler(upstream string, enterpriseSlug string, logger
 	return proxy
 }
 
-// extractGhpToken checks for a ghp_ prefixed token in the Authorization header.
-// Supports "Bearer ghp_xxx", "token ghp_xxx", and Basic auth with
-// username "x-access-token" and a ghp_ password (as used by git credential helpers).
+// extractClientToken checks for a client token (ghx_/gha_) in the Authorization header.
+// Supports "Bearer ghx_xxx", "token ghx_xxx", and Basic auth with
+// username "x-access-token" and a client token password (as used by git credential helpers).
 //
-// Returns the plaintext ghp_ token and a rewrite function that builds a new
+// Returns the plaintext client token and a rewrite function that builds a new
 // Authorization header value preserving the original scheme.
-func extractGhpToken(r *http.Request) (string, func(realToken string) string) {
+func extractClientToken(r *http.Request) (string, func(realToken string) string) {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
 		return "", nil
@@ -186,9 +187,11 @@ func extractGhpToken(r *http.Request) (string, func(realToken string) string) {
 	scheme := strings.ToLower(parts[0])
 	originalScheme := parts[0] // preserve original casing
 	credential := parts[1]
-	if (scheme == "token" || scheme == "bearer") && strings.HasPrefix(credential, token.Prefix) {
-		return credential, func(realToken string) string {
-			return originalScheme + " " + realToken
+	if scheme == "token" || scheme == "bearer" {
+		if _, ok := token.TokenTypeFromPrefix(credential); ok {
+			return credential, func(realToken string) string {
+				return originalScheme + " " + realToken
+			}
 		}
 	}
 	if scheme == "basic" {
@@ -197,11 +200,27 @@ func extractGhpToken(r *http.Request) (string, func(realToken string) string) {
 			return "", nil
 		}
 		user, pass, ok := strings.Cut(string(decoded), ":")
-		if ok && strings.EqualFold(user, "x-access-token") && strings.HasPrefix(pass, token.Prefix) {
-			return pass, func(realToken string) string {
-				return originalScheme + " " + base64.StdEncoding.EncodeToString([]byte(user+":"+realToken))
+		if ok && strings.EqualFold(user, "x-access-token") {
+			if _, ok := token.TokenTypeFromPrefix(pass); ok {
+				return pass, func(realToken string) string {
+					return originalScheme + " " + base64.StdEncoding.EncodeToString([]byte(user+":"+realToken))
+				}
 			}
 		}
 	}
 	return "", nil
+}
+
+// repositoryAllowed returns true if the given repo is in the JSON array of repositories.
+func repositoryAllowed(repo string, reposJSON json.RawMessage) bool {
+	var repos []string
+	if err := json.Unmarshal(reposJSON, &repos); err != nil {
+		return false
+	}
+	for _, r := range repos {
+		if strings.EqualFold(r, repo) {
+			return true
+		}
+	}
+	return false
 }

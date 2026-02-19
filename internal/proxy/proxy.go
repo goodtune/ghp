@@ -26,22 +26,24 @@ const (
 
 // Handler is the reverse proxy HTTP handler.
 type Handler struct {
-	cfg          *config.Config
-	tokenService *token.Service
-	store        database.Store
-	encryptor    *crypto.Encryptor
-	logger       *slog.Logger
-	client       *http.Client
+	cfg              *config.Config
+	tokenService     *token.Service
+	store            database.Store
+	encryptor        *crypto.Encryptor
+	appTokenProvider AppTokenProvider // may be nil
+	logger           *slog.Logger
+	client           *http.Client
 }
 
 // NewHandler creates a new reverse proxy handler.
-func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
+func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc *crypto.Encryptor, atp AppTokenProvider, logger *slog.Logger) *Handler {
 	return &Handler{
-		cfg:          cfg,
-		tokenService: ts,
-		store:        store,
-		encryptor:    enc,
-		logger:       logger,
+		cfg:              cfg,
+		tokenService:     ts,
+		store:            store,
+		encryptor:        enc,
+		appTokenProvider: atp,
+		logger:           logger,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -68,17 +70,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		apiPath = "/"
 	}
 
-	// Extract the ghp_ token from the Authorization header.
-	// If the token is not a ghp_ token, forward the request transparently
-	// to GitHub with the original credentials intact.
-	ghpToken, rewriteAuth := extractGhpToken(r)
-	if ghpToken == "" {
+	// Extract the client token from the Authorization header.
+	// If the token is not a client token (ghx_/gha_), forward the request
+	// transparently to GitHub with the original credentials intact.
+	clientToken, rewriteAuth := extractClientToken(r)
+	if clientToken == "" {
 		h.forwardPassthrough(w, r, apiPath)
 		return
 	}
 
-	// Resolve the ghp_ token.
-	pt, err := h.tokenService.Resolve(r.Context(), ghpToken)
+	// Resolve the client token.
+	pt, err := h.tokenService.Resolve(r.Context(), clientToken)
 	if err != nil {
 		h.logger.Warn("token resolution failed", "error", err)
 		writeError(w, http.StatusUnauthorized, err.Error())
@@ -99,9 +101,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	repo := ExtractRepoFromPath(apiPath)
 
 	// If a repo is identified, enforce the token's repository scope.
-	if repo != "" && !strings.EqualFold(repo, pt.Repository) {
+	if repo != "" && !repositoryAllowed(repo, pt.Repositories) {
 		writeError(w, http.StatusForbidden,
-			fmt.Sprintf("Token is scoped to %s, not %s", pt.Repository, repo))
+			fmt.Sprintf("Token is not scoped to %s", repo))
 		h.logRequest(r.Context(), pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
@@ -119,7 +121,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if !scopes.HasPermission(permission, level) {
 			writeError(w, http.StatusForbidden,
-				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, pt.Repository))
+				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
 			h.logRequest(r.Context(), pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
 		}
@@ -160,11 +162,44 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		h.logger.Error("failed to record token usage", "error", err)
 	}
 
-	h.logRequest(r.Context(), pt, r.Method, "/graphql", pt.Repository, status, time.Since(start), "proxy_request")
+	h.logRequest(r.Context(), pt, r.Method, "/graphql", "", status, time.Since(start), "proxy_request")
 }
 
 func (h *Handler) getGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {
-	gt, err := h.store.GetGitHubTokenByID(r.Context(), pt.GitHubTokenID)
+	switch token.TokenType(pt.TokenType) {
+	case token.TokenTypeAgent:
+		return h.getAgentGitHubToken(r.Context(), pt)
+	default:
+		return h.getProxyGitHubToken(r, pt)
+	}
+}
+
+func (h *Handler) getAgentGitHubToken(ctx context.Context, pt *database.ProxyToken) (string, error) {
+	if h.appTokenProvider == nil {
+		return "", fmt.Errorf("agent tokens require GitHub App configuration")
+	}
+	if pt.InstallationID == nil {
+		return "", fmt.Errorf("agent token missing installation_id")
+	}
+
+	var repos []string
+	if err := json.Unmarshal(pt.Repositories, &repos); err != nil {
+		return "", fmt.Errorf("parsing repositories: %w", err)
+	}
+
+	scopes, err := database.ParseScopes(pt.Scopes)
+	if err != nil {
+		return "", fmt.Errorf("parsing scopes: %w", err)
+	}
+
+	return h.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, repos, scopes)
+}
+
+func (h *Handler) getProxyGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {
+	if pt.GitHubTokenID == nil {
+		return "", fmt.Errorf("token has no linked GitHub credential")
+	}
+	gt, err := h.store.GetGitHubTokenByID(r.Context(), *pt.GitHubTokenID)
 	if err != nil {
 		return "", fmt.Errorf("loading github token: %w", err)
 	}
@@ -408,9 +443,13 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 }
 
 func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, method, path, repo string, status int, dur time.Duration, action string) {
+	userID := ""
+	if pt.UserID != nil {
+		userID = *pt.UserID
+	}
 	h.logger.Info(action,
 		"token_id", pt.ID,
-		"user_id", pt.UserID,
+		"user_id", userID,
 		"session", pt.SessionID,
 		"repo", repo,
 		"method", method,
@@ -420,7 +459,7 @@ func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, metho
 	)
 
 	entry := &database.AuditEntry{
-		UserID:     pt.UserID,
+		UserID:     userID,
 		Action:     action,
 		Method:     method,
 		Path:       path,

@@ -2,14 +2,14 @@
 
 ghp acts as a transparent virtualhost for GitHub's API and web endpoints.
 DNS (or `/etc/hosts`) on your agent network points `api.github.com` and
-`github.com` at the ghp server. Agents set `GH_TOKEN` to a `ghp_`-prefixed
+`github.com` at the ghp server. Agents set `GH_TOKEN` to a `ghx_`-prefixed
 token and make standard GitHub API calls.
 
 ## Request Flow
 
 ```mermaid
 sequenceDiagram
-    participant Agent as Agent<br/>(GH_TOKEN=ghp_xxx)
+    participant Agent as Agent<br/>(GH_TOKEN=ghx_xxx)
     participant ghp as ghp<br/>(api.github.com virtualhost)
     participant GitHub as GitHub<br/>(real api.github.com)
 
@@ -24,7 +24,7 @@ sequenceDiagram
 
 For each request, the proxy:
 
-1. Validates the `ghp_` token and checks it hasn't expired or been revoked
+1. Validates the `ghx_` token and checks it hasn't expired or been revoked
 2. Verifies the request targets the allowed repository and permission scope
 3. Injects the real GitHub credentials (stored server-side, encrypted at rest)
 4. Forwards the request to the real GitHub endpoint and returns the response
@@ -36,7 +36,7 @@ ghp routes traffic by `Host` header across four virtualhosts:
 | Host | Handler |
 |------|---------|
 | `api.github.com` | API proxy — scope enforcement, credential injection, audit logging |
-| `github.com` | Transparent passthrough — git clone/push with `ghp_` token interception |
+| `github.com` | Transparent passthrough — git clone/push with `ghx_`/`gha_` token interception |
 | `*.githubcopilot.com` | Transparent passthrough for Copilot traffic |
 | Configured management host | Web UI, OAuth, token management API |
 

@@ -203,7 +203,7 @@ func newScopedHandler(t *testing.T, repo string, scopes map[string]string) (*Han
 }
 
 func TestServeHTTP_GhpToken_WrongRepository(t *testing.T) {
-	// A ghp_ token scoped to goodtune/ghp must be rejected when used
+	// A token scoped to goodtune/ghp must be rejected when used
 	// against a different repository (goodtune/pac-proxy).
 	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
 		"contents": "read",
@@ -222,9 +222,6 @@ func TestServeHTTP_GhpToken_WrongRepository(t *testing.T) {
 		t.Fatalf("expected 403 for wrong repository, got %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "scoped to goodtune/ghp") {
-		t.Errorf("expected error to mention scoped repository, got: %s", body)
-	}
 	if !strings.Contains(body, "goodtune/pac-proxy") {
 		t.Errorf("expected error to mention requested repository, got: %s", body)
 	}

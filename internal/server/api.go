@@ -48,10 +48,13 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 }
 
 type createTokenRequest struct {
-	Repository string `json:"repository"`
-	Scopes     string `json:"scopes"`
-	Duration   string `json:"duration"`
-	SessionID  string `json:"session_id"`
+	Type           string   `json:"type"`
+	Repository     string   `json:"repository"`
+	Repositories   []string `json:"repositories"`
+	InstallationID int64    `json:"installation_id"`
+	Scopes         string   `json:"scopes"`
+	Duration       string   `json:"duration"`
+	SessionID      string   `json:"session_id"`
 }
 
 func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +64,15 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
 		return
+	}
+
+	tt := token.TokenTypeProxy
+	if req.Type == "agent" {
+		tt = token.TokenTypeAgent
+		if session.Role != "admin" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"message": "Admin role required for agent tokens"})
+			return
+		}
 	}
 
 	scopes, err := token.ParseScopeString(req.Scopes)
@@ -79,21 +91,29 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		duration = d
 	}
 
-	// Get the user's GitHub token.
-	gt, err := a.store.GetGitHubToken(r.Context(), session.UserID)
-	if err != nil || gt == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "No GitHub token found. Please re-authenticate."})
-		return
+	createReq := token.CreateRequest{
+		TokenType: tt,
+		UserID:    session.UserID,
+		Scopes:    scopes,
+		Duration:  duration,
+		SessionID: req.SessionID,
 	}
 
-	result, err := a.tokenService.Create(r.Context(), token.CreateRequest{
-		UserID:        session.UserID,
-		GitHubTokenID: gt.ID,
-		Repository:    req.Repository,
-		Scopes:        scopes,
-		Duration:      duration,
-		SessionID:     req.SessionID,
-	})
+	switch tt {
+	case token.TokenTypeProxy:
+		gt, err := a.store.GetGitHubToken(r.Context(), session.UserID)
+		if err != nil || gt == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "No GitHub token found. Please re-authenticate."})
+			return
+		}
+		createReq.GitHubTokenID = gt.ID
+		createReq.Repository = req.Repository
+	case token.TokenTypeAgent:
+		createReq.InstallationID = req.InstallationID
+		createReq.Repositories = req.Repositories
+	}
+
+	result, err := a.tokenService.Create(r.Context(), createReq)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
@@ -108,17 +128,19 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 
 	a.logger.Info("token_created",
 		"user", session.Username,
-		"repo", req.Repository,
+		"type", string(tt),
+		"repos", result.Repositories,
 		"session", req.SessionID,
 	)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"token":      result.Token,
-		"id":         result.ID,
-		"repository": result.Repository,
-		"scopes":     result.Scopes,
-		"expires_at": result.ExpiresAt.Format(time.RFC3339),
-		"session_id": result.SessionID,
+		"token":        result.Token,
+		"id":           result.ID,
+		"type":         string(result.TokenType),
+		"repositories": result.Repositories,
+		"scopes":       result.Scopes,
+		"expires_at":   result.ExpiresAt.Format(time.RFC3339),
+		"session_id":   result.SessionID,
 	})
 }
 
@@ -162,7 +184,7 @@ func (a *API) handleGetToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Token not found"})
 		return
 	}
-	if pt.UserID != session.UserID && session.Role != "admin" {
+	if (pt.UserID == nil || *pt.UserID != session.UserID) && session.Role != "admin" {
 		writeJSON(w, http.StatusForbidden, map[string]string{"message": "Access denied"})
 		return
 	}
@@ -184,7 +206,7 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Token not found"})
 		return
 	}
-	if pt.UserID != session.UserID && session.Role != "admin" {
+	if (pt.UserID == nil || *pt.UserID != session.UserID) && session.Role != "admin" {
 		writeJSON(w, http.StatusForbidden, map[string]string{"message": "Access denied"})
 		return
 	}

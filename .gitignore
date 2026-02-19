@@ -42,6 +42,9 @@ doc/man1/
 # MkDocs output
 site/
 
+# Git worktrees
+.worktrees/
+
 # Editor/IDE
 # .idea/
 # .vscode/
