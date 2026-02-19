@@ -7,7 +7,7 @@
 **GitHub Proxy for Autonomous Coding Agents**
 
 Issue scoped, auditable tokens to coding agents. Agents interact with GitHub
-through the proxy using opaque `ghp_`-prefixed tokens — they never see real
+through the proxy using opaque `ghx_`-prefixed tokens — they never see real
 GitHub credentials.
 
 - Agents use standard `gh` CLI, GitHub SDKs, or raw HTTP — no custom clients
@@ -26,7 +26,7 @@ You just need a token.
 1. Open your team's ghp dashboard (e.g. `https://ghp.example.com`)
 2. Sign in with GitHub
 3. Click **Create Token**, choose a repository and scopes
-4. Copy the `ghp_`-prefixed token
+4. Copy the `ghx_`-prefixed token
 
 ### Option B: CLI
 
@@ -38,7 +38,7 @@ ghp token create --repo owner/repo --scope contents:read,pulls:write
 ### Give the token to your agent
 
 ```bash
-export GH_TOKEN=ghp_...
+export GH_TOKEN=ghx_...
 ```
 
 The agent now uses GitHub through the proxy with scoped permissions. No other

@@ -16,8 +16,11 @@ the `GHP_` prefix.
 | `GHP_SERVER_HTTP_LISTEN` | HTTP listen address for HTTPS redirects | |
 | `GHP_SERVER_MANAGEMENT_HOST` | Hostname for management UI/API | |
 | `GHP_SERVER_BASE_URL` | Base URL for OAuth callbacks and links | |
-| `GHP_GITHUB_CLIENT_ID` | GitHub App client ID | |
-| `GHP_GITHUB_CLIENT_SECRET` | GitHub App client secret | |
+| `GHP_GITHUB_CLIENT_ID` | GitHub App client ID (OAuth) | |
+| `GHP_GITHUB_CLIENT_SECRET` | GitHub App client secret (OAuth) | |
+| `GHP_GITHUB_APP_ID` | GitHub App ID (for `gha_` agent tokens) | |
+| `GHP_GITHUB_PRIVATE_KEY` | PEM-encoded private key content (for `gha_` agent tokens) | |
+| `GHP_GITHUB_PRIVATE_KEY_FILE` | Path to PEM private key file (for `gha_` agent tokens) | |
 | `GHP_GITHUB_ENTERPRISE_SLUG` | Enterprise slug for access restriction header | |
 | `GHP_TOKENS_DEFAULT_DURATION` | Default token lifetime | `24h` |
 | `GHP_TOKENS_MAX_DURATION` | Maximum token lifetime | `168h` |
@@ -30,6 +33,9 @@ the `GHP_` prefix.
 github:
   client_id: ""
   client_secret: ""
+  app_id: 0                    # GitHub App ID (enables gha_ agent tokens)
+  private_key_file: ""         # path to PEM file for GitHub App authentication
+  # private_key: ""            # or inline PEM content (useful in containers)
   enterprise_slug: ""
 
 database:

@@ -44,7 +44,8 @@ type GitHubConfig struct {
 	AppID          int64  `koanf:"app_id"`
 	ClientID       string `koanf:"client_id"`
 	ClientSecret   string `koanf:"client_secret"`
-	PrivateKeyFile string `koanf:"private_key_file"`
+	PrivateKey     string `koanf:"private_key"`      // PEM contents directly (GHP_GITHUB_PRIVATE_KEY)
+	PrivateKeyFile string `koanf:"private_key_file"`  // Path to PEM file (GHP_GITHUB_PRIVATE_KEY_FILE)
 	EnterpriseSlug string `koanf:"enterprise_slug"`
 }
 

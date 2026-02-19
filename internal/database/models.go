@@ -31,21 +31,23 @@ type GitHubToken struct {
 	UpdatedAt             time.Time `json:"updated_at"`
 }
 
-// ProxyToken represents a ghp_ token issued to agents.
+// ProxyToken represents a ghx_ or gha_ token issued to agents.
 type ProxyToken struct {
-	ID            string          `json:"id"`
-	TokenHash     string          `json:"-"`
-	TokenPrefix   string          `json:"token_prefix"`
-	UserID        string          `json:"user_id"`
-	GitHubTokenID string          `json:"github_token_id"`
-	Repository    string          `json:"repository"`
-	Scopes        json.RawMessage `json:"scopes"`
-	SessionID     string          `json:"session_id"`
-	ExpiresAt     time.Time       `json:"expires_at"`
-	RevokedAt     *time.Time      `json:"revoked_at,omitempty"`
-	LastUsedAt    *time.Time      `json:"last_used_at,omitempty"`
-	RequestCount  int64           `json:"request_count"`
-	CreatedAt     time.Time       `json:"created_at"`
+	ID             string          `json:"id"`
+	TokenHash      string          `json:"-"`
+	TokenPrefix    string          `json:"token_prefix"`
+	TokenType      string          `json:"token_type"`
+	UserID         *string         `json:"user_id,omitempty"`
+	GitHubTokenID  *string         `json:"github_token_id,omitempty"`
+	InstallationID *int64          `json:"installation_id,omitempty"`
+	Repositories   json.RawMessage `json:"repositories"`
+	Scopes         json.RawMessage `json:"scopes"`
+	SessionID      string          `json:"session_id"`
+	ExpiresAt      time.Time       `json:"expires_at"`
+	RevokedAt      *time.Time      `json:"revoked_at,omitempty"`
+	LastUsedAt     *time.Time      `json:"last_used_at,omitempty"`
+	RequestCount   int64           `json:"request_count"`
+	CreatedAt      time.Time       `json:"created_at"`
 }
 
 // AuditEntry represents an entry in the audit log.

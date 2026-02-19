@@ -27,6 +27,11 @@
         .badge-active { background: rgba(35,134,54,0.2); color: #3fb950; }
         .badge-expired { background: rgba(218,54,51,0.2); color: #f85149; }
         .badge-revoked { background: rgba(139,148,158,0.2); color: #8b949e; }
+        .create-form { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1.5rem; margin-bottom: 2rem; }
+        .form-group { margin-bottom: 1rem; }
+        .form-group label { display: block; margin-bottom: 0.25rem; font-size: 0.875rem; color: #8b949e; }
+        .form-group input, .form-group select { width: 100%; padding: 0.5rem; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 0.875rem; }
+        .token-display { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-top: 1rem; font-family: monospace; word-break: break-all; }
         .empty { text-align: center; color: #8b949e; padding: 2rem; }
         a.link { color: #58a6ff; text-decoration: none; }
         a.link:hover { text-decoration: underline; }
@@ -49,6 +54,42 @@
         </div>
 
         <div class="section">
+            <h2>Create Agent Token</h2>
+            <div class="create-form">
+                <div class="form-group">
+                    <label for="installation-id">Installation ID</label>
+                    <input type="number" id="installation-id" placeholder="12345678">
+                </div>
+                <div class="form-group">
+                    <label for="repos">Repositories (comma-separated)</label>
+                    <input type="text" id="repos" placeholder="org/repo1,org/repo2">
+                </div>
+                <div class="form-group">
+                    <label for="scopes">Scopes (comma-separated)</label>
+                    <input type="text" id="scopes" placeholder="contents:read,pulls:write">
+                </div>
+                <div class="form-group">
+                    <label for="duration">Duration</label>
+                    <select id="duration">
+                        <option value="8h">8 hours</option>
+                        <option value="24h" selected>24 hours</option>
+                        <option value="48h">48 hours</option>
+                        <option value="168h">7 days</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="session">Session identifier (optional)</label>
+                    <input type="text" id="session" placeholder="ci-agent-run-42">
+                </div>
+                <button class="btn" onclick="createAgentToken()">Create Agent Token</button>
+                <div id="new-token" style="display:none">
+                    <div class="token-display" id="token-value"></div>
+                    <p style="color:#f0883e;margin-top:0.5rem;font-size:0.8rem">This token will only be shown once. Copy it now.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
             <h2>All Tokens</h2>
             <div id="all-tokens"></div>
         </div>
@@ -65,6 +106,37 @@
             if (body) opts.body = JSON.stringify(body);
             const resp = await fetch(path, opts);
             return resp.json();
+        }
+
+        async function createAgentToken() {
+            const installationId = parseInt(document.getElementById('installation-id').value);
+            const repos = document.getElementById('repos').value;
+            const scopes = document.getElementById('scopes').value;
+            const duration = document.getElementById('duration').value;
+            const session = document.getElementById('session').value;
+
+            if (!installationId || !repos || !scopes) {
+                alert('Installation ID, repositories, and scopes are required');
+                return;
+            }
+
+            const body = {
+                type: 'agent',
+                installation_id: installationId,
+                repositories: repos.split(',').map(r => r.trim()),
+                scopes: scopes,
+                duration: duration,
+            };
+            if (session) body.session_id = session;
+
+            const data = await api('POST', '/api/tokens', body);
+            if (data.token) {
+                document.getElementById('token-value').textContent = data.token;
+                document.getElementById('new-token').style.display = 'block';
+                loadAllTokens();
+            } else {
+                alert(data.message || 'Failed to create agent token');
+            }
         }
 
         async function loadUsers() {
@@ -116,7 +188,7 @@
         }
 
         function renderTokenTable(tokens) {
-            let html = '<table><tr><th>Prefix</th><th>Repository</th><th>Scopes</th><th>Session</th><th>Status</th><th>Requests</th><th>Expires</th><th></th></tr>';
+            let html = '<table><tr><th>Prefix</th><th>Type</th><th>Repositories</th><th>Scopes</th><th>Session</th><th>Status</th><th>Requests</th><th>Expires</th><th></th></tr>';
             for (const t of tokens) {
                 const now = new Date();
                 const expires = new Date(t.expires_at);
@@ -126,9 +198,11 @@
                 else { status = 'Active'; badge = 'badge-active'; }
 
                 const scopes = typeof t.scopes === 'string' ? t.scopes : JSON.stringify(t.scopes);
+                const repos = Array.isArray(t.repositories) ? t.repositories.join(', ') : (t.repositories || '');
                 html += '<tr>';
                 html += '<td>' + esc(t.token_prefix) + '...</td>';
-                html += '<td>' + esc(t.repository || '') + '</td>';
+                html += '<td>' + esc(t.token_type || 'proxy') + '</td>';
+                html += '<td>' + esc(repos) + '</td>';
                 html += '<td>' + esc(scopes) + '</td>';
                 html += '<td>' + esc(t.session_id || '-') + '</td>';
                 html += '<td><span class="badge ' + badge + '">' + status + '</span></td>';

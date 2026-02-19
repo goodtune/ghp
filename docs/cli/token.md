@@ -6,18 +6,11 @@ Create, list, and revoke proxy tokens.
 
 ### ghp token create
 
-    ghp token create --repo owner/repo --scope contents:read,pulls:write [flags]
+    ghp token create --scope contents:read,pulls:write [flags]
 
-Create a new scoped `ghp_` token for an agent.
+Create a new scoped token for an agent. There are two token types:
 
-| Flag | Required | Default | Description |
-|------|----------|---------|-------------|
-| `--repo` | Yes | | Target repository (`owner/repo`) |
-| `--scope` | Yes | | Comma-separated permissions (e.g. `contents:read,pulls:write`) |
-| `--duration` | No | `24h` | Token lifetime (max: server-configured, default max 7 days) |
-| `--session` | No | | Session identifier for audit tracking |
-
-Example:
+**Proxy tokens (`ghx_`)** — user-scoped, backed by your OAuth credential:
 
     ghp token create \
       --repo goodtune/myproject \
@@ -25,12 +18,32 @@ Example:
       --duration 48h \
       --session "claude-code-feature-123"
 
+**Agent tokens (`gha_`)** — app-scoped, backed by a GitHub App installation
+(admin only, requires GitHub App configuration on the server):
+
+    ghp token create \
+      --type agent \
+      --installation-id 12345678 \
+      --repos owner/repo1,owner/repo2 \
+      --scope contents:read,pulls:write \
+      --session "ci-agent-run-42"
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--type` | No | `proxy` | Token type: `proxy` or `agent` |
+| `--repo` | Proxy only | | Target repository (`owner/repo`) |
+| `--repos` | Agent only | | Comma-separated repositories |
+| `--installation-id` | Agent only | | GitHub App installation ID |
+| `--scope` | Yes | | Comma-separated permissions (e.g. `contents:read,pulls:write`) |
+| `--duration` | No | `24h` | Token lifetime (max: server-configured, default max 7 days) |
+| `--session` | No | | Session identifier for audit tracking |
+
 ### ghp token list
 
     ghp token list
 
-List your active tokens with repository, scopes, session, expiry, and request
-count.
+List your active tokens with type, repositories, scopes, session, expiry, and
+request count.
 
 ### ghp token revoke
 

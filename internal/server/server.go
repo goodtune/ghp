@@ -16,6 +16,7 @@ import (
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/proxy"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/goodtune/ghp/internal/token"
@@ -67,8 +68,33 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Create services.
 	tokenSvc := token.NewService(store, s.cfg.Tokens.MaxDuration)
+
+	// Optionally set up GitHub App token provider for agent (gha_) tokens.
+	var appTokenProvider proxy.AppTokenProvider
+	if s.cfg.GitHub.AppID != 0 {
+		privateKey := s.cfg.GitHub.PrivateKey
+		if privateKey == "" && s.cfg.GitHub.PrivateKeyFile != "" {
+			keyData, err := os.ReadFile(s.cfg.GitHub.PrivateKeyFile)
+			if err != nil {
+				return fmt.Errorf("reading GitHub App private key file: %w", err)
+			}
+			privateKey = string(keyData)
+		}
+		if privateKey != "" {
+			atp, err := github.NewAppTokenProvider(github.AppConfig{
+				AppID:      s.cfg.GitHub.AppID,
+				PrivateKey: privateKey,
+			})
+			if err != nil {
+				return fmt.Errorf("initializing GitHub App token provider: %w", err)
+			}
+			appTokenProvider = atp
+			s.logger.Info("github app token provider initialized", "app_id", s.cfg.GitHub.AppID)
+		}
+	}
+
 	authHandler := auth.NewHandler(s.cfg, store, enc, s.logger)
-	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, s.logger)
+	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, s.logger)
 	api := NewAPI(s.cfg, store, tokenSvc, authHandler, s.logger)
 	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
 
@@ -94,7 +120,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/graphql", proxyHandler)
 
 	// Create passthrough handlers for github.com and *.githubcopilot.com.
-	resolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc)
+	resolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc, appTokenProvider)
 	githubInner := proxy.NewPassthroughHandler(
 		"https://github.com", resolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
