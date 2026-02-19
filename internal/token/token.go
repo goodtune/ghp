@@ -1,4 +1,4 @@
-// Package token handles ghp_ token generation and validation.
+// Package token handles ghx_ and gha_ token generation and validation.
 package token
 
 import (
@@ -15,33 +15,65 @@ import (
 	"github.com/goodtune/ghp/internal/database"
 )
 
+// TokenType distinguishes proxy tokens from agent tokens.
+type TokenType string
+
 const (
-	// Prefix for all proxy tokens.
-	Prefix = "ghp_"
-	// TokenBytes is the number of random bytes used to generate a token.
-	TokenBytes = 32
-	// base62 alphabet.
-	alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	TokenTypeProxy TokenType = "proxy"
+	TokenTypeAgent TokenType = "agent"
 )
 
-// CreateRequest contains the parameters for creating a new proxy token.
-type CreateRequest struct {
-	UserID        string
-	GitHubTokenID string
-	Repository    string
-	Scopes        map[string]string
-	Duration      time.Duration
-	SessionID     string
+// Prefix constants for each token type.
+const (
+	PrefixProxy = "ghx_"
+	PrefixAgent = "gha_"
+	TokenBytes  = 32
+	alphabet    = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
+
+// tokenPrefixes maps token types to their string prefixes.
+var tokenPrefixes = map[TokenType]string{
+	TokenTypeProxy: PrefixProxy,
+	TokenTypeAgent: PrefixAgent,
 }
 
-// CreateResult contains the result of creating a new proxy token.
+// TokenTypeFromPrefix returns the token type for a given prefixed string.
+func TokenTypeFromPrefix(s string) (TokenType, bool) {
+	for tt, prefix := range tokenPrefixes {
+		if strings.HasPrefix(s, prefix) {
+			return tt, true
+		}
+	}
+	return "", false
+}
+
+// PrefixForType returns the prefix for a given token type.
+func PrefixForType(tt TokenType) string {
+	return tokenPrefixes[tt]
+}
+
+// CreateRequest contains the parameters for creating a new token.
+type CreateRequest struct {
+	TokenType      TokenType
+	UserID         string
+	GitHubTokenID  string            // Required for proxy tokens.
+	InstallationID int64             // Required for agent tokens.
+	Repository     string            // Single repo — for proxy tokens.
+	Repositories   []string          // Multi repo — for agent tokens.
+	Scopes         map[string]string
+	Duration       time.Duration
+	SessionID      string
+}
+
+// CreateResult contains the result of creating a new token.
 type CreateResult struct {
-	Token      string    // The plaintext ghp_ token (shown once).
-	ID         string    // The database ID of the token.
-	Repository string    // The repository.
-	Scopes     map[string]string
-	ExpiresAt  time.Time
-	SessionID  string
+	Token        string
+	ID           string
+	TokenType    TokenType
+	Repositories []string
+	Scopes       map[string]string
+	ExpiresAt    time.Time
+	SessionID    string
 }
 
 // Service manages proxy token lifecycle.
@@ -58,11 +90,33 @@ func NewService(store database.Store, maxDuration time.Duration) *Service {
 	}
 }
 
-// Create generates a new ghp_ token and stores its hash.
+// Create generates a new token and stores its hash.
 func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult, error) {
-	if req.Repository == "" {
-		return nil, fmt.Errorf("repository is required")
+	tt := req.TokenType
+	if tt == "" {
+		tt = TokenTypeProxy
 	}
+
+	// Build repositories list.
+	var repos []string
+	switch tt {
+	case TokenTypeProxy:
+		if req.Repository == "" {
+			return nil, fmt.Errorf("repository is required for proxy tokens")
+		}
+		repos = []string{req.Repository}
+	case TokenTypeAgent:
+		if len(req.Repositories) == 0 {
+			return nil, fmt.Errorf("at least one repository is required for agent tokens")
+		}
+		if req.InstallationID == 0 {
+			return nil, fmt.Errorf("installation_id is required for agent tokens")
+		}
+		repos = req.Repositories
+	default:
+		return nil, fmt.Errorf("unknown token type %q", tt)
+	}
+
 	if len(req.Scopes) == 0 {
 		return nil, fmt.Errorf("at least one scope is required")
 	}
@@ -73,8 +127,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 		return nil, fmt.Errorf("duration %s exceeds maximum %s", req.Duration, s.maxDuration)
 	}
 
-	// Generate a cryptographically random token.
-	plaintext, err := generateToken()
+	plaintext, err := generateToken(tt)
 	if err != nil {
 		return nil, fmt.Errorf("generating token: %w", err)
 	}
@@ -87,17 +140,32 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 		return nil, fmt.Errorf("marshaling scopes: %w", err)
 	}
 
+	reposJSON, err := json.Marshal(repos)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling repositories: %w", err)
+	}
+
 	expiresAt := time.Now().UTC().Add(req.Duration)
 
 	pt := &database.ProxyToken{
-		TokenHash:     hash,
-		TokenPrefix:   prefix,
-		UserID:        req.UserID,
-		GitHubTokenID: req.GitHubTokenID,
-		Repository:    req.Repository,
-		Scopes:        json.RawMessage(scopesJSON),
-		SessionID:     req.SessionID,
-		ExpiresAt:     expiresAt,
+		TokenHash:    hash,
+		TokenPrefix:  prefix,
+		TokenType:    string(tt),
+		Repositories: json.RawMessage(reposJSON),
+		Scopes:       json.RawMessage(scopesJSON),
+		SessionID:    req.SessionID,
+		ExpiresAt:    expiresAt,
+	}
+
+	// Set type-specific fields.
+	if req.UserID != "" {
+		pt.UserID = &req.UserID
+	}
+	if req.GitHubTokenID != "" {
+		pt.GitHubTokenID = &req.GitHubTokenID
+	}
+	if req.InstallationID != 0 {
+		pt.InstallationID = &req.InstallationID
 	}
 
 	if err := s.store.CreateProxyToken(ctx, pt); err != nil {
@@ -105,19 +173,20 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 	}
 
 	return &CreateResult{
-		Token:      plaintext,
-		ID:         pt.ID,
-		Repository: req.Repository,
-		Scopes:     req.Scopes,
-		ExpiresAt:  expiresAt,
-		SessionID:  req.SessionID,
+		Token:        plaintext,
+		ID:           pt.ID,
+		TokenType:    tt,
+		Repositories: repos,
+		Scopes:       req.Scopes,
+		ExpiresAt:    expiresAt,
+		SessionID:    req.SessionID,
 	}, nil
 }
 
 // Resolve looks up a proxy token by its plaintext value.
 // Returns nil if the token is not found, expired, or revoked.
 func (s *Service) Resolve(ctx context.Context, plaintext string) (*database.ProxyToken, error) {
-	if !strings.HasPrefix(plaintext, Prefix) {
+	if _, ok := TokenTypeFromPrefix(plaintext); !ok {
 		return nil, fmt.Errorf("invalid token prefix")
 	}
 
@@ -156,8 +225,8 @@ func Hash(token string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// generateToken creates a new ghp_-prefixed token with a base62-encoded random value.
-func generateToken() (string, error) {
+// generateToken creates a new prefixed token with a base62-encoded random value.
+func generateToken(tt TokenType) (string, error) {
 	b := make([]byte, TokenBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -184,7 +253,7 @@ func generateToken() (string, error) {
 		result[i], result[j] = result[j], result[i]
 	}
 
-	return Prefix + string(result), nil
+	return PrefixForType(tt) + string(result), nil
 }
 
 // ParseScopeString parses a comma-separated scope string like "contents:read,pulls:write".

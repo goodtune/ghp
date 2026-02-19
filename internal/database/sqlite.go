@@ -290,26 +290,46 @@ func (s *SQLiteStore) CreateProxyToken(ctx context.Context, token *ProxyToken) e
 	if err != nil {
 		return fmt.Errorf("marshaling scopes: %w", err)
 	}
+	reposJSON, err := json.Marshal(token.Repositories)
+	if err != nil {
+		return fmt.Errorf("marshaling repositories: %w", err)
+	}
+	tokenType := token.TokenType
+	if tokenType == "" {
+		tokenType = "proxy"
+	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO proxy_tokens (id, token_hash, token_prefix, user_id, github_token_id, repository, scopes, session_id, expires_at, request_count, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-	`, token.ID, token.TokenHash, token.TokenPrefix, token.UserID, token.GitHubTokenID,
-		token.Repository, string(scopesJSON), token.SessionID,
+		INSERT INTO proxy_tokens (id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, request_count, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+	`, token.ID, token.TokenHash, token.TokenPrefix, tokenType, token.UserID, token.GitHubTokenID,
+		token.InstallationID, string(reposJSON), string(scopesJSON), token.SessionID,
 		token.ExpiresAt.Format(time.RFC3339Nano), now)
 	return err
 }
 
 func scanProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, error) {
 	t := &ProxyToken{}
-	var scopesStr string
+	var scopesStr, reposStr string
 	var revokedAt, lastUsedAt sql.NullString
 	var expiresStr, createdStr string
-	err := scan(&t.ID, &t.TokenHash, &t.TokenPrefix, &t.UserID, &t.GitHubTokenID, &t.Repository, &scopesStr,
+	var userID, githubTokenID sql.NullString
+	var installationID sql.NullInt64
+	err := scan(&t.ID, &t.TokenHash, &t.TokenPrefix, &t.TokenType, &userID, &githubTokenID, &installationID, &reposStr, &scopesStr,
 		&t.SessionID, &expiresStr, &revokedAt, &lastUsedAt, &t.RequestCount, &createdStr)
 	if err != nil {
 		return nil, err
 	}
 	t.Scopes = json.RawMessage(scopesStr)
+	t.Repositories = json.RawMessage(reposStr)
+	if userID.Valid {
+		t.UserID = &userID.String
+	}
+	if githubTokenID.Valid {
+		t.GitHubTokenID = &githubTokenID.String
+	}
+	if installationID.Valid {
+		t.InstallationID = &installationID.Int64
+	}
 	t.ExpiresAt = parseTime(expiresStr)
 	t.CreatedAt = parseTime(createdStr)
 	if revokedAt.Valid {
@@ -325,7 +345,7 @@ func scanProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, error) {
 
 func (s *SQLiteStore) GetProxyTokenByHash(ctx context.Context, hash string) (*ProxyToken, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, token_hash, token_prefix, user_id, github_token_id, repository, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
+		SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
 		FROM proxy_tokens WHERE token_hash = ?`, hash)
 	t, err := scanProxyToken(row.Scan)
 	if err == sql.ErrNoRows {
@@ -336,7 +356,7 @@ func (s *SQLiteStore) GetProxyTokenByHash(ctx context.Context, hash string) (*Pr
 
 func (s *SQLiteStore) GetProxyTokenByID(ctx context.Context, id string) (*ProxyToken, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, token_hash, token_prefix, user_id, github_token_id, repository, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
+		SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
 		FROM proxy_tokens WHERE id = ?`, id)
 	t, err := scanProxyToken(row.Scan)
 	if err == sql.ErrNoRows {
@@ -347,7 +367,7 @@ func (s *SQLiteStore) GetProxyTokenByID(ctx context.Context, id string) (*ProxyT
 
 func (s *SQLiteStore) ListProxyTokens(ctx context.Context, userID string) ([]*ProxyToken, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, token_hash, token_prefix, user_id, github_token_id, repository, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
+		SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
 		FROM proxy_tokens WHERE user_id = ? ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -358,7 +378,7 @@ func (s *SQLiteStore) ListProxyTokens(ctx context.Context, userID string) ([]*Pr
 
 func (s *SQLiteStore) ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, token_hash, token_prefix, user_id, github_token_id, repository, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
+		SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
 		FROM proxy_tokens ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err

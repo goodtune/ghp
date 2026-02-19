@@ -4,7 +4,7 @@
 
 ghp is a transparent reverse proxy that sits between your coding agents and
 GitHub. Agents use standard GitHub tooling — they just set `GH_TOKEN` to a
-scoped `ghp_`-prefixed token and everything works.
+scoped `ghx_`-prefixed token and everything works.
 
 - **Scoped tokens** — each agent gets only the repository and permission access it needs
 - **Audit trail** — every proxied request is logged

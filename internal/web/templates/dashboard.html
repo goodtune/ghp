@@ -137,7 +137,7 @@
                 return;
             }
 
-            let html = '<table><tr><th>ID</th><th>Repository</th><th>Scopes</th><th>Session</th><th>Status</th><th>Requests</th><th>Expires</th><th></th></tr>';
+            let html = '<table><tr><th>ID</th><th>Type</th><th>Repositories</th><th>Scopes</th><th>Session</th><th>Status</th><th>Requests</th><th>Expires</th><th></th></tr>';
             for (const t of tokens) {
                 const now = new Date();
                 const expires = new Date(t.expires_at);
@@ -147,9 +147,11 @@
                 else { status = 'Active'; badge = 'badge-active'; }
 
                 const scopes = typeof t.scopes === 'string' ? t.scopes : JSON.stringify(t.scopes);
+                const repos = Array.isArray(t.repositories) ? t.repositories.join(', ') : (t.repositories || '');
                 html += '<tr>';
                 html += '<td>' + t.token_prefix + '...</td>';
-                html += '<td>' + (t.repository || '') + '</td>';
+                html += '<td>' + (t.token_type || 'proxy') + '</td>';
+                html += '<td>' + repos + '</td>';
                 html += '<td>' + scopes + '</td>';
                 html += '<td>' + (t.session_id || '-') + '</td>';
                 html += '<td><span class="badge ' + badge + '">' + status + '</span></td>';
