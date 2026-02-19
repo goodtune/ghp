@@ -8,7 +8,7 @@ Create, list, and revoke proxy tokens.
 
     ghp token create --repo owner/repo --scope contents:read,pulls:write [flags]
 
-Create a new scoped `ghp_` token for an agent.
+Create a new scoped `ghx_` proxy token for an agent.
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|

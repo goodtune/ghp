@@ -14,7 +14,7 @@ network. You just need a token.
 4. Select the target repository
 5. Choose permission scopes (e.g. `contents:read`, `pulls:write`)
 6. Set a duration (default: 24 hours)
-7. Click **Create** and copy the `ghp_`-prefixed token
+7. Click **Create** and copy the `ghx_`-prefixed token
 
 ### CLI
 
@@ -34,7 +34,7 @@ Then create a scoped token:
 
 Set the token as `GH_TOKEN` in the agent's environment:
 
-    export GH_TOKEN=ghp_xxxxxxxxxxxxxxxx
+    export GH_TOKEN=ghx_xxxxxxxxxxxxxxxx
 
 That's it. The agent now uses GitHub through the proxy with scoped permissions.
 Standard `gh` CLI, GitHub SDKs, and raw HTTP all work transparently.
