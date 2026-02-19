@@ -80,7 +80,7 @@ func TestProxyTokenResolver_InvalidToken(t *testing.T) {
 	tokenSvc := token.NewService(store, 7*24*time.Hour)
 	resolver := NewProxyTokenResolver(tokenSvc, store, enc)
 
-	_, err = resolver.ResolveToGitHubToken(ctx, "ghp_nonexistenttoken1234567890abcdefghijklmno")
+	_, err = resolver.ResolveToGitHubToken(ctx, "ghx_nonexistenttoken1234567890abcdefghijklmno")
 	if err == nil {
 		t.Fatal("expected error for invalid token")
 	}

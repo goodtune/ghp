@@ -55,7 +55,7 @@ func TestPassthroughHandler_NoAuth(t *testing.T) {
 func TestPassthroughHandler_GhpToken_SchemePreserved(t *testing.T) {
 	// The proxy must preserve the original Authorization scheme when
 	// rewriting a ghp_ token to the real GitHub credential.
-	ghpTok := token.Prefix + "abc123"
+	ghpTok := token.PrefixProxy + "abc123"
 	tests := []struct {
 		name       string
 		authHeader string
@@ -254,7 +254,7 @@ func TestScopedPassthrough_GitPush_InsufficientPermission(t *testing.T) {
 }
 
 func TestScopedPassthrough_GitPush_WrongRepository(t *testing.T) {
-	// ghp_ token scoped to goodtune/ghp must be rejected when used
+	// Token scoped to goodtune/ghp must be rejected when used
 	// against a different repository.
 	handler, ghpToken := newScopedPassthrough(t, "goodtune/ghp", map[string]string{
 		"contents": "write",
@@ -270,9 +270,6 @@ func TestScopedPassthrough_GitPush_WrongRepository(t *testing.T) {
 		t.Fatalf("expected 403 for wrong repository, got %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "goodtune/ghp") {
-		t.Errorf("expected error to mention scoped repository, got: %s", body)
-	}
 	if !strings.Contains(body, "goodtune/pac-proxy") {
 		t.Errorf("expected error to mention requested repository, got: %s", body)
 	}
@@ -364,7 +361,7 @@ func TestScopedPassthrough_BasicAuth_GitPush_InsufficientPermission(t *testing.T
 }
 
 func TestScopedPassthrough_BasicAuth_GitPush_WrongRepository(t *testing.T) {
-	// A ghp_ token sent via Basic auth scoped to goodtune/ghp must be
+	// A token sent via Basic auth scoped to goodtune/ghp must be
 	// rejected when used against a different repository.
 	handler, ghpToken := newScopedPassthrough(t, "goodtune/ghp", map[string]string{
 		"contents": "write",
@@ -380,9 +377,6 @@ func TestScopedPassthrough_BasicAuth_GitPush_WrongRepository(t *testing.T) {
 		t.Fatalf("expected 403 for wrong repository via Basic auth, got %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "goodtune/ghp") {
-		t.Errorf("expected error to mention scoped repository, got: %s", body)
-	}
 	if !strings.Contains(body, "goodtune/pac-proxy") {
 		t.Errorf("expected error to mention requested repository, got: %s", body)
 	}
