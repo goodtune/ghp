@@ -22,13 +22,17 @@ CREATE TABLE github_tokens (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TYPE token_type AS ENUM ('proxy', 'agent');
+
 CREATE TABLE proxy_tokens (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     token_hash TEXT NOT NULL UNIQUE,
     token_prefix TEXT NOT NULL,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    github_token_id UUID NOT NULL REFERENCES github_tokens(id) ON DELETE CASCADE,
-    repository TEXT NOT NULL,
+    token_type token_type NOT NULL DEFAULT 'proxy',
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    github_token_id UUID REFERENCES github_tokens(id) ON DELETE CASCADE,
+    installation_id BIGINT,
+    repositories JSONB NOT NULL DEFAULT '[]',
     scopes JSONB NOT NULL,
     session_id TEXT NOT NULL DEFAULT '',
     expires_at TIMESTAMPTZ NOT NULL,

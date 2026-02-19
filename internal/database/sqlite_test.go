@@ -116,14 +116,16 @@ func TestProxyTokenCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a proxy token.
+	// Test proxy token (ghx_ type).
 	scopes := json.RawMessage(`{"contents":"read","pulls":"write"}`)
+	repos := json.RawMessage(`["org/repo"]`)
 	pt := &ProxyToken{
 		TokenHash:     "sha256hash123",
-		TokenPrefix:   "ghp_a1b2",
-		UserID:        user.ID,
-		GitHubTokenID: gt.ID,
-		Repository:    "org/repo",
+		TokenPrefix:   "ghx_a1b2",
+		TokenType:     "proxy",
+		UserID:        &user.ID,
+		GitHubTokenID: &gt.ID,
+		Repositories:  repos,
 		Scopes:        scopes,
 		SessionID:     "test-session",
 		ExpiresAt:     time.Now().Add(24 * time.Hour),
@@ -132,7 +134,6 @@ func TestProxyTokenCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Get by hash.
 	got, err := store.GetProxyTokenByHash(ctx, "sha256hash123")
 	if err != nil {
 		t.Fatal(err)
@@ -140,11 +141,48 @@ func TestProxyTokenCRUD(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected token, got nil")
 	}
-	if got.Repository != "org/repo" {
-		t.Errorf("repository = %q, want org/repo", got.Repository)
+	if got.TokenType != "proxy" {
+		t.Errorf("token_type = %q, want proxy", got.TokenType)
 	}
-	if got.TokenPrefix != "ghp_a1b2" {
-		t.Errorf("prefix = %q, want ghp_a1b2", got.TokenPrefix)
+	if got.TokenPrefix != "ghx_a1b2" {
+		t.Errorf("prefix = %q, want ghx_a1b2", got.TokenPrefix)
+	}
+
+	var gotRepos []string
+	if err := json.Unmarshal(got.Repositories, &gotRepos); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotRepos) != 1 || gotRepos[0] != "org/repo" {
+		t.Errorf("repositories = %v, want [org/repo]", gotRepos)
+	}
+
+	// Test agent token (gha_ type) with installation_id and no github_token.
+	installID := int64(12345)
+	agentRepos := json.RawMessage(`["org/repo1","org/repo2"]`)
+	at := &ProxyToken{
+		TokenHash:      "sha256hash456",
+		TokenPrefix:    "gha_c3d4",
+		TokenType:      "agent",
+		UserID:         &user.ID,
+		InstallationID: &installID,
+		Repositories:   agentRepos,
+		Scopes:         json.RawMessage(`{"contents":"read"}`),
+		SessionID:      "admin-session",
+		ExpiresAt:      time.Now().Add(365 * 24 * time.Hour),
+	}
+	if err := store.CreateProxyToken(ctx, at); err != nil {
+		t.Fatal(err)
+	}
+
+	gotAgent, err := store.GetProxyTokenByHash(ctx, "sha256hash456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAgent.TokenType != "agent" {
+		t.Errorf("token_type = %q, want agent", gotAgent.TokenType)
+	}
+	if gotAgent.InstallationID == nil || *gotAgent.InstallationID != 12345 {
+		t.Errorf("installation_id = %v, want 12345", gotAgent.InstallationID)
 	}
 
 	// Update usage.
@@ -164,8 +202,8 @@ func TestProxyTokenCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tokens) != 1 {
-		t.Errorf("ListProxyTokens = %d, want 1", len(tokens))
+	if len(tokens) != 2 {
+		t.Errorf("ListProxyTokens = %d, want 2", len(tokens))
 	}
 
 	// Revoke.
