@@ -27,9 +27,9 @@ test.describe("Token management", () => {
     const tokenDisplay = page.locator("#new-token");
     await expect(tokenDisplay).toBeVisible();
 
-    // The token value should start with ghp_.
+    // The token value should start with ghx_.
     const tokenValue = page.locator("#token-value");
-    await expect(tokenValue).toContainText("ghp_");
+    await expect(tokenValue).toContainText("ghx_");
 
     // The warning message should be shown.
     await expect(tokenDisplay).toContainText(
