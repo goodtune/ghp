@@ -50,9 +50,11 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	apps := h.auth.Apps()
 	data := map[string]interface{}{
 		"Username": session.Username,
 		"Role":     session.Role,
+		"MultiApp": apps.IsMultiApp(),
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "dashboard.html", data); err != nil {
@@ -92,12 +94,31 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	session := h.auth.GetSession(r)
-	if session != nil {
+	// In multi-app mode, already-authenticated users can still visit /login
+	// to authorise with additional apps. In single-app mode, redirect home.
+	if session != nil && !h.auth.Apps().IsMultiApp() {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
-	if err := h.templates.ExecuteTemplate(w, "login.html", nil); err != nil {
+	apps := h.auth.Apps()
+	type appEntry struct {
+		Slug        string
+		DisplayName string
+	}
+	var appList []appEntry
+	if apps.IsMultiApp() {
+		for _, a := range apps.List() {
+			appList = append(appList, appEntry{Slug: a.Slug, DisplayName: a.DisplayName})
+		}
+	}
+
+	data := map[string]interface{}{
+		"MultiApp": apps.IsMultiApp(),
+		"Apps":     appList,
+	}
+
+	if err := h.templates.ExecuteTemplate(w, "login.html", data); err != nil {
 		h.logger.Error("template execution failed", "error", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 	}

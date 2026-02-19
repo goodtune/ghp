@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
@@ -27,6 +28,7 @@ const (
 // Handler is the reverse proxy HTTP handler.
 type Handler struct {
 	cfg          *config.Config
+	apps         *auth.AppRegistry
 	tokenService *token.Service
 	store        database.Store
 	encryptor    *crypto.Encryptor
@@ -35,9 +37,10 @@ type Handler struct {
 }
 
 // NewHandler creates a new reverse proxy handler.
-func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
+func NewHandler(cfg *config.Config, apps *auth.AppRegistry, ts *token.Service, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
 	return &Handler{
 		cfg:          cfg,
+		apps:         apps,
 		tokenService: ts,
 		store:        store,
 		encryptor:    enc,
@@ -205,6 +208,12 @@ type tokenRefreshResponse struct {
 // GitHub's OAuth token endpoint. On success it persists the new encrypted
 // tokens and returns the new plaintext access token.
 func (h *Handler) refreshGitHubToken(ctx context.Context, gt *database.GitHubToken) (string, error) {
+	// Look up the app credentials for this token's app.
+	app, ok := h.apps.Get(gt.AppSlug)
+	if !ok {
+		return "", fmt.Errorf("unknown app slug %q for token refresh", gt.AppSlug)
+	}
+
 	refreshPlaintext, err := h.encryptor.Decrypt(gt.RefreshToken)
 	if err != nil {
 		return "", fmt.Errorf("decrypting refresh token: %w", err)
@@ -212,8 +221,8 @@ func (h *Handler) refreshGitHubToken(ctx context.Context, gt *database.GitHubTok
 
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
-		"client_id":     {h.cfg.GitHub.ClientID},
-		"client_secret": {h.cfg.GitHub.ClientSecret},
+		"client_id":     {app.ClientID},
+		"client_secret": {app.ClientSecret},
 		"refresh_token": {refreshPlaintext},
 	}
 
@@ -315,8 +324,8 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	}
 
 	// Inject enterprise access restriction header if configured.
-	if h.cfg.GitHub.EnterpriseSlug != "" {
-		proxyReq.Header.Set("sec-GitHub-allowed-enterprise", h.cfg.GitHub.EnterpriseSlug)
+	if slug := h.enterpriseSlug(); slug != "" {
+		proxyReq.Header.Set("sec-GitHub-allowed-enterprise", slug)
 	}
 
 	resp, err := h.client.Do(proxyReq)
@@ -364,8 +373,8 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 	proxyReq.Header.Set("Authorization", authHeader)
 
 	// Inject enterprise access restriction header if configured.
-	if h.cfg.GitHub.EnterpriseSlug != "" {
-		proxyReq.Header.Set("sec-GitHub-allowed-enterprise", h.cfg.GitHub.EnterpriseSlug)
+	if slug := h.enterpriseSlug(); slug != "" {
+		proxyReq.Header.Set("sec-GitHub-allowed-enterprise", slug)
 	}
 
 	resp, err := h.client.Do(proxyReq)
@@ -437,6 +446,18 @@ func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, metho
 	}
 }
 
+
+// enterpriseSlug returns the enterprise slug for enterprise access restriction.
+// In multi-app mode, falls back to the default app's enterprise slug.
+func (h *Handler) enterpriseSlug() string {
+	if h.cfg.GitHub.EnterpriseSlug != "" {
+		return h.cfg.GitHub.EnterpriseSlug
+	}
+	if def := h.apps.Default(); def != nil {
+		return def.EnterpriseSlug
+	}
+	return ""
+}
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

@@ -15,6 +15,7 @@ import (
 // Config represents the complete server configuration.
 type Config struct {
 	GitHub   GitHubConfig   `koanf:"github"`
+	Vault    VaultConfig    `koanf:"vault"`
 	Database DatabaseConfig `koanf:"database"`
 	Server   ServerConfig   `koanf:"server"`
 	TLS      TLSConfig      `koanf:"tls"`
@@ -29,6 +30,18 @@ type Config struct {
 	// DevMode enables test-only endpoints (e.g. /auth/test-login).
 	// Must never be enabled in production.
 	DevMode bool `koanf:"dev_mode"`
+}
+
+// VaultConfig holds optional HashiCorp Vault integration settings.
+// When Enabled is true, Vault becomes the source of truth for the
+// encryption key and GitHub App credentials (multi-app mode).
+type VaultConfig struct {
+	Enabled  bool   `koanf:"enabled"`
+	Addr     string `koanf:"addr"`      // e.g. "https://vault.example.com:8200"
+	RoleID   string `koanf:"role_id"`   // AppRole role ID
+	SecretID string `koanf:"secret_id"` // AppRole secret ID
+	Mount    string `koanf:"mount"`     // KV v2 mount path (default: "secret")
+	Prefix   string `koanf:"prefix"`    // Key prefix under mount (default: "ghp")
 }
 
 type TLSConfig struct {
@@ -136,7 +149,7 @@ func Load(path string) (*Config, error) {
 		if i := strings.Index(s, "_"); i > 0 {
 			section, field := s[:i], s[i+1:]
 			switch section {
-			case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel":
+			case "github", "vault", "database", "server", "tls", "tokens", "logging", "metrics", "otel":
 				// Handle 3-level nesting for logging.file.*
 				if section == "logging" && strings.HasPrefix(field, "file_") {
 					return "logging.file." + field[len("file_"):]
@@ -154,6 +167,33 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// VaultEnabled returns true if Vault integration is configured.
+func (c *Config) VaultEnabled() bool {
+	return c.Vault.Enabled
+}
+
+// Validate checks the configuration for consistency errors.
+func (c *Config) Validate() error {
+	if c.Vault.Enabled {
+		if c.Vault.Addr == "" {
+			return fmt.Errorf("vault.addr is required when vault is enabled")
+		}
+		if c.Vault.RoleID == "" {
+			return fmt.Errorf("vault.role_id is required when vault is enabled")
+		}
+		if c.Vault.SecretID == "" {
+			return fmt.Errorf("vault.secret_id is required when vault is enabled")
+		}
+		if c.EncryptionKey != "" {
+			return fmt.Errorf("encryption_key must not be set locally when vault is enabled (it will be read from vault)")
+		}
+		if c.GitHub.ClientID != "" || c.GitHub.ClientSecret != "" {
+			return fmt.Errorf("github.client_id and github.client_secret must not be set locally when vault is enabled (app credentials come from vault)")
+		}
+	}
+	return nil
 }
 
 // IsAdmin returns true if the given GitHub username is in the admin list.

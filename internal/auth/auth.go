@@ -34,9 +34,16 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
+// oauthState tracks a pending OAuth flow including which app it belongs to.
+type oauthState struct {
+	ExpiresAt time.Time
+	AppSlug   string // empty for single-app mode
+}
+
 // Handler manages OAuth flows and sessions.
 type Handler struct {
 	cfg       *config.Config
+	apps      *AppRegistry
 	store     database.Store
 	encryptor *crypto.Encryptor
 	logger    *slog.Logger
@@ -46,19 +53,25 @@ type Handler struct {
 
 	// OAuth state tokens (short-lived, in-memory).
 	stateMu sync.Mutex
-	states  map[string]time.Time
+	states  map[string]*oauthState
 }
 
 // NewHandler creates a new auth handler.
-func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
+func NewHandler(cfg *config.Config, apps *AppRegistry, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
 	return &Handler{
 		cfg:       cfg,
+		apps:      apps,
 		store:     store,
 		encryptor: enc,
 		logger:    logger,
 		sessions:  make(map[string]*Session),
-		states:    make(map[string]time.Time),
+		states:    make(map[string]*oauthState),
 	}
+}
+
+// Apps returns the app registry.
+func (h *Handler) Apps() *AppRegistry {
+	return h.apps
 }
 
 // RegisterRoutes adds auth routes to the given mux.
@@ -163,13 +176,24 @@ func (h *Handler) deleteSession(token string) {
 }
 
 func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
+	// Determine which app to authenticate with.
+	appSlug := r.URL.Query().Get("app")
+	app, ok := h.apps.Get(appSlug)
+	if !ok {
+		http.Error(w, fmt.Sprintf("Unknown app: %s", appSlug), http.StatusBadRequest)
+		return
+	}
+
 	state := generateState()
 	h.stateMu.Lock()
-	h.states[state] = time.Now().Add(10 * time.Minute)
+	h.states[state] = &oauthState{
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+		AppSlug:   app.Slug,
+	}
 	h.stateMu.Unlock()
 
 	url := fmt.Sprintf("https://github.com/login/oauth/authorize?client_id=%s&state=%s",
-		h.cfg.GitHub.ClientID, state)
+		app.ClientID, state)
 
 	// If the request accepts JSON (CLI), return the URL; otherwise redirect.
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
@@ -192,40 +216,52 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 
 	code := r.URL.Query().Get("code")
 	setupAction := r.URL.Query().Get("setup_action")
-	state := r.URL.Query().Get("state")
+	stateParam := r.URL.Query().Get("state")
 
 	if code == "" {
 		http.Error(w, "Missing code parameter", http.StatusBadRequest)
 		return
 	}
 
+	// Resolve which app this callback belongs to.
+	var appSlug string
+
 	// When GitHub redirects after app installation/authorization it sends
 	// code + setup_action but no state parameter. Skip state validation in
 	// that case — the code exchange itself authenticates the request.
+	// Use the default app for setup_action callbacks.
 	if setupAction == "" {
-		if state == "" {
+		if stateParam == "" {
 			http.Error(w, "Missing state parameter", http.StatusBadRequest)
 			return
 		}
 
-		// Validate state.
+		// Validate and consume state.
 		h.stateMu.Lock()
-		expiry, ok := h.states[state]
+		st, ok := h.states[stateParam]
 		if ok {
-			delete(h.states, state)
+			delete(h.states, stateParam)
 		}
 		h.stateMu.Unlock()
 
-		if !ok || time.Now().After(expiry) {
+		if !ok || time.Now().After(st.ExpiresAt) {
 			http.Error(w, "Invalid or expired state", http.StatusBadRequest)
 			return
 		}
+		appSlug = st.AppSlug
 	}
 
-	// Exchange code for access token.
-	accessToken, refreshToken, expiresIn, err := h.exchangeCode(code)
+	app, ok := h.apps.Get(appSlug)
+	if !ok {
+		h.logger.Error("callback for unknown app", "app_slug", appSlug)
+		http.Error(w, "Unknown app", http.StatusBadRequest)
+		return
+	}
+
+	// Exchange code for access token using the correct app credentials.
+	accessToken, refreshToken, expiresIn, err := h.exchangeCode(code, app.ClientID, app.ClientSecret)
 	if err != nil {
-		h.logger.Error("OAuth code exchange failed", "error", err)
+		h.logger.Error("OAuth code exchange failed", "error", err, "app", app.Slug)
 		http.Error(w, "Authentication failed", http.StatusInternalServerError)
 		return
 	}
@@ -271,9 +307,10 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store GitHub token.
+	// Store GitHub token, tagged with the app slug for multi-app support.
 	gt := &database.GitHubToken{
 		UserID:                user.ID,
+		AppSlug:               app.Slug,
 		AccessToken:           encAccess,
 		RefreshToken:          encRefresh,
 		AccessTokenExpiresAt:  time.Now().Add(time.Duration(expiresIn) * time.Second),
@@ -286,7 +323,7 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logger.Info("auth_login", "user", ghUser.Login, "github_id", ghUser.ID)
+	h.logger.Info("auth_login", "user", ghUser.Login, "github_id", ghUser.ID, "app", app.Slug)
 
 	// Create session.
 	sessionToken := h.createSession(user.ID, user.GitHubUsername, user.Role)
@@ -433,9 +470,9 @@ type githubUser struct {
 	Email string `json:"email"`
 }
 
-func (h *Handler) exchangeCode(code string) (accessToken, refreshToken string, expiresIn int, err error) {
+func (h *Handler) exchangeCode(code, clientID, clientSecret string) (accessToken, refreshToken string, expiresIn int, err error) {
 	body := fmt.Sprintf("client_id=%s&client_secret=%s&code=%s",
-		h.cfg.GitHub.ClientID, h.cfg.GitHub.ClientSecret, code)
+		clientID, clientSecret, code)
 
 	req, err := http.NewRequest("POST", "https://github.com/login/oauth/access_token",
 		strings.NewReader(body))

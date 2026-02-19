@@ -10,9 +10,11 @@
         .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 2rem; max-width: 400px; width: 100%; text-align: center; }
         h1 { font-size: 1.5rem; margin-bottom: 0.5rem; color: #f0f6fc; }
         p { color: #8b949e; margin-bottom: 1.5rem; font-size: 0.9rem; }
-        .btn { display: inline-block; background: #238636; color: #fff; padding: 0.75rem 1.5rem; border-radius: 6px; text-decoration: none; font-weight: 600; border: none; cursor: pointer; font-size: 1rem; }
+        .btn { display: inline-block; background: #238636; color: #fff; padding: 0.75rem 1.5rem; border-radius: 6px; text-decoration: none; font-weight: 600; border: none; cursor: pointer; font-size: 1rem; width: 100%; margin-bottom: 0.5rem; }
         .btn:hover { background: #2ea043; }
+        .btn:last-child { margin-bottom: 0; }
         .logo { font-size: 2rem; margin-bottom: 1rem; }
+        .app-label { display: block; color: #8b949e; font-size: 0.8rem; margin-bottom: 1rem; }
     </style>
 </head>
 <body>
@@ -20,7 +22,14 @@
         <div class="logo">&#128274;</div>
         <h1>ghp</h1>
         <p>GitHub Proxy for Autonomous Coding Agents</p>
+        {{ if .MultiApp }}
+        <span class="app-label">Choose a GitHub App to authorise with:</span>
+        {{ range .Apps }}
+        <a href="/auth/github?app={{ .Slug }}" class="btn">{{ .DisplayName }}</a>
+        {{ end }}
+        {{ else }}
         <a href="/auth/github" class="btn">Sign in with GitHub</a>
+        {{ end }}
     </div>
 </body>
 </html>

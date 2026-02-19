@@ -45,6 +45,9 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/users/{id}/tokens", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListUserTokens)))
 
 	mux.Handle("GET /api/audit", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListAudit)))
+
+	// Apps endpoint (public, no auth required — only returns slugs and display names).
+	mux.HandleFunc("GET /api/apps", a.handleListApps)
 }
 
 type createTokenRequest struct {
@@ -52,6 +55,7 @@ type createTokenRequest struct {
 	Scopes     string `json:"scopes"`
 	Duration   string `json:"duration"`
 	SessionID  string `json:"session_id"`
+	App        string `json:"app,omitempty"` // app slug for multi-app (vault) mode
 }
 
 func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
@@ -79,10 +83,19 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		duration = d
 	}
 
-	// Get the user's GitHub token.
-	gt, err := a.store.GetGitHubToken(r.Context(), session.UserID)
+	// Get the user's GitHub token, optionally scoped to an app.
+	var gt *database.GitHubToken
+	if req.App != "" {
+		gt, err = a.store.GetGitHubTokenForApp(r.Context(), session.UserID, req.App)
+	} else {
+		gt, err = a.store.GetGitHubToken(r.Context(), session.UserID)
+	}
 	if err != nil || gt == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "No GitHub token found. Please re-authenticate."})
+		msg := "No GitHub token found. Please re-authenticate."
+		if req.App != "" {
+			msg = "No GitHub token found for app '" + req.App + "'. Please authorise with this app first."
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": msg})
 		return
 	}
 
@@ -110,6 +123,7 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		"user", session.Username,
 		"repo", req.Repository,
 		"session", req.SessionID,
+		"app", req.App,
 	)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
@@ -256,6 +270,27 @@ func (a *API) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		entries = []*database.AuditEntry{}
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+func (a *API) handleListApps(w http.ResponseWriter, r *http.Request) {
+	apps := a.authHandler.Apps()
+	type appResponse struct {
+		Slug        string `json:"slug"`
+		DisplayName string `json:"display_name"`
+	}
+
+	var result []appResponse
+	for _, app := range apps.List() {
+		result = append(result, appResponse{
+			Slug:        app.Slug,
+			DisplayName: app.DisplayName,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"multi_app": apps.IsMultiApp(),
+		"apps":      result,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

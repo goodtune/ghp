@@ -203,16 +203,16 @@ func (s *SQLiteStore) UpsertGitHubToken(ctx context.Context, token *GitHubToken)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO github_tokens (id, user_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(user_id) DO UPDATE SET
+		INSERT INTO github_tokens (id, user_id, app_slug, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, app_slug) DO UPDATE SET
 			access_token = excluded.access_token,
 			refresh_token = excluded.refresh_token,
 			access_token_expires_at = excluded.access_token_expires_at,
 			refresh_token_expires_at = excluded.refresh_token_expires_at,
 			scopes = excluded.scopes,
 			updated_at = excluded.updated_at
-	`, token.ID, token.UserID, token.AccessToken, token.RefreshToken,
+	`, token.ID, token.UserID, token.AppSlug, token.AccessToken, token.RefreshToken,
 		token.AccessTokenExpiresAt.Format(time.RFC3339Nano),
 		token.RefreshTokenExpiresAt.Format(time.RFC3339Nano),
 		token.Scopes, now, now)
@@ -223,9 +223,9 @@ func (s *SQLiteStore) GetGitHubToken(ctx context.Context, userID string) (*GitHu
 	t := &GitHubToken{}
 	var atExp, rtExp, createdStr, updatedStr string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
+		`SELECT id, user_id, app_slug, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
 		 FROM github_tokens WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1`, userID,
-	).Scan(&t.ID, &t.UserID, &t.AccessToken, &t.RefreshToken, &atExp, &rtExp, &t.Scopes, &createdStr, &updatedStr)
+	).Scan(&t.ID, &t.UserID, &t.AppSlug, &t.AccessToken, &t.RefreshToken, &atExp, &rtExp, &t.Scopes, &createdStr, &updatedStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -243,9 +243,29 @@ func (s *SQLiteStore) GetGitHubTokenByID(ctx context.Context, id string) (*GitHu
 	t := &GitHubToken{}
 	var atExp, rtExp, createdStr, updatedStr string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
+		`SELECT id, user_id, app_slug, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
 		 FROM github_tokens WHERE id = ?`, id,
-	).Scan(&t.ID, &t.UserID, &t.AccessToken, &t.RefreshToken, &atExp, &rtExp, &t.Scopes, &createdStr, &updatedStr)
+	).Scan(&t.ID, &t.UserID, &t.AppSlug, &t.AccessToken, &t.RefreshToken, &atExp, &rtExp, &t.Scopes, &createdStr, &updatedStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t.AccessTokenExpiresAt = parseTime(atExp)
+	t.RefreshTokenExpiresAt = parseTime(rtExp)
+	t.CreatedAt = parseTime(createdStr)
+	t.UpdatedAt = parseTime(updatedStr)
+	return t, nil
+}
+
+func (s *SQLiteStore) GetGitHubTokenForApp(ctx context.Context, userID, appSlug string) (*GitHubToken, error) {
+	t := &GitHubToken{}
+	var atExp, rtExp, createdStr, updatedStr string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, user_id, app_slug, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
+		 FROM github_tokens WHERE user_id = ? AND app_slug = ?`, userID, appSlug,
+	).Scan(&t.ID, &t.UserID, &t.AppSlug, &t.AccessToken, &t.RefreshToken, &atExp, &rtExp, &t.Scopes, &createdStr, &updatedStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

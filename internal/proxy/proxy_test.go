@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
@@ -27,6 +28,15 @@ func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return rec.Result(), nil
 }
 
+func testAppRegistry(enterprise string) *auth.AppRegistry {
+	return auth.NewSingleAppRegistry(&auth.AppInfo{
+		ClientID:       "test-client-id",
+		ClientSecret:   "test-client-secret",
+		EnterpriseSlug: enterprise,
+		DisplayName:    "Test",
+	})
+}
+
 func TestForwardRequest_EnterpriseHeader(t *testing.T) {
 	ct := &captureTransport{}
 	h := &Handler{
@@ -35,6 +45,7 @@ func TestForwardRequest_EnterpriseHeader(t *testing.T) {
 				EnterpriseSlug: "my-enterprise",
 			},
 		},
+		apps:   testAppRegistry("my-enterprise"),
 		logger: slog.Default(),
 		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
 	}
@@ -66,6 +77,7 @@ func TestServeHTTP_NonGhpTokenPassthrough(t *testing.T) {
 				EnterpriseSlug: "acme",
 			},
 		},
+		apps:   testAppRegistry("acme"),
 		logger: slog.Default(),
 		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
 	}
@@ -103,6 +115,7 @@ func TestServeHTTP_NoAuthHeader(t *testing.T) {
 	ct := &captureTransport{}
 	h := &Handler{
 		cfg:    &config.Config{},
+		apps:   testAppRegistry(""),
 		logger: slog.Default(),
 		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
 	}
@@ -126,6 +139,7 @@ func TestForwardRequest_NoEnterpriseHeader(t *testing.T) {
 		cfg: &config.Config{
 			GitHub: config.GitHubConfig{},
 		},
+		apps:   testAppRegistry(""),
 		logger: slog.Default(),
 		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
 	}
@@ -193,6 +207,7 @@ func newScopedHandler(t *testing.T, repo string, scopes map[string]string) (*Han
 	ct := &captureTransport{}
 	h := &Handler{
 		cfg:          &config.Config{},
+		apps:         testAppRegistry(""),
 		tokenService: tokenSvc,
 		store:        store,
 		encryptor:    enc,
@@ -307,6 +322,7 @@ func TestServeHTTP_NonGhpToken_GraphQLPathNormalization(t *testing.T) {
 	ct := &captureTransport{}
 	h := &Handler{
 		cfg:    &config.Config{},
+		apps:   testAppRegistry(""),
 		logger: slog.Default(),
 		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
 	}

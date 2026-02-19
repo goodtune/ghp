@@ -42,6 +42,7 @@
             <h1>ghp</h1>
             <div class="user-info">
                 <span>{{ .Username }} ({{ .Role }})</span>
+                {{ if .MultiApp }}<a href="/login" class="btn btn-secondary">Authorise App</a>{{ end }}
                 {{ if eq .Role "admin" }}<a href="/admin" class="btn btn-secondary">Admin</a>{{ end }}
                 <button class="btn btn-secondary" onclick="logout()">Sign out</button>
             </div>

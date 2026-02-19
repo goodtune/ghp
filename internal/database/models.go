@@ -22,6 +22,7 @@ type User struct {
 type GitHubToken struct {
 	ID                    string    `json:"id"`
 	UserID                string    `json:"user_id"`
+	AppSlug               string    `json:"app_slug,omitempty"` // Vault multi-app: which GitHub App issued this token
 	AccessToken           string    `json:"access_token"`
 	RefreshToken          string    `json:"refresh_token"`
 	AccessTokenExpiresAt  time.Time `json:"access_token_expires_at"`
@@ -101,6 +102,7 @@ type Store interface {
 	UpsertGitHubToken(ctx context.Context, token *GitHubToken) error
 	GetGitHubToken(ctx context.Context, userID string) (*GitHubToken, error)
 	GetGitHubTokenByID(ctx context.Context, id string) (*GitHubToken, error)
+	GetGitHubTokenForApp(ctx context.Context, userID, appSlug string) (*GitHubToken, error)
 
 	// Proxy tokens
 	CreateProxyToken(ctx context.Context, token *ProxyToken) error

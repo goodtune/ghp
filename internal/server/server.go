@@ -17,9 +17,10 @@ import (
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/proxy"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/goodtune/ghp/internal/token"
+	"github.com/goodtune/ghp/internal/vault"
 	"github.com/goodtune/ghp/internal/web"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Server is the main ghp server.
@@ -35,6 +36,11 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 
 // Run starts the server and blocks until shutdown.
 func (s *Server) Run(ctx context.Context) error {
+	// Validate config.
+	if err := s.cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
+
 	// Open database.
 	store, err := database.Open(s.cfg.Database.Driver, s.cfg.Database.DSN)
 	if err != nil {
@@ -52,23 +58,35 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("database has %d pending migration(s): run 'ghp migrate' first", len(pending))
 	}
 
-	// Set up encryption.
-	encKey := s.cfg.EncryptionKey
-	if encKey == "" {
-		encKey = os.Getenv("GHP_ENCRYPTION_KEY")
+	// Set up encryption and app registry — source depends on whether Vault is enabled.
+	var enc *crypto.Encryptor
+	var apps *auth.AppRegistry
+
+	if s.cfg.VaultEnabled() {
+		enc, apps, err = s.initFromVault(ctx)
+		if err != nil {
+			return err
+		}
+	} else {
+		enc, apps, err = s.initFromConfig()
+		if err != nil {
+			return err
+		}
 	}
-	if encKey == "" {
-		return fmt.Errorf("encryption key not configured (set encryption_key in config or GHP_ENCRYPTION_KEY env var)")
-	}
-	enc, err := crypto.NewEncryptor(encKey)
-	if err != nil {
-		return fmt.Errorf("initializing encryption: %w", err)
+
+	// Resolve enterprise slug for passthrough handlers.
+	// In multi-app mode, use the first app's enterprise slug as the default.
+	enterpriseSlug := s.cfg.GitHub.EnterpriseSlug
+	if s.cfg.VaultEnabled() {
+		if def := apps.Default(); def != nil {
+			enterpriseSlug = def.EnterpriseSlug
+		}
 	}
 
 	// Create services.
 	tokenSvc := token.NewService(store, s.cfg.Tokens.MaxDuration)
-	authHandler := auth.NewHandler(s.cfg, store, enc, s.logger)
-	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, s.logger)
+	authHandler := auth.NewHandler(s.cfg, apps, store, enc, s.logger)
+	proxyHandler := proxy.NewHandler(s.cfg, apps, tokenSvc, store, enc, s.logger)
 	api := NewAPI(s.cfg, store, tokenSvc, authHandler, s.logger)
 	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
 
@@ -96,11 +114,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// Create passthrough handlers for github.com and *.githubcopilot.com.
 	resolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc)
 	githubInner := proxy.NewPassthroughHandler(
-		"https://github.com", resolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
+		"https://github.com", resolver, enterpriseSlug, s.logger, nil)
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
 		githubInner, tokenSvc, resolver, s.logger)
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
-		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
+		"https://copilot-proxy.githubusercontent.com", enterpriseSlug, s.logger, nil)
 
 	// Build host dispatch with access logging on GitHub-facing handlers.
 	dispatch := newHostDispatch(hostDispatchConfig{
@@ -121,6 +139,86 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Legacy mode: plain HTTP on single port (no TLS).
 	return s.servePlain(ctx, dispatch)
+}
+
+// initFromVault loads encryption key and app credentials from HashiCorp Vault.
+func (s *Server) initFromVault(ctx context.Context) (*crypto.Encryptor, *auth.AppRegistry, error) {
+	s.logger.Info("vault_init", "msg", "loading secrets from vault", "addr", s.cfg.Vault.Addr)
+
+	vc, err := vault.NewClient(vault.Config{
+		Addr:     s.cfg.Vault.Addr,
+		RoleID:   s.cfg.Vault.RoleID,
+		SecretID: s.cfg.Vault.SecretID,
+		Mount:    s.cfg.Vault.Mount,
+		Prefix:   s.cfg.Vault.Prefix,
+	}, s.logger)
+	if err != nil {
+		return nil, nil, fmt.Errorf("connecting to vault: %w", err)
+	}
+
+	// Load encryption key.
+	encKey, err := vc.GetEncryptionKey(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("vault encryption key: %w", err)
+	}
+	enc, err := crypto.NewEncryptor(encKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("initializing encryption from vault key: %w", err)
+	}
+	s.logger.Info("vault_encryption_key_loaded")
+
+	// Load all GitHub App credentials.
+	vaultApps, err := vc.LoadAllApps(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("vault apps: %w", err)
+	}
+
+	appInfos := make([]*auth.AppInfo, 0, len(vaultApps))
+	for _, va := range vaultApps {
+		appInfos = append(appInfos, &auth.AppInfo{
+			Slug:           va.Slug,
+			AppID:          va.AppID,
+			ClientID:       va.ClientID,
+			ClientSecret:   va.ClientSecret,
+			PrivateKey:     va.PrivateKey,
+			EnterpriseSlug: va.EnterpriseSlug,
+			DisplayName:    va.DisplayName,
+		})
+	}
+
+	apps, err := auth.NewMultiAppRegistry(appInfos)
+	if err != nil {
+		return nil, nil, fmt.Errorf("building app registry: %w", err)
+	}
+
+	s.logger.Info("vault_apps_loaded", "count", len(appInfos))
+	return enc, apps, nil
+}
+
+// initFromConfig loads encryption key and app credentials from local config/env.
+func (s *Server) initFromConfig() (*crypto.Encryptor, *auth.AppRegistry, error) {
+	encKey := s.cfg.EncryptionKey
+	if encKey == "" {
+		encKey = os.Getenv("GHP_ENCRYPTION_KEY")
+	}
+	if encKey == "" {
+		return nil, nil, fmt.Errorf("encryption key not configured (set encryption_key in config or GHP_ENCRYPTION_KEY env var)")
+	}
+	enc, err := crypto.NewEncryptor(encKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("initializing encryption: %w", err)
+	}
+
+	apps := auth.NewSingleAppRegistry(&auth.AppInfo{
+		AppID:          s.cfg.GitHub.AppID,
+		ClientID:       s.cfg.GitHub.ClientID,
+		ClientSecret:   s.cfg.GitHub.ClientSecret,
+		PrivateKey:     "", // loaded from file separately if needed
+		EnterpriseSlug: s.cfg.GitHub.EnterpriseSlug,
+		DisplayName:    "GitHub",
+	})
+
+	return enc, apps, nil
 }
 
 // serveTLS starts an HTTPS server with TLS termination and an optional
