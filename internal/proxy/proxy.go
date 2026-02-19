@@ -26,22 +26,24 @@ const (
 
 // Handler is the reverse proxy HTTP handler.
 type Handler struct {
-	cfg          *config.Config
-	tokenService *token.Service
-	store        database.Store
-	encryptor    *crypto.Encryptor
-	logger       *slog.Logger
-	client       *http.Client
+	cfg              *config.Config
+	tokenService     *token.Service
+	store            database.Store
+	encryptor        *crypto.Encryptor
+	appTokenProvider AppTokenProvider // may be nil
+	logger           *slog.Logger
+	client           *http.Client
 }
 
 // NewHandler creates a new reverse proxy handler.
-func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
+func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc *crypto.Encryptor, atp AppTokenProvider, logger *slog.Logger) *Handler {
 	return &Handler{
-		cfg:          cfg,
-		tokenService: ts,
-		store:        store,
-		encryptor:    enc,
-		logger:       logger,
+		cfg:              cfg,
+		tokenService:     ts,
+		store:            store,
+		encryptor:        enc,
+		appTokenProvider: atp,
+		logger:           logger,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -164,6 +166,36 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 }
 
 func (h *Handler) getGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {
+	switch token.TokenType(pt.TokenType) {
+	case token.TokenTypeAgent:
+		return h.getAgentGitHubToken(r.Context(), pt)
+	default:
+		return h.getProxyGitHubToken(r, pt)
+	}
+}
+
+func (h *Handler) getAgentGitHubToken(ctx context.Context, pt *database.ProxyToken) (string, error) {
+	if h.appTokenProvider == nil {
+		return "", fmt.Errorf("agent tokens require GitHub App configuration")
+	}
+	if pt.InstallationID == nil {
+		return "", fmt.Errorf("agent token missing installation_id")
+	}
+
+	var repos []string
+	if err := json.Unmarshal(pt.Repositories, &repos); err != nil {
+		return "", fmt.Errorf("parsing repositories: %w", err)
+	}
+
+	scopes, err := database.ParseScopes(pt.Scopes)
+	if err != nil {
+		return "", fmt.Errorf("parsing scopes: %w", err)
+	}
+
+	return h.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, repos, scopes)
+}
+
+func (h *Handler) getProxyGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {
 	if pt.GitHubTokenID == nil {
 		return "", fmt.Errorf("token has no linked GitHub credential")
 	}

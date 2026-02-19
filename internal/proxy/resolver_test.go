@@ -58,7 +58,7 @@ func TestProxyTokenResolver(t *testing.T) {
 	}
 
 	// Resolve the token.
-	resolver := NewProxyTokenResolver(tokenSvc, store, enc)
+	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
 	plaintext, err := resolver.ResolveToGitHubToken(ctx, result.Token)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestProxyTokenResolver_InvalidToken(t *testing.T) {
 	}
 
 	tokenSvc := token.NewService(store, 7*24*time.Hour)
-	resolver := NewProxyTokenResolver(tokenSvc, store, enc)
+	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
 
 	_, err = resolver.ResolveToGitHubToken(ctx, "ghx_nonexistenttoken1234567890abcdefghijklmno")
 	if err == nil {
