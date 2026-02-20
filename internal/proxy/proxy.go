@@ -3,19 +3,24 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/goodtune/ghp/internal/auth"
+	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
+	ghub "github.com/goodtune/ghp/internal/github"
+	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
 )
 
@@ -134,7 +139,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	githubToken, err := h.getGitHubToken(r, pt)
 	if err != nil {
 		h.logger.Error("failed to get GitHub token", "error", err)
-		writeError(w, http.StatusInternalServerError, "Failed to retrieve GitHub credentials")
+		status, msg := installationTokenErrorResponse(err)
+		writeError(w, status, msg)
 		return
 	}
 
@@ -155,7 +161,8 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	githubToken, err := h.getGitHubToken(r, pt)
 	if err != nil {
 		h.logger.Error("failed to get GitHub token for GraphQL", "error", err)
-		writeError(w, http.StatusInternalServerError, "Failed to retrieve GitHub credentials")
+		status, msg := installationTokenErrorResponse(err)
+		writeError(w, status, msg)
 		return
 	}
 
@@ -467,6 +474,13 @@ func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, metho
 		"duration_ms", dur.Milliseconds(),
 	)
 
+	// Record Prometheus proxy-level metrics.
+	apiType := "rest"
+	if path == "/graphql" {
+		apiType = "graphql"
+	}
+	metrics.ObserveProxyRequest(backend.API, pt, method, status, dur, apiType)
+
 	entry := &database.AuditEntry{
 		UserID:     userID,
 		Action:     action,
@@ -495,6 +509,28 @@ func (h *Handler) enterpriseSlug() string {
 		return def.EnterpriseSlug
 	}
 	return ""
+}
+
+// installationTokenErrorResponse inspects err for an *InstallationTokenError
+// and returns the upstream status code with a descriptive message listing
+// missing permissions. For all other errors it returns 500 with a generic message.
+func installationTokenErrorResponse(err error) (int, string) {
+	var ite *ghub.InstallationTokenError
+	if !errors.As(err, &ite) {
+		return http.StatusInternalServerError, "Failed to retrieve GitHub credentials"
+	}
+
+	missing := ite.MissingPermissions()
+	if ite.GrantedPermissions == nil || len(missing) == 0 {
+		return ite.StatusCode, ite.Message
+	}
+
+	parts := make([]string, 0, len(missing))
+	for perm, level := range missing {
+		parts = append(parts, perm+":"+level)
+	}
+	sort.Strings(parts)
+	return ite.StatusCode, fmt.Sprintf("Installation is missing permissions: %s", strings.Join(parts, ", "))
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {

@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -72,6 +73,99 @@ func TestAppTokenProvider_CachesToken(t *testing.T) {
 
 	if callCount != 1 {
 		t.Errorf("expected 1 API call (cached), got %d", callCount)
+	}
+}
+
+func TestAppTokenProvider_422ReturnsInstallationTokenError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app/installations/789/access_tokens":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"message": "Resource not accessible by integration",
+			})
+		case "/app/installations/789":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"permissions": map[string]string{
+					"contents": "read",
+					"metadata": "read",
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{
+		AppID:      1,
+		PrivateKey: testRSAKey,
+		BaseURL:    server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requested := map[string]string{
+		"contents": "write",
+		"issues":   "read",
+	}
+	_, err = provider.GetInstallationToken(context.Background(), 789, []string{"org/repo"}, requested)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var ite *InstallationTokenError
+	if !errors.As(err, &ite) {
+		t.Fatalf("expected *InstallationTokenError, got %T: %v", err, err)
+	}
+
+	if ite.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("expected status 422, got %d", ite.StatusCode)
+	}
+
+	if ite.Message != "Resource not accessible by integration" {
+		t.Errorf("unexpected message: %q", ite.Message)
+	}
+
+	missing := ite.MissingPermissions()
+	if _, ok := missing["contents"]; !ok {
+		t.Errorf("expected contents in missing permissions, got %v", missing)
+	}
+	if _, ok := missing["issues"]; !ok {
+		t.Errorf("expected issues in missing permissions, got %v", missing)
+	}
+	if _, ok := missing["metadata"]; ok {
+		t.Errorf("metadata should not be missing, got %v", missing)
+	}
+}
+
+func TestInstallationTokenError_MissingPermissions(t *testing.T) {
+	ite := &InstallationTokenError{
+		StatusCode: 422,
+		Message:    "test",
+		RequestedPermissions: map[string]string{
+			"contents": "write",
+			"issues":   "read",
+			"metadata": "read",
+		},
+		GrantedPermissions: map[string]string{
+			"contents": "read",
+			"metadata": "read",
+		},
+	}
+
+	missing := ite.MissingPermissions()
+	if len(missing) != 2 {
+		t.Fatalf("expected 2 missing permissions, got %d: %v", len(missing), missing)
+	}
+	if missing["contents"] != "write" {
+		t.Errorf("expected contents:write missing, got %v", missing)
+	}
+	if missing["issues"] != "read" {
+		t.Errorf("expected issues:read missing, got %v", missing)
 	}
 }
 

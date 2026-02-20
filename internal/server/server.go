@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/goodtune/ghp/internal/auth"
+	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
@@ -154,12 +155,12 @@ func (s *Server) Run(ctx context.Context) error {
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", enterpriseSlug, s.logger, nil)
 
-	// Build host dispatch with access logging on GitHub-facing handlers.
+	// Build host dispatch with access logging on all handlers.
 	dispatch := newHostDispatch(hostDispatchConfig{
-		apiHandler:     accessLogHandler(proxyHandler, s.logger),
-		githubHandler:  accessLogHandler(githubPassthrough, s.logger),
-		copilotHandler: accessLogHandler(copilotPassthrough, s.logger),
-		mgmtHandler:    mux,
+		apiHandler:     accessLogHandler(backend.API, proxyHandler, s.logger),
+		githubHandler:  accessLogHandler(backend.GitHub, githubPassthrough, s.logger),
+		copilotHandler: accessLogHandler(backend.Copilot, copilotPassthrough, s.logger),
+		mgmtHandler:    accessLogHandler(backend.Mgmt, mux, s.logger),
 		managementHost: s.cfg.Server.ManagementHost,
 	})
 
@@ -393,9 +394,9 @@ func newHostDispatch(cfg hostDispatchConfig) http.Handler {
 		}
 
 		switch {
-		case host == "api.github.com":
+		case host == backend.API:
 			cfg.apiHandler.ServeHTTP(w, r)
-		case host == "github.com":
+		case host == backend.GitHub:
 			cfg.githubHandler.ServeHTTP(w, r)
 		case host == "githubcopilot.com" || strings.HasSuffix(host, ".githubcopilot.com"):
 			cfg.copilotHandler.ServeHTTP(w, r)
