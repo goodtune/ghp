@@ -128,12 +128,12 @@ func (s *Server) Run(ctx context.Context) error {
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 
-	// Build host dispatch with access logging on GitHub-facing handlers.
+	// Build host dispatch with access logging on all handlers.
 	dispatch := newHostDispatch(hostDispatchConfig{
-		apiHandler:     accessLogHandler(proxyHandler, s.logger),
-		githubHandler:  accessLogHandler(githubPassthrough, s.logger),
-		copilotHandler: accessLogHandler(copilotPassthrough, s.logger),
-		mgmtHandler:    mux,
+		apiHandler:     accessLogHandler("api.github.com", proxyHandler, s.logger),
+		githubHandler:  accessLogHandler("github.com", githubPassthrough, s.logger),
+		copilotHandler: accessLogHandler("copilot", copilotPassthrough, s.logger),
+		mgmtHandler:    accessLogHandler("management", mux, s.logger),
 		managementHost: s.cfg.Server.ManagementHost,
 	})
 

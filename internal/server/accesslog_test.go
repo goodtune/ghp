@@ -18,7 +18,7 @@ func TestAccessLog(t *testing.T) {
 		w.Write([]byte("hello"))
 	})
 
-	handler := accessLogHandler(inner, logger)
+	handler := accessLogHandler("github.com", inner, logger)
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
 	req.Header.Set("User-Agent", "git/2.40")
