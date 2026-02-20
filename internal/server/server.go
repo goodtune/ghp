@@ -17,6 +17,7 @@ import (
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/docs"
 	"github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/proxy"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -110,6 +111,12 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Web UI routes.
 	webUI.RegisterRoutes(mux)
+
+	// Documentation site (embedded mkdocs output).
+	mux.Handle("/docs/", http.StripPrefix("/docs/", docs.Handler()))
+	mux.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/docs/", http.StatusMovedPermanently)
+	})
 
 	// Metrics route (on management mux, not on GitHub-facing virtualhosts).
 	if s.cfg.Metrics.Enabled {
