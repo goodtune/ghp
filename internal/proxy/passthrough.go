@@ -110,7 +110,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		// Wrap response writer to capture status code for metrics.
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		defer func() {
-			metrics.ObserveProxyRequest("github.com", pt, r.Method, rec.status, time.Since(start))
+			metrics.ObserveProxyRequest(metrics.BackendGitHub, pt, r.Method, rec.status, time.Since(start))
 		}()
 
 		// Enforce repository scope.

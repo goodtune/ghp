@@ -460,7 +460,7 @@ func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, metho
 	)
 
 	// Record Prometheus proxy-level metrics.
-	metrics.ObserveProxyRequest("api.github.com", pt, method, status, dur)
+	metrics.ObserveProxyRequest(metrics.BackendAPI, pt, method, status, dur)
 
 	entry := &database.AuditEntry{
 		UserID:     userID,

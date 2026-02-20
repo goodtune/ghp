@@ -10,6 +10,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// Backend label constants for Prometheus metrics.
+const (
+	BackendAPI     = "api.github.com"
+	BackendGitHub  = "github.com"
+	BackendCopilot = "copilot"
+	BackendMgmt    = "management"
+)
+
 var (
 	// HTTP-level metrics for all requests, labeled by backend.
 	HttpRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
@@ -67,7 +75,11 @@ var (
 )
 
 // ObserveProxyRequest records proxy-level request metrics for a completed request.
+// pt must not be nil.
 func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string, status int, dur time.Duration) {
+	if pt == nil {
+		return
+	}
 	userID := ""
 	if pt.UserID != nil {
 		userID = *pt.UserID

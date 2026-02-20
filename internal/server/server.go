@@ -17,6 +17,7 @@ import (
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/github"
+	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/proxy"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/goodtune/ghp/internal/token"
@@ -130,10 +131,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Build host dispatch with access logging on all handlers.
 	dispatch := newHostDispatch(hostDispatchConfig{
-		apiHandler:     accessLogHandler("api.github.com", proxyHandler, s.logger),
-		githubHandler:  accessLogHandler("github.com", githubPassthrough, s.logger),
-		copilotHandler: accessLogHandler("copilot", copilotPassthrough, s.logger),
-		mgmtHandler:    accessLogHandler("management", mux, s.logger),
+		apiHandler:     accessLogHandler(metrics.BackendAPI, proxyHandler, s.logger),
+		githubHandler:  accessLogHandler(metrics.BackendGitHub, githubPassthrough, s.logger),
+		copilotHandler: accessLogHandler(metrics.BackendCopilot, copilotPassthrough, s.logger),
+		mgmtHandler:    accessLogHandler(metrics.BackendMgmt, mux, s.logger),
 		managementHost: s.cfg.Server.ManagementHost,
 	})
 
