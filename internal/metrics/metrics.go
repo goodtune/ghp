@@ -28,12 +28,12 @@ var (
 		Name:    "ghp_proxy_request_duration_seconds",
 		Help:    "Duration of proxied requests to GitHub.",
 		Buckets: prometheus.DefBuckets,
-	}, []string{"backend", "method", "status", "token_type", "user", "app"})
+	}, []string{"backend", "method", "status", "token_type", "type", "user", "app"})
 
 	ProxyRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ghp_proxy_request_total",
 		Help: "Total number of proxied requests.",
-	}, []string{"backend", "method", "status", "token_type", "user", "app"})
+	}, []string{"backend", "method", "status", "token_type", "type", "user", "app"})
 
 	TokenActive = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ghp_token_active",
@@ -67,8 +67,9 @@ var (
 )
 
 // ObserveProxyRequest records proxy-level request metrics for a completed request.
-// pt must not be nil.
-func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string, status int, dur time.Duration) {
+// pt must not be nil. apiType distinguishes "graphql" vs "rest" for API backends;
+// pass "" for non-API backends.
+func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string, status int, dur time.Duration, apiType string) {
 	if pt == nil {
 		return
 	}
@@ -82,6 +83,6 @@ func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string,
 	}
 	statusStr := strconv.Itoa(status)
 
-	ProxyRequestDuration.WithLabelValues(backend, method, statusStr, pt.TokenType, userID, app).Observe(dur.Seconds())
-	ProxyRequestTotal.WithLabelValues(backend, method, statusStr, pt.TokenType, userID, app).Inc()
+	ProxyRequestDuration.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, userID, app).Observe(dur.Seconds())
+	ProxyRequestTotal.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, userID, app).Inc()
 }

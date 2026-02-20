@@ -461,7 +461,11 @@ func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, metho
 	)
 
 	// Record Prometheus proxy-level metrics.
-	metrics.ObserveProxyRequest(backend.API, pt, method, status, dur)
+	apiType := "rest"
+	if path == "/graphql" {
+		apiType = "graphql"
+	}
+	metrics.ObserveProxyRequest(backend.API, pt, method, status, dur, apiType)
 
 	entry := &database.AuditEntry{
 		UserID:     userID,
