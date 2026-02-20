@@ -8,7 +8,7 @@ func Open(driver, dsn string) (Store, error) {
 	case "sqlite":
 		return NewSQLiteStore(dsn)
 	case "postgres":
-		return nil, fmt.Errorf("postgres driver not yet implemented — use sqlite for development")
+		return NewPostgresStore(dsn)
 	default:
 		return nil, fmt.Errorf("unsupported database driver: %s", driver)
 	}

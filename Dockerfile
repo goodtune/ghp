@@ -16,4 +16,4 @@ FROM gcr.io/distroless/static-debian12
 COPY --from=build /ghp /ghp
 EXPOSE 8080
 ENTRYPOINT ["/ghp"]
-CMD ["serve"]
+CMD ["serve", "--migrate"]

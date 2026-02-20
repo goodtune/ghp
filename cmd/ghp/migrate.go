@@ -10,6 +10,33 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// runMigrations opens the database and applies all pending migrations.
+func runMigrations(cfg *config.Config) error {
+	store, err := database.Open(cfg.Database.Driver, cfg.Database.DSN)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer store.Close()
+
+	migrator := database.NewMigrator(store, cfg.Database.Driver)
+
+	ctx := context.Background()
+
+	executor, ok := store.(database.MigrationExecutor)
+	if !ok {
+		return fmt.Errorf("store does not support migrations")
+	}
+	if err := executor.EnsureMigrationsTable(ctx); err != nil {
+		return fmt.Errorf("ensuring migrations table: %w", err)
+	}
+
+	if err := migrator.Migrate(ctx); err != nil {
+		return fmt.Errorf("running migrations: %w", err)
+	}
+
+	return nil
+}
+
 func newMigrateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "migrate",
@@ -25,27 +52,8 @@ func newMigrateCmd() *cobra.Command {
 				return err
 			}
 
-			store, err := database.Open(cfg.Database.Driver, cfg.Database.DSN)
-			if err != nil {
-				return fmt.Errorf("opening database: %w", err)
-			}
-			defer store.Close()
-
-			migrator := database.NewMigrator(store, cfg.Database.Driver)
-
-			ctx := context.Background()
-
-			// Ensure migration tracking table exists.
-			executor, ok := store.(database.MigrationExecutor)
-			if !ok {
-				return fmt.Errorf("store does not support migrations")
-			}
-			if err := executor.EnsureMigrationsTable(ctx); err != nil {
-				return fmt.Errorf("ensuring migrations table: %w", err)
-			}
-
-			if err := migrator.Migrate(ctx); err != nil {
-				return fmt.Errorf("running migrations: %w", err)
+			if err := runMigrations(cfg); err != nil {
+				return err
 			}
 
 			fmt.Println("Migrations complete.")
