@@ -25,6 +25,7 @@ the `GHP_` prefix.
 | `GHP_TOKENS_DEFAULT_DURATION` | Default token lifetime | `24h` |
 | `GHP_TOKENS_MAX_DURATION` | Maximum token lifetime | `168h` |
 | `GHP_METRICS_ENABLED` | Enable Prometheus `/metrics` endpoint on management host | `false` |
+| `GHP_AUTH_JWT_SECRET` | HMAC secret for OAuth broker JWTs (enables broker endpoints) | |
 | `GHP_DEV_MODE` | Enable test endpoints (never use in production) | `false` |
 
 ## Full YAML Reference
@@ -66,6 +67,12 @@ logging:
 
 metrics:
   enabled: false               # serves /metrics on the management host
+
+auth:
+  jwt_secret: ""               # HMAC-SHA256 secret for OAuth broker JWTs
+  allowed_redirects:            # permitted redirect_uri values for broker flow
+    - "https://app.example.com/auth/callback"
+    - "*.internal.example.com"  # wildcard domain patterns supported
 
 admins:
   - "alice"

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -47,17 +48,26 @@ type Handler struct {
 	// OAuth state tokens (short-lived, in-memory).
 	stateMu sync.Mutex
 	states  map[string]time.Time
+
+	// Broker OAuth flow state (short-lived, in-memory).
+	brokerMu     sync.Mutex
+	brokerStates map[string]*brokerState
+
+	// Overridable base URLs for GitHub endpoints (used in tests).
+	githubBaseURL    string // defaults to "https://github.com"
+	githubAPIBaseURL string // defaults to "https://api.github.com"
 }
 
 // NewHandler creates a new auth handler.
 func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
 	return &Handler{
-		cfg:       cfg,
-		store:     store,
-		encryptor: enc,
-		logger:    logger,
-		sessions:  make(map[string]*Session),
-		states:    make(map[string]time.Time),
+		cfg:          cfg,
+		store:        store,
+		encryptor:    enc,
+		logger:       logger,
+		sessions:     make(map[string]*Session),
+		states:       make(map[string]time.Time),
+		brokerStates: make(map[string]*brokerState),
 	}
 }
 
@@ -67,6 +77,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/github/callback", h.handleGitHubCallback)
 	mux.HandleFunc("POST /auth/logout", h.handleLogout)
 	mux.HandleFunc("GET /auth/status", h.handleStatus)
+
+	// OAuth broker endpoints: delegate authentication to this proxy.
+	if h.cfg.Auth.JWTSecret != "" {
+		mux.HandleFunc("GET /auth/authorize", h.handleBrokerAuthorize)
+		mux.HandleFunc("GET /auth/callback", h.handleBrokerCallback)
+		h.logger.Info("oauth broker endpoints enabled")
+	}
 
 	// Dev-mode only: test login endpoint that bypasses GitHub OAuth.
 	if h.cfg.DevMode {
@@ -168,8 +185,8 @@ func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	h.states[state] = time.Now().Add(10 * time.Minute)
 	h.stateMu.Unlock()
 
-	url := fmt.Sprintf("https://github.com/login/oauth/authorize?client_id=%s&state=%s",
-		h.cfg.GitHub.ClientID, state)
+	url := fmt.Sprintf("%s/login/oauth/authorize?client_id=%s&state=%s",
+		h.getGitHubBaseURL(), h.cfg.GitHub.ClientID, state)
 
 	// If the request accepts JSON (CLI), return the URL; otherwise redirect.
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
@@ -223,7 +240,7 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Exchange code for access token.
-	accessToken, refreshToken, expiresIn, err := h.exchangeCode(code)
+	accessToken, refreshToken, expiresIn, err := h.exchangeCode(code, "")
 	if err != nil {
 		h.logger.Error("OAuth code exchange failed", "error", err)
 		http.Error(w, "Authentication failed", http.StatusInternalServerError)
@@ -428,16 +445,20 @@ func (h *Handler) handleTestLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 type githubUser struct {
-	ID    int64  `json:"id"`
-	Login string `json:"login"`
-	Email string `json:"email"`
+	ID        int64  `json:"id"`
+	Login     string `json:"login"`
+	Email     string `json:"email"`
+	AvatarURL string `json:"avatar_url"`
 }
 
-func (h *Handler) exchangeCode(code string) (accessToken, refreshToken string, expiresIn int, err error) {
+func (h *Handler) exchangeCode(code string, redirectURI string) (accessToken, refreshToken string, expiresIn int, err error) {
 	body := fmt.Sprintf("client_id=%s&client_secret=%s&code=%s",
 		h.cfg.GitHub.ClientID, h.cfg.GitHub.ClientSecret, code)
+	if redirectURI != "" {
+		body += "&redirect_uri=" + url.QueryEscape(redirectURI)
+	}
 
-	req, err := http.NewRequest("POST", "https://github.com/login/oauth/access_token",
+	req, err := http.NewRequest("POST", h.getGitHubBaseURL()+"/login/oauth/access_token",
 		strings.NewReader(body))
 	if err != nil {
 		return "", "", 0, err
@@ -472,7 +493,7 @@ func (h *Handler) exchangeCode(code string) (accessToken, refreshToken string, e
 }
 
 func (h *Handler) getGitHubUser(accessToken string) (*githubUser, error) {
-	req, err := http.NewRequest("GET", "https://api.github.com/user", nil)
+	req, err := http.NewRequest("GET", h.getGitHubAPIBaseURL()+"/user", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -507,4 +528,18 @@ func generateState() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func (h *Handler) getGitHubBaseURL() string {
+	if h.githubBaseURL != "" {
+		return h.githubBaseURL
+	}
+	return "https://github.com"
+}
+
+func (h *Handler) getGitHubAPIBaseURL() string {
+	if h.githubAPIBaseURL != "" {
+		return h.githubAPIBaseURL
+	}
+	return "https://api.github.com"
 }
