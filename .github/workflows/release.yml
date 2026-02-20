@@ -35,8 +35,7 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Install mkdocs
-        run: pip install mkdocs-material
+      - uses: astral-sh/setup-uv@v6
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
