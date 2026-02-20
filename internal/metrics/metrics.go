@@ -10,14 +10,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// Backend label constants for Prometheus metrics.
-const (
-	BackendAPI     = "api.github.com"
-	BackendGitHub  = "github.com"
-	BackendCopilot = "copilot"
-	BackendMgmt    = "management"
-)
-
 var (
 	// HTTP-level metrics for all requests, labeled by backend.
 	HttpRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{

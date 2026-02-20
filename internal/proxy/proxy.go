@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
@@ -460,7 +461,7 @@ func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, metho
 	)
 
 	// Record Prometheus proxy-level metrics.
-	metrics.ObserveProxyRequest(metrics.BackendAPI, pt, method, status, dur)
+	metrics.ObserveProxyRequest(backend.API, pt, method, status, dur)
 
 	entry := &database.AuditEntry{
 		UserID:     userID,

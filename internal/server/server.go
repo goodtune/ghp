@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/goodtune/ghp/internal/auth"
+	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/github"
-	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/proxy"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/goodtune/ghp/internal/token"
@@ -131,10 +131,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Build host dispatch with access logging on all handlers.
 	dispatch := newHostDispatch(hostDispatchConfig{
-		apiHandler:     accessLogHandler(metrics.BackendAPI, proxyHandler, s.logger),
-		githubHandler:  accessLogHandler(metrics.BackendGitHub, githubPassthrough, s.logger),
-		copilotHandler: accessLogHandler(metrics.BackendCopilot, copilotPassthrough, s.logger),
-		mgmtHandler:    accessLogHandler(metrics.BackendMgmt, mux, s.logger),
+		apiHandler:     accessLogHandler(backend.API, proxyHandler, s.logger),
+		githubHandler:  accessLogHandler(backend.GitHub, githubPassthrough, s.logger),
+		copilotHandler: accessLogHandler(backend.Copilot, copilotPassthrough, s.logger),
+		mgmtHandler:    accessLogHandler(backend.Mgmt, mux, s.logger),
 		managementHost: s.cfg.Server.ManagementHost,
 	})
 
@@ -288,9 +288,9 @@ func newHostDispatch(cfg hostDispatchConfig) http.Handler {
 		}
 
 		switch {
-		case host == "api.github.com":
+		case host == backend.API:
 			cfg.apiHandler.ServeHTTP(w, r)
-		case host == "github.com":
+		case host == backend.GitHub:
 			cfg.githubHandler.ServeHTTP(w, r)
 		case host == "githubcopilot.com" || strings.HasSuffix(host, ".githubcopilot.com"):
 			cfg.copilotHandler.ServeHTTP(w, r)
