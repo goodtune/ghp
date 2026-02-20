@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/goodtune/ghp/internal/backend"
 )
 
 func TestAccessLog(t *testing.T) {
@@ -18,7 +20,7 @@ func TestAccessLog(t *testing.T) {
 		w.Write([]byte("hello"))
 	})
 
-	handler := accessLogHandler(inner, logger)
+	handler := accessLogHandler(backend.GitHub, inner, logger)
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
 	req.Header.Set("User-Agent", "git/2.40")

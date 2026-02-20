@@ -10,11 +10,58 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// InstallationTokenError represents a failed installation token request,
+// carrying the upstream HTTP status code, GitHub's error message, and
+// permission diagnostics.
+type InstallationTokenError struct {
+	StatusCode           int
+	Message              string
+	RequestedPermissions map[string]string
+	GrantedPermissions   map[string]string
+}
+
+func (e *InstallationTokenError) Error() string {
+	missing := e.MissingPermissions()
+	if len(missing) == 0 {
+		return fmt.Sprintf("installation token request failed (%d): %s", e.StatusCode, e.Message)
+	}
+
+	parts := make([]string, 0, len(missing))
+	for perm, level := range missing {
+		parts = append(parts, perm+":"+level)
+	}
+	sort.Strings(parts)
+	return fmt.Sprintf("installation token request failed (%d): %s (missing permissions: %s)",
+		e.StatusCode, e.Message, strings.Join(parts, ", "))
+}
+
+// MissingPermissions returns the permissions that were requested but not
+// granted (or granted at a lower level than requested).
+func (e *InstallationTokenError) MissingPermissions() map[string]string {
+	missing := make(map[string]string)
+	for perm, reqLevel := range e.RequestedPermissions {
+		grantedLevel, ok := e.GrantedPermissions[perm]
+		if !ok || !permissionSatisfies(grantedLevel, reqLevel) {
+			missing[perm] = reqLevel
+		}
+	}
+	return missing
+}
+
+// permissionSatisfies returns true if granted >= requested.
+// GitHub permission levels: "read" < "write" < "admin".
+func permissionSatisfies(granted, requested string) bool {
+	levels := map[string]int{"read": 1, "write": 2, "admin": 3}
+	return levels[granted] >= levels[requested]
+}
 
 // AppConfig holds configuration for GitHub App authentication.
 type AppConfig struct {
@@ -130,7 +177,30 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 
 	if resp.StatusCode != http.StatusCreated {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("installation token request failed (%d): %s", resp.StatusCode, respBody)
+
+		// Parse GitHub's error message.
+		var ghErr struct {
+			Message string `json:"message"`
+		}
+		msg := string(respBody)
+		if json.Unmarshal(respBody, &ghErr) == nil && ghErr.Message != "" {
+			msg = ghErr.Message
+		}
+
+		// Optionally fetch granted permissions to provide diagnostics.
+		var grantedPerms map[string]string
+		if resp.StatusCode == http.StatusUnprocessableEntity {
+			if granted, err := p.getInstallationPermissions(ctx, signed, installationID); err == nil {
+				grantedPerms = granted
+			}
+		}
+
+		return "", &InstallationTokenError{
+			StatusCode:           resp.StatusCode,
+			Message:              msg,
+			RequestedPermissions: permissions,
+			GrantedPermissions:   grantedPerms,
+		}
 	}
 
 	var result struct {
@@ -147,4 +217,36 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 	p.mu.Unlock()
 
 	return result.Token, nil
+}
+
+// getInstallationPermissions queries the GitHub API for the permissions
+// granted to the given installation. The jwtToken must be a valid App JWT.
+func (p *AppTokenProvider) getInstallationPermissions(ctx context.Context, jwtToken string, installationID int64) (map[string]string, error) {
+	url := fmt.Sprintf("%s/app/installations/%d", p.baseURL, installationID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating installation request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching installation: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("installation request failed (%d)", resp.StatusCode)
+	}
+
+	var result struct {
+		Permissions map[string]string `json:"permissions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding installation response: %w", err)
+	}
+
+	return result.Permissions, nil
 }

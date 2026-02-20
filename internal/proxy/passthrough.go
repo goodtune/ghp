@@ -10,8 +10,11 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 
+	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
 )
 
@@ -89,6 +92,8 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			return
 		}
 
+		start := time.Now()
+
 		// Resolve the full proxy token for scope checking.
 		pt, err := enforcer.Resolve(r.Context(), clientTok)
 		if err != nil {
@@ -103,9 +108,15 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			return
 		}
 
+		// Wrap response writer to capture status code for metrics.
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		defer func() {
+			metrics.ObserveProxyRequest(backend.GitHub, pt, r.Method, rec.status, time.Since(start), "git")
+		}()
+
 		// Enforce repository scope.
 		if !repositoryAllowed(repo, pt.Repositories) {
-			writeError(w, http.StatusForbidden,
+			writeError(rec, http.StatusForbidden,
 				fmt.Sprintf("Token is not scoped to %s", repo))
 			return
 		}
@@ -116,11 +127,11 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			if logger != nil {
 				logger.Error("git scope enforcement: failed to parse scopes", "error", err)
 			}
-			writeError(w, http.StatusInternalServerError, "Internal error")
+			writeError(rec, http.StatusInternalServerError, "Internal error")
 			return
 		}
 		if !scopes.HasPermission(permission, level) {
-			writeError(w, http.StatusForbidden,
+			writeError(rec, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
 			return
 		}
@@ -131,12 +142,48 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			if logger != nil {
 				logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
 			}
-			writeError(w, http.StatusUnauthorized, "Token resolution failed")
+			writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 			return
 		}
 		r.Header.Set("Authorization", rewriteAuth(realToken))
-		inner.ServeHTTP(w, r)
+		inner.ServeHTTP(rec, r)
 	})
+}
+
+// statusRecorder wraps http.ResponseWriter to capture the status code.
+type statusRecorder struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.wroteHeader {
+		return
+	}
+	r.status = code
+	r.wroteHeader = true
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// Flush implements http.Flusher by delegating to the underlying writer.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap returns the underlying ResponseWriter so callers can access
+// optional interfaces (e.g. http.Hijacker) via httputil helpers.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 // NewCopilotPassthroughHandler creates a transparent reverse proxy for
