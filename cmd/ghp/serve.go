@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -11,7 +12,7 @@ import (
 )
 
 func newServeCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the server (proxy + web UI + API)",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -26,12 +27,26 @@ func newServeCmd() *cobra.Command {
 			}
 
 			logger := newLogger(cfg)
+
+			migrate, _ := cmd.Flags().GetBool("migrate")
+			if migrate {
+				logger.Info("running database migrations before startup")
+				if err := runMigrations(cfg); err != nil {
+					return fmt.Errorf("pre-startup migration: %w", err)
+				}
+				logger.Info("database migrations complete")
+			}
+
 			logger.Info("server_start", "msg", "starting ghp server")
 
 			srv := server.New(cfg, logger)
 			return srv.Run(context.Background())
 		},
 	}
+
+	cmd.Flags().Bool("migrate", false, "Run database migrations before starting the server")
+
+	return cmd
 }
 
 func newLogger(cfg *config.Config) *slog.Logger {
