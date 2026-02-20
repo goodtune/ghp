@@ -187,14 +187,19 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 			msg = ghErr.Message
 		}
 
-		// Fetch granted permissions to provide diagnostics.
-		granted, _ := p.getInstallationPermissions(ctx, signed, installationID)
+		// Optionally fetch granted permissions to provide diagnostics.
+		var grantedPerms map[string]string
+		if resp.StatusCode == http.StatusUnprocessableEntity {
+			if granted, err := p.getInstallationPermissions(ctx, signed, installationID); err == nil {
+				grantedPerms = granted
+			}
+		}
 
 		return "", &InstallationTokenError{
 			StatusCode:           resp.StatusCode,
 			Message:              msg,
 			RequestedPermissions: permissions,
-			GrantedPermissions:   granted,
+			GrantedPermissions:   grantedPerms,
 		}
 	}
 

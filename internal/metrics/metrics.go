@@ -67,8 +67,9 @@ var (
 )
 
 // ObserveProxyRequest records proxy-level request metrics for a completed request.
-// If pt is nil the call is a no-op. apiType distinguishes "graphql" vs "rest" for
-// API backends; pass "" for non-API backends.
+// If pt is nil the call is a no-op. apiType describes the request type (for example
+// "rest", "graphql", or "git") used for the "type" metric label; callers should pass
+// an appropriate value or "" if the type is unknown.
 func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string, status int, dur time.Duration, apiType string) {
 	if pt == nil {
 		return

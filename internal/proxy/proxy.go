@@ -501,7 +501,7 @@ func installationTokenErrorResponse(err error) (int, string) {
 	}
 
 	missing := ite.MissingPermissions()
-	if len(missing) == 0 {
+	if ite.GrantedPermissions == nil || len(missing) == 0 {
 		return ite.StatusCode, ite.Message
 	}
 
