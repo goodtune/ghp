@@ -38,41 +38,9 @@
         .empty { text-align: center; color: #8b949e; padding: 2rem; }
         a.link { color: #58a6ff; text-decoration: none; }
         a.link:hover { text-decoration: underline; }
-
-        /* Repo multi-select */
-        .repo-select { position: relative; }
-        .repo-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; margin-bottom: 0.5rem; min-height: 1px; }
-        .repo-chips:empty { display: none; }
-        .repo-chip { display: inline-flex; align-items: center; gap: 0.25rem; background: #21262d; border: 1px solid #30363d; border-radius: 2rem; padding: 0.2rem 0.5rem; font-size: 0.8rem; color: #c9d1d9; }
-        .repo-chip button { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 0.9rem; padding: 0; line-height: 1; display: flex; align-items: center; }
-        .repo-chip button:hover { color: #f85149; }
-        .repo-search-wrap { position: relative; }
-        .repo-search-wrap input { width: 100%; }
-        .repo-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 10; background: #161b22; border: 1px solid #30363d; border-top: none; border-radius: 0 0 6px 6px; max-height: 200px; overflow-y: auto; display: none; }
-        .repo-dropdown.open { display: block; }
-        .repo-option { padding: 0.5rem 0.75rem; cursor: pointer; font-size: 0.875rem; color: #c9d1d9; }
-        .repo-option:hover { background: #21262d; }
-        .repo-option.no-results { color: #8b949e; cursor: default; }
-        .repo-option.no-results:hover { background: none; }
-
-        /* Permissions table (GitHub-style) */
-        .permissions-section { margin-top: 0.25rem; }
-        .permissions-section .perm-header { font-size: 0.875rem; color: #8b949e; margin-bottom: 0.25rem; }
-        .perm-table { width: 100%; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
-        .perm-row { display: flex; align-items: center; justify-content: space-between; padding: 0.625rem 0.75rem; border-bottom: 1px solid #21262d; }
-        .perm-row:last-child { border-bottom: none; }
-        .perm-info { flex: 1; }
-        .perm-name { font-size: 0.875rem; color: #f0f6fc; font-weight: 500; }
-        .perm-desc { font-size: 0.75rem; color: #8b949e; margin-top: 0.125rem; }
-        .perm-control { flex-shrink: 0; margin-left: 1rem; }
-        .perm-control select { padding: 0.3rem 1.75rem 0.3rem 0.5rem; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 0.8rem; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8.825a.5.5 0 0 1-.354-.146l-3.5-3.5a.5.5 0 1 1 .708-.708L6 7.618l3.146-3.147a.5.5 0 1 1 .708.708l-3.5 3.5A.5.5 0 0 1 6 8.825z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 0.4rem center; cursor: pointer; }
-        .perm-control select:focus { outline: none; border-color: #58a6ff; }
-        .perm-empty { padding: 1rem; text-align: center; color: #484f58; font-size: 0.875rem; }
-
-        /* Loading indicator */
-        .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-left: 0.5rem; }
-        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
+    <script src="/static/ghp-repo-select.js"></script>
+    <script src="/static/ghp-permission-select.js"></script>
 </head>
 <body>
     <div class="container">
@@ -101,21 +69,11 @@
                 </div>
                 <div class="form-group">
                     <label>Repositories</label>
-                    <div class="repo-select">
-                        <div class="repo-chips" id="repo-chips"></div>
-                        <div class="repo-search-wrap">
-                            <input type="text" id="repo-search" placeholder="Search repositories..." disabled oninput="filterRepos()" onfocus="openRepoDropdown()" />
-                            <div class="repo-dropdown" id="repo-dropdown"></div>
-                        </div>
-                    </div>
+                    <ghp-repo-select id="repo-select" mode="multi" placeholder="Search repositories..." disabled></ghp-repo-select>
                 </div>
                 <div class="form-group">
                     <label>Permissions</label>
-                    <div class="permissions-section" id="permissions-section">
-                        <div class="perm-table">
-                            <div class="perm-empty">Select an installation to configure permissions</div>
-                        </div>
-                    </div>
+                    <ghp-permission-select id="perm-select"></ghp-permission-select>
                 </div>
                 <div class="form-group">
                     <label for="duration">Duration</label>
@@ -160,20 +118,9 @@
 
         // ── State ───────────────────────────────────────────────────
         let installations = [];
-        let allRepos = [];         // repos available for current installation
-        let selectedRepos = [];    // repos already selected
-        let installationPerms = {}; // granted perms for current installation
 
-        // Human-readable descriptions for permission categories.
-        const permDescriptions = {
-            contents:  'Repository contents, commits, branches, downloads, releases, and merges.',
-            pulls:     'Pull requests and related comments, assignees, labels, milestones, and merges.',
-            issues:    'Issues and related comments, assignees, labels, and milestones.',
-            statuses:  'Commit statuses.',
-            checks:    'Check runs and check suites.',
-            actions:   'GitHub Actions workflows, runs, and artifacts.',
-            metadata:  'Search repositories, list collaborators, and access repository metadata.',
-        };
+        const repoSelect = document.getElementById('repo-select');
+        const permSelect = document.getElementById('perm-select');
 
         // ── Installation select ────────────────────────────────────
         async function loadInstallations() {
@@ -193,183 +140,29 @@
             }
         }
 
-        function onInstallationChange() {
+        async function onInstallationChange() {
             const id = parseInt(document.getElementById('installation-id').value);
-            selectedRepos = [];
-            allRepos = [];
-            renderRepoChips();
-            renderRepoDropdown();
+            repoSelect.clear();
             document.getElementById('new-token').style.display = 'none';
 
             if (!id) {
-                document.getElementById('repo-search').disabled = true;
-                document.getElementById('repo-search').value = '';
-                renderPermissions({});
+                repoSelect.disabled = true;
+                permSelect.permissions = {};
                 return;
             }
 
-            // Find installation permissions.
+            // Set permissions from installation.
             const inst = installations.find(i => i.id === id);
-            installationPerms = inst ? (inst.permissions || {}) : {};
-            renderPermissions(installationPerms);
+            permSelect.permissions = inst ? (inst.permissions || {}) : {};
 
             // Load repos.
-            document.getElementById('repo-search').disabled = true;
-            document.getElementById('repo-search').placeholder = 'Loading repositories...';
-            loadInstallationRepos(id);
-        }
+            repoSelect.disabled = true;
+            repoSelect.setAttribute('placeholder', 'Loading repositories...');
 
-        async function loadInstallationRepos(installationId) {
-            const data = await api('GET', '/api/github/installations/' + installationId + '/repositories');
-            const searchInput = document.getElementById('repo-search');
-            if (Array.isArray(data)) {
-                allRepos = data.map(r => r.full_name).sort();
-            } else {
-                allRepos = [];
-            }
-            searchInput.disabled = false;
-            searchInput.placeholder = 'Search repositories...';
-            searchInput.value = '';
-        }
-
-        // ── Repository multi-select ────────────────────────────────
-        function renderRepoChips() {
-            const container = document.getElementById('repo-chips');
-            container.innerHTML = '';
-            for (const repo of selectedRepos) {
-                const chip = document.createElement('span');
-                chip.className = 'repo-chip';
-                chip.innerHTML = esc(repo) + ' <button onclick="removeRepo(\'' + esc(repo).replace(/'/g, "\\'") + '\')">&times;</button>';
-                container.appendChild(chip);
-            }
-        }
-
-        function removeRepo(repo) {
-            selectedRepos = selectedRepos.filter(r => r !== repo);
-            renderRepoChips();
-            filterRepos();
-        }
-
-        function addRepo(repo) {
-            if (!selectedRepos.includes(repo)) {
-                selectedRepos.push(repo);
-                renderRepoChips();
-            }
-            document.getElementById('repo-search').value = '';
-            closeRepoDropdown();
-        }
-
-        function filterRepos() {
-            const query = document.getElementById('repo-search').value.toLowerCase();
-            const filtered = allRepos.filter(r =>
-                !selectedRepos.includes(r) && r.toLowerCase().includes(query)
-            );
-            renderRepoDropdown(filtered);
-        }
-
-        function renderRepoDropdown(repos) {
-            const dd = document.getElementById('repo-dropdown');
-            if (!repos || repos.length === 0) {
-                const q = document.getElementById('repo-search').value;
-                if (q) {
-                    dd.innerHTML = '<div class="repo-option no-results">No matching repositories</div>';
-                    dd.classList.add('open');
-                } else {
-                    dd.classList.remove('open');
-                }
-                return;
-            }
-            dd.innerHTML = '';
-            for (const repo of repos.slice(0, 50)) {
-                const opt = document.createElement('div');
-                opt.className = 'repo-option';
-                opt.textContent = repo;
-                opt.onclick = function() { addRepo(repo); };
-                dd.appendChild(opt);
-            }
-            dd.classList.add('open');
-        }
-
-        function openRepoDropdown() {
-            filterRepos();
-        }
-
-        function closeRepoDropdown() {
-            document.getElementById('repo-dropdown').classList.remove('open');
-        }
-
-        // Close dropdown when clicking outside.
-        document.addEventListener('click', function(e) {
-            if (!e.target.closest('.repo-select')) {
-                closeRepoDropdown();
-            }
-        });
-
-        // ── Permissions (GitHub-style) ─────────────────────────────
-        function renderPermissions(grantedPerms) {
-            const container = document.getElementById('permissions-section');
-            const keys = Object.keys(grantedPerms).sort();
-
-            if (keys.length === 0) {
-                container.innerHTML = '<div class="perm-table"><div class="perm-empty">Select an installation to configure permissions</div></div>';
-                return;
-            }
-
-            let html = '<div class="perm-table">';
-            for (const perm of keys) {
-                const granted = grantedPerms[perm]; // "read" or "write"
-                const desc = permDescriptions[perm] || '';
-                const isMetadata = perm === 'metadata';
-
-                html += '<div class="perm-row">';
-                html += '  <div class="perm-info">';
-                html += '    <div class="perm-name">' + esc(formatPermName(perm)) + '</div>';
-                if (desc) html += '    <div class="perm-desc">' + esc(desc) + '</div>';
-                html += '  </div>';
-                html += '  <div class="perm-control">';
-
-                if (isMetadata) {
-                    // Metadata is always read-only, shown as a disabled badge.
-                    html += '    <select disabled><option>Read</option></select>';
-                } else {
-                    html += '    <select data-perm="' + esc(perm) + '">';
-                    html += '      <option value="">No access</option>';
-                    html += '      <option value="read">Read</option>';
-                    if (granted === 'write') {
-                        html += '      <option value="write">Read and write</option>';
-                    }
-                    html += '    </select>';
-                }
-
-                html += '  </div>';
-                html += '</div>';
-            }
-            html += '</div>';
-            container.innerHTML = html;
-        }
-
-        function formatPermName(perm) {
-            const names = {
-                contents: 'Contents',
-                pulls: 'Pull requests',
-                issues: 'Issues',
-                statuses: 'Commit statuses',
-                checks: 'Checks',
-                actions: 'Actions',
-                metadata: 'Metadata',
-            };
-            return names[perm] || perm.charAt(0).toUpperCase() + perm.slice(1);
-        }
-
-        function getSelectedPermissions() {
-            const scopes = {};
-            const selects = document.querySelectorAll('[data-perm]');
-            for (const sel of selects) {
-                if (sel.value) {
-                    scopes[sel.dataset.perm] = sel.value;
-                }
-            }
-            return scopes;
+            const data = await api('GET', '/api/github/installations/' + id + '/repositories');
+            repoSelect.repos = Array.isArray(data) ? data : [];
+            repoSelect.disabled = false;
+            repoSelect.setAttribute('placeholder', 'Search repositories...');
         }
 
         // ── Create token ───────────────────────────────────────────
@@ -377,7 +170,8 @@
             const installationId = parseInt(document.getElementById('installation-id').value);
             const duration = document.getElementById('duration').value;
             const session = document.getElementById('session').value;
-            const scopes = getSelectedPermissions();
+            const selectedRepos = repoSelect.value;
+            const scopes = permSelect.value;
 
             if (!installationId) {
                 alert('Please select an installation.');
@@ -392,7 +186,6 @@
                 return;
             }
 
-            // Build scopes string: "contents:read,pulls:write"
             const scopeStr = Object.entries(scopes).map(([k, v]) => k + ':' + v).join(',');
 
             const body = {
@@ -422,7 +215,7 @@
             }
         }
 
-        // ── Users / Tokens / Audit (unchanged) ────────────────────
+        // ── Users / Tokens / Audit ─────────────────────────────────
         async function loadUsers() {
             const users = await api('GET', '/api/users');
             const container = document.getElementById('users-list');

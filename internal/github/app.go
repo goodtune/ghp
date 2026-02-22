@@ -369,7 +369,7 @@ func (p *AppTokenProvider) ListInstallationRepositories(ctx context.Context, ins
 		allRepos = append(allRepos, page.Repositories...)
 
 		// Follow pagination.
-		repoURL = parseLinkNext(resp.Header.Get("Link"))
+		repoURL = ParseLinkNext(resp.Header.Get("Link"))
 	}
 
 	return allRepos, nil
@@ -387,8 +387,8 @@ func (p *AppTokenProvider) signJWT() (string, error) {
 	return jwtToken.SignedString(p.key)
 }
 
-// parseLinkNext extracts the "next" URL from a GitHub Link header.
-func parseLinkNext(header string) string {
+// ParseLinkNext extracts the "next" URL from a GitHub Link header.
+func ParseLinkNext(header string) string {
 	if header == "" {
 		return ""
 	}

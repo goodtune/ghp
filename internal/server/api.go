@@ -3,6 +3,8 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/token"
@@ -21,17 +24,19 @@ type API struct {
 	store            database.Store
 	tokenService     *token.Service
 	authHandler      *auth.Handler
+	encryptor        *crypto.Encryptor
 	appTokenProvider *github.AppTokenProvider // nil if GitHub App not configured
 	logger           *slog.Logger
 }
 
 // NewAPI creates a new API handler.
-func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, atp *github.AppTokenProvider, logger *slog.Logger) *API {
+func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *github.AppTokenProvider, logger *slog.Logger) *API {
 	return &API{
 		cfg:              cfg,
 		store:            store,
 		tokenService:     ts,
 		authHandler:      ah,
+		encryptor:        enc,
 		appTokenProvider: atp,
 		logger:           logger,
 	}
@@ -48,6 +53,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/users", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListUsers)))
 	mux.Handle("GET /api/users/{id}/tokens", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListUserTokens)))
 
+	mux.Handle("GET /api/github/repositories", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListUserRepos)))
 	mux.Handle("GET /api/github/installations", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallations)))
 	mux.Handle("GET /api/github/installations/{id}/repositories", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallationRepos)))
 
@@ -285,6 +291,75 @@ func (a *API) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		entries = []*database.AuditEntry{}
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+func (a *API) handleListUserRepos(w http.ResponseWriter, r *http.Request) {
+	session := auth.SessionFromContext(r.Context())
+
+	gt, err := a.store.GetGitHubToken(r.Context(), session.UserID)
+	if err != nil || gt == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "No GitHub token found. Please re-authenticate."})
+		return
+	}
+
+	plainToken, err := a.encryptor.Decrypt(gt.AccessToken)
+	if err != nil {
+		a.logger.Error("failed to decrypt github token", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to decrypt credentials"})
+		return
+	}
+
+	// Paginate through user repos from GitHub.
+	type ghRepo struct {
+		FullName string `json:"full_name"`
+		Name     string `json:"name"`
+		Private  bool   `json:"private"`
+	}
+
+	var allRepos []ghRepo
+	nextURL := "https://api.github.com/user/repos?per_page=100&sort=full_name"
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	for nextURL != "" {
+		req, err := http.NewRequestWithContext(r.Context(), "GET", nextURL, nil)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+			return
+		}
+		req.Header.Set("Authorization", "token "+plainToken)
+		req.Header.Set("Accept", "application/vnd.github+json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			a.logger.Error("failed to list user repos", "error", err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"message": "Failed to list repositories"})
+			return
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			a.logger.Error("github user repos failed", "status", resp.StatusCode, "body", string(body))
+			writeJSON(w, http.StatusBadGateway, map[string]string{"message": fmt.Sprintf("GitHub API error (%d)", resp.StatusCode)})
+			return
+		}
+
+		var page []ghRepo
+		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+			resp.Body.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to parse GitHub response"})
+			return
+		}
+
+		// Parse Link header for next page.
+		linkHeader := resp.Header.Get("Link")
+		resp.Body.Close()
+
+		allRepos = append(allRepos, page...)
+		nextURL = github.ParseLinkNext(linkHeader)
+	}
+
+	writeJSON(w, http.StatusOK, allRepos)
 }
 
 func (a *API) handleListInstallations(w http.ResponseWriter, r *http.Request) {
