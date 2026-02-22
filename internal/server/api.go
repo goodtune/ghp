@@ -3,18 +3,18 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
+	ghub "github.com/google/go-github/v68/github"
+
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
-	"github.com/goodtune/ghp/internal/github"
+	ghpgithub "github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/token"
 )
 
@@ -25,12 +25,12 @@ type API struct {
 	tokenService     *token.Service
 	authHandler      *auth.Handler
 	encryptor        *crypto.Encryptor
-	appTokenProvider *github.AppTokenProvider // nil if GitHub App not configured
+	appTokenProvider *ghpgithub.AppTokenProvider // nil if GitHub App not configured
 	logger           *slog.Logger
 }
 
 // NewAPI creates a new API handler.
-func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *github.AppTokenProvider, logger *slog.Logger) *API {
+func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, logger *slog.Logger) *API {
 	return &API{
 		cfg:              cfg,
 		store:            store,
@@ -309,7 +309,8 @@ func (a *API) handleListUserRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Paginate through user repos from GitHub.
+	client := ghub.NewClient(nil).WithAuthToken(plainToken)
+
 	type ghRepo struct {
 		FullName string `json:"full_name"`
 		Name     string `json:"name"`
@@ -317,46 +318,28 @@ func (a *API) handleListUserRepos(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var allRepos []ghRepo
-	nextURL := "https://api.github.com/user/repos?per_page=100&sort=full_name"
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	for nextURL != "" {
-		req, err := http.NewRequestWithContext(r.Context(), "GET", nextURL, nil)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
-			return
-		}
-		req.Header.Set("Authorization", "token "+plainToken)
-		req.Header.Set("Accept", "application/vnd.github+json")
-
-		resp, err := client.Do(req)
+	opts := &ghub.RepositoryListByAuthenticatedUserOptions{
+		Sort:        "full_name",
+		ListOptions: ghub.ListOptions{PerPage: 100},
+	}
+	for {
+		repos, resp, err := client.Repositories.ListByAuthenticatedUser(r.Context(), opts)
 		if err != nil {
 			a.logger.Error("failed to list user repos", "error", err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"message": "Failed to list repositories"})
 			return
 		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			a.logger.Error("github user repos failed", "status", resp.StatusCode, "body", string(body))
-			writeJSON(w, http.StatusBadGateway, map[string]string{"message": fmt.Sprintf("GitHub API error (%d)", resp.StatusCode)})
-			return
+		for _, repo := range repos {
+			allRepos = append(allRepos, ghRepo{
+				FullName: repo.GetFullName(),
+				Name:     repo.GetName(),
+				Private:  repo.GetPrivate(),
+			})
 		}
-
-		var page []ghRepo
-		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
-			resp.Body.Close()
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to parse GitHub response"})
-			return
+		if resp.NextPage == 0 {
+			break
 		}
-
-		// Parse Link header for next page.
-		linkHeader := resp.Header.Get("Link")
-		resp.Body.Close()
-
-		allRepos = append(allRepos, page...)
-		nextURL = github.ParseLinkNext(linkHeader)
+		opts.Page = resp.NextPage
 	}
 
 	writeJSON(w, http.StatusOK, allRepos)
