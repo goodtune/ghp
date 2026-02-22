@@ -5,31 +5,35 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/token"
 )
 
 // API handles the service API endpoints (token management, users, audit).
 type API struct {
-	cfg          *config.Config
-	store        database.Store
-	tokenService *token.Service
-	authHandler  *auth.Handler
-	logger       *slog.Logger
+	cfg              *config.Config
+	store            database.Store
+	tokenService     *token.Service
+	authHandler      *auth.Handler
+	appTokenProvider *github.AppTokenProvider // nil if GitHub App not configured
+	logger           *slog.Logger
 }
 
 // NewAPI creates a new API handler.
-func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, logger *slog.Logger) *API {
+func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, atp *github.AppTokenProvider, logger *slog.Logger) *API {
 	return &API{
-		cfg:          cfg,
-		store:        store,
-		tokenService: ts,
-		authHandler:  ah,
-		logger:       logger,
+		cfg:              cfg,
+		store:            store,
+		tokenService:     ts,
+		authHandler:      ah,
+		appTokenProvider: atp,
+		logger:           logger,
 	}
 }
 
@@ -43,6 +47,9 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 
 	mux.Handle("GET /api/users", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListUsers)))
 	mux.Handle("GET /api/users/{id}/tokens", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListUserTokens)))
+
+	mux.Handle("GET /api/github/installations", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallations)))
+	mux.Handle("GET /api/github/installations/{id}/repositories", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallationRepos)))
 
 	mux.Handle("GET /api/audit", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListAudit)))
 }
@@ -278,6 +285,45 @@ func (a *API) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		entries = []*database.AuditEntry{}
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+func (a *API) handleListInstallations(w http.ResponseWriter, r *http.Request) {
+	if a.appTokenProvider == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "GitHub App not configured"})
+		return
+	}
+
+	installations, err := a.appTokenProvider.ListInstallations(r.Context())
+	if err != nil {
+		a.logger.Error("failed to list installations", "error", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"message": "Failed to list GitHub installations"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, installations)
+}
+
+func (a *API) handleListInstallationRepos(w http.ResponseWriter, r *http.Request) {
+	if a.appTokenProvider == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "GitHub App not configured"})
+		return
+	}
+
+	idStr := r.PathValue("id")
+	installationID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid installation ID"})
+		return
+	}
+
+	repos, err := a.appTokenProvider.ListInstallationRepositories(r.Context(), installationID)
+	if err != nil {
+		a.logger.Error("failed to list installation repos", "error", err, "installation_id", installationID)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"message": "Failed to list repositories"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, repos)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

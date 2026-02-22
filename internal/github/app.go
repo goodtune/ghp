@@ -140,14 +140,7 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 	p.mu.Unlock()
 
 	// Generate JWT.
-	now := time.Now()
-	claims := jwt.RegisteredClaims{
-		Issuer:    fmt.Sprintf("%d", p.appID),
-		IssuedAt:  jwt.NewNumericDate(now.Add(-60 * time.Second)),
-		ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
-	}
-	jwtToken := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	signed, err := jwtToken.SignedString(p.key)
+	signed, err := p.signJWT()
 	if err != nil {
 		return "", fmt.Errorf("signing JWT: %w", err)
 	}
@@ -249,4 +242,165 @@ func (p *AppTokenProvider) getInstallationPermissions(ctx context.Context, jwtTo
 	}
 
 	return result.Permissions, nil
+}
+
+// Installation represents a GitHub App installation.
+type Installation struct {
+	ID      int64                `json:"id"`
+	Account InstallationAccount  `json:"account"`
+	Permissions map[string]string `json:"permissions"`
+	RepositorySelection string   `json:"repository_selection"`
+}
+
+// InstallationAccount is the GitHub account (user or org) associated with an installation.
+type InstallationAccount struct {
+	Login string `json:"login"`
+	ID    int64  `json:"id"`
+	Type  string `json:"type"`
+}
+
+// InstallationRepository represents a repository accessible to an installation.
+type InstallationRepository struct {
+	FullName string `json:"full_name"`
+	Name     string `json:"name"`
+	Private  bool   `json:"private"`
+}
+
+// ListInstallations returns all installations for this GitHub App.
+func (p *AppTokenProvider) ListInstallations(ctx context.Context) ([]Installation, error) {
+	signed, err := p.signJWT()
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/app/installations", p.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+signed)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("listing installations: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("list installations failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var installations []Installation
+	if err := json.NewDecoder(resp.Body).Decode(&installations); err != nil {
+		return nil, fmt.Errorf("decoding installations: %w", err)
+	}
+	return installations, nil
+}
+
+// ListInstallationRepositories returns repositories accessible to the given installation.
+func (p *AppTokenProvider) ListInstallationRepositories(ctx context.Context, installationID int64) ([]InstallationRepository, error) {
+	// Get an unscoped installation token to list repos.
+	signed, err := p.signJWT()
+	if err != nil {
+		return nil, err
+	}
+
+	tokenURL := fmt.Sprintf("%s/app/installations/%d/access_tokens", p.baseURL, installationID)
+	tokenReq, err := http.NewRequestWithContext(ctx, "POST", tokenURL, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return nil, fmt.Errorf("creating token request: %w", err)
+	}
+	tokenReq.Header.Set("Authorization", "Bearer "+signed)
+	tokenReq.Header.Set("Accept", "application/vnd.github+json")
+	tokenReq.Header.Set("Content-Type", "application/json")
+
+	tokenResp, err := p.client.Do(tokenReq)
+	if err != nil {
+		return nil, fmt.Errorf("requesting installation token: %w", err)
+	}
+	defer tokenResp.Body.Close()
+
+	if tokenResp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(tokenResp.Body)
+		return nil, fmt.Errorf("installation token request failed (%d): %s", tokenResp.StatusCode, string(body))
+	}
+
+	var tokenResult struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenResult); err != nil {
+		return nil, fmt.Errorf("decoding token: %w", err)
+	}
+
+	// Paginate through all repos.
+	var allRepos []InstallationRepository
+	repoURL := fmt.Sprintf("%s/installation/repositories?per_page=100", p.baseURL)
+
+	for repoURL != "" {
+		req, err := http.NewRequestWithContext(ctx, "GET", repoURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating repo request: %w", err)
+		}
+		req.Header.Set("Authorization", "token "+tokenResult.Token)
+		req.Header.Set("Accept", "application/vnd.github+json")
+
+		resp, err := p.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("listing repos: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("list repos failed (%d): %s", resp.StatusCode, string(body))
+		}
+
+		var page struct {
+			Repositories []InstallationRepository `json:"repositories"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decoding repos: %w", err)
+		}
+		resp.Body.Close()
+
+		allRepos = append(allRepos, page.Repositories...)
+
+		// Follow pagination.
+		repoURL = parseLinkNext(resp.Header.Get("Link"))
+	}
+
+	return allRepos, nil
+}
+
+// signJWT creates a signed JWT for GitHub App authentication.
+func (p *AppTokenProvider) signJWT() (string, error) {
+	now := time.Now()
+	claims := jwt.RegisteredClaims{
+		Issuer:    fmt.Sprintf("%d", p.appID),
+		IssuedAt:  jwt.NewNumericDate(now.Add(-60 * time.Second)),
+		ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
+	}
+	jwtToken := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	return jwtToken.SignedString(p.key)
+}
+
+// parseLinkNext extracts the "next" URL from a GitHub Link header.
+func parseLinkNext(header string) string {
+	if header == "" {
+		return ""
+	}
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if strings.Contains(part, `rel="next"`) {
+			start := strings.Index(part, "<")
+			end := strings.Index(part, ">")
+			if start >= 0 && end > start {
+				return part[start+1 : end]
+			}
+		}
+	}
+	return ""
 }
