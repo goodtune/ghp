@@ -118,6 +118,9 @@ class GhpRepoSelect extends HTMLElement {
     input.addEventListener('input', () => this._filterAndRender());
     input.addEventListener('focus', () => this._filterAndRender());
 
+    this._renderChips();
+    this._updateInputVisibility();
+
     // Close dropdown on outside click.
     this._outsideClick = (e) => {
       if (!this.contains(e.target)) this._closeDropdown();
@@ -211,6 +214,17 @@ class GhpRepoSelect extends HTMLElement {
       btn.addEventListener('click', () => this._removeRepo(repo));
       chip.appendChild(btn);
       container.appendChild(chip);
+    }
+    this._updateInputVisibility();
+  }
+
+  _updateInputVisibility() {
+    const wrap = this.shadowRoot.querySelector('.wrap');
+    if (!wrap) return;
+    if (this.mode === 'single' && this._selected.length > 0) {
+      wrap.style.display = 'none';
+    } else {
+      wrap.style.display = '';
     }
   }
 
