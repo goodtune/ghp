@@ -42,11 +42,18 @@ func (h *Handler) handleBrokerAuthorize(w http.ResponseWriter, r *http.Request) 
 	downstreamState := r.URL.Query().Get("state")
 
 	state := generateState()
+	now := time.Now()
 	h.brokerMu.Lock()
+	// Clean up expired broker states to prevent unbounded growth.
+	for k, bs := range h.brokerStates {
+		if now.After(bs.ExpiresAt) {
+			delete(h.brokerStates, k)
+		}
+	}
 	h.brokerStates[state] = &brokerState{
 		RedirectURI:     redirectURI,
 		DownstreamState: downstreamState,
-		ExpiresAt:       time.Now().Add(10 * time.Minute),
+		ExpiresAt:       now.Add(10 * time.Minute),
 	}
 	h.brokerMu.Unlock()
 

@@ -80,9 +80,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// OAuth broker endpoints: delegate authentication to this proxy.
 	if h.cfg.Auth.JWTSecret != "" {
-		mux.HandleFunc("GET /auth/authorize", h.handleBrokerAuthorize)
-		mux.HandleFunc("GET /auth/callback", h.handleBrokerCallback)
-		h.logger.Info("oauth broker endpoints enabled")
+		// Require a sufficiently strong JWT secret before enabling broker endpoints.
+		if len(h.cfg.Auth.JWTSecret) < 32 {
+			h.logger.Error("jwt_secret is too short; oauth broker endpoints disabled",
+				"configured_length", len(h.cfg.Auth.JWTSecret), "min_length", 32)
+		} else {
+			mux.HandleFunc("GET /auth/authorize", h.handleBrokerAuthorize)
+			mux.HandleFunc("GET /auth/callback", h.handleBrokerCallback)
+			h.logger.Info("oauth broker endpoints enabled")
+			// Warn if no allowed redirects are configured — all broker requests will fail.
+			if len(h.cfg.Auth.AllowedRedirects) == 0 {
+				h.logger.Warn("oauth broker enabled but no allowed redirects configured; all broker authorization requests will fail with \"redirect_uri not allowed\"")
+			}
+		}
 	}
 
 	// Dev-mode only: test login endpoint that bypasses GitHub OAuth.

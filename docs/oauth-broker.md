@@ -96,6 +96,7 @@ To initiate authentication, redirect the user to the proxy's authorize endpoint:
 
 ```python
 import secrets
+from urllib.parse import urlencode
 from flask import redirect, session
 
 @app.route("/login")
@@ -103,10 +104,8 @@ def login():
     state = secrets.token_urlsafe(32)
     session["oauth_state"] = state
     callback = "https://myapp.example.com/auth/callback"
-    return redirect(
-        f"{AUTH_PROXY_URL}/auth/authorize"
-        f"?redirect_uri={callback}&state={state}"
-    )
+    params = urlencode({"redirect_uri": callback, "state": state})
+    return redirect(f"{AUTH_PROXY_URL}/auth/authorize?{params}")
 ```
 
 ### Handling the Callback
