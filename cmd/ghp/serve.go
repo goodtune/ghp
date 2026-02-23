@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 
@@ -26,7 +27,7 @@ func newServeCmd() *cobra.Command {
 				return err
 			}
 
-			logger := newLogger(cfg)
+			logger, logWriter := newLogger(cfg)
 
 			migrate, _ := cmd.Flags().GetBool("migrate")
 			if migrate {
@@ -39,7 +40,7 @@ func newServeCmd() *cobra.Command {
 
 			logger.Info("server_start", "msg", "starting ghp server")
 
-			srv := server.New(cfg, logger)
+			srv := server.New(cfg, logger, logWriter)
 			return srv.Run(context.Background())
 		},
 	}
@@ -49,7 +50,7 @@ func newServeCmd() *cobra.Command {
 	return cmd
 }
 
-func newLogger(cfg *config.Config) *slog.Logger {
+func newLogger(cfg *config.Config) (*slog.Logger, io.Writer) {
 	var level slog.Level
 	switch cfg.Logging.Level {
 	case "debug":
@@ -64,17 +65,13 @@ func newLogger(cfg *config.Config) *slog.Logger {
 
 	opts := &slog.HandlerOptions{Level: level}
 
-	switch cfg.Logging.Output {
-	case "file":
-		if cfg.Logging.File.Path != "" {
-			f, err := os.OpenFile(cfg.Logging.File.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err != nil {
-				// Fall back to stdout.
-				return slog.New(slog.NewJSONHandler(os.Stdout, opts))
-			}
-			return slog.New(slog.NewJSONHandler(f, opts))
+	var w io.Writer = os.Stdout
+	if cfg.Logging.Output == "file" && cfg.Logging.File.Path != "" {
+		f, err := os.OpenFile(cfg.Logging.File.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			w = f
 		}
 	}
 
-	return slog.New(slog.NewJSONHandler(os.Stdout, opts))
+	return slog.New(slog.NewJSONHandler(w, opts)), w
 }

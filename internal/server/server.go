@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -27,13 +28,14 @@ import (
 
 // Server is the main ghp server.
 type Server struct {
-	cfg    *config.Config
-	logger *slog.Logger
+	cfg       *config.Config
+	logger    *slog.Logger
+	logWriter io.Writer
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, logger *slog.Logger) *Server {
-	return &Server{cfg: cfg, logger: logger}
+func New(cfg *config.Config, logger *slog.Logger, logWriter io.Writer) *Server {
+	return &Server{cfg: cfg, logger: logger, logWriter: logWriter}
 }
 
 // Run starts the server and blocks until shutdown.
@@ -142,12 +144,23 @@ func (s *Server) Run(ctx context.Context) error {
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 
+	// Build access log handler factory based on configured format.
+	wrapAccess := func(b string, next http.Handler) http.Handler {
+		return accessLogHandler(b, next, s.logger)
+	}
+	if s.cfg.Logging.Format == "caddy" {
+		cw := newCaddyLogWriter(s.logWriter)
+		wrapAccess = func(b string, next http.Handler) http.Handler {
+			return caddyAccessLogHandler(b, next, cw)
+		}
+	}
+
 	// Build host dispatch with access logging on all handlers.
 	dispatch := newHostDispatch(hostDispatchConfig{
-		apiHandler:     accessLogHandler(backend.API, proxyHandler, s.logger),
-		githubHandler:  accessLogHandler(backend.GitHub, githubPassthrough, s.logger),
-		copilotHandler: accessLogHandler(backend.Copilot, copilotPassthrough, s.logger),
-		mgmtHandler:    accessLogHandler(backend.Mgmt, mux, s.logger),
+		apiHandler:     wrapAccess(backend.API, proxyHandler),
+		githubHandler:  wrapAccess(backend.GitHub, githubPassthrough),
+		copilotHandler: wrapAccess(backend.Copilot, copilotPassthrough),
+		mgmtHandler:    wrapAccess(backend.Mgmt, mux),
 		managementHost: s.cfg.Server.ManagementHost,
 	})
 
