@@ -13,7 +13,12 @@ database:
   dsn: /var/lib/ghp/ghp.db
 
 server:
-  systemd_socket_activation: true
+  listen: ":8080"
+  # To enable systemd socket activation (for zero-downtime restarts),
+  # set the following to true and enable ghp.socket:
+  #   systemctl enable --now ghp.socket
+  #   systemctl edit ghp.service  # add Requires=ghp.socket under [Unit]
+  # systemd_socket_activation: true
 
 # tls:
 #   certificates:

@@ -2,7 +2,6 @@
 Description=GHP - GitHub Proxy for Autonomous Coding Agents
 Documentation=https://github.com/goodtune/ghp
 After=network-online.target
-Requires=ghp.socket
 
 [Service]
 Type=notify
