@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	ghub "github.com/google/go-github/v68/github"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -140,14 +141,7 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 	p.mu.Unlock()
 
 	// Generate JWT.
-	now := time.Now()
-	claims := jwt.RegisteredClaims{
-		Issuer:    fmt.Sprintf("%d", p.appID),
-		IssuedAt:  jwt.NewNumericDate(now.Add(-60 * time.Second)),
-		ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
-	}
-	jwtToken := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	signed, err := jwtToken.SignedString(p.key)
+	signed, err := p.signJWT()
 	if err != nil {
 		return "", fmt.Errorf("signing JWT: %w", err)
 	}
@@ -250,3 +244,167 @@ func (p *AppTokenProvider) getInstallationPermissions(ctx context.Context, jwtTo
 
 	return result.Permissions, nil
 }
+
+// Installation represents a GitHub App installation (API response DTO).
+type Installation struct {
+	ID                  int64               `json:"id"`
+	Account             InstallationAccount `json:"account"`
+	Permissions         map[string]string   `json:"permissions"`
+	RepositorySelection string              `json:"repository_selection"`
+}
+
+// InstallationAccount is the GitHub account (user or org) associated with an installation.
+type InstallationAccount struct {
+	Login string `json:"login"`
+	ID    int64  `json:"id"`
+	Type  string `json:"type"`
+}
+
+// InstallationRepository represents a repository accessible to an installation (API response DTO).
+type InstallationRepository struct {
+	FullName string `json:"full_name"`
+	Name     string `json:"name"`
+	Private  bool   `json:"private"`
+}
+
+// newAppClient returns a go-github client authenticated as the GitHub App (JWT).
+func (p *AppTokenProvider) newAppClient() (*ghub.Client, error) {
+	signed, err := p.signJWT()
+	if err != nil {
+		return nil, err
+	}
+	client := ghub.NewClient(nil).WithAuthToken(signed)
+	if p.baseURL != "https://api.github.com" {
+		client, err = client.WithEnterpriseURLs(p.baseURL, p.baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("configuring enterprise URLs: %w", err)
+		}
+	}
+	return client, nil
+}
+
+// ListInstallations returns all installations for this GitHub App.
+func (p *AppTokenProvider) ListInstallations(ctx context.Context) ([]Installation, error) {
+	client, err := p.newAppClient()
+	if err != nil {
+		return nil, err
+	}
+
+	var all []Installation
+	opts := &ghub.ListOptions{PerPage: 100}
+	for {
+		installs, resp, err := client.Apps.ListInstallations(ctx, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing installations: %w", err)
+		}
+		for _, inst := range installs {
+			i := Installation{
+				ID:          inst.GetID(),
+				Permissions: installationPermissionsToMap(inst.Permissions),
+			}
+			if inst.RepositorySelection != nil {
+				i.RepositorySelection = *inst.RepositorySelection
+			}
+			if inst.Account != nil {
+				i.Account = InstallationAccount{
+					Login: inst.Account.GetLogin(),
+					ID:    inst.Account.GetID(),
+					Type:  inst.Account.GetType(),
+				}
+			}
+			all = append(all, i)
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return all, nil
+}
+
+// ListInstallationRepositories returns repositories accessible to the given installation.
+func (p *AppTokenProvider) ListInstallationRepositories(ctx context.Context, installationID int64) ([]InstallationRepository, error) {
+	// Create an unscoped installation token via the App JWT client.
+	appClient, err := p.newAppClient()
+	if err != nil {
+		return nil, err
+	}
+	tok, _, err := appClient.Apps.CreateInstallationToken(ctx, installationID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating installation token: %w", err)
+	}
+
+	// Create a client authenticated as the installation.
+	instClient := ghub.NewClient(nil).WithAuthToken(tok.GetToken())
+	if p.baseURL != "https://api.github.com" {
+		instClient, err = instClient.WithEnterpriseURLs(p.baseURL, p.baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("configuring enterprise URLs: %w", err)
+		}
+	}
+
+	var all []InstallationRepository
+	opts := &ghub.ListOptions{PerPage: 100}
+	for {
+		result, resp, err := instClient.Apps.ListRepos(ctx, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing installation repos: %w", err)
+		}
+		for _, r := range result.Repositories {
+			all = append(all, InstallationRepository{
+				FullName: r.GetFullName(),
+				Name:     r.GetName(),
+				Private:  r.GetPrivate(),
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return all, nil
+}
+
+// installationPermissionsToMap converts the SDK's typed struct to a flat map.
+func installationPermissionsToMap(p *ghub.InstallationPermissions) map[string]string {
+	if p == nil {
+		return nil
+	}
+	m := make(map[string]string)
+	add := func(key string, val *string) {
+		if val != nil && *val != "" {
+			m[key] = *val
+		}
+	}
+	add("actions", p.Actions)
+	add("administration", p.Administration)
+	add("checks", p.Checks)
+	add("contents", p.Contents)
+	add("deployments", p.Deployments)
+	add("discussions", p.Discussions)
+	add("environments", p.Environments)
+	add("issues", p.Issues)
+	add("members", p.Members)
+	add("metadata", p.Metadata)
+	add("packages", p.Packages)
+	add("pages", p.Pages)
+	add("pulls", p.PullRequests)
+	add("security_events", p.SecurityEvents)
+	add("statuses", p.Statuses)
+	add("vulnerability_alerts", p.VulnerabilityAlerts)
+	add("workflows", p.Workflows)
+	return m
+}
+
+// signJWT creates a signed JWT for GitHub App authentication.
+func (p *AppTokenProvider) signJWT() (string, error) {
+	now := time.Now()
+	claims := jwt.RegisteredClaims{
+		Issuer:    fmt.Sprintf("%d", p.appID),
+		IssuedAt:  jwt.NewNumericDate(now.Add(-60 * time.Second)),
+		ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
+	}
+	jwtToken := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	return jwtToken.SignedString(p.key)
+}
+

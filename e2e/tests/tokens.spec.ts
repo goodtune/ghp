@@ -1,6 +1,36 @@
 import { test, expect } from "@playwright/test";
 import { loginTestUser } from "./helpers";
 
+/** Inject a repository into the ghp-repo-select component and select it. */
+async function selectRepo(page: any, repo: string) {
+  await page.evaluate((r: string) => {
+    const el = document.getElementById("repo-select") as any;
+    el.repos = [r];
+    el.value = r;
+  }, repo);
+}
+
+/** Select a permission level inside the ghp-permission-select component. */
+async function selectPermission(
+  page: any,
+  perm: string,
+  level: string
+) {
+  await page.evaluate(
+    ({ p, l }: { p: string; l: string }) => {
+      const el = document.getElementById("perm-select") as any;
+      const sel = el.shadowRoot.querySelector(
+        `[data-perm="${p}"]`
+      ) as HTMLSelectElement;
+      if (sel) {
+        sel.value = l;
+        sel.dispatchEvent(new Event("change"));
+      }
+    },
+    { p: perm, l: level }
+  );
+}
+
 test.describe("Token management", () => {
   test.beforeEach(async ({ context }) => {
     await loginTestUser(context);
@@ -8,10 +38,12 @@ test.describe("Token management", () => {
 
   test("can create a token via the form", async ({ page }, testInfo) => {
     await page.goto("/");
+    await page.waitForLoadState("networkidle");
 
-    // Fill in the form.
-    await page.fill("#repo", "goodtune/myproject");
-    await page.fill("#scopes", "contents:read,pulls:write");
+    // Set repo and permissions via the web components.
+    await selectRepo(page, "goodtune/myproject");
+    await selectPermission(page, "contents", "read");
+
     await page.selectOption("#duration", "24h");
     await page.fill("#session", "playwright-test-session");
 
@@ -46,10 +78,11 @@ test.describe("Token management", () => {
     page,
   }) => {
     await page.goto("/");
+    await page.waitForLoadState("networkidle");
 
     // Create a token first.
-    await page.fill("#repo", "goodtune/testproject");
-    await page.fill("#scopes", "contents:read");
+    await selectRepo(page, "goodtune/testproject");
+    await selectPermission(page, "contents", "read");
     await page.fill("#session", "e2e-list-test");
     await page.click('button:has-text("Create Token")');
 
@@ -66,10 +99,11 @@ test.describe("Token management", () => {
     // Use a unique user so tokens from other tests don't interfere.
     await loginTestUser(context, { username: "revoke-test-user" });
     await page.goto("/");
+    await page.waitForLoadState("networkidle");
 
     // Create a token.
-    await page.fill("#repo", "goodtune/revoke-test");
-    await page.fill("#scopes", "issues:write");
+    await selectRepo(page, "goodtune/revoke-test");
+    await selectPermission(page, "issues", "write");
     await page.click('button:has-text("Create Token")');
     await expect(page.locator("#new-token")).toBeVisible();
 

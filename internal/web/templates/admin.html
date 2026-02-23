@@ -18,6 +18,7 @@
         .btn-danger:hover { background: #f85149; }
         .btn-secondary { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; }
         .btn-secondary:hover { background: #30363d; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .section { margin-bottom: 2rem; }
         .section h2 { font-size: 1.1rem; color: #f0f6fc; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #30363d; }
         table { width: 100%; border-collapse: collapse; }
@@ -31,11 +32,15 @@
         .form-group { margin-bottom: 1rem; }
         .form-group label { display: block; margin-bottom: 0.25rem; font-size: 0.875rem; color: #8b949e; }
         .form-group input, .form-group select { width: 100%; padding: 0.5rem; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 0.875rem; }
+        .form-group select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8.825a.5.5 0 0 1-.354-.146l-3.5-3.5a.5.5 0 1 1 .708-.708L6 7.618l3.146-3.147a.5.5 0 1 1 .708.708l-3.5 3.5A.5.5 0 0 1 6 8.825z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 0.5rem center; padding-right: 1.5rem; }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(88,166,255,0.3); }
         .token-display { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-top: 1rem; font-family: monospace; word-break: break-all; }
         .empty { text-align: center; color: #8b949e; padding: 2rem; }
         a.link { color: #58a6ff; text-decoration: none; }
         a.link:hover { text-decoration: underline; }
     </style>
+    <script src="/static/ghp-repo-select.js"></script>
+    <script src="/static/ghp-permission-select.js"></script>
 </head>
 <body>
     <div class="container">
@@ -57,16 +62,18 @@
             <h2>Create Agent Token</h2>
             <div class="create-form">
                 <div class="form-group">
-                    <label for="installation-id">Installation ID</label>
-                    <input type="number" id="installation-id" placeholder="12345678">
+                    <label for="installation-id">Installation</label>
+                    <select id="installation-id" onchange="onInstallationChange()">
+                        <option value="">Loading installations...</option>
+                    </select>
                 </div>
                 <div class="form-group">
-                    <label for="repos">Repositories (comma-separated)</label>
-                    <input type="text" id="repos" placeholder="org/repo1,org/repo2">
+                    <label>Repositories</label>
+                    <ghp-repo-select id="repo-select" mode="multi" placeholder="Search repositories..." disabled></ghp-repo-select>
                 </div>
                 <div class="form-group">
-                    <label for="scopes">Scopes (comma-separated)</label>
-                    <input type="text" id="scopes" placeholder="contents:read,pulls:write">
+                    <label>Permissions</label>
+                    <ghp-permission-select id="perm-select"></ghp-permission-select>
                 </div>
                 <div class="form-group">
                     <label for="duration">Duration</label>
@@ -81,7 +88,7 @@
                     <label for="session">Session identifier (optional)</label>
                     <input type="text" id="session" placeholder="ci-agent-run-42">
                 </div>
-                <button class="btn" onclick="createAgentToken()">Create Agent Token</button>
+                <button class="btn" id="create-btn" onclick="createAgentToken()">Create Agent Token</button>
                 <div id="new-token" style="display:none">
                     <div class="token-display" id="token-value"></div>
                     <p style="color:#f0883e;margin-top:0.5rem;font-size:0.8rem">This token will only be shown once. Copy it now.</p>
@@ -101,6 +108,7 @@
     </div>
 
     <script>
+        // ── API helper ──────────────────────────────────────────────
         async function api(method, path, body) {
             const opts = { method, headers: { 'Content-Type': 'application/json' } };
             if (body) opts.body = JSON.stringify(body);
@@ -108,28 +116,106 @@
             return resp.json();
         }
 
-        async function createAgentToken() {
-            const installationId = parseInt(document.getElementById('installation-id').value);
-            const repos = document.getElementById('repos').value;
-            const scopes = document.getElementById('scopes').value;
-            const duration = document.getElementById('duration').value;
-            const session = document.getElementById('session').value;
+        // ── State ───────────────────────────────────────────────────
+        let installations = [];
 
-            if (!installationId || !repos || !scopes) {
-                alert('Installation ID, repositories, and scopes are required');
+        const repoSelect = document.getElementById('repo-select');
+        const permSelect = document.getElementById('perm-select');
+
+        // ── Installation select ────────────────────────────────────
+        async function loadInstallations() {
+            const sel = document.getElementById('installation-id');
+            try {
+                const data = await api('GET', '/api/github/installations');
+                if (!Array.isArray(data) || data.length === 0) {
+                    sel.innerHTML = '<option value="">No installations found</option>';
+                    return;
+                }
+                installations = data;
+                sel.innerHTML = '<option value="">Select an installation...</option>';
+                for (const inst of installations) {
+                    const opt = document.createElement('option');
+                    opt.value = inst.id;
+                    opt.textContent = inst.account.login + ' (' + inst.id + ')';
+                    sel.appendChild(opt);
+                }
+            } catch (err) {
+                sel.innerHTML = '<option value="">Failed to load installations</option>';
+                console.error('Failed to load installations:', err);
+            }
+        }
+
+        async function onInstallationChange() {
+            const id = parseInt(document.getElementById('installation-id').value);
+            repoSelect.clear();
+            document.getElementById('new-token').style.display = 'none';
+
+            if (!id) {
+                repoSelect.disabled = true;
+                permSelect.permissions = {};
                 return;
             }
+
+            // Set permissions from installation.
+            const inst = installations.find(i => i.id === id);
+            permSelect.permissions = inst ? (inst.permissions || {}) : {};
+
+            // Load repos.
+            repoSelect.disabled = true;
+            repoSelect.setAttribute('placeholder', 'Loading repositories...');
+
+            try {
+                const data = await api('GET', '/api/github/installations/' + id + '/repositories');
+                repoSelect.repos = Array.isArray(data) ? data : [];
+                repoSelect.disabled = false;
+                repoSelect.setAttribute('placeholder', 'Search repositories...');
+            } catch (err) {
+                repoSelect.setAttribute('placeholder', 'Failed to load repositories');
+                console.error('Failed to load repositories:', err);
+            }
+        }
+
+        // ── Create token ───────────────────────────────────────────
+        async function createAgentToken() {
+            const installationId = parseInt(document.getElementById('installation-id').value);
+            const duration = document.getElementById('duration').value;
+            const session = document.getElementById('session').value;
+            const selectedRepos = repoSelect.value;
+            const scopes = permSelect.value;
+
+            if (!installationId) {
+                alert('Please select an installation.');
+                return;
+            }
+            if (selectedRepos.length === 0) {
+                alert('Please select at least one repository.');
+                return;
+            }
+            if (Object.keys(scopes).length === 0) {
+                alert('Please select at least one permission.');
+                return;
+            }
+
+            const scopeStr = Object.entries(scopes).map(([k, v]) => k + ':' + v).join(',');
 
             const body = {
                 type: 'agent',
                 installation_id: installationId,
-                repositories: repos.split(',').map(r => r.trim()),
-                scopes: scopes,
+                repositories: selectedRepos,
+                scopes: scopeStr,
                 duration: duration,
             };
             if (session) body.session_id = session;
 
+            const btn = document.getElementById('create-btn');
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+
             const data = await api('POST', '/api/tokens', body);
+
+            btn.disabled = false;
+            btn.textContent = 'Create Agent Token';
+
             if (data.token) {
                 document.getElementById('token-value').textContent = data.token;
                 document.getElementById('new-token').style.display = 'block';
@@ -139,6 +225,7 @@
             }
         }
 
+        // ── Users / Tokens / Audit ─────────────────────────────────
         async function loadUsers() {
             const users = await api('GET', '/api/users');
             const container = document.getElementById('users-list');
@@ -258,6 +345,8 @@
             window.location.href = '/login';
         }
 
+        // ── Init ───────────────────────────────────────────────────
+        loadInstallations();
         loadUsers();
         loadAllTokens();
         loadAudit();

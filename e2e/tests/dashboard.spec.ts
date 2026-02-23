@@ -36,9 +36,9 @@ test.describe("Dashboard", () => {
       page.locator('h2:has-text("Create Token")')
     ).toBeVisible();
 
-    // Form fields are present.
-    await expect(page.locator("#repo")).toBeVisible();
-    await expect(page.locator("#scopes")).toBeVisible();
+    // Web component form fields are present.
+    await expect(page.locator("ghp-repo-select")).toBeVisible();
+    await expect(page.locator("ghp-permission-select")).toBeVisible();
     await expect(page.locator("#duration")).toBeVisible();
     await expect(page.locator("#session")).toBeVisible();
 
