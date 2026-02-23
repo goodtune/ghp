@@ -36,6 +36,7 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - How It Works: how-it-works.md
+  - OAuth Broker: oauth-broker.md
   - Administration:
     - Installation: admin/installation.md
     - Configuration: admin/configuration.md
