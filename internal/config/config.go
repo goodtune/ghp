@@ -23,6 +23,7 @@ type Config struct {
 	Metrics  MetricsConfig  `koanf:"metrics"`
 	OTEL     OTELConfig     `koanf:"otel"`
 	Admins   []string       `koanf:"admins"`
+	Auth     AuthConfig     `koanf:"auth"`
 
 	EncryptionKey string `koanf:"encryption_key"`
 
@@ -88,6 +89,16 @@ type OTELConfig struct {
 	Protocol string `koanf:"protocol"`
 }
 
+// AuthConfig holds settings for the OAuth broker feature.
+type AuthConfig struct {
+	// JWTSecret is the shared HMAC-SHA256 secret used to sign broker JWTs.
+	// When set, the /auth/authorize and /auth/callback broker endpoints are enabled.
+	JWTSecret string `koanf:"jwt_secret"`
+	// AllowedRedirects is a list of permitted redirect_uri values or wildcard
+	// domain patterns (e.g. "*.example.com") for the OAuth broker flow.
+	AllowedRedirects []string `koanf:"allowed_redirects"`
+}
+
 // Defaults returns a Config with sensible defaults.
 func Defaults() *Config {
 	return &Config{
@@ -137,7 +148,7 @@ func Load(path string) (*Config, error) {
 		if i := strings.Index(s, "_"); i > 0 {
 			section, field := s[:i], s[i+1:]
 			switch section {
-			case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel":
+			case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth":
 				// Handle 3-level nesting for logging.file.*
 				if section == "logging" && strings.HasPrefix(field, "file_") {
 					return "logging.file." + field[len("file_"):]
