@@ -4,22 +4,14 @@ repo_url: https://github.com/goodtune/ghp
 repo_name: goodtune/ghp
 
 theme:
-  name: material
-  palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
-  features:
-    - navigation.sections
-    - navigation.expand
-    - content.code.copy
+  name: shadcn
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js
+  - javascripts/mermaid.js
 
 markdown_extensions:
   - pymdownx.superfences:
