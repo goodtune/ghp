@@ -210,7 +210,8 @@ class GhpRepoSelect extends HTMLElement {
       const text = document.createTextNode(repo + ' ');
       chip.appendChild(text);
       const btn = document.createElement('button');
-      btn.innerHTML = '&times;';
+      btn.type = 'button';
+      btn.textContent = '×';
       btn.addEventListener('click', () => this._removeRepo(repo));
       chip.appendChild(btn);
       container.appendChild(chip);

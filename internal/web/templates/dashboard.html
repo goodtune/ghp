@@ -136,11 +136,11 @@
             const session = document.getElementById('session').value;
 
             if (!repo) {
-                alert('Please select a repository.');
+                alert('Repository is required.');
                 return;
             }
             if (Object.keys(scopes).length === 0) {
-                alert('Please select at least one permission.');
+                alert('At least one permission is required.');
                 return;
             }
 

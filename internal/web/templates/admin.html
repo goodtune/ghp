@@ -125,18 +125,23 @@
         // ── Installation select ────────────────────────────────────
         async function loadInstallations() {
             const sel = document.getElementById('installation-id');
-            const data = await api('GET', '/api/github/installations');
-            if (!Array.isArray(data) || data.length === 0) {
-                sel.innerHTML = '<option value="">No installations found</option>';
-                return;
-            }
-            installations = data;
-            sel.innerHTML = '<option value="">Select an installation...</option>';
-            for (const inst of installations) {
-                const opt = document.createElement('option');
-                opt.value = inst.id;
-                opt.textContent = inst.account.login + ' (' + inst.id + ')';
-                sel.appendChild(opt);
+            try {
+                const data = await api('GET', '/api/github/installations');
+                if (!Array.isArray(data) || data.length === 0) {
+                    sel.innerHTML = '<option value="">No installations found</option>';
+                    return;
+                }
+                installations = data;
+                sel.innerHTML = '<option value="">Select an installation...</option>';
+                for (const inst of installations) {
+                    const opt = document.createElement('option');
+                    opt.value = inst.id;
+                    opt.textContent = inst.account.login + ' (' + inst.id + ')';
+                    sel.appendChild(opt);
+                }
+            } catch (err) {
+                sel.innerHTML = '<option value="">Failed to load installations</option>';
+                console.error('Failed to load installations:', err);
             }
         }
 
@@ -159,10 +164,15 @@
             repoSelect.disabled = true;
             repoSelect.setAttribute('placeholder', 'Loading repositories...');
 
-            const data = await api('GET', '/api/github/installations/' + id + '/repositories');
-            repoSelect.repos = Array.isArray(data) ? data : [];
-            repoSelect.disabled = false;
-            repoSelect.setAttribute('placeholder', 'Search repositories...');
+            try {
+                const data = await api('GET', '/api/github/installations/' + id + '/repositories');
+                repoSelect.repos = Array.isArray(data) ? data : [];
+                repoSelect.disabled = false;
+                repoSelect.setAttribute('placeholder', 'Search repositories...');
+            } catch (err) {
+                repoSelect.setAttribute('placeholder', 'Failed to load repositories');
+                console.error('Failed to load repositories:', err);
+            }
         }
 
         // ── Create token ───────────────────────────────────────────
