@@ -6,7 +6,7 @@ Requires=ghp.socket
 
 [Service]
 Type=notify
-ExecStart=/usr/bin/ghp serve --config /etc/ghp/config.yaml
+ExecStart=/usr/bin/ghp serve --migrate --config /etc/ghp/config.yaml
 ExecReload=/bin/kill -USR1 $MAINPID
 
 DynamicUser=yes
