@@ -4,7 +4,7 @@ repo_url: https://github.com/goodtune/ghp
 repo_name: goodtune/ghp
 
 theme:
-  name: terminal
+  name: shadcn
 
 extra_css:
   - stylesheets/extra.css

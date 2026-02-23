@@ -1,3 +1,7 @@
-:root {
-    --page-width: 80em;
+pre {
+    overflow: auto;
+}
+
+article {
+    max-width: none !important;
 }
