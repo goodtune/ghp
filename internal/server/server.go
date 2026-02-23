@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,13 +28,29 @@ import (
 
 // Server is the main ghp server.
 type Server struct {
-	cfg    *config.Config
-	logger *slog.Logger
+	cfg        *config.Config
+	configPath string
+	logger     *slog.Logger
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, logger *slog.Logger) *Server {
-	return &Server{cfg: cfg, logger: logger}
+func New(cfg *config.Config, configPath string, logger *slog.Logger) *Server {
+	return &Server{cfg: cfg, configPath: configPath, logger: logger}
+}
+
+// reloadConfig re-reads the configuration file and updates hot-reloadable
+// fields in-place. All components holding a pointer to the Config struct
+// will see the updated values.
+func (s *Server) reloadConfig() {
+	if s.configPath == "" {
+		s.logger.Warn("config_reload_skipped", "msg", "no config file path, cannot reload")
+		return
+	}
+	if err := s.cfg.ReloadFrom(s.configPath); err != nil {
+		s.logger.Error("config_reload_failed", "error", err)
+		return
+	}
+	s.logger.Info("config_reloaded", "path", s.configPath)
 }
 
 // Run starts the server and blocks until shutdown.
@@ -151,49 +168,94 @@ func (s *Server) Run(ctx context.Context) error {
 		managementHost: s.cfg.Server.ManagementHost,
 	})
 
-	// Platform-specific signal handling (e.g. SIGUSR1 on Unix).
-	setupPlatformSignals(s.logger)
+	// Platform-specific signal handling (e.g. SIGUSR1 on Unix for config reload).
+	setupPlatformSignals(s.logger, s.reloadConfig)
 
-	// TLS mode: https_listen configured with certificates.
-	if s.cfg.Server.HTTPSListen != "" {
+	// TLS mode: https_listen configured, or socket activation with TLS certificates.
+	hasTLS := s.cfg.Server.HTTPSListen != "" ||
+		(s.cfg.Server.SystemdSocketActivation && len(s.cfg.TLS.Certificates) > 0)
+	if hasTLS {
 		return s.serveTLS(ctx, dispatch)
 	}
 
-	// Legacy mode: plain HTTP on single port (no TLS).
+	// Plain HTTP mode (single port, no TLS).
 	return s.servePlain(ctx, dispatch)
 }
 
 // serveTLS starts an HTTPS server with TLS termination and an optional
 // HTTP redirect server. It blocks until shutdown.
+//
+// With systemd socket activation, file descriptors are inherited from the
+// socket unit. Two FDs means fd3=HTTP(80) and fd4=HTTPS(443); a single FD
+// is used for HTTPS only.
 func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
 	tlsCfg, err := loadTLSConfig(&s.cfg.TLS)
 	if err != nil {
 		return fmt.Errorf("loading TLS config: %w", err)
 	}
 	if tlsCfg == nil {
-		return fmt.Errorf("https_listen configured but no TLS certificates provided")
+		return fmt.Errorf("TLS mode enabled but no certificates configured")
 	}
 
-	httpsLn, err := net.Listen("tcp", s.cfg.Server.HTTPSListen)
-	if err != nil {
-		return fmt.Errorf("listening on %s: %w", s.cfg.Server.HTTPSListen, err)
+	var httpsLn net.Listener
+	var httpLn net.Listener // optional HTTP redirect listener
+
+	if s.cfg.Server.SystemdSocketActivation {
+		listeners, sdErr := systemdListeners()
+		if sdErr != nil {
+			s.logger.Warn("systemd_socket_fallback",
+				"error", sdErr,
+				"msg", "falling back to configured addresses")
+		} else {
+			switch len(listeners) {
+			case 1:
+				httpsLn = listeners[0]
+			case 2:
+				httpLn = listeners[0]  // fd 3 = port 80
+				httpsLn = listeners[1] // fd 4 = port 443
+			default:
+				for _, ln := range listeners {
+					ln.Close()
+				}
+				return fmt.Errorf("expected 1-2 systemd sockets for TLS mode, got %d", len(listeners))
+			}
+		}
 	}
+
+	// Fall back to configured addresses when systemd sockets are unavailable.
+	if httpsLn == nil {
+		if s.cfg.Server.HTTPSListen == "" {
+			return fmt.Errorf("https_listen not configured and no systemd socket available")
+		}
+		httpsLn, err = net.Listen("tcp", s.cfg.Server.HTTPSListen)
+		if err != nil {
+			return fmt.Errorf("listening on %s: %w", s.cfg.Server.HTTPSListen, err)
+		}
+	}
+
 	tlsLn := tls.NewListener(httpsLn, tlsCfg)
 
 	// Set TLSConfig so HTTP/2 is auto-configured by net/http.
 	httpsServer := &http.Server{Handler: handler, TLSConfig: tlsCfg}
 
-	// Start HTTP redirect server if configured.
+	// Start HTTP redirect server from systemd socket or configured address.
 	var httpServer *http.Server
-	if s.cfg.Server.HTTPListen != "" {
-		httpLn, err := net.Listen("tcp", s.cfg.Server.HTTPListen)
+	if httpLn != nil {
+		httpServer = &http.Server{Handler: httpsRedirectHandler()}
+		go func() {
+			if err := httpServer.Serve(httpLn); err != nil && err != http.ErrServerClosed {
+				s.logger.Error("http_redirect_server_error", "err", err)
+			}
+		}()
+	} else if s.cfg.Server.HTTPListen != "" {
+		cfgLn, err := net.Listen("tcp", s.cfg.Server.HTTPListen)
 		if err != nil {
 			tlsLn.Close()
 			return fmt.Errorf("listening on %s: %w", s.cfg.Server.HTTPListen, err)
 		}
 		httpServer = &http.Server{Handler: httpsRedirectHandler()}
 		go func() {
-			if err := httpServer.Serve(httpLn); err != nil && err != http.ErrServerClosed {
+			if err := httpServer.Serve(cfgLn); err != nil && err != http.ErrServerClosed {
 				s.logger.Error("http_redirect_server_error",
 					"listen_addr", s.cfg.Server.HTTPListen,
 					"err", err)
@@ -216,8 +278,8 @@ func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
 	}()
 
 	s.logger.Info("server_ready",
-		"https_listen", s.cfg.Server.HTTPSListen,
-		"http_listen", s.cfg.Server.HTTPListen,
+		"mode", "tls",
+		"systemd", s.cfg.Server.SystemdSocketActivation,
 		"msg", "ready to accept connections")
 	notifySystemd("READY=1")
 
@@ -266,11 +328,18 @@ func (s *Server) createListener() (net.Listener, error) {
 
 	// Check for systemd socket activation.
 	if s.cfg.Server.SystemdSocketActivation {
-		if fds := os.Getenv("LISTEN_FDS"); fds == "1" {
-			f := os.NewFile(3, "systemd-socket")
-			return net.FileListener(f)
+		listeners, err := systemdListeners()
+		if err != nil {
+			s.logger.Warn("systemd_socket_fallback",
+				"error", err,
+				"msg", "falling back to configured address")
+		} else if len(listeners) >= 1 {
+			// Use the first listener; close any extras (plain mode needs one).
+			for _, ln := range listeners[1:] {
+				ln.Close()
+			}
+			return listeners[0], nil
 		}
-		s.logger.Warn("systemd socket activation configured but LISTEN_FDS not set, falling back to configured address")
 	}
 
 	// Unix socket.
@@ -282,6 +351,34 @@ func (s *Server) createListener() (net.Listener, error) {
 
 	// TCP.
 	return net.Listen("tcp", addr)
+}
+
+// systemdListeners returns net.Listeners for each file descriptor passed
+// by the systemd socket activation protocol (LISTEN_FDS).
+func systemdListeners() ([]net.Listener, error) {
+	fdsStr := os.Getenv("LISTEN_FDS")
+	if fdsStr == "" {
+		return nil, fmt.Errorf("LISTEN_FDS not set")
+	}
+	nfds, err := strconv.Atoi(fdsStr)
+	if err != nil || nfds <= 0 {
+		return nil, fmt.Errorf("invalid LISTEN_FDS value: %s", fdsStr)
+	}
+	listeners := make([]net.Listener, 0, nfds)
+	for i := 0; i < nfds; i++ {
+		fd := 3 + i
+		f := os.NewFile(uintptr(fd), fmt.Sprintf("systemd-socket-%d", i))
+		ln, err := net.FileListener(f)
+		f.Close()
+		if err != nil {
+			for _, prev := range listeners {
+				prev.Close()
+			}
+			return nil, fmt.Errorf("creating listener from fd %d: %w", fd, err)
+		}
+		listeners = append(listeners, ln)
+	}
+	return listeners, nil
 }
 
 type hostDispatchConfig struct {

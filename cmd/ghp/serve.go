@@ -39,7 +39,7 @@ func newServeCmd() *cobra.Command {
 
 			logger.Info("server_start", "msg", "starting ghp server")
 
-			srv := server.New(cfg, logger)
+			srv := server.New(cfg, cfgPath, logger)
 			return srv.Run(context.Background())
 		},
 	}

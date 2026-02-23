@@ -1,0 +1,34 @@
+# GHP - GitHub Proxy for Autonomous Coding Agents
+# Full reference: https://github.com/goodtune/ghp
+
+github:
+  # app_id: 0
+  # client_id: ""
+  # client_secret: ""
+  # private_key_file: /etc/ghp/github-app.pem
+  # enterprise_slug: ""
+
+database:
+  driver: sqlite
+  dsn: /var/lib/ghp/ghp.db
+
+server:
+  systemd_socket_activation: true
+
+# tls:
+#   certificates:
+#     - cert_file: /etc/ghp/tls/cert.pem
+#       key_file: /etc/ghp/tls/key.pem
+
+tokens:
+  default_duration: 24h
+  max_duration: 168h
+
+logging:
+  output: stdout
+  level: info
+
+# encryption_key: ""  # Or set GHP_ENCRYPTION_KEY env var
+
+# admins:
+#   - github-username
