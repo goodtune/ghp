@@ -144,23 +144,15 @@ func (s *Server) Run(ctx context.Context) error {
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 
-	// Build access log handler factory based on configured format.
-	wrapAccess := func(b string, next http.Handler) http.Handler {
-		return accessLogHandler(b, next, s.logger)
-	}
-	if s.cfg.Logging.Format == "caddy" {
-		cw := newCaddyLogWriter(s.logWriter)
-		wrapAccess = func(b string, next http.Handler) http.Handler {
-			return caddyAccessLogHandler(b, next, cw)
-		}
-	}
+	// Build access log writer for Caddy-compatible JSON access logs.
+	aw := newAccessLogWriter(s.logWriter)
 
 	// Build host dispatch with access logging on all handlers.
 	dispatch := newHostDispatch(hostDispatchConfig{
-		apiHandler:     wrapAccess(backend.API, proxyHandler),
-		githubHandler:  wrapAccess(backend.GitHub, githubPassthrough),
-		copilotHandler: wrapAccess(backend.Copilot, copilotPassthrough),
-		mgmtHandler:    wrapAccess(backend.Mgmt, mux),
+		apiHandler:     accessLogHandler(backend.API, proxyHandler, aw),
+		githubHandler:  accessLogHandler(backend.GitHub, githubPassthrough, aw),
+		copilotHandler: accessLogHandler(backend.Copilot, copilotPassthrough, aw),
+		mgmtHandler:    accessLogHandler(backend.Mgmt, mux, aw),
 		managementHost: s.cfg.Server.ManagementHost,
 	})
 

@@ -70,10 +70,9 @@ type TokensConfig struct {
 }
 
 type LoggingConfig struct {
-	Output string         `koanf:"output"`
-	Level  string         `koanf:"level"`
-	Format string         `koanf:"format"`
-	File   LogFileConfig  `koanf:"file"`
+	Output string        `koanf:"output"`
+	Level  string        `koanf:"level"`
+	File   LogFileConfig `koanf:"file"`
 }
 
 type LogFileConfig struct {

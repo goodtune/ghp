@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -53,42 +52,14 @@ func (r *responseRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
 }
 
-// accessLogHandler wraps an http.Handler with standard HTTP access logging
-// and per-backend Prometheus metrics.
-func accessLogHandler(backend string, next http.Handler, logger *slog.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rec := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
-
-		next.ServeHTTP(rec, r)
-
-		dur := time.Since(start)
-		statusStr := strconv.Itoa(rec.status)
-
-		logger.Info("http_request",
-			"method", r.Method,
-			"host", r.Host,
-			"path", r.URL.Path,
-			"status", rec.status,
-			"size", rec.size,
-			"duration_ms", dur.Milliseconds(),
-			"remote_addr", r.RemoteAddr,
-			"user_agent", r.Header.Get("User-Agent"),
-		)
-
-		metrics.HttpRequestDuration.WithLabelValues(backend, r.Method, statusStr).Observe(dur.Seconds())
-		metrics.HttpRequestTotal.WithLabelValues(backend, r.Method, statusStr).Inc()
-	})
-}
-
 // Caddy-compatible JSON access log types.
 
-type caddyAccessLogEntry struct {
+type accessLogEntry struct {
 	Level       string              `json:"level"`
 	TS          float64             `json:"ts"`
 	Logger      string              `json:"logger"`
 	Msg         string              `json:"msg"`
-	Request     caddyRequestEntry   `json:"request"`
+	Request     requestEntry        `json:"request"`
 	BytesRead   int                 `json:"bytes_read"`
 	UserID      string              `json:"user_id"`
 	Duration    float64             `json:"duration"`
@@ -97,7 +68,7 @@ type caddyAccessLogEntry struct {
 	RespHeaders map[string][]string `json:"resp_headers"`
 }
 
-type caddyRequestEntry struct {
+type requestEntry struct {
 	RemoteIP   string              `json:"remote_ip"`
 	RemotePort string              `json:"remote_port"`
 	ClientIP   string              `json:"client_ip"`
@@ -108,17 +79,17 @@ type caddyRequestEntry struct {
 	Headers    map[string][]string `json:"headers"`
 }
 
-// caddyLogWriter provides thread-safe Caddy-format JSON log writing.
-type caddyLogWriter struct {
+// accessLogWriter provides thread-safe Caddy-format JSON log writing.
+type accessLogWriter struct {
 	mu sync.Mutex
 	w  io.Writer
 }
 
-func newCaddyLogWriter(w io.Writer) *caddyLogWriter {
-	return &caddyLogWriter{w: w}
+func newAccessLogWriter(w io.Writer) *accessLogWriter {
+	return &accessLogWriter{w: w}
 }
 
-func (c *caddyLogWriter) writeEntry(entry *caddyAccessLogEntry) {
+func (c *accessLogWriter) writeEntry(entry *accessLogEntry) {
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return
@@ -129,9 +100,9 @@ func (c *caddyLogWriter) writeEntry(entry *caddyAccessLogEntry) {
 	c.mu.Unlock()
 }
 
-// caddyAccessLogHandler wraps an http.Handler with Caddy-compatible JSON
-// access logging and per-backend Prometheus metrics.
-func caddyAccessLogHandler(backend string, next http.Handler, cw *caddyLogWriter) http.Handler {
+// accessLogHandler wraps an http.Handler with Caddy-compatible JSON access
+// logging and per-backend Prometheus metrics.
+func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -165,12 +136,12 @@ func caddyAccessLogHandler(backend string, next http.Handler, cw *caddyLogWriter
 			level = "error"
 		}
 
-		entry := &caddyAccessLogEntry{
+		entry := &accessLogEntry{
 			Level:  level,
 			TS:     float64(start.UnixNano()) / 1e9,
 			Logger: "http.log.access",
 			Msg:    "handled request",
-			Request: caddyRequestEntry{
+			Request: requestEntry{
 				RemoteIP:   remoteIP,
 				RemotePort: remotePort,
 				ClientIP:   remoteIP,
@@ -188,7 +159,7 @@ func caddyAccessLogHandler(backend string, next http.Handler, cw *caddyLogWriter
 			RespHeaders: respHeaders,
 		}
 
-		cw.writeEntry(entry)
+		aw.writeEntry(entry)
 
 		metrics.HttpRequestDuration.WithLabelValues(backend, r.Method, statusStr).Observe(dur.Seconds())
 		metrics.HttpRequestTotal.WithLabelValues(backend, r.Method, statusStr).Inc()

@@ -3,10 +3,8 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/goodtune/ghp/internal/backend"
@@ -14,36 +12,7 @@ import (
 
 func TestAccessLog(t *testing.T) {
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("hello"))
-	})
-
-	handler := accessLogHandler(backend.GitHub, inner, logger)
-
-	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
-	req.Header.Set("User-Agent", "git/2.40")
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
-	}
-
-	log := buf.String()
-	for _, want := range []string{"http_request", "GET", "/org/repo", "200", "git/2.40", "github.com"} {
-		if !strings.Contains(log, want) {
-			t.Errorf("log missing %q: %s", want, log)
-		}
-	}
-}
-
-func TestCaddyAccessLog(t *testing.T) {
-	var buf bytes.Buffer
-	cw := newCaddyLogWriter(&buf)
+	aw := newAccessLogWriter(&buf)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -51,7 +20,7 @@ func TestCaddyAccessLog(t *testing.T) {
 		w.Write([]byte("hello"))
 	})
 
-	handler := caddyAccessLogHandler(backend.GitHub, inner, cw)
+	handler := accessLogHandler(backend.GitHub, inner, aw)
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
 	req.Header.Set("User-Agent", "git/2.40")
@@ -64,9 +33,9 @@ func TestCaddyAccessLog(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 
-	var entry caddyAccessLogEntry
+	var entry accessLogEntry
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
-		t.Fatalf("failed to unmarshal caddy log entry: %v\nraw: %s", err, buf.String())
+		t.Fatalf("failed to unmarshal access log entry: %v\nraw: %s", err, buf.String())
 	}
 
 	// Verify top-level Caddy fields.
@@ -119,15 +88,15 @@ func TestCaddyAccessLog(t *testing.T) {
 	}
 }
 
-func TestCaddyAccessLog_SensitiveHeadersRedacted(t *testing.T) {
+func TestAccessLog_SensitiveHeadersRedacted(t *testing.T) {
 	var buf bytes.Buffer
-	cw := newCaddyLogWriter(&buf)
+	aw := newAccessLogWriter(&buf)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := caddyAccessLogHandler(backend.GitHub, inner, cw)
+	handler := accessLogHandler(backend.GitHub, inner, aw)
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
 	req.Header.Set("Authorization", "Bearer secret-token")
@@ -136,7 +105,7 @@ func TestCaddyAccessLog_SensitiveHeadersRedacted(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	var entry caddyAccessLogEntry
+	var entry accessLogEntry
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
 		t.Fatalf("failed to unmarshal: %v", err)
 	}
@@ -149,22 +118,22 @@ func TestCaddyAccessLog_SensitiveHeadersRedacted(t *testing.T) {
 	}
 }
 
-func TestCaddyAccessLog_ErrorLevel(t *testing.T) {
+func TestAccessLog_ErrorLevel(t *testing.T) {
 	var buf bytes.Buffer
-	cw := newCaddyLogWriter(&buf)
+	aw := newAccessLogWriter(&buf)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	handler := caddyAccessLogHandler(backend.GitHub, inner, cw)
+	handler := accessLogHandler(backend.GitHub, inner, aw)
 
 	req := httptest.NewRequest("GET", "http://github.com/error", nil)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
 
-	var entry caddyAccessLogEntry
+	var entry accessLogEntry
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
 		t.Fatalf("failed to unmarshal: %v", err)
 	}
