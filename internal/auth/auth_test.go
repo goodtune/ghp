@@ -2,6 +2,9 @@ package auth
 
 import (
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/goodtune/ghp/internal/config"
@@ -65,5 +68,33 @@ func TestSecureCookies(t *testing.T) {
 				t.Errorf("secureCookies() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHandleTestLogin_BodyTooLarge(t *testing.T) {
+	cfg := &config.Config{DevMode: true}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+
+	// Body must be valid-looking JSON so the decoder reads past the 1 MB limit.
+	body := strings.NewReader(`{"username":"` + strings.Repeat("x", maxRequestBodySize) + `"}`)
+	req := httptest.NewRequest("POST", "/auth/test-login", body)
+	w := httptest.NewRecorder()
+	h.handleTestLogin(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected %d, got %d", http.StatusRequestEntityTooLarge, w.Code)
+	}
+}
+
+func TestHandleTestLogin_InvalidJSON(t *testing.T) {
+	cfg := &config.Config{DevMode: true}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+
+	req := httptest.NewRequest("POST", "/auth/test-login", strings.NewReader("not valid json"))
+	w := httptest.NewRecorder()
+	h.handleTestLogin(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
 	}
 }
