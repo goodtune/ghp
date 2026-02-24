@@ -73,15 +73,15 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 		sessions:         make(map[string]*Session),
 		states:           make(map[string]time.Time),
 		brokerStates:     make(map[string]*brokerState),
-		loginLimiter:     NewIPRateLimiter(5, time.Minute),
-		githubLimiter:    NewIPRateLimiter(10, time.Minute),
-		authorizeLimiter: NewIPRateLimiter(10, time.Minute),
+		loginLimiter:     NewIPRateLimiter(5, time.Minute, "/auth/test-login", logger),
+		githubLimiter:    NewIPRateLimiter(10, time.Minute, "/auth/github", logger),
+		authorizeLimiter: NewIPRateLimiter(10, time.Minute, "/auth/authorize", logger),
 	}
 }
 
 // RegisterRoutes adds auth routes to the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.Handle("GET /auth/github", h.githubLimiter.Middleware("GET /auth/github", http.HandlerFunc(h.handleGitHubLogin)))
+	mux.Handle("GET /auth/github", h.githubLimiter.Middleware(http.HandlerFunc(h.handleGitHubLogin)))
 	mux.HandleFunc("GET /auth/github/callback", h.handleGitHubCallback)
 	mux.HandleFunc("POST /auth/logout", h.handleLogout)
 	mux.HandleFunc("GET /auth/status", h.handleStatus)
@@ -93,7 +93,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			h.logger.Error("jwt_secret is too short; oauth broker endpoints disabled",
 				"configured_length", len(h.cfg.Auth.JWTSecret), "min_length", 32)
 		} else {
-			mux.Handle("GET /auth/authorize", h.authorizeLimiter.Middleware("GET /auth/authorize", http.HandlerFunc(h.handleBrokerAuthorize)))
+			mux.Handle("GET /auth/authorize", h.authorizeLimiter.Middleware(http.HandlerFunc(h.handleBrokerAuthorize)))
 			mux.HandleFunc("GET /auth/callback", h.handleBrokerCallback)
 			h.logger.Info("oauth broker endpoints enabled")
 			// Warn if no allowed redirects are configured — all broker requests will fail.
@@ -106,7 +106,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Dev-mode only: test login endpoint that bypasses GitHub OAuth.
 	if h.cfg.DevMode {
 		h.logger.Warn("dev mode enabled: /auth/test-login endpoint is active")
-		mux.Handle("POST /auth/test-login", h.loginLimiter.Middleware("POST /auth/test-login", http.HandlerFunc(h.handleTestLogin)))
+		mux.Handle("POST /auth/test-login", h.loginLimiter.Middleware(http.HandlerFunc(h.handleTestLogin)))
 	}
 }
 
