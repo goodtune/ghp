@@ -34,6 +34,9 @@ type Config struct {
 
 type TLSConfig struct {
 	Certificates []CertificateConfig `koanf:"certificates"`
+	// MinVersion sets the minimum TLS version accepted by the server.
+	// Allowed values: "1.2" (default), "1.3".
+	MinVersion string `koanf:"min_version"`
 }
 
 type CertificateConfig struct {
