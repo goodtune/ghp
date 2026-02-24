@@ -27,25 +27,28 @@ type API struct {
 	encryptor        *crypto.Encryptor
 	appTokenProvider *ghpgithub.AppTokenProvider // nil if GitHub App not configured
 	logger           *slog.Logger
+
+	tokenCreateLimiter *auth.IPRateLimiter // POST /api/tokens
 }
 
 // NewAPI creates a new API handler.
 func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, logger *slog.Logger) *API {
 	return &API{
-		cfg:              cfg,
-		store:            store,
-		tokenService:     ts,
-		authHandler:      ah,
-		encryptor:        enc,
-		appTokenProvider: atp,
-		logger:           logger,
+		cfg:                cfg,
+		store:              store,
+		tokenService:       ts,
+		authHandler:        ah,
+		encryptor:          enc,
+		appTokenProvider:   atp,
+		logger:             logger,
+		tokenCreateLimiter: auth.NewIPRateLimiter(20, time.Minute, "/api/tokens", logger),
 	}
 }
 
 // RegisterRoutes adds API routes to the given mux.
 // All routes require authentication via the auth handler.
 func (a *API) RegisterRoutes(mux *http.ServeMux) {
-	mux.Handle("POST /api/tokens", a.authHandler.RequireAuth(http.HandlerFunc(a.handleCreateToken)))
+	mux.Handle("POST /api/tokens", a.authHandler.RequireAuth(a.tokenCreateLimiter.Middleware(http.HandlerFunc(a.handleCreateToken))))
 	mux.Handle("GET /api/tokens", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListTokens)))
 	mux.Handle("GET /api/tokens/{id}", a.authHandler.RequireAuth(http.HandlerFunc(a.handleGetToken)))
 	mux.Handle("DELETE /api/tokens/{id}", a.authHandler.RequireAuth(http.HandlerFunc(a.handleRevokeToken)))

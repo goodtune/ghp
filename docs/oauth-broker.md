@@ -38,7 +38,7 @@ To enable the OAuth broker, add the following to your `ghp` configuration:
 
 ```yaml
 auth:
-  jwt_secret: "<shared-hmac-secret>"
+  jwt_private_key_file: "/etc/ghp/broker-signing.pem"
   allowed_redirects:
     - "https://app.example.com/auth/callback"
     - "*.internal.example.com"
@@ -46,15 +46,19 @@ auth:
 
 | Field | Description |
 |-------|-------------|
-| `auth.jwt_secret` | Shared HMAC-SHA256 secret used to sign broker JWTs. Must be shared with downstream services out-of-band. When set, the broker endpoints are enabled. |
+| `auth.jwt_private_key` | PEM-encoded RSA private key used to sign broker JWTs with RS256 (asymmetric). Downstream services verify tokens using the public key from `/.well-known/jwks.json` without being able to forge them. |
+| `auth.jwt_private_key_file` | Path to a PEM-encoded RSA private key file. Used when `jwt_private_key` is not set directly. |
 | `auth.allowed_redirects` | List of permitted `redirect_uri` values. Supports exact URLs and wildcard domain patterns (e.g. `*.example.com`). |
 
-Environment variable: `GHP_AUTH_JWT_SECRET`
+Environment variables: `GHP_AUTH_JWT_PRIVATE_KEY` (PEM contents), `GHP_AUTH_JWT_PRIVATE_KEY_FILE` (file path)
 
-!!! warning "Generate a strong secret"
-    Use a cryptographically random secret of at least 32 bytes:
+!!! tip "Generate an RSA key pair"
+    Generate a 2048-bit RSA key for JWT signing:
 
-        openssl rand -hex 32
+        openssl genrsa -out broker-signing.pem 2048
+
+    The corresponding public key is available to downstream services at
+    `{base_url}/.well-known/jwks.json` — no out-of-band key distribution required.
 
 ### GitHub App Setup
 
@@ -71,13 +75,13 @@ authentication to the proxy and receive a signed JWT in return.
 
 ### Prerequisites
 
-The downstream service needs two configuration values, provided by the proxy
-operator:
+The downstream service needs the proxy's base URL and its public key (available
+at `{auth_proxy_url}/.well-known/jwks.json`). No secret key distribution is required.
 
 | Value | Description | Example |
 |-------|-------------|---------|
 | `auth_proxy_url` | Base URL of the auth proxy | `https://auth-proxy.example.com` |
-| `auth_jwt_secret` | Shared HMAC secret (HS256) used to verify token signatures | *(provided out-of-band)* |
+| `auth_jwks_url` | JWKS endpoint for RS256 token verification | `https://auth-proxy.example.com/.well-known/jwks.json` |
 
 ### Starting the Login Flow
 
@@ -120,7 +124,7 @@ After the user authenticates with GitHub, the proxy redirects them back to
 The downstream service should:
 
 1. **Verify `state`** matches the value stored at the start of the flow.
-2. **Validate the JWT signature** using the shared HS256 secret.
+2. **Validate the JWT signature** using the proxy's public key (fetch from `/.well-known/jwks.json`).
 3. **Check that `exp`** has not passed.
 4. **Check that `aud`** matches the service's own callback URL.
 5. **Create a local session** using the claims from the token.
@@ -129,6 +133,11 @@ The downstream service should:
 
 ```python
 import jwt  # PyJWT
+import requests
+
+# Fetch the public key once at startup (or cache with TTL).
+jwks = requests.get(f"{AUTH_PROXY_URL}/.well-known/jwks.json").json()
+PUBLIC_KEY = jwt.algorithms.RSAAlgorithm.from_jwk(jwks["keys"][0])
 
 @app.route("/auth/callback")
 def auth_callback():
@@ -141,8 +150,8 @@ def auth_callback():
     try:
         claims = jwt.decode(
             token,
-            AUTH_JWT_SECRET,
-            algorithms=["HS256"],
+            PUBLIC_KEY,
+            algorithms=["RS256"],
             audience="https://myapp.example.com/auth/callback",
         )
     except jwt.InvalidTokenError as e:
@@ -157,11 +166,42 @@ def auth_callback():
 **Example (Go):**
 
 ```go
-import "github.com/golang-jwt/jwt/v5"
+import (
+    "crypto/rsa"
+    "encoding/base64"
+    "encoding/json"
+    "fmt"
+    "math/big"
+    "net/http"
+
+    "github.com/golang-jwt/jwt/v5"
+)
 
 type BrokerClaims struct {
     AvatarURL string `json:"avatar_url"`
     jwt.RegisteredClaims
+}
+
+// fetchRSAPublicKey retrieves the first RSA key from a JWKS endpoint.
+func fetchRSAPublicKey(jwksURL string) (*rsa.PublicKey, error) {
+    resp, err := http.Get(jwksURL)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+    var jwks struct {
+        Keys []struct {
+            N string `json:"n"`
+            E string `json:"e"`
+        } `json:"keys"`
+    }
+    if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil || len(jwks.Keys) == 0 {
+        return nil, fmt.Errorf("invalid JWKS response")
+    }
+    nBytes, _ := base64.RawURLEncoding.DecodeString(jwks.Keys[0].N)
+    eBytes, _ := base64.RawURLEncoding.DecodeString(jwks.Keys[0].E)
+    e := int(new(big.Int).SetBytes(eBytes).Int64())
+    return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: e}, nil
 }
 
 func handleAuthCallback(w http.ResponseWriter, r *http.Request) {
@@ -171,14 +211,15 @@ func handleAuthCallback(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // 2-4. Validate JWT
+    // 2-4. Validate JWT using the proxy's public key
+    // publicKey is an *rsa.PublicKey fetched once at startup via fetchRSAPublicKey.
     tokenStr := r.URL.Query().Get("token")
     token, err := jwt.ParseWithClaims(tokenStr, &BrokerClaims{},
         func(t *jwt.Token) (interface{}, error) {
-            if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+            if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
                 return nil, fmt.Errorf("unexpected signing method")
             }
-            return []byte(authJWTSecret), nil
+            return publicKey, nil
         },
         jwt.WithAudience("https://myapp.example.com/auth/callback"),
     )
@@ -199,18 +240,22 @@ func handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 ```javascript
 const jwt = require("jsonwebtoken");
+const jwksClient = require("jwks-rsa");
 
-app.get("/auth/callback", (req, res) => {
+const client = jwksClient({ jwksUri: `${AUTH_PROXY_URL}/.well-known/jwks.json` });
+
+app.get("/auth/callback", async (req, res) => {
   // 1. Verify CSRF state
   if (req.query.state !== req.session.oauthState) {
     return res.status(403).send("Invalid state");
   }
   delete req.session.oauthState;
 
-  // 2-4. Validate JWT
+  // 2-4. Validate JWT using the proxy's public key
   try {
-    const claims = jwt.verify(req.query.token, AUTH_JWT_SECRET, {
-      algorithms: ["HS256"],
+    const key = await client.getSigningKey();
+    const claims = jwt.verify(req.query.token, key.getPublicKey(), {
+      algorithms: ["RS256"],
       audience: "https://myapp.example.com/auth/callback",
     });
 
@@ -228,11 +273,15 @@ app.get("/auth/callback", (req, res) => {
 
 | Claim | Description |
 |-------|-------------|
+| `iss` | Issuer — the proxy's `base_url` (or `"ghp"` if not configured) |
 | `sub` | GitHub username (e.g. `octocat`) |
 | `avatar_url` | GitHub avatar URL |
 | `aud` | The `redirect_uri` this token was issued for |
 | `iat` | Issued-at timestamp (Unix epoch) |
 | `exp` | Expiry timestamp — 60 seconds after `iat` |
+
+The JWT header includes a `kid` (Key ID) field that matches the `kid` in the JWKS
+endpoint, enabling downstream services to select the correct key for verification.
 
 The token is **single-use and short-lived**. It exists only to bootstrap a local
 session — downstream services should not store or reuse it beyond that.
@@ -243,8 +292,8 @@ No direct GitHub API calls are required on the downstream side.
 
 ## Trust Model
 
-- The proxy and all downstream services share an **HMAC secret** (HS256).
-- The proxy **signs**; downstream services **verify**.
+- The proxy holds the **RSA private key** and signs JWTs.
+- Downstream services verify tokens using the **RSA public key** from `/.well-known/jwks.json` — they cannot forge tokens.
 - The JWT is **single-use and short-lived** (60 seconds) — it exists only to
   bootstrap the local session.
 
@@ -257,6 +306,7 @@ No direct GitHub API calls are required on the downstream side.
 | Token expiry | `exp` is set to 60 seconds. The JWT is consumed immediately on redirect and does not need to live longer. |
 | CSRF | The `state` parameter round-trips through the entire flow, allowing the downstream service to verify it. |
 | HTTP downgrade | The proxy rejects `redirect_uri` values that do not use HTTPS (except `localhost` in dev mode). |
+| Token forgery | RS256 (asymmetric) signing ensures downstream services can verify tokens using the public key without being able to forge them. |
 
 ## Proxy Endpoints
 
@@ -274,3 +324,10 @@ Entry point for the OAuth flow. Downstream services redirect users here.
 GitHub redirects here after the user authorizes. The proxy exchanges the code,
 fetches the user's identity, mints a JWT, and redirects to the downstream
 service's `redirect_uri` with `token` and `state` query parameters.
+
+### `GET /.well-known/jwks.json`
+
+Returns the RSA public key as a [JSON Web Key Set (JWKS)](https://datatracker.ietf.org/doc/html/rfc7517),
+allowing downstream services to verify RS256-signed broker JWTs. Only available
+when the broker is configured with an RSA key (`jwt_private_key` /
+`jwt_private_key_file`).

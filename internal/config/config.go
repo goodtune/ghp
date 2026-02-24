@@ -34,6 +34,9 @@ type Config struct {
 
 type TLSConfig struct {
 	Certificates []CertificateConfig `koanf:"certificates"`
+	// MinVersion sets the minimum TLS version accepted by the server.
+	// Allowed values: "1.2" (default), "1.3".
+	MinVersion string `koanf:"min_version"`
 }
 
 type CertificateConfig struct {
@@ -91,9 +94,15 @@ type OTELConfig struct {
 
 // AuthConfig holds settings for the OAuth broker feature.
 type AuthConfig struct {
-	// JWTSecret is the shared HMAC-SHA256 secret used to sign broker JWTs.
-	// When set, the /auth/authorize and /auth/callback broker endpoints are enabled.
-	JWTSecret string `koanf:"jwt_secret"`
+	// JWTPrivateKey is the PEM-encoded RSA private key used to sign broker JWTs
+	// with RS256 (asymmetric signing). When set, it takes precedence over
+	// JWTPrivateKeyFile and the broker endpoints are enabled. Downstream services
+	// can verify tokens using the corresponding public key (via /.well-known/jwks.json)
+	// without being able to forge them.
+	JWTPrivateKey string `koanf:"jwt_private_key"`
+	// JWTPrivateKeyFile is the path to a PEM-encoded RSA private key file.
+	// Used when JWTPrivateKey is not set directly.
+	JWTPrivateKeyFile string `koanf:"jwt_private_key_file"`
 	// AllowedRedirects is a list of permitted redirect_uri values or wildcard
 	// domain patterns (e.g. "*.example.com") for the OAuth broker flow.
 	AllowedRedirects []string `koanf:"allowed_redirects"`

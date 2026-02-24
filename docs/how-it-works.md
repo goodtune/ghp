@@ -37,7 +37,7 @@ ghp routes traffic by `Host` header across four virtualhosts:
 |------|---------|
 | `api.github.com` | API proxy — scope enforcement, credential injection, audit logging |
 | `github.com` | Transparent passthrough — git clone/push with `ghx_`/`gha_` token interception |
-| `*.githubcopilot.com` | Transparent passthrough for Copilot traffic |
+| `*.githubcopilot.com` | Transparent passthrough for Copilot traffic — audit logging and metrics captured, no scope enforcement |
 | Configured management host | Web UI, OAuth, token management API |
 
 When the server terminates TLS directly (production mode), SNI selects the
@@ -52,3 +52,11 @@ a reverse proxy), the `Host` header alone drives routing.
 - **Audit trail** — every proxied request is logged with token, repository, method, path, and status
 - **Expiration** — tokens have a configurable lifetime (default 24h, max 7 days)
 - **Revocation** — tokens can be revoked immediately via CLI or web UI
+
+### Copilot Passthrough
+
+Traffic to `*.githubcopilot.com` is forwarded transparently without token interception or
+scope enforcement. This is by design — Copilot clients manage their own credentials. However,
+every Copilot request is **audit-logged** (method, host, path, status, duration) and
+**counted in Prometheus metrics** (`ghp_http_request_total{backend="copilot"}`) so that
+Copilot activity remains observable alongside all other ghp traffic.

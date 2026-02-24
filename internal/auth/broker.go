@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -105,14 +108,16 @@ func (h *Handler) handleBrokerCallback(w http.ResponseWriter, r *http.Request) {
 	claims := BrokerClaims{
 		AvatarURL: user.AvatarURL,
 		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    h.brokerIssuer(),
 			Subject:   user.Login,
 			Audience:  jwt.ClaimStrings{bs.RedirectURI},
 			ExpiresAt: jwt.NewNumericDate(now.Add(60 * time.Second)),
 			IssuedAt:  jwt.NewNumericDate(now),
 		},
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString([]byte(h.cfg.Auth.JWTSecret))
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = h.jwksKeyID()
+	signed, err := token.SignedString(h.rsaPrivKey)
 	if err != nil {
 		h.logger.Error("broker: failed to sign JWT", "error", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
@@ -134,6 +139,38 @@ func (h *Handler) handleBrokerCallback(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.Info("broker_auth_complete", "user", user.Login, "redirect_uri", bs.RedirectURI)
 	http.Redirect(w, r, redirectURL.String(), http.StatusTemporaryRedirect)
+}
+
+// handleJWKS serves the RSA public key as a JSON Web Key Set (JWKS), allowing
+// downstream services to verify RS256-signed broker JWTs without possessing
+// the private key.
+func (h *Handler) handleJWKS(w http.ResponseWriter, r *http.Request) {
+	if h.rsaPrivKey == nil {
+		http.Error(w, "JWKS not available", http.StatusNotFound)
+		return
+	}
+	pub := &h.rsaPrivKey.PublicKey
+	n := base64.RawURLEncoding.EncodeToString(pub.N.Bytes())
+	// Encode the public exponent as big-endian bytes with leading zeros stripped.
+	e := pub.E
+	var eBytes []byte
+	for e > 0 {
+		eBytes = append([]byte{byte(e & 0xff)}, eBytes...)
+		e >>= 8
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"keys": []map[string]interface{}{
+			{
+				"kty": "RSA",
+				"use": "sig",
+				"alg": "RS256",
+				"kid": h.jwksKeyID(),
+				"n":   n,
+				"e":   base64.RawURLEncoding.EncodeToString(eBytes),
+			},
+		},
+	})
 }
 
 // validateRedirectURI checks whether uri is permitted by the configured allowlist.
@@ -181,6 +218,26 @@ func isLocalhost(host string) bool {
 		h = hp
 	}
 	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+}
+
+// jwksKeyID returns a stable key identifier derived from the RSA public key.
+// It is used as the "kid" header in signed JWTs and the "kid" field in the JWKS
+// endpoint, allowing downstream services to match tokens to keys.
+func (h *Handler) jwksKeyID() string {
+	pub := &h.rsaPrivKey.PublicKey
+	// SHA-256 of the modulus gives a stable, collision-resistant identifier.
+	sum := sha256.Sum256(pub.N.Bytes())
+	return base64.RawURLEncoding.EncodeToString(sum[:8])
+}
+
+// brokerIssuer returns the issuer claim value for broker JWTs. When the
+// server's BaseURL is configured it is used; otherwise a generic identifier
+// is returned.
+func (h *Handler) brokerIssuer() string {
+	if h.cfg.Server.BaseURL != "" {
+		return strings.TrimRight(h.cfg.Server.BaseURL, "/")
+	}
+	return "ghp"
 }
 
 // brokerCallbackURL returns the URL that GitHub should redirect to after
