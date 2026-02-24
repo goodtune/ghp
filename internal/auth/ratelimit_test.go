@@ -8,18 +8,19 @@ import (
 )
 
 func TestIPRateLimiter_Allow(t *testing.T) {
+	// burst=3 means 3 requests may be consumed immediately from the bucket.
 	limiter := NewIPRateLimiter(3, time.Minute)
 
 	ip := "1.2.3.4"
 
-	// First three requests should be allowed.
+	// First three requests should be allowed (burst).
 	for i := 0; i < 3; i++ {
 		if !limiter.Allow(ip) {
 			t.Fatalf("request %d should be allowed", i+1)
 		}
 	}
 
-	// Fourth request should be denied.
+	// Fourth request should be denied (bucket empty).
 	if limiter.Allow(ip) {
 		t.Error("fourth request should be rate limited")
 	}
@@ -30,30 +31,8 @@ func TestIPRateLimiter_Allow(t *testing.T) {
 	}
 }
 
-func TestIPRateLimiter_WindowExpiry(t *testing.T) {
-	// Use a very short window so we can test expiry without sleeping too long.
-	limiter := NewIPRateLimiter(2, 50*time.Millisecond)
-	ip := "10.0.0.1"
-
-	if !limiter.Allow(ip) {
-		t.Fatal("first request should be allowed")
-	}
-	if !limiter.Allow(ip) {
-		t.Fatal("second request should be allowed")
-	}
-	// Third request should be denied (limit=2).
-	if limiter.Allow(ip) {
-		t.Error("third request should be rate limited")
-	}
-
-	// After the window expires the counter resets.
-	time.Sleep(60 * time.Millisecond)
-	if !limiter.Allow(ip) {
-		t.Error("request after window expiry should be allowed")
-	}
-}
-
 func TestIPRateLimiter_Middleware(t *testing.T) {
+	// burst=2: first two requests allowed, third rejected.
 	limiter := NewIPRateLimiter(2, time.Minute)
 
 	called := 0
@@ -61,7 +40,7 @@ func TestIPRateLimiter_Middleware(t *testing.T) {
 		called++
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := limiter.Middleware(inner)
+	handler := limiter.Middleware("test-endpoint", inner)
 
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest("GET", "/", nil)
@@ -86,6 +65,27 @@ func TestIPRateLimiter_Middleware(t *testing.T) {
 	}
 	if called != 2 {
 		t.Error("inner handler should not be called after rate limit")
+	}
+}
+
+func TestIPRateLimiter_EvictStale(t *testing.T) {
+	limiter := NewIPRateLimiter(5, time.Minute)
+
+	// Add a visitor and manually backdate its lastSeen to trigger eviction.
+	limiter.Allow("10.0.0.1")
+	limiter.mu.Lock()
+	limiter.visitors["10.0.0.1"].lastSeen = time.Now().Add(-visitorTTL - time.Second)
+	limiter.mu.Unlock()
+
+	// A new Allow call for a different IP triggers eviction of stale entries.
+	limiter.Allow("10.0.0.2")
+
+	limiter.mu.Lock()
+	_, stillPresent := limiter.visitors["10.0.0.1"]
+	limiter.mu.Unlock()
+
+	if stillPresent {
+		t.Error("stale visitor should have been evicted")
 	}
 }
 

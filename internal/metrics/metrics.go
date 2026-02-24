@@ -64,6 +64,13 @@ var (
 		Name: "ghp_github_token_refresh_total",
 		Help: "Total number of GitHub token refresh attempts.",
 	}, []string{"user", "status"})
+
+	// RateLimitRejectedTotal counts requests rejected by IP rate limiters,
+	// labeled by the endpoint being protected. Use this to alert on abuse.
+	RateLimitRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_ratelimit_rejected_total",
+		Help: "Total number of requests rejected by the IP rate limiter, by endpoint.",
+	}, []string{"endpoint"})
 )
 
 // ObserveProxyRequest records proxy-level request metrics for a completed request.

@@ -6,24 +6,40 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
+
+	"github.com/goodtune/ghp/internal/metrics"
 )
 
-// IPRateLimiter is a sliding-window rate limiter keyed by IP address.
-// It allows at most limit requests per window duration from each IP.
+// visitorTTL is how long an idle visitor entry is kept before being evicted.
+const visitorTTL = 3 * time.Minute
+
+// visitor holds the per-IP rate limiter and the last time it was seen.
+type visitor struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+// IPRateLimiter is a per-IP token-bucket rate limiter backed by
+// golang.org/x/time/rate. Stale visitor entries are evicted on each
+// Allow call so memory usage is bounded.
 type IPRateLimiter struct {
-	mu       sync.Mutex
-	requests map[string][]time.Time
-	limit    int
-	window   time.Duration
+	mu          sync.Mutex
+	visitors    map[string]*visitor
+	ratePerSec  rate.Limit
+	burst       int
 }
 
 // NewIPRateLimiter creates a new IPRateLimiter that allows up to limit requests
-// per window duration per IP address.
+// per window duration per IP address. The underlying token bucket refills at
+// limit/window tokens per second with a burst equal to limit.
 func NewIPRateLimiter(limit int, window time.Duration) *IPRateLimiter {
+	ratePerSec := rate.Limit(float64(limit) / window.Seconds())
 	return &IPRateLimiter{
-		requests: make(map[string][]time.Time),
-		limit:    limit,
-		window:   window,
+		visitors:   make(map[string]*visitor),
+		ratePerSec: ratePerSec,
+		burst:      limit,
 	}
 }
 
@@ -32,40 +48,35 @@ func (l *IPRateLimiter) Allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := time.Now()
-	cutoff := now.Add(-l.window)
+	l.evictStale()
 
-	// Retain only timestamps within the current window.
-	reqs := l.requests[ip]
-	j := 0
-	for _, t := range reqs {
-		if t.After(cutoff) {
-			reqs[j] = t
-			j++
+	v, ok := l.visitors[ip]
+	if !ok {
+		v = &visitor{limiter: rate.NewLimiter(l.ratePerSec, l.burst)}
+		l.visitors[ip] = v
+	}
+	v.lastSeen = time.Now()
+	return v.limiter.Allow()
+}
+
+// evictStale removes visitor entries that have not been seen within visitorTTL.
+// Must be called with l.mu held.
+func (l *IPRateLimiter) evictStale() {
+	cutoff := time.Now().Add(-visitorTTL)
+	for ip, v := range l.visitors {
+		if v.lastSeen.Before(cutoff) {
+			delete(l.visitors, ip)
 		}
 	}
-	reqs = reqs[:j]
-
-	if len(reqs) >= l.limit {
-		l.requests[ip] = reqs
-		return false
-	}
-
-	if len(reqs) == 0 {
-		// Remove the map entry when there are no in-window requests so that
-		// stale IPs do not accumulate and cause unbounded memory growth.
-		delete(l.requests, ip)
-	}
-
-	l.requests[ip] = append(reqs, now)
-	return true
 }
 
 // Middleware returns an http.Handler that enforces rate limiting before
 // delegating to next. Requests that exceed the limit receive 429.
-func (l *IPRateLimiter) Middleware(next http.Handler) http.Handler {
+// endpoint is used as a label on the ghp_ratelimit_rejected_total metric.
+func (l *IPRateLimiter) Middleware(endpoint string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !l.Allow(ClientIP(r)) {
+			metrics.RateLimitRejectedTotal.WithLabelValues(endpoint).Inc()
 			http.Error(w, `{"message":"Rate limit exceeded. Please try again later."}`, http.StatusTooManyRequests)
 			return
 		}
