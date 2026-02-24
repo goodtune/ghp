@@ -41,7 +41,7 @@ func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *aut
 		encryptor:          enc,
 		appTokenProvider:   atp,
 		logger:             logger,
-		tokenCreateLimiter: auth.NewIPRateLimiter(20, time.Minute),
+		tokenCreateLimiter: auth.NewIPRateLimiter(20, time.Minute, "/api/tokens", logger),
 	}
 }
 

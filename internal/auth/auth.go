@@ -73,9 +73,9 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 		sessions:         make(map[string]*Session),
 		states:           make(map[string]time.Time),
 		brokerStates:     make(map[string]*brokerState),
-		loginLimiter:     NewIPRateLimiter(5, time.Minute),
-		githubLimiter:    NewIPRateLimiter(10, time.Minute),
-		authorizeLimiter: NewIPRateLimiter(10, time.Minute),
+		loginLimiter:     NewIPRateLimiter(5, time.Minute, "/auth/test-login", logger),
+		githubLimiter:    NewIPRateLimiter(10, time.Minute, "/auth/github", logger),
+		authorizeLimiter: NewIPRateLimiter(10, time.Minute, "/auth/authorize", logger),
 	}
 }
 
