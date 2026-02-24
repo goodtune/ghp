@@ -40,7 +40,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("ghp version %s\n", version)
+			fmt.Fprintf(cmd.OutOrStdout(), "ghp version %s\n", version)
 		},
 	}
 }

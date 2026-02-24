@@ -94,10 +94,11 @@ func newAuthCmd() *cobra.Command {
 				return fmt.Errorf("server URL not configured. Set GHP_SERVER_URL or add server_url to ~/.config/ghp/config.yaml")
 			}
 
-			fmt.Printf("Opening browser for GitHub authentication...\n")
-			fmt.Printf("Visit: %s/auth/github\n", cfg.ServerURL)
-			fmt.Printf("\nAfter authenticating, run:\n")
-			fmt.Printf("  export GHP_USER_TOKEN=<token from callback>\n")
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Opening browser for GitHub authentication...\n")
+			fmt.Fprintf(out, "Visit: %s/auth/github\n", cfg.ServerURL)
+			fmt.Fprintf(out, "\nAfter authenticating, run:\n")
+			fmt.Fprintf(out, "  export GHP_USER_TOKEN=<token from callback>\n")
 
 			return nil
 		},
@@ -115,7 +116,7 @@ func newAuthCmd() *cobra.Command {
 				return fmt.Errorf("server URL not configured")
 			}
 			if cfg.UserToken == "" {
-				fmt.Println("Not authenticated. Run 'ghp auth login' to authenticate.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Not authenticated. Run 'ghp auth login' to authenticate.")
 				return nil
 			}
 
@@ -135,11 +136,12 @@ func newAuthCmd() *cobra.Command {
 			var result map[string]interface{}
 			json.Unmarshal(body, &result)
 
+			out := cmd.OutOrStdout()
 			if auth, ok := result["authenticated"].(bool); ok && auth {
-				fmt.Printf("Authenticated as: %s\n", result["username"])
-				fmt.Printf("Role: %s\n", result["role"])
+				fmt.Fprintf(out, "Authenticated as: %s\n", result["username"])
+				fmt.Fprintf(out, "Role: %s\n", result["role"])
 			} else {
-				fmt.Println("Not authenticated or session expired. Run 'ghp auth login'.")
+				fmt.Fprintln(out, "Not authenticated or session expired. Run 'ghp auth login'.")
 			}
 
 			return nil
