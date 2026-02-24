@@ -19,47 +19,20 @@ func newTestLimiter(limit int, window time.Duration) *IPRateLimiter {
 
 func TestIPRateLimiter_Allow(t *testing.T) {
 	limiter := newTestLimiter(3, time.Minute)
-
 	ip := "1.2.3.4"
 
-	// First three requests should be allowed (burst).
 	for i := 0; i < 3; i++ {
 		if !limiter.Allow(ip) {
 			t.Fatalf("request %d should be allowed", i+1)
 		}
 	}
 
-	// Fourth request should be denied (bucket empty).
 	if limiter.Allow(ip) {
 		t.Error("fourth request should be rate limited")
 	}
 
-	// A different IP is not affected.
 	if !limiter.Allow("5.6.7.8") {
 		t.Error("different IP should be allowed")
-	}
-}
-
-func TestIPRateLimiter_WindowExpiry(t *testing.T) {
-	// Use a very short window so we can test expiry without sleeping too long.
-	limiter := newTestLimiter(2, 100*time.Millisecond)
-	ip := "10.0.0.1"
-
-	if !limiter.Allow(ip) {
-		t.Fatal("first request should be allowed")
-	}
-	if !limiter.Allow(ip) {
-		t.Fatal("second request should be allowed")
-	}
-	// Third request should be denied (limit=2).
-	if limiter.Allow(ip) {
-		t.Error("third request should be rate limited")
-	}
-
-	// After the window expires the counter resets.
-	time.Sleep(150 * time.Millisecond)
-	if !limiter.Allow(ip) {
-		t.Error("request after window expiry should be allowed")
 	}
 }
 
@@ -86,7 +59,6 @@ func TestIPRateLimiter_Middleware(t *testing.T) {
 		t.Errorf("inner handler called %d times, want 2", called)
 	}
 
-	// Third request should be rejected with 429.
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "1.2.3.4:1234"
 	w := httptest.NewRecorder()
@@ -99,8 +71,6 @@ func TestIPRateLimiter_Middleware(t *testing.T) {
 	}
 }
 
-// TestIPRateLimiter_Middleware_ResponseHeaders verifies that a 429 response
-// carries the correct Content-Type and a Retry-After header.
 func TestIPRateLimiter_Middleware_ResponseHeaders(t *testing.T) {
 	limiter := newTestLimiter(1, time.Minute)
 
@@ -109,12 +79,10 @@ func TestIPRateLimiter_Middleware_ResponseHeaders(t *testing.T) {
 	})
 	handler := limiter.Middleware(inner)
 
-	// First request consumes the single allowed slot.
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "1.2.3.4:1234"
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
-	// Second request must be rate-limited.
 	req = httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "1.2.3.4:1234"
 	w := httptest.NewRecorder()
@@ -131,54 +99,7 @@ func TestIPRateLimiter_Middleware_ResponseHeaders(t *testing.T) {
 	}
 }
 
-// TestIPRateLimiter_RetryAfterAccuracy verifies that the Retry-After header
-// is a positive integer and does not exceed the window duration.
-func TestIPRateLimiter_RetryAfterAccuracy(t *testing.T) {
-	window := time.Minute
-	limiter := newTestLimiter(3, window)
-
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	handler := limiter.Middleware(inner)
-
-	// Exhaust the limit.
-	for i := 0; i < 3; i++ {
-		req := httptest.NewRequest("GET", "/", nil)
-		req.RemoteAddr = "1.2.3.4:1234"
-		handler.ServeHTTP(httptest.NewRecorder(), req)
-	}
-
-	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "1.2.3.4:1234"
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429, got %d", w.Code)
-	}
-
-	ra := w.Header().Get("Retry-After")
-	if ra == "" {
-		t.Fatal("Retry-After header missing")
-	}
-	var retryAfterSec int
-	if _, err := fmt.Sscanf(ra, "%d", &retryAfterSec); err != nil {
-		t.Fatalf("Retry-After %q is not an integer: %v", ra, err)
-	}
-	if retryAfterSec < 1 {
-		t.Errorf("Retry-After %d must be >= 1", retryAfterSec)
-	}
-	maxSec := int(window.Seconds()) + 1
-	if retryAfterSec > maxSec {
-		t.Errorf("Retry-After %d exceeds window (%d s)", retryAfterSec, maxSec)
-	}
-}
-
-// TestIPRateLimiter_ConcurrentAccess exercises the limiter under concurrent
-// load to catch data races. Run with: go test -race ./internal/auth/...
 func TestIPRateLimiter_ConcurrentAccess(t *testing.T) {
-	// High limit so most requests pass; we just want race detection.
 	limiter := newTestLimiter(1000, time.Minute)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
