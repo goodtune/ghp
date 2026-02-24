@@ -30,9 +30,18 @@ func loadCLIConfig() (*cliConfig, error) {
 		return cfg, nil
 	}
 	configPath := filepath.Join(home, ".config", "ghp", "config.yaml")
-	data, err := os.ReadFile(configPath)
+	info, err := os.Stat(configPath)
 	if err != nil {
 		return cfg, nil // File doesn't exist yet, that's ok.
+	}
+	// 0177 masks owner-execute, group, and other permission bits.
+	const insecurePermsMask = 0177
+	if info.Mode().Perm()&insecurePermsMask != 0 {
+		fmt.Fprintf(os.Stderr, "warning: config file %s has insecure permissions %04o (expected 0600)\n", configPath, info.Mode().Perm())
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return cfg, nil
 	}
 
 	var fileCfg cliConfig
