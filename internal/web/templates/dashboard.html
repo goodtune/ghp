@@ -4,96 +4,68 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ghp — Dashboard</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 1rem; }
-        header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 0; border-bottom: 1px solid #30363d; margin-bottom: 2rem; }
-        header h1 { font-size: 1.25rem; color: #f0f6fc; }
-        .user-info { display: flex; align-items: center; gap: 1rem; }
-        .user-info span { color: #8b949e; }
-        .btn { display: inline-block; background: #238636; color: #fff; padding: 0.5rem 1rem; border-radius: 6px; text-decoration: none; font-weight: 600; border: none; cursor: pointer; font-size: 0.875rem; }
-        .btn:hover { background: #2ea043; }
-        .btn-danger { background: #da3633; }
-        .btn-danger:hover { background: #f85149; }
-        .btn-secondary { background: #21262d; border: 1px solid #30363d; }
-        .btn-secondary:hover { background: #30363d; }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .section { margin-bottom: 2rem; }
-        .section h2 { font-size: 1.1rem; color: #f0f6fc; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #30363d; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #21262d; font-size: 0.875rem; }
-        th { color: #8b949e; font-weight: 600; }
-        .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
-        .badge-active { background: rgba(35,134,54,0.2); color: #3fb950; }
-        .badge-expired { background: rgba(218,54,51,0.2); color: #f85149; }
-        .badge-revoked { background: rgba(139,148,158,0.2); color: #8b949e; }
-        .create-form { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1.5rem; margin-bottom: 2rem; }
-        .form-group { margin-bottom: 1rem; }
-        .form-group label { display: block; margin-bottom: 0.25rem; font-size: 0.875rem; color: #8b949e; }
-        .form-group input, .form-group select { width: 100%; padding: 0.5rem; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 0.875rem; }
-        .form-group select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8.825a.5.5 0 0 1-.354-.146l-3.5-3.5a.5.5 0 1 1 .708-.708L6 7.618l3.146-3.147a.5.5 0 1 1 .708.708l-3.5 3.5A.5.5 0 0 1 6 8.825z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 0.5rem center; padding-right: 1.5rem; }
-        .form-group input:focus, .form-group select:focus { outline: none; border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(88,166,255,0.3); }
-        .token-display { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-top: 1rem; font-family: monospace; word-break: break-all; }
-        #token-list { min-height: 100px; }
-        .empty { text-align: center; color: #8b949e; padding: 2rem; }
-    </style>
+    <link rel="stylesheet" href="/static/theme.css">
+    <script src="/static/theme.js"></script>
     <script src="/static/ghp-repo-select.js"></script>
     <script src="/static/ghp-permission-select.js"></script>
+    <script src="/static/ghp-stepper.js"></script>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>ghp</h1>
-            <div class="user-info">
-                <span>{{ .Username }} ({{ .Role }})</span>
-                {{ if eq .Role "admin" }}<a href="/admin" class="btn btn-secondary">Admin</a>{{ end }}
-                <button class="btn btn-secondary" onclick="logout()">Sign out</button>
-            </div>
-        </header>
+    <header class="header">
+        <div class="header-brand">
+            <img src="/static/octobear.png" alt="" width="32" height="32">
+            <span>ghp</span>
+        </div>
+        <div class="header-actions">
+            <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
+            <span class="username">{{ .Username }}</span>
+            {{ if eq .Role "admin" }}<a href="/admin" class="btn btn-ghost">Admin</a>{{ end }}
+            <button class="btn btn-ghost" onclick="logout()">Sign out</button>
+        </div>
+    </header>
 
-        <div class="section">
-            <h2>Create Token</h2>
-            <div class="create-form">
-                <div class="form-group">
-                    <label>Repository</label>
-                    <ghp-repo-select id="repo-select" mode="single" placeholder="Loading repositories..."></ghp-repo-select>
-                </div>
-                <div class="form-group">
-                    <label>Permissions</label>
-                    <ghp-permission-select id="perm-select"></ghp-permission-select>
-                </div>
-                <div class="form-group">
-                    <label for="duration">Duration</label>
-                    <select id="duration">
-                        <option value="8h">8 hours</option>
-                        <option value="24h" selected>24 hours</option>
-                        <option value="48h">48 hours</option>
-                        <option value="168h">7 days</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="session">Session identifier (optional)</label>
-                    <input type="text" id="session" placeholder="claude-code-feature-123">
-                </div>
-                <button class="btn" id="create-btn" onclick="createToken()">Create Token</button>
-                <div id="new-token" style="display:none">
-                    <div class="token-display" id="token-value"></div>
-                    <p style="color:#f0883e;margin-top:0.5rem;font-size:0.8rem">This token will only be shown once. Copy it now.</p>
-                </div>
+    <main class="container">
+        <div class="section-header">
+            <h2>Your Tokens</h2>
+            <button class="btn btn-primary" onclick="openStepper()">New Token</button>
+        </div>
+        <div id="token-grid" class="token-grid">
+            <!-- JS renders token cards or empty state here -->
+        </div>
+    </main>
+
+    <ghp-stepper id="stepper">
+        <div slot="step-0">
+            <div class="form-group">
+                <label>Repository</label>
+                <ghp-repo-select id="repo-select" mode="single" placeholder="Loading repositories..."></ghp-repo-select>
             </div>
         </div>
-
-        <div class="section">
-            <h2>Active Tokens</h2>
-            <div id="token-list"></div>
+        <div slot="step-1">
+            <div class="form-group">
+                <label>Permissions</label>
+                <ghp-permission-select id="perm-select"></ghp-permission-select>
+            </div>
         </div>
-
-        <div class="section">
-            <h2>Audit Log</h2>
-            <div id="audit-log"></div>
+        <div slot="step-2">
+            <div class="form-group">
+                <label for="duration">Duration</label>
+                <select id="duration">
+                    <option value="8h">8 hours</option>
+                    <option value="24h" selected>24 hours</option>
+                    <option value="48h">48 hours</option>
+                    <option value="168h">7 days</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="session">Session identifier (optional)</label>
+                <input type="text" id="session" placeholder="claude-code-feature-123">
+            </div>
         </div>
-    </div>
+        <div slot="step-3" id="step-confirm">
+            <!-- JS renders confirm summary + create button + token display here -->
+        </div>
+    </ghp-stepper>
 
     <script>
         // ── API helper ──────────────────────────────────────────────
@@ -102,138 +74,6 @@
             if (body) opts.body = JSON.stringify(body);
             const resp = await fetch(path, opts);
             return resp.json();
-        }
-
-        const repoSelect = document.getElementById('repo-select');
-        const permSelect = document.getElementById('perm-select');
-
-        // All proxy-token scopes available at write level (user OAuth is broad).
-        const proxyPermissions = {
-            contents: 'write',
-            pulls: 'write',
-            issues: 'write',
-            statuses: 'write',
-            checks: 'write',
-            actions: 'write',
-            metadata: 'read',
-        };
-        permSelect.permissions = proxyPermissions;
-
-        // ── Load user repos ────────────────────────────────────────
-        async function loadUserRepos() {
-            const data = await api('GET', '/api/github/repositories');
-            if (Array.isArray(data)) {
-                repoSelect.repos = data;
-            }
-            repoSelect.setAttribute('placeholder', 'Search repositories...');
-        }
-
-        // ── Create token ───────────────────────────────────────────
-        async function createToken() {
-            const repo = repoSelect.value;
-            const scopes = permSelect.value;
-            const duration = document.getElementById('duration').value;
-            const session = document.getElementById('session').value;
-
-            if (!repo) {
-                alert('Repository is required.');
-                return;
-            }
-            if (Object.keys(scopes).length === 0) {
-                alert('At least one permission is required.');
-                return;
-            }
-
-            const scopeStr = Object.entries(scopes).map(([k, v]) => k + ':' + v).join(',');
-
-            const body = { repository: repo, scopes: scopeStr, duration: duration };
-            if (session) body.session_id = session;
-
-            const btn = document.getElementById('create-btn');
-            btn.disabled = true;
-            btn.textContent = 'Creating...';
-
-            const data = await api('POST', '/api/tokens', body);
-
-            btn.disabled = false;
-            btn.textContent = 'Create Token';
-
-            if (data.token) {
-                document.getElementById('token-value').textContent = data.token;
-                document.getElementById('new-token').style.display = 'block';
-                loadTokens();
-            } else {
-                alert(data.message || 'Failed to create token');
-            }
-        }
-
-        // ── Tokens / Audit ─────────────────────────────────────────
-        async function revokeToken(id) {
-            if (!confirm('Revoke this token?')) return;
-            await api('DELETE', '/api/tokens/' + id);
-            loadTokens();
-        }
-
-        async function loadTokens() {
-            const tokens = await api('GET', '/api/tokens');
-            const container = document.getElementById('token-list');
-
-            if (!Array.isArray(tokens) || tokens.length === 0) {
-                container.innerHTML = '<div class="empty">No tokens found</div>';
-                return;
-            }
-
-            let html = '<table><tr><th>ID</th><th>Type</th><th>Repositories</th><th>Scopes</th><th>Session</th><th>Status</th><th>Requests</th><th>Expires</th><th></th></tr>';
-            for (const t of tokens) {
-                const now = new Date();
-                const expires = new Date(t.expires_at);
-                let status, badge;
-                if (t.revoked_at) { status = 'Revoked'; badge = 'badge-revoked'; }
-                else if (expires < now) { status = 'Expired'; badge = 'badge-expired'; }
-                else { status = 'Active'; badge = 'badge-active'; }
-
-                const scopes = typeof t.scopes === 'string' ? t.scopes : JSON.stringify(t.scopes);
-                const repos = Array.isArray(t.repositories) ? t.repositories.join(', ') : (t.repositories || '');
-                html += '<tr>';
-                html += '<td>' + esc(t.token_prefix) + '...</td>';
-                html += '<td>' + esc(t.token_type || 'proxy') + '</td>';
-                html += '<td>' + esc(repos) + '</td>';
-                html += '<td>' + esc(scopes) + '</td>';
-                html += '<td>' + esc(t.session_id || '-') + '</td>';
-                html += '<td><span class="badge ' + badge + '">' + status + '</span></td>';
-                html += '<td>' + (t.request_count || 0) + '</td>';
-                html += '<td>' + expires.toLocaleString() + '</td>';
-                html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" onclick="revokeToken(\'' + t.id + '\')">Revoke</button>' : '') + '</td>';
-                html += '</tr>';
-            }
-            html += '</table>';
-            container.innerHTML = html;
-        }
-
-        async function loadAudit() {
-            const entries = await api('GET', '/api/audit');
-            const container = document.getElementById('audit-log');
-
-            if (!Array.isArray(entries) || entries.length === 0) {
-                container.innerHTML = '<div class="empty">No audit entries</div>';
-                return;
-            }
-
-            let html = '<table><tr><th>Time</th><th>Action</th><th>Method</th><th>Path</th><th>Repository</th><th>Status</th><th>Duration</th></tr>';
-            for (const e of entries.slice(0, 50)) {
-                const ts = new Date(e.timestamp).toLocaleString();
-                html += '<tr>';
-                html += '<td>' + ts + '</td>';
-                html += '<td>' + esc(e.action) + '</td>';
-                html += '<td>' + esc(e.method || '-') + '</td>';
-                html += '<td>' + esc(e.path || '-') + '</td>';
-                html += '<td>' + esc(e.repository || '-') + '</td>';
-                html += '<td>' + (e.status_code || '-') + '</td>';
-                html += '<td>' + (e.duration_ms ? e.duration_ms + 'ms' : '-') + '</td>';
-                html += '</tr>';
-            }
-            html += '</table>';
-            container.innerHTML = html;
         }
 
         function esc(s) {
@@ -247,10 +87,191 @@
             window.location.href = '/login';
         }
 
-        // ── Init ───────────────────────────────────────────────────
+        // ── Stepper setup ───────────────────────────────────────────
+        const stepper = document.getElementById('stepper');
+        const repoSelect = document.getElementById('repo-select');
+        const permSelect = document.getElementById('perm-select');
+
+        // All proxy-token scopes available at write level
+        const proxyPermissions = {
+            contents: 'write', pulls: 'write', issues: 'write',
+            statuses: 'write', checks: 'write', actions: 'write', metadata: 'read'
+        };
+        permSelect.permissions = proxyPermissions;
+
+        stepper.steps = [
+            { title: 'Select Repository', validate: () => !!repoSelect.value },
+            { title: 'Set Permissions', validate: () => Object.keys(permSelect.value).length > 0 },
+            { title: 'Details' },
+            { title: 'Confirm & Create' },
+        ];
+
+        function openStepper() {
+            repoSelect.value = '';
+            permSelect.permissions = proxyPermissions;
+            document.getElementById('duration').value = '24h';
+            document.getElementById('session').value = '';
+            document.getElementById('step-confirm').innerHTML = '';
+            stepper.open();
+        }
+
+        stepper.addEventListener('step-change', (e) => {
+            if (e.detail.step === 3) {
+                const repo = repoSelect.value;
+                const scopes = permSelect.value;
+                const duration = document.getElementById('duration').value;
+                const session = document.getElementById('session').value;
+
+                const scopeChips = Object.entries(scopes)
+                    .map(([k, v]) => '<span class="scope-chip">' + esc(k + ':' + v) + '</span>')
+                    .join('');
+
+                let html = '<div class="confirm-summary">';
+                html += '<p><strong>Repository:</strong> ' + esc(repo) + '</p>';
+                html += '<p><strong>Permissions:</strong> ' + scopeChips + '</p>';
+                html += '<p><strong>Duration:</strong> ' + esc(duration) + '</p>';
+                if (session) html += '<p><strong>Session:</strong> ' + esc(session) + '</p>';
+                html += '</div>';
+                html += '<button class="btn btn-primary" id="create-btn" onclick="createToken()">Create Token</button>';
+
+                document.getElementById('step-confirm').innerHTML = html;
+            }
+        });
+
+        // ── Create token ────────────────────────────────────────────
+        async function createToken() {
+            const repo = repoSelect.value;
+            const scopes = permSelect.value;
+            const duration = document.getElementById('duration').value;
+            const session = document.getElementById('session').value;
+
+            const scopeStr = Object.entries(scopes).map(([k, v]) => k + ':' + v).join(',');
+
+            const body = { repository: repo, scopes: scopeStr, duration: duration };
+            if (session) body.session_id = session;
+
+            const btn = document.getElementById('create-btn');
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+
+            const data = await api('POST', '/api/tokens', body);
+
+            if (data.token) {
+                let html = '<div class="token-display">' + esc(data.token) + '</div>';
+                html += '<p style="color:var(--color-warning);margin-top:0.5rem;font-size:0.875rem">';
+                html += 'This token will only be shown once. Copy it now.</p>';
+                document.getElementById('step-confirm').innerHTML = html;
+                stepper.hideNav();
+                loadTokens();
+            } else {
+                btn.disabled = false;
+                btn.textContent = 'Create Token';
+                alert(data.message || 'Failed to create token');
+            }
+        }
+
+        // ── Load user repos ─────────────────────────────────────────
+        async function loadUserRepos() {
+            const data = await api('GET', '/api/github/repositories');
+            if (Array.isArray(data)) {
+                repoSelect.repos = data;
+            }
+            repoSelect.setAttribute('placeholder', 'Search repositories...');
+        }
+
+        // ── Format expiry ───────────────────────────────────────────
+        function formatExpiry(expiresAt, revokedAt) {
+            if (revokedAt) return 'Revoked';
+            const now = new Date();
+            const expires = new Date(expiresAt);
+            const diffMs = expires - now;
+
+            if (diffMs <= 0) {
+                const ago = Math.abs(diffMs);
+                return 'Expired ' + formatRelative(ago) + ' ago';
+            }
+            return 'Expires in ' + formatRelative(diffMs);
+        }
+
+        function formatRelative(ms) {
+            const minutes = Math.floor(ms / 60000);
+            const hours = Math.floor(ms / 3600000);
+            const days = Math.floor(ms / 86400000);
+            if (days > 0) return days + 'd';
+            if (hours > 0) return hours + 'h';
+            if (minutes > 0) return minutes + 'm';
+            return '<1m';
+        }
+
+        // ── Load tokens ─────────────────────────────────────────────
+        async function loadTokens() {
+            const tokens = await api('GET', '/api/tokens');
+            const container = document.getElementById('token-grid');
+
+            if (!Array.isArray(tokens) || tokens.length === 0) {
+                container.innerHTML = '<div class="empty-state">'
+                    + '<img src="/static/octobear.png" alt="">'
+                    + '<p>No tokens yet. Create one to get started.</p>'
+                    + '<button class="btn btn-primary" onclick="openStepper()">New Token</button>'
+                    + '</div>';
+                return;
+            }
+
+            let html = '';
+            for (const t of tokens) {
+                const now = new Date();
+                const expires = new Date(t.expires_at);
+                let status, statusClass;
+                if (t.revoked_at) { status = 'Revoked'; statusClass = 'revoked'; }
+                else if (expires < now) { status = 'Expired'; statusClass = 'expired'; }
+                else { status = 'Active'; statusClass = 'active'; }
+
+                const repos = Array.isArray(t.repositories) ? t.repositories.join(', ') : (t.repositories || '');
+                const scopes = typeof t.scopes === 'string' ? t.scopes.split(',') : [];
+
+                html += '<div class="token-card">';
+                html += '<div class="token-card-header">';
+                html += '<div>';
+                html += '<div class="token-card-repo">' + esc(repos) + '</div>';
+                html += '<div class="token-card-prefix">' + esc(t.token_prefix) + '...</div>';
+                html += '</div>';
+                html += '<span class="status status-' + statusClass + '">';
+                html += '<span class="status-dot"></span>';
+                html += status;
+                html += '</span>';
+                html += '</div>';
+
+                html += '<div class="token-card-scopes">';
+                for (const scope of scopes) {
+                    html += '<span class="scope-chip">' + esc(scope.trim()) + '</span>';
+                }
+                html += '</div>';
+
+                if (t.session_id) {
+                    html += '<div class="token-card-session">' + esc(t.session_id) + '</div>';
+                }
+
+                html += '<div class="token-card-footer">';
+                html += '<span class="token-card-meta">' + formatExpiry(t.expires_at, t.revoked_at) + '</span>';
+                if (status === 'Active') {
+                    html += '<button class="btn btn-danger" onclick="revokeToken(\'' + t.id + '\')">Revoke</button>';
+                }
+                html += '</div>';
+                html += '</div>';
+            }
+            container.innerHTML = html;
+        }
+
+        // ── Revoke token ────────────────────────────────────────────
+        async function revokeToken(id) {
+            if (!confirm('Revoke this token?')) return;
+            await api('DELETE', '/api/tokens/' + id);
+            loadTokens();
+        }
+
+        // ── Init ────────────────────────────────────────────────────
         loadUserRepos();
         loadTokens();
-        loadAudit();
     </script>
 </body>
 </html>
