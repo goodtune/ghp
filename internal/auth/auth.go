@@ -12,8 +12,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/hashicorp/golang-lru/v2/expirable"
 
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
@@ -25,6 +26,17 @@ const (
 	SessionCookieName = "ghp_session"
 	// SessionDuration is how long a browser session lasts.
 	SessionDuration = 30 * 24 * time.Hour
+
+	// maxSessions is the maximum number of concurrent user sessions held in memory.
+	maxSessions = 10_000
+	// maxStates is the maximum number of in-flight OAuth state tokens.
+	maxStates = 1_000
+	// stateTTL is how long an OAuth state token remains valid.
+	stateTTL = 10 * time.Minute
+	// maxBrokerStates is the maximum number of in-flight broker OAuth states.
+	maxBrokerStates = 1_000
+	// brokerStateTTL is how long a broker OAuth state token remains valid.
+	brokerStateTTL = 10 * time.Minute
 )
 
 // Session represents an authenticated user session.
@@ -42,16 +54,15 @@ type Handler struct {
 	encryptor *crypto.Encryptor
 	logger    *slog.Logger
 
-	mu       sync.RWMutex
-	sessions map[string]*Session // session token -> Session
+	// sessions maps session tokens to active user sessions.
+	// Bounded and TTL-expired via expirable.LRU (thread-safe).
+	sessions *expirable.LRU[string, *Session]
 
-	// OAuth state tokens (short-lived, in-memory).
-	stateMu sync.Mutex
-	states  map[string]time.Time
+	// states holds in-flight OAuth state tokens (short-lived).
+	states *expirable.LRU[string, struct{}]
 
-	// Broker OAuth flow state (short-lived, in-memory).
-	brokerMu     sync.Mutex
-	brokerStates map[string]*brokerState
+	// brokerStates holds in-flight broker OAuth flow states (short-lived).
+	brokerStates *expirable.LRU[string, *brokerState]
 
 	// Overridable base URLs for GitHub endpoints (used in tests).
 	githubBaseURL    string // defaults to "https://github.com"
@@ -65,9 +76,9 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 		store:        store,
 		encryptor:    enc,
 		logger:       logger,
-		sessions:     make(map[string]*Session),
-		states:       make(map[string]time.Time),
-		brokerStates: make(map[string]*brokerState),
+		sessions:     expirable.NewLRU[string, *Session](maxSessions, nil, SessionDuration),
+		states:       expirable.NewLRU[string, struct{}](maxStates, nil, stateTTL),
+		brokerStates: expirable.NewLRU[string, *brokerState](maxBrokerStates, nil, brokerStateTTL),
 	}
 }
 
@@ -162,13 +173,14 @@ func SessionFromContext(ctx context.Context) *Session {
 }
 
 func (h *Handler) lookupSession(token string) *Session {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	s, ok := h.sessions[token]
+	s, ok := h.sessions.Get(token)
 	if !ok {
 		return nil
 	}
+	// ExpiresAt is a belt-and-suspenders check; the LRU TTL already evicts
+	// expired entries, but we keep it for defense in depth.
 	if time.Now().After(s.ExpiresAt) {
+		h.sessions.Remove(token)
 		return nil
 	}
 	return s
@@ -176,14 +188,12 @@ func (h *Handler) lookupSession(token string) *Session {
 
 func (h *Handler) createSession(userID, username, role string) string {
 	token := generateSessionToken()
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.sessions[token] = &Session{
+	h.sessions.Add(token, &Session{
 		UserID:    userID,
 		Username:  username,
 		Role:      role,
 		ExpiresAt: time.Now().Add(SessionDuration),
-	}
+	})
 	return token
 }
 
@@ -194,16 +204,12 @@ func (h *Handler) CreateTestSession(userID, username, role string) string {
 }
 
 func (h *Handler) deleteSession(token string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.sessions, token)
+	h.sessions.Remove(token)
 }
 
 func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	state := generateState()
-	h.stateMu.Lock()
-	h.states[state] = time.Now().Add(10 * time.Minute)
-	h.stateMu.Unlock()
+	h.states.Add(state, struct{}{})
 
 	url := fmt.Sprintf("%s/login/oauth/authorize?client_id=%s&state=%s",
 		h.getGitHubBaseURL(), h.cfg.GitHub.ClientID, state)
@@ -245,15 +251,12 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Validate state.
-		h.stateMu.Lock()
-		expiry, ok := h.states[state]
+		// Validate state. Get returns false for missing or TTL-expired entries.
+		_, ok := h.states.Get(state)
 		if ok {
-			delete(h.states, state)
+			h.states.Remove(state)
 		}
-		h.stateMu.Unlock()
-
-		if !ok || time.Now().After(expiry) {
+		if !ok {
 			http.Error(w, "Invalid or expired state", http.StatusBadRequest)
 			return
 		}
