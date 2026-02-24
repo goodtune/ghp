@@ -53,6 +53,11 @@ type Handler struct {
 	brokerMu     sync.Mutex
 	brokerStates map[string]*brokerState
 
+	// Rate limiters for sensitive endpoints (keyed by IP address).
+	loginLimiter     *IPRateLimiter // POST /auth/test-login
+	githubLimiter    *IPRateLimiter // GET  /auth/github
+	authorizeLimiter *IPRateLimiter // GET  /auth/authorize
+
 	// Overridable base URLs for GitHub endpoints (used in tests).
 	githubBaseURL    string // defaults to "https://github.com"
 	githubAPIBaseURL string // defaults to "https://api.github.com"
@@ -61,19 +66,22 @@ type Handler struct {
 // NewHandler creates a new auth handler.
 func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
 	return &Handler{
-		cfg:          cfg,
-		store:        store,
-		encryptor:    enc,
-		logger:       logger,
-		sessions:     make(map[string]*Session),
-		states:       make(map[string]time.Time),
-		brokerStates: make(map[string]*brokerState),
+		cfg:              cfg,
+		store:            store,
+		encryptor:        enc,
+		logger:           logger,
+		sessions:         make(map[string]*Session),
+		states:           make(map[string]time.Time),
+		brokerStates:     make(map[string]*brokerState),
+		loginLimiter:     NewIPRateLimiter(5, time.Minute),
+		githubLimiter:    NewIPRateLimiter(10, time.Minute),
+		authorizeLimiter: NewIPRateLimiter(10, time.Minute),
 	}
 }
 
 // RegisterRoutes adds auth routes to the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /auth/github", h.handleGitHubLogin)
+	mux.Handle("GET /auth/github", h.githubLimiter.Middleware(http.HandlerFunc(h.handleGitHubLogin)))
 	mux.HandleFunc("GET /auth/github/callback", h.handleGitHubCallback)
 	mux.HandleFunc("POST /auth/logout", h.handleLogout)
 	mux.HandleFunc("GET /auth/status", h.handleStatus)
@@ -85,7 +93,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			h.logger.Error("jwt_secret is too short; oauth broker endpoints disabled",
 				"configured_length", len(h.cfg.Auth.JWTSecret), "min_length", 32)
 		} else {
-			mux.HandleFunc("GET /auth/authorize", h.handleBrokerAuthorize)
+			mux.Handle("GET /auth/authorize", h.authorizeLimiter.Middleware(http.HandlerFunc(h.handleBrokerAuthorize)))
 			mux.HandleFunc("GET /auth/callback", h.handleBrokerCallback)
 			h.logger.Info("oauth broker endpoints enabled")
 			// Warn if no allowed redirects are configured — all broker requests will fail.
@@ -98,7 +106,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Dev-mode only: test login endpoint that bypasses GitHub OAuth.
 	if h.cfg.DevMode {
 		h.logger.Warn("dev mode enabled: /auth/test-login endpoint is active")
-		mux.HandleFunc("POST /auth/test-login", h.handleTestLogin)
+		mux.Handle("POST /auth/test-login", h.loginLimiter.Middleware(http.HandlerFunc(h.handleTestLogin)))
 	}
 }
 
