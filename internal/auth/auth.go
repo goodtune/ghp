@@ -168,7 +168,7 @@ func (h *Handler) lookupSession(token string) *Session {
 		return nil
 	}
 	// ExpiresAt is a belt-and-suspenders check; the LRU TTL already evicts
-	// expired entries, but we keep it for defence in depth.
+	// expired entries, but we keep it for defense in depth.
 	if time.Now().After(s.ExpiresAt) {
 		h.sessions.Remove(token)
 		return nil

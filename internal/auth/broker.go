@@ -15,7 +15,6 @@ import (
 type brokerState struct {
 	RedirectURI     string
 	DownstreamState string
-	ExpiresAt       time.Time
 }
 
 // BrokerClaims are the JWT claims minted by the OAuth broker.
@@ -45,7 +44,6 @@ func (h *Handler) handleBrokerAuthorize(w http.ResponseWriter, r *http.Request) 
 	h.brokerStates.Add(state, &brokerState{
 		RedirectURI:     redirectURI,
 		DownstreamState: downstreamState,
-		ExpiresAt:       time.Now().Add(brokerStateTTL),
 	})
 
 	callbackURL := h.brokerCallbackURL(r)
@@ -78,7 +76,7 @@ func (h *Handler) handleBrokerCallback(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		h.brokerStates.Remove(state)
 	}
-	if !ok || time.Now().After(bs.ExpiresAt) {
+	if !ok {
 		http.Error(w, "Invalid or expired state", http.StatusBadRequest)
 		return
 	}
