@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -189,7 +190,9 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter {
 // NewCopilotPassthroughHandler creates a transparent reverse proxy for
 // *.githubcopilot.com traffic. The original Host header is preserved so the
 // correct subdomain reaches the real Copilot service. No token interception
-// is performed.
+// or scope enforcement is performed; credentials in the Authorization header
+// are forwarded verbatim. Every request is audit-logged and captured in
+// Prometheus metrics so that Copilot traffic remains observable.
 // The upstream parameter sets the network destination (scheme + host:port).
 // The transport parameter allows callers to supply a custom RoundTripper;
 // pass nil to use http.DefaultTransport.
@@ -213,7 +216,28 @@ func NewCopilotPassthroughHandler(upstream string, enterpriseSlug string, logger
 		proxy.Transport = transport
 	}
 
-	return proxy
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+		proxy.ServeHTTP(rec, r)
+
+		dur := time.Since(start)
+		statusStr := strconv.Itoa(rec.status)
+
+		if logger != nil {
+			logger.Info("copilot_request",
+				"method", r.Method,
+				"host", r.Host,
+				"path", r.URL.Path,
+				"status", rec.status,
+				"duration_ms", dur.Milliseconds(),
+			)
+		}
+
+		metrics.HttpRequestDuration.WithLabelValues(backend.Copilot, r.Method, statusStr).Observe(dur.Seconds())
+		metrics.HttpRequestTotal.WithLabelValues(backend.Copilot, r.Method, statusStr).Inc()
+	})
 }
 
 // extractClientToken checks for a client token (ghx_/gha_) in the Authorization header.
