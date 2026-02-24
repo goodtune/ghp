@@ -5,10 +5,8 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +17,7 @@ import (
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	ghub "github.com/google/go-github/v68/github"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/goodtune/ghp/internal/crypto"
 )
 
 // InstallationTokenError represents a failed installation token request,
@@ -96,30 +95,7 @@ type AppTokenProvider struct {
 
 // NewAppTokenProvider creates a provider from the given config.
 func NewAppTokenProvider(cfg AppConfig) (*AppTokenProvider, error) {
-	block, _ := pem.Decode([]byte(cfg.PrivateKey))
-	if block == nil {
-		return nil, fmt.Errorf("failed to parse PEM block")
-	}
-
-	var key *rsa.PrivateKey
-	var err error
-
-	switch block.Type {
-	case "RSA PRIVATE KEY":
-		key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
-	case "PRIVATE KEY":
-		parsed, e := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if e != nil {
-			return nil, fmt.Errorf("parsing PKCS8 private key: %w", e)
-		}
-		var ok bool
-		key, ok = parsed.(*rsa.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("PKCS8 key is not RSA")
-		}
-	default:
-		return nil, fmt.Errorf("unsupported PEM block type %q", block.Type)
-	}
+	key, err := crypto.ParseRSAPrivateKey(cfg.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("parsing private key: %w", err)
 	}

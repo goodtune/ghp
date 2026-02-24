@@ -1,16 +1,12 @@
 package auth
 
 import (
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -117,14 +113,8 @@ func (h *Handler) handleBrokerCallback(w http.ResponseWriter, r *http.Request) {
 			IssuedAt:  jwt.NewNumericDate(now),
 		},
 	}
-	var signed string
-	if h.rsaPrivKey != nil {
-		token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-		signed, err = token.SignedString(h.rsaPrivKey)
-	} else {
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		signed, err = token.SignedString([]byte(h.cfg.Auth.JWTSecret))
-	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	signed, err := token.SignedString(h.rsaPrivKey)
 	if err != nil {
 		h.logger.Error("broker: failed to sign JWT", "error", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
@@ -177,42 +167,6 @@ func (h *Handler) handleJWKS(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	})
-}
-
-// loadRSAPrivateKey parses an RSA private key from PEM-encoded data or a file.
-// Returns nil, nil when neither pemData nor pemFile is provided.
-func loadRSAPrivateKey(pemData, pemFile string) (*rsa.PrivateKey, error) {
-	var pemBytes []byte
-	if pemData != "" {
-		pemBytes = []byte(pemData)
-	} else if pemFile != "" {
-		var err error
-		pemBytes, err = os.ReadFile(pemFile)
-		if err != nil {
-			return nil, fmt.Errorf("reading JWT private key file: %w", err)
-		}
-	}
-	if len(pemBytes) == 0 {
-		return nil, nil
-	}
-	block, _ := pem.Decode(pemBytes)
-	if block == nil {
-		return nil, fmt.Errorf("failed to decode PEM block from JWT private key")
-	}
-	// Try PKCS8 first ("PRIVATE KEY"), then PKCS1 ("RSA PRIVATE KEY").
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		rsaKey, err2 := x509.ParsePKCS1PrivateKey(block.Bytes)
-		if err2 != nil {
-			return nil, fmt.Errorf("parsing JWT private key (PKCS8: %v, PKCS1: %w)", err, err2)
-		}
-		return rsaKey, nil
-	}
-	rsaKey, ok := key.(*rsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("JWT private key is not an RSA key")
-	}
-	return rsaKey, nil
 }
 
 // validateRedirectURI checks whether uri is permitted by the configured allowlist.

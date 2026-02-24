@@ -46,7 +46,7 @@ auth:
 
 | Field | Description |
 |-------|-------------|
-| `auth.jwt_private_key` | PEM-encoded RSA private key used to sign broker JWTs with RS256 (asymmetric). Downstream services verify tokens using the public key from `/auth/jwks.json` without being able to forge them. |
+| `auth.jwt_private_key` | PEM-encoded RSA private key used to sign broker JWTs with RS256 (asymmetric). Downstream services verify tokens using the public key from `/.well-known/jwks.json` without being able to forge them. |
 | `auth.jwt_private_key_file` | Path to a PEM-encoded RSA private key file. Used when `jwt_private_key` is not set directly. |
 | `auth.allowed_redirects` | List of permitted `redirect_uri` values. Supports exact URLs and wildcard domain patterns (e.g. `*.example.com`). |
 
@@ -58,13 +58,7 @@ Environment variables: `GHP_AUTH_JWT_PRIVATE_KEY` (PEM contents), `GHP_AUTH_JWT_
         openssl genrsa -out broker-signing.pem 2048
 
     The corresponding public key is available to downstream services at
-    `{base_url}/auth/jwks.json` — no out-of-band key distribution required.
-
-!!! warning "Deprecated: shared HMAC secret"
-    The `auth.jwt_secret` field (HS256 symmetric signing) is still supported for
-    backward compatibility but is deprecated. With a shared secret, any service
-    that can verify tokens can also forge them. Migrate to `jwt_private_key` for
-    RS256 asymmetric signing.
+    `{base_url}/.well-known/jwks.json` — no out-of-band key distribution required.
 
 ### GitHub App Setup
 
@@ -82,12 +76,12 @@ authentication to the proxy and receive a signed JWT in return.
 ### Prerequisites
 
 The downstream service needs the proxy's base URL and its public key (available
-at `{auth_proxy_url}/auth/jwks.json`). No secret key distribution is required.
+at `{auth_proxy_url}/.well-known/jwks.json`). No secret key distribution is required.
 
 | Value | Description | Example |
 |-------|-------------|---------|
 | `auth_proxy_url` | Base URL of the auth proxy | `https://auth-proxy.example.com` |
-| `auth_jwks_url` | JWKS endpoint for RS256 token verification | `https://auth-proxy.example.com/auth/jwks.json` |
+| `auth_jwks_url` | JWKS endpoint for RS256 token verification | `https://auth-proxy.example.com/.well-known/jwks.json` |
 
 ### Starting the Login Flow
 
@@ -130,7 +124,7 @@ After the user authenticates with GitHub, the proxy redirects them back to
 The downstream service should:
 
 1. **Verify `state`** matches the value stored at the start of the flow.
-2. **Validate the JWT signature** using the proxy's public key (fetch from `/auth/jwks.json`).
+2. **Validate the JWT signature** using the proxy's public key (fetch from `/.well-known/jwks.json`).
 3. **Check that `exp`** has not passed.
 4. **Check that `aud`** matches the service's own callback URL.
 5. **Create a local session** using the claims from the token.
@@ -142,7 +136,7 @@ import jwt  # PyJWT
 import requests
 
 # Fetch the public key once at startup (or cache with TTL).
-jwks = requests.get(f"{AUTH_PROXY_URL}/auth/jwks.json").json()
+jwks = requests.get(f"{AUTH_PROXY_URL}/.well-known/jwks.json").json()
 PUBLIC_KEY = jwt.algorithms.RSAAlgorithm.from_jwk(jwks["keys"][0])
 
 @app.route("/auth/callback")
@@ -248,7 +242,7 @@ func handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 const jwt = require("jsonwebtoken");
 const jwksClient = require("jwks-rsa");
 
-const client = jwksClient({ jwksUri: `${AUTH_PROXY_URL}/auth/jwks.json` });
+const client = jwksClient({ jwksUri: `${AUTH_PROXY_URL}/.well-known/jwks.json` });
 
 app.get("/auth/callback", async (req, res) => {
   // 1. Verify CSRF state
@@ -295,7 +289,7 @@ No direct GitHub API calls are required on the downstream side.
 ## Trust Model
 
 - The proxy holds the **RSA private key** and signs JWTs.
-- Downstream services verify tokens using the **RSA public key** from `/auth/jwks.json` — they cannot forge tokens.
+- Downstream services verify tokens using the **RSA public key** from `/.well-known/jwks.json` — they cannot forge tokens.
 - The JWT is **single-use and short-lived** (60 seconds) — it exists only to
   bootstrap the local session.
 
@@ -308,7 +302,7 @@ No direct GitHub API calls are required on the downstream side.
 | Token expiry | `exp` is set to 60 seconds. The JWT is consumed immediately on redirect and does not need to live longer. |
 | CSRF | The `state` parameter round-trips through the entire flow, allowing the downstream service to verify it. |
 | HTTP downgrade | The proxy rejects `redirect_uri` values that do not use HTTPS (except `localhost` in dev mode). |
-| Token forgery | RS256 (asymmetric) signing ensures downstream services can verify tokens using the public key without being able to forge them. The HS256 path (deprecated) requires all verifiers to share the secret and is therefore able to forge tokens. |
+| Token forgery | RS256 (asymmetric) signing ensures downstream services can verify tokens using the public key without being able to forge them. |
 
 ## Proxy Endpoints
 
@@ -327,7 +321,7 @@ GitHub redirects here after the user authorizes. The proxy exchanges the code,
 fetches the user's identity, mints a JWT, and redirects to the downstream
 service's `redirect_uri` with `token` and `state` query parameters.
 
-### `GET /auth/jwks.json`
+### `GET /.well-known/jwks.json`
 
 Returns the RSA public key as a [JSON Web Key Set (JWKS)](https://datatracker.ietf.org/doc/html/rfc7517),
 allowing downstream services to verify RS256-signed broker JWTs. Only available

@@ -93,18 +93,13 @@ type OTELConfig struct {
 type AuthConfig struct {
 	// JWTPrivateKey is the PEM-encoded RSA private key used to sign broker JWTs
 	// with RS256 (asymmetric signing). When set, it takes precedence over
-	// JWTSecret and the broker endpoints are enabled. Downstream services can
-	// verify tokens using the corresponding public key (via /auth/jwks.json)
+	// JWTPrivateKeyFile and the broker endpoints are enabled. Downstream services
+	// can verify tokens using the corresponding public key (via /.well-known/jwks.json)
 	// without being able to forge them.
 	JWTPrivateKey string `koanf:"jwt_private_key"`
 	// JWTPrivateKeyFile is the path to a PEM-encoded RSA private key file.
 	// Used when JWTPrivateKey is not set directly.
 	JWTPrivateKeyFile string `koanf:"jwt_private_key_file"`
-	// JWTSecret is the shared HMAC-SHA256 secret used to sign broker JWTs.
-	// Deprecated: use JWTPrivateKey or JWTPrivateKeyFile for RS256 signing instead.
-	// When set (and no RSA key is configured), the broker endpoints are enabled
-	// using HS256 for backward compatibility.
-	JWTSecret string `koanf:"jwt_secret"`
 	// AllowedRedirects is a list of permitted redirect_uri values or wildcard
 	// domain patterns (e.g. "*.example.com") for the OAuth broker flow.
 	AllowedRedirects []string `koanf:"allowed_redirects"`

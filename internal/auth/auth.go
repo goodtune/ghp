@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -86,11 +87,24 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 		brokerStates: expirable.NewLRU[string, *brokerState](maxBrokerStates, nil, brokerStateTTL),
 	}
 	if cfg.Auth.JWTPrivateKey != "" || cfg.Auth.JWTPrivateKeyFile != "" {
-		key, err := loadRSAPrivateKey(cfg.Auth.JWTPrivateKey, cfg.Auth.JWTPrivateKeyFile)
-		if err != nil {
-			logger.Error("failed to load JWT RSA private key", "error", err)
+		var pemData string
+		if cfg.Auth.JWTPrivateKey != "" {
+			pemData = cfg.Auth.JWTPrivateKey
 		} else {
-			h.rsaPrivKey = key
+			data, err := os.ReadFile(cfg.Auth.JWTPrivateKeyFile)
+			if err != nil {
+				logger.Error("failed to read JWT private key file", "error", err)
+			} else {
+				pemData = string(data)
+			}
+		}
+		if pemData != "" {
+			key, err := crypto.ParseRSAPrivateKey(pemData)
+			if err != nil {
+				logger.Error("failed to load JWT RSA private key", "error", err)
+			} else {
+				h.rsaPrivKey = key
+			}
 		}
 	}
 	return h
@@ -115,28 +129,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// OAuth broker endpoints: delegate authentication to this proxy.
 	if h.cfg.Auth.JWTPrivateKey != "" || h.cfg.Auth.JWTPrivateKeyFile != "" {
-		// RS256 path (preferred): RSA key configured.
 		if h.rsaPrivKey == nil {
 			h.logger.Error("jwt_private_key configuration is invalid; oauth broker endpoints disabled")
 		} else {
 			mux.HandleFunc("GET /auth/authorize", h.handleBrokerAuthorize)
 			mux.HandleFunc("GET /auth/callback", h.handleBrokerCallback)
-			mux.HandleFunc("GET /auth/jwks.json", h.handleJWKS)
-			h.logger.Info("oauth broker endpoints enabled (RS256)")
-			if len(h.cfg.Auth.AllowedRedirects) == 0 {
-				h.logger.Warn("oauth broker enabled but no allowed redirects configured; all broker authorization requests will fail with \"redirect_uri not allowed\"")
-			}
-		}
-	} else if h.cfg.Auth.JWTSecret != "" {
-		// Legacy HS256 path: shared secret configured.
-		// Require a sufficiently strong JWT secret before enabling broker endpoints.
-		if len(h.cfg.Auth.JWTSecret) < 32 {
-			h.logger.Error("jwt_secret is too short; oauth broker endpoints disabled",
-				"configured_length", len(h.cfg.Auth.JWTSecret), "min_length", 32)
-		} else {
-			mux.HandleFunc("GET /auth/authorize", h.handleBrokerAuthorize)
-			mux.HandleFunc("GET /auth/callback", h.handleBrokerCallback)
-			h.logger.Info("oauth broker endpoints enabled (HS256, deprecated: switch to jwt_private_key for RS256)")
+			mux.HandleFunc("GET /.well-known/jwks.json", h.handleJWKS)
+			h.logger.Info("oauth broker endpoints enabled")
 			if len(h.cfg.Auth.AllowedRedirects) == 0 {
 				h.logger.Warn("oauth broker enabled but no allowed redirects configured; all broker authorization requests will fail with \"redirect_uri not allowed\"")
 			}
