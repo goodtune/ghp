@@ -73,6 +73,8 @@ func newLogger(cfg *config.Config) (*slog.Logger, io.Writer, func()) {
 		if err == nil {
 			w = f
 			cleanup = func() { f.Close() }
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: failed to open log file %q: %v; falling back to stdout\n", cfg.Logging.File.Path, err)
 		}
 	}
 
