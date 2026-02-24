@@ -172,7 +172,7 @@ func (s *Server) Run(ctx context.Context) error {
 		apiHandler:     accessLogHandler(backend.API, proxyHandler, aw),
 		githubHandler:  accessLogHandler(backend.GitHub, githubPassthrough, aw),
 		copilotHandler: accessLogHandler(backend.Copilot, copilotPassthrough, aw),
-		mgmtHandler:    accessLogHandler(backend.Mgmt, mux, aw),
+		mgmtHandler:    accessLogHandler(backend.Mgmt, web.SecurityHeadersMiddleware(mux), aw),
 		managementHost: s.cfg.Server.ManagementHost,
 	})
 

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// wantSecurityHeaders lists the security headers that securityHeadersMiddleware
+// wantSecurityHeaders lists the security headers that SecurityHeadersMiddleware
 // must set on every response that passes through it.
 var wantSecurityHeaders = map[string]string{
 	"Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
@@ -46,7 +46,7 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 			})
 
 			rr := httptest.NewRecorder()
-			securityHeadersMiddleware(inner).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+			SecurityHeadersMiddleware(inner).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 
 			if rr.Code != tc.wantStatus {
 				t.Errorf("status: got %d, want %d", rr.Code, tc.wantStatus)
@@ -65,84 +65,64 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 	}
 }
 
-// TestSecurityHeadersMuxPrecedence verifies that:
-//   - All routes on the inner (web UI) mux receive security headers.
-//   - More-specific patterns registered on an outer mux take precedence and
-//     bypass the security-headers middleware entirely (they do not receive the
-//     headers), demonstrating that the middleware does not bleed into unrelated
-//     handlers.
-func TestSecurityHeadersMuxPrecedence(t *testing.T) {
-	// Build the same structure that RegisterRoutes uses: an inner mux wrapped
-	// with securityHeadersMiddleware, mounted as a "/" fallback on an outer mux
-	// that also has more-specific patterns.
-	inner := http.NewServeMux()
-	inner.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+// TestSecurityHeadersAllRoutes verifies that when SecurityHeadersMiddleware
+// wraps the top-level mux, all routes (web UI, API, auth, docs) receive
+// security headers alongside their own handler-specific headers.
+func TestSecurityHeadersAllRoutes(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Handler", "web-index")
-		w.WriteHeader(http.StatusOK)
 	})
-	inner.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Handler", "web-login")
-		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /api/data", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Handler", "api-data")
+	})
+	mux.HandleFunc("GET /auth/callback", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Handler", "auth-callback")
 	})
 
-	outer := http.NewServeMux()
-	outer.HandleFunc("GET /api/data", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Handler", "api-data")
-		w.WriteHeader(http.StatusOK)
-	})
-	outer.HandleFunc("GET /auth/callback", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Handler", "auth-callback")
-		w.WriteHeader(http.StatusOK)
-	})
-	outer.Handle("/", securityHeadersMiddleware(inner))
+	wrapped := SecurityHeadersMiddleware(mux)
 
 	tests := []struct {
-		name            string
-		path            string
-		wantHandler     string
-		wantSecHeaders  bool // whether security headers should be present
+		name        string
+		path        string
+		wantHandler string
 	}{
 		{
-			name:           "web index receives security headers",
-			path:           "/",
-			wantHandler:    "web-index",
-			wantSecHeaders: true,
+			name:        "web index",
+			path:        "/",
+			wantHandler: "web-index",
 		},
 		{
-			name:           "web login receives security headers",
-			path:           "/login",
-			wantHandler:    "web-login",
-			wantSecHeaders: true,
+			name:        "web login",
+			path:        "/login",
+			wantHandler: "web-login",
 		},
 		{
-			name:           "outer /api/ pattern takes precedence, no security headers",
-			path:           "/api/data",
-			wantHandler:    "api-data",
-			wantSecHeaders: false,
+			name:        "API route",
+			path:        "/api/data",
+			wantHandler: "api-data",
 		},
 		{
-			name:           "outer /auth/ pattern takes precedence, no security headers",
-			path:           "/auth/callback",
-			wantHandler:    "auth-callback",
-			wantSecHeaders: false,
+			name:        "auth route",
+			path:        "/auth/callback",
+			wantHandler: "auth-callback",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
-			outer.ServeHTTP(rr, httptest.NewRequest("GET", tc.path, nil))
+			wrapped.ServeHTTP(rr, httptest.NewRequest("GET", tc.path, nil))
 
 			if got := rr.Header().Get("X-Handler"); got != tc.wantHandler {
 				t.Errorf("X-Handler: got %q, want %q", got, tc.wantHandler)
 			}
 			for header, want := range wantSecurityHeaders {
-				got := rr.Header().Get(header)
-				if tc.wantSecHeaders && got != want {
+				if got := rr.Header().Get(header); got != want {
 					t.Errorf("%s: got %q, want %q", header, got, want)
-				}
-				if !tc.wantSecHeaders && got != "" {
-					t.Errorf("%s: expected empty (outer-mux route), got %q", header, got)
 				}
 			}
 		})
