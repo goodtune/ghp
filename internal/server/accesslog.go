@@ -1,9 +1,13 @@
 package server
 
 import (
-	"log/slog"
+	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/goodtune/ghp/internal/metrics"
@@ -48,9 +52,60 @@ func (r *responseRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
 }
 
-// accessLogHandler wraps an http.Handler with standard HTTP access logging
-// and per-backend Prometheus metrics.
-func accessLogHandler(backend string, next http.Handler, logger *slog.Logger) http.Handler {
+// Caddy-compatible JSON access log types.
+
+type accessLogEntry struct {
+	Level       string              `json:"level"`
+	TS          float64             `json:"ts"`
+	Logger      string              `json:"logger"`
+	Msg         string              `json:"msg"`
+	Request     requestEntry        `json:"request"`
+	BytesRead   int                 `json:"bytes_read"`
+	UserID      string              `json:"user_id"`
+	Duration    float64             `json:"duration"`
+	Size        int                 `json:"size"`
+	Status      int                 `json:"status"`
+	RespHeaders map[string][]string `json:"resp_headers"`
+}
+
+type requestEntry struct {
+	RemoteIP   string              `json:"remote_ip"`
+	RemotePort string              `json:"remote_port"`
+	ClientIP   string              `json:"client_ip"`
+	Proto      string              `json:"proto"`
+	Method     string              `json:"method"`
+	Host       string              `json:"host"`
+	URI        string              `json:"uri"`
+	Headers    map[string][]string `json:"headers"`
+}
+
+// accessLogWriter provides thread-safe Caddy-format JSON log writing.
+type accessLogWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func newAccessLogWriter(w io.Writer) *accessLogWriter {
+	if w == nil {
+		w = io.Discard
+	}
+	return &accessLogWriter{w: w}
+}
+
+func (c *accessLogWriter) writeEntry(entry *accessLogEntry) {
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.w.Write(data) // best-effort; access log write errors are non-critical
+}
+
+// accessLogHandler wraps an http.Handler with Caddy-compatible JSON access
+// logging and per-backend Prometheus metrics.
+func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -60,18 +115,70 @@ func accessLogHandler(backend string, next http.Handler, logger *slog.Logger) ht
 		dur := time.Since(start)
 		statusStr := strconv.Itoa(rec.status)
 
-		logger.Info("http_request",
-			"method", r.Method,
-			"host", r.Host,
-			"path", r.URL.Path,
-			"status", rec.status,
-			"size", rec.size,
-			"duration_ms", dur.Milliseconds(),
-			"remote_addr", r.RemoteAddr,
-			"user_agent", r.Header.Get("User-Agent"),
-		)
+		remoteIP, remotePort := splitRemoteAddr(r.RemoteAddr)
+
+		// Copy request headers, redacting sensitive values.
+		headers := make(map[string][]string, len(r.Header))
+		for k, v := range r.Header {
+			switch strings.ToLower(k) {
+			case "authorization", "proxy-authorization", "cookie",
+				"x-auth-token", "x-api-key", "x-access-token":
+				headers[k] = []string{"REDACTED"}
+			default:
+				headers[k] = v
+			}
+		}
+
+		// Capture response headers, redacting sensitive values.
+		respHeaders := make(map[string][]string, len(rec.Header()))
+		for k, v := range rec.Header() {
+			switch strings.ToLower(k) {
+			case "set-cookie":
+				respHeaders[k] = []string{"REDACTED"}
+			default:
+				respHeaders[k] = v
+			}
+		}
+
+		level := "info"
+		if rec.status >= 500 {
+			level = "error"
+		}
+
+		entry := &accessLogEntry{
+			Level:  level,
+			TS:     float64(start.UnixNano()) / 1e9,
+			Logger: "http.log.access",
+			Msg:    "handled request",
+			Request: requestEntry{
+				RemoteIP:   remoteIP,
+				RemotePort: remotePort,
+				ClientIP:   remoteIP,
+				Proto:      r.Proto,
+				Method:     r.Method,
+				Host:       r.Host,
+				URI:        r.URL.RequestURI(),
+				Headers:    headers,
+			},
+			BytesRead:   0,
+			UserID:      "",
+			Duration:    dur.Seconds(),
+			Size:        rec.size,
+			Status:      rec.status,
+			RespHeaders: respHeaders,
+		}
+
+		aw.writeEntry(entry)
 
 		metrics.HttpRequestDuration.WithLabelValues(backend, r.Method, statusStr).Observe(dur.Seconds())
 		metrics.HttpRequestTotal.WithLabelValues(backend, r.Method, statusStr).Inc()
 	})
+}
+
+func splitRemoteAddr(addr string) (ip, port string) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, ""
+	}
+	return host, port
 }
