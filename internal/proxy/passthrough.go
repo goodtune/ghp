@@ -189,7 +189,10 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter {
 // NewCopilotPassthroughHandler creates a transparent reverse proxy for
 // *.githubcopilot.com traffic. The original Host header is preserved so the
 // correct subdomain reaches the real Copilot service. No token interception
-// is performed.
+// or scope enforcement is performed; credentials in the Authorization header
+// are forwarded verbatim. Caddy-compatible access logging and Prometheus
+// metrics are applied consistently by the server layer (accessLogHandler),
+// so this handler only concerns itself with proxying.
 // The upstream parameter sets the network destination (scheme + host:port).
 // The transport parameter allows callers to supply a custom RoundTripper;
 // pass nil to use http.DefaultTransport.

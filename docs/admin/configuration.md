@@ -22,6 +22,7 @@ the `GHP_` prefix.
 | `GHP_GITHUB_PRIVATE_KEY` | PEM-encoded private key content (for `gha_` agent tokens) | |
 | `GHP_GITHUB_PRIVATE_KEY_FILE` | Path to PEM private key file (for `gha_` agent tokens) | |
 | `GHP_GITHUB_ENTERPRISE_SLUG` | Enterprise slug for access restriction header | |
+| `GHP_TLS_MIN_VERSION` | Minimum TLS version (`1.2` or `1.3`) | `1.2` |
 | `GHP_TOKENS_DEFAULT_DURATION` | Default token lifetime | `24h` |
 | `GHP_TOKENS_MAX_DURATION` | Maximum token lifetime | `168h` |
 | `GHP_METRICS_ENABLED` | Enable Prometheus `/metrics` endpoint on management host | `false` |
@@ -59,6 +60,7 @@ tls:
   certificates:
     - cert_file: "/path/to/cert.pem"
       key_file: "/path/to/key.pem"
+  min_version: "1.2"             # minimum TLS version: "1.2" (default) or "1.3"
 
 tokens:
   default_duration: "24h"
