@@ -71,6 +71,16 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 	}
 }
 
+// secureCookies returns true when cookies should be sent with the Secure flag.
+// This is the case when TLS certificates are configured or when the BaseURL
+// uses an https:// scheme.
+func (h *Handler) secureCookies() bool {
+	if len(h.cfg.TLS.Certificates) > 0 {
+		return true
+	}
+	return strings.HasPrefix(h.cfg.Server.BaseURL, "https://")
+}
+
 // RegisterRoutes adds auth routes to the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/github", h.handleGitHubLogin)
@@ -334,6 +344,7 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		Value:    sessionToken,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   h.secureCookies(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(SessionDuration.Seconds()),
 	})
@@ -350,6 +361,7 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   h.secureCookies(),
 		MaxAge:   -1,
 	})
 	w.WriteHeader(http.StatusOK)
@@ -441,6 +453,7 @@ func (h *Handler) handleTestLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    sessionToken,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   h.secureCookies(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(SessionDuration.Seconds()),
 	})
