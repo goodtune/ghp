@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -38,6 +39,9 @@ func TestLoadTLSConfig(t *testing.T) {
 	}
 	if tlsCfg.Certificates[0].Leaf == nil {
 		t.Fatal("expected leaf cert to be parsed")
+	}
+	if tlsCfg.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("expected MinVersion TLS 1.2, got %d", tlsCfg.MinVersion)
 	}
 }
 

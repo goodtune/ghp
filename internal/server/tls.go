@@ -16,6 +16,9 @@ func loadTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 	}
 
 	tlsCfg := &tls.Config{
+		// Explicitly require TLS 1.2+ to document intent and guard against
+		// future Go default changes.
+		MinVersion: tls.VersionTLS12,
 		// Enable HTTP/2 via ALPN negotiation.
 		NextProtos: []string{"h2", "http/1.1"},
 	}
