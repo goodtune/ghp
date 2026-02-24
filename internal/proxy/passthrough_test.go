@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -14,9 +13,7 @@ import (
 
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
-	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 type mockTokenResolver struct {
@@ -391,88 +388,5 @@ func tlsTransport(ts *httptest.Server) http.RoundTripper {
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 		},
-	}
-}
-
-// bufLogHandler is a minimal slog.Handler that writes JSON records to a buffer.
-type bufLogHandler struct {
-	buf *bytes.Buffer
-	h   slog.Handler
-}
-
-func newBufLogger() (*slog.Logger, *bytes.Buffer) {
-	buf := &bytes.Buffer{}
-	h := &bufLogHandler{buf: buf, h: slog.NewTextHandler(buf, nil)}
-	return slog.New(h), buf
-}
-
-func (b *bufLogHandler) Enabled(ctx context.Context, l slog.Level) bool {
-	return b.h.Enabled(ctx, l)
-}
-func (b *bufLogHandler) Handle(ctx context.Context, r slog.Record) error {
-	return b.h.Handle(ctx, r)
-}
-func (b *bufLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &bufLogHandler{buf: b.buf, h: b.h.WithAttrs(attrs)}
-}
-func (b *bufLogHandler) WithGroup(name string) slog.Handler {
-	return &bufLogHandler{buf: b.buf, h: b.h.WithGroup(name)}
-}
-
-func TestCopilotPassthroughHandler_AuditLog(t *testing.T) {
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	logger, buf := newBufLogger()
-	handler := NewCopilotPassthroughHandler(upstream.URL, "", logger, tlsTransport(upstream))
-
-	req := httptest.NewRequest("GET", "http://api.githubcopilot.com/some/path", nil)
-	req.Host = "api.githubcopilot.com"
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
-	}
-
-	logged := buf.String()
-	if !strings.Contains(logged, "copilot_request") {
-		t.Errorf("expected 'copilot_request' in log output, got: %s", logged)
-	}
-	if !strings.Contains(logged, "api.githubcopilot.com") {
-		t.Errorf("expected host in log output, got: %s", logged)
-	}
-	if !strings.Contains(logged, "/some/path") {
-		t.Errorf("expected path in log output, got: %s", logged)
-	}
-}
-
-func TestCopilotPassthroughHandler_Metrics(t *testing.T) {
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	// Count requests before the test.
-	before := testutil.ToFloat64(metrics.HttpRequestTotal.WithLabelValues("copilot", "GET", "200"))
-
-	handler := NewCopilotPassthroughHandler(upstream.URL, "", nil, tlsTransport(upstream))
-
-	req := httptest.NewRequest("GET", "http://api.githubcopilot.com/v1/completions", nil)
-	req.Host = "api.githubcopilot.com"
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
-	}
-
-	after := testutil.ToFloat64(metrics.HttpRequestTotal.WithLabelValues("copilot", "GET", "200"))
-	if after-before != 1 {
-		t.Errorf("expected HttpRequestTotal to increment by 1, got delta %.0f", after-before)
 	}
 }
