@@ -138,6 +138,34 @@ func (s *SQLiteStore) UpsertUser(ctx context.Context, user *User) error {
 	return nil
 }
 
+func (s *SQLiteStore) SyncAdminRoles(ctx context.Context, adminUsernames []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	// Demote all current admins to 'user'.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET role = 'user', updated_at = ? WHERE role = 'admin'`, now,
+	); err != nil {
+		return err
+	}
+
+	// Promote the configured admins.
+	for _, username := range adminUsernames {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET role = 'admin', updated_at = ? WHERE LOWER(github_username) = LOWER(?)`,
+			now, username,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *SQLiteStore) GetUserByGitHubID(ctx context.Context, githubID int64) (*User, error) {
 	u := &User{}
 	var createdStr, updatedStr string

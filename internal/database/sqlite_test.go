@@ -337,3 +337,60 @@ func TestAuditLog(t *testing.T) {
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
+
+func TestSyncAdminRoles(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	alice := &User{GitHubID: 1, GitHubUsername: "alice", Role: "user"}
+	bob := &User{GitHubID: 2, GitHubUsername: "bob", Role: "user"}
+	if err := store.UpsertUser(ctx, alice); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertUser(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+
+	// Promote alice to admin via sync.
+	if err := store.SyncAdminRoles(ctx, []string{"alice"}); err != nil {
+		t.Fatalf("SyncAdminRoles: %v", err)
+	}
+	gotAlice, err := store.GetUserByGitHubID(ctx, 1)
+	if err != nil {
+		t.Fatalf("GetUserByGitHubID alice: %v", err)
+	}
+	if gotAlice.Role != "admin" {
+		t.Errorf("alice role = %q, want admin", gotAlice.Role)
+	}
+	gotBob, err := store.GetUserByGitHubID(ctx, 2)
+	if err != nil {
+		t.Fatalf("GetUserByGitHubID bob: %v", err)
+	}
+	if gotBob.Role != "user" {
+		t.Errorf("bob role = %q, want user", gotBob.Role)
+	}
+
+	// Remove alice from admin list — she should be demoted.
+	if err := store.SyncAdminRoles(ctx, []string{}); err != nil {
+		t.Fatalf("SyncAdminRoles (empty): %v", err)
+	}
+	gotAlice2, err := store.GetUserByGitHubID(ctx, 1)
+	if err != nil {
+		t.Fatalf("GetUserByGitHubID alice2: %v", err)
+	}
+	if gotAlice2.Role != "user" {
+		t.Errorf("alice role after demotion = %q, want user", gotAlice2.Role)
+	}
+
+	// Case-insensitive match: "BOB" should promote bob.
+	if err := store.SyncAdminRoles(ctx, []string{"BOB"}); err != nil {
+		t.Fatalf("SyncAdminRoles (case): %v", err)
+	}
+	gotBob2, err := store.GetUserByGitHubID(ctx, 2)
+	if err != nil {
+		t.Fatalf("GetUserByGitHubID bob2: %v", err)
+	}
+	if gotBob2.Role != "admin" {
+		t.Errorf("bob role = %q, want admin", gotBob2.Role)
+	}
+}

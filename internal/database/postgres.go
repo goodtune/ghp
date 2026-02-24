@@ -104,6 +104,34 @@ func (s *PostgresStore) UpsertUser(ctx context.Context, user *User) error {
 	return err
 }
 
+func (s *PostgresStore) SyncAdminRoles(ctx context.Context, adminUsernames []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+
+	// Demote all current admins to 'user'.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET role = 'user', updated_at = $1 WHERE role = 'admin'`, now,
+	); err != nil {
+		return err
+	}
+
+	// Promote the configured admins.
+	for _, username := range adminUsernames {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET role = 'admin', updated_at = $1 WHERE LOWER(github_username) = LOWER($2)`,
+			now, username,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *PostgresStore) GetUserByGitHubID(ctx context.Context, githubID int64) (*User, error) {
 	u := &User{}
 	err := s.db.QueryRowContext(ctx,

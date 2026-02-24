@@ -33,6 +33,7 @@ type Server struct {
 	configPath string
 	logger     *slog.Logger
 	logWriter  io.Writer
+	store      database.Store
 }
 
 // New creates a new Server.
@@ -56,6 +57,15 @@ func (s *Server) reloadConfig() {
 		return
 	}
 	s.logger.Info("config_reloaded", "path", s.configPath)
+
+	// Sync admin roles from the updated config.
+	if s.store != nil {
+		if err := s.store.SyncAdminRoles(context.Background(), s.cfg.Admins); err != nil {
+			s.logger.Error("admin_role_sync_failed", "error", err)
+		} else {
+			s.logger.Info("admin_roles_synced")
+		}
+	}
 }
 
 // Run starts the server and blocks until shutdown.
@@ -66,6 +76,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer store.Close()
+	s.store = store
 
 	// Check for pending migrations.
 	migrator := database.NewMigrator(store, s.cfg.Database.Driver)
@@ -75,6 +86,13 @@ func (s *Server) Run(ctx context.Context) error {
 		s.logger.Warn("could not check migrations", "error", err)
 	} else if len(pending) > 0 {
 		return fmt.Errorf("database has %d pending migration(s): run 'ghp migrate' first", len(pending))
+	}
+
+	// Sync admin roles from config on startup.
+	if err := store.SyncAdminRoles(ctx, s.cfg.Admins); err != nil {
+		s.logger.Warn("admin_role_sync_failed", "error", err)
+	} else {
+		s.logger.Info("admin_roles_synced")
 	}
 
 	// Set up encryption.

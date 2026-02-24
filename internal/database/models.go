@@ -98,6 +98,7 @@ type Store interface {
 	GetUserByGitHubID(ctx context.Context, githubID int64) (*User, error)
 	GetUserByID(ctx context.Context, id string) (*User, error)
 	ListUsers(ctx context.Context) ([]*User, error)
+	SyncAdminRoles(ctx context.Context, adminUsernames []string) error
 
 	// GitHub tokens
 	UpsertGitHubToken(ctx context.Context, token *GitHubToken) error
