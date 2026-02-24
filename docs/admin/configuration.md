@@ -86,6 +86,12 @@ admins:
   - "bob"
 ```
 
+!!! note "Admin role is re-evaluated on every login"
+    The `admins` list is the source of truth for admin privileges. Each time a
+    user logs in via GitHub OAuth, their role is set according to the current
+    `admins` list — additions and removals take effect on the user's next login.
+    There is no need to manually update user records in the database.
+
 ## Encryption Key
 
 Generate an encryption key:

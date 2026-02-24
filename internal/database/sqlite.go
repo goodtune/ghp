@@ -119,6 +119,7 @@ func (s *SQLiteStore) UpsertUser(ctx context.Context, user *User) error {
 		ON CONFLICT(github_id) DO UPDATE SET
 			github_username = excluded.github_username,
 			github_email = excluded.github_email,
+			role = excluded.role,
 			updated_at = excluded.updated_at
 	`, user.ID, user.GitHubID, user.GitHubUsername, user.GitHubEmail, user.Role, now, now)
 	if err != nil {
@@ -135,6 +136,34 @@ func (s *SQLiteStore) UpsertUser(ctx context.Context, user *User) error {
 	user.CreatedAt = parseTime(createdStr)
 	user.UpdatedAt = parseTime(updatedStr)
 	return nil
+}
+
+func (s *SQLiteStore) SyncAdminRoles(ctx context.Context, adminUsernames []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	// Demote all current admins to 'user'.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET role = 'user', updated_at = ? WHERE role = 'admin'`, now,
+	); err != nil {
+		return err
+	}
+
+	// Promote the configured admins.
+	for _, username := range adminUsernames {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET role = 'admin', updated_at = ? WHERE LOWER(github_username) = LOWER(?)`,
+			now, username,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) GetUserByGitHubID(ctx context.Context, githubID int64) (*User, error) {
