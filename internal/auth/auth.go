@@ -4,6 +4,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -54,6 +56,12 @@ type Handler struct {
 	encryptor *crypto.Encryptor
 	logger    *slog.Logger
 
+	// rsaPrivKey is the RSA private key used to sign broker JWTs with RS256.
+	// When nil, broker endpoints are disabled entirely.
+	// Note: this key is set once at NewHandler time; config hot-reload (SIGUSR1)
+	// does not update it — a server restart is required to change the signing key.
+	rsaPrivKey *rsa.PrivateKey
+
 	// sessions maps session tokens to active user sessions.
 	// Bounded and TTL-expired via expirable.LRU (thread-safe).
 	sessions *expirable.LRU[string, *Session]
@@ -76,7 +84,7 @@ type Handler struct {
 
 // NewHandler creates a new auth handler.
 func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
-	return &Handler{
+	h := &Handler{
 		cfg:              cfg,
 		store:            store,
 		encryptor:        enc,
@@ -88,6 +96,28 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 		githubLimiter:    NewIPRateLimiter(10, time.Minute, "/auth/github", logger),
 		authorizeLimiter: NewIPRateLimiter(10, time.Minute, "/auth/authorize", logger),
 	}
+	if cfg.Auth.JWTPrivateKey != "" || cfg.Auth.JWTPrivateKeyFile != "" {
+		var pemData string
+		if cfg.Auth.JWTPrivateKey != "" {
+			pemData = cfg.Auth.JWTPrivateKey
+		} else {
+			data, err := os.ReadFile(cfg.Auth.JWTPrivateKeyFile)
+			if err != nil {
+				logger.Error("failed to read JWT private key file", "error", err)
+			} else {
+				pemData = string(data)
+			}
+		}
+		if pemData != "" {
+			key, err := crypto.ParseRSAPrivateKey(pemData)
+			if err != nil {
+				logger.Error("failed to load JWT RSA private key", "error", err)
+			} else {
+				h.rsaPrivKey = key
+			}
+		}
+	}
+	return h
 }
 
 // secureCookies returns true when cookies should be sent with the Secure flag.
@@ -108,16 +138,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/status", h.handleStatus)
 
 	// OAuth broker endpoints: delegate authentication to this proxy.
-	if h.cfg.Auth.JWTSecret != "" {
-		// Require a sufficiently strong JWT secret before enabling broker endpoints.
-		if len(h.cfg.Auth.JWTSecret) < 32 {
-			h.logger.Error("jwt_secret is too short; oauth broker endpoints disabled",
-				"configured_length", len(h.cfg.Auth.JWTSecret), "min_length", 32)
+	if h.cfg.Auth.JWTPrivateKey != "" || h.cfg.Auth.JWTPrivateKeyFile != "" {
+		if h.rsaPrivKey == nil {
+			h.logger.Error("jwt_private_key configuration is invalid; oauth broker endpoints disabled")
 		} else {
 			mux.Handle("GET /auth/authorize", h.authorizeLimiter.Middleware(http.HandlerFunc(h.handleBrokerAuthorize)))
 			mux.HandleFunc("GET /auth/callback", h.handleBrokerCallback)
+			mux.HandleFunc("GET /.well-known/jwks.json", h.handleJWKS)
 			h.logger.Info("oauth broker endpoints enabled")
-			// Warn if no allowed redirects are configured — all broker requests will fail.
 			if len(h.cfg.Auth.AllowedRedirects) == 0 {
 				h.logger.Warn("oauth broker enabled but no allowed redirects configured; all broker authorization requests will fail with \"redirect_uri not allowed\"")
 			}

@@ -1,8 +1,12 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,11 +18,9 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/goodtune/ghp/internal/config"
 )
-
 func TestValidateRedirectURI(t *testing.T) {
 	cfg := &config.Config{
 		Auth: config.AuthConfig{
-			JWTSecret: "test-secret",
 			AllowedRedirects: []string{
 				"https://app.example.com/auth/callback",
 				"*.example.org",
@@ -59,7 +61,6 @@ func TestValidateRedirectURI_DevMode(t *testing.T) {
 	cfg := &config.Config{
 		DevMode: true,
 		Auth: config.AuthConfig{
-			JWTSecret: "test-secret",
 			AllowedRedirects: []string{
 				"http://localhost:3000/auth/callback",
 			},
@@ -138,7 +139,6 @@ func TestBrokerAuthorize(t *testing.T) {
 			BaseURL: "https://proxy.example.com",
 		},
 		Auth: config.AuthConfig{
-			JWTSecret:        "test-secret-key-for-hmac-256-xx",
 			AllowedRedirects: []string{"https://app.example.com/auth/callback"},
 		},
 	}
@@ -186,9 +186,7 @@ func TestBrokerAuthorize(t *testing.T) {
 }
 
 func TestBrokerAuthorize_MissingRedirectURI(t *testing.T) {
-	cfg := &config.Config{
-		Auth: config.AuthConfig{JWTSecret: "test-secret"},
-	}
+	cfg := &config.Config{}
 	h := NewHandler(cfg, nil, nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/auth/authorize", nil)
@@ -203,7 +201,6 @@ func TestBrokerAuthorize_MissingRedirectURI(t *testing.T) {
 func TestBrokerAuthorize_DisallowedRedirectURI(t *testing.T) {
 	cfg := &config.Config{
 		Auth: config.AuthConfig{
-			JWTSecret:        "test-secret",
 			AllowedRedirects: []string{"https://allowed.example.com/cb"},
 		},
 	}
@@ -220,6 +217,8 @@ func TestBrokerAuthorize_DisallowedRedirectURI(t *testing.T) {
 }
 
 func TestBrokerCallback(t *testing.T) {
+	privKey, privPEM := generateTestRSAKey(t)
+
 	// Mock GitHub OAuth token exchange and user info endpoints.
 	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -244,7 +243,6 @@ func TestBrokerCallback(t *testing.T) {
 	}))
 	defer ghServer.Close()
 
-	jwtSecret := "test-secret-key-for-hmac-256-xx"
 	cfg := &config.Config{
 		GitHub: config.GitHubConfig{
 			ClientID:     "test-client-id",
@@ -254,7 +252,7 @@ func TestBrokerCallback(t *testing.T) {
 			BaseURL: "https://proxy.example.com",
 		},
 		Auth: config.AuthConfig{
-			JWTSecret:        jwtSecret,
+			JWTPrivateKey:    privPEM,
 			AllowedRedirects: []string{"https://app.example.com/auth/callback"},
 		},
 	}
@@ -294,7 +292,7 @@ func TestBrokerCallback(t *testing.T) {
 		t.Errorf("expected state=csrf123, got %s", loc.Query().Get("state"))
 	}
 
-	// Verify JWT.
+	// Verify JWT is signed with RS256.
 	tokenStr := loc.Query().Get("token")
 	if tokenStr == "" {
 		t.Fatal("missing token in redirect")
@@ -302,10 +300,10 @@ func TestBrokerCallback(t *testing.T) {
 
 	token, err := jwt.ParseWithClaims(tokenStr, &BrokerClaims{},
 		func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 			}
-			return []byte(jwtSecret), nil
+			return &privKey.PublicKey, nil
 		})
 	if err != nil {
 		t.Fatalf("failed to parse JWT: %v", err)
@@ -324,6 +322,9 @@ func TestBrokerCallback(t *testing.T) {
 	if len(claims.Audience) != 1 || claims.Audience[0] != "https://app.example.com/auth/callback" {
 		t.Errorf("unexpected aud: %v", claims.Audience)
 	}
+	if claims.Issuer != "https://proxy.example.com" {
+		t.Errorf("expected iss=https://proxy.example.com, got %s", claims.Issuer)
+	}
 	if claims.ExpiresAt == nil {
 		t.Fatal("expected exp claim")
 	}
@@ -332,11 +333,17 @@ func TestBrokerCallback(t *testing.T) {
 	if expDelta < 55*time.Second || expDelta > 65*time.Second {
 		t.Errorf("expected exp ~60s from now, got %v", expDelta)
 	}
+
+	// Verify kid header is present.
+	if token.Header["kid"] == nil || token.Header["kid"] == "" {
+		t.Error("expected kid header in JWT")
+	}
 }
 
 func TestBrokerCallback_NoState(t *testing.T) {
+	_, privPEM := generateTestRSAKey(t)
 	cfg := &config.Config{
-		Auth: config.AuthConfig{JWTSecret: "test-secret"},
+		Auth: config.AuthConfig{JWTPrivateKey: privPEM},
 	}
 	h := NewHandler(cfg, nil, nil, slog.Default())
 
@@ -387,11 +394,8 @@ func TestBrokerCallback_NoState(t *testing.T) {
 	}
 }
 
-
 func TestBrokerCallback_InvalidState(t *testing.T) {
-	cfg := &config.Config{
-		Auth: config.AuthConfig{JWTSecret: "test-secret"},
-	}
+	cfg := &config.Config{}
 	h := NewHandler(cfg, nil, nil, slog.Default())
 
 	req := httptest.NewRequest("GET",
@@ -405,9 +409,7 @@ func TestBrokerCallback_InvalidState(t *testing.T) {
 }
 
 func TestBrokerCallback_MissingCode(t *testing.T) {
-	cfg := &config.Config{
-		Auth: config.AuthConfig{JWTSecret: "test-secret"},
-	}
+	cfg := &config.Config{}
 	h := NewHandler(cfg, nil, nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/auth/callback?state=test-state", nil)
@@ -420,9 +422,7 @@ func TestBrokerCallback_MissingCode(t *testing.T) {
 }
 
 func TestBrokerCallback_MissingState(t *testing.T) {
-	cfg := &config.Config{
-		Auth: config.AuthConfig{JWTSecret: "test-secret"},
-	}
+	cfg := &config.Config{}
 	h := NewHandler(cfg, nil, nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/auth/callback?code=test-code", nil)
@@ -485,5 +485,87 @@ func TestBrokerCallbackURL(t *testing.T) {
 				t.Errorf("brokerCallbackURL() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// generateTestRSAKey is a helper that creates a 2048-bit RSA key and returns
+// it along with the PEM-encoded private key string.
+func generateTestRSAKey(t *testing.T) (*rsa.PrivateKey, string) {
+	t.Helper()
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate RSA key: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(privKey)
+	if err != nil {
+		t.Fatalf("failed to marshal RSA key: %v", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	return privKey, string(pemBytes)
+}
+
+func TestHandleJWKS(t *testing.T) {
+	_, privPEM := generateTestRSAKey(t)
+
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			JWTPrivateKey:    privPEM,
+			AllowedRedirects: []string{"https://app.example.com/auth/callback"},
+		},
+	}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+
+	req := httptest.NewRequest("GET", "/.well-known/jwks.json", nil)
+	w := httptest.NewRecorder()
+	h.handleJWKS(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var jwks struct {
+		Keys []struct {
+			Kty string `json:"kty"`
+			Use string `json:"use"`
+			Alg string `json:"alg"`
+			Kid string `json:"kid"`
+			N   string `json:"n"`
+			E   string `json:"e"`
+		} `json:"keys"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&jwks); err != nil {
+		t.Fatalf("failed to decode JWKS: %v", err)
+	}
+	if len(jwks.Keys) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(jwks.Keys))
+	}
+	key := jwks.Keys[0]
+	if key.Kty != "RSA" {
+		t.Errorf("expected kty=RSA, got %s", key.Kty)
+	}
+	if key.Alg != "RS256" {
+		t.Errorf("expected alg=RS256, got %s", key.Alg)
+	}
+	if key.Use != "sig" {
+		t.Errorf("expected use=sig, got %s", key.Use)
+	}
+	if key.Kid == "" {
+		t.Error("expected non-empty kid field")
+	}
+	if key.N == "" || key.E == "" {
+		t.Error("expected non-empty n and e fields")
+	}
+}
+
+func TestHandleJWKS_NoKey(t *testing.T) {
+	cfg := &config.Config{}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+
+	req := httptest.NewRequest("GET", "/.well-known/jwks.json", nil)
+	w := httptest.NewRecorder()
+	h.handleJWKS(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when no RSA key configured, got %d", w.Code)
 	}
 }
