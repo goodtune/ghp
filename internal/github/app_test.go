@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -73,6 +74,91 @@ func TestAppTokenProvider_CachesToken(t *testing.T) {
 
 	if callCount != 1 {
 		t.Errorf("expected 1 API call (cached), got %d", callCount)
+	}
+}
+
+func TestInstallationCacheKey(t *testing.T) {
+	// Same inputs → same key.
+	k1 := installationCacheKey(1, []string{"org/repo"}, map[string]string{"contents": "read"})
+	k2 := installationCacheKey(1, []string{"org/repo"}, map[string]string{"contents": "read"})
+	if k1 != k2 {
+		t.Error("same inputs should produce same key")
+	}
+
+	// Repo ordering should not matter.
+	k3 := installationCacheKey(1, []string{"org/b", "org/a"}, map[string]string{"contents": "read"})
+	k4 := installationCacheKey(1, []string{"org/a", "org/b"}, map[string]string{"contents": "read"})
+	if k3 != k4 {
+		t.Error("repo ordering should not affect cache key")
+	}
+
+	// Different repos → different keys.
+	k5 := installationCacheKey(1, []string{"org/repo-a"}, map[string]string{"contents": "read"})
+	k6 := installationCacheKey(1, []string{"org/repo-b"}, map[string]string{"contents": "read"})
+	if k5 == k6 {
+		t.Error("different repos should produce different keys")
+	}
+
+	// Different permissions → different keys.
+	k7 := installationCacheKey(1, []string{"org/repo"}, map[string]string{"contents": "read"})
+	k8 := installationCacheKey(1, []string{"org/repo"}, map[string]string{"contents": "write"})
+	if k7 == k8 {
+		t.Error("different permissions should produce different keys")
+	}
+
+	// Different installation IDs → different keys.
+	k9 := installationCacheKey(1, []string{"org/repo"}, map[string]string{"contents": "read"})
+	k10 := installationCacheKey(2, []string{"org/repo"}, map[string]string{"contents": "read"})
+	if k9 == k10 {
+		t.Error("different installation IDs should produce different keys")
+	}
+}
+
+func TestAppTokenProvider_CacheMissDifferentScope(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"token":      fmt.Sprintf("ghs_token_%d", callCount),
+			"expires_at": time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+		})
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{
+		AppID:      1,
+		PrivateKey: testRSAKey,
+		BaseURL:    server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Same repos, different permissions → different cache keys → 2 API calls.
+	callCount = 0
+	_, _ = provider.GetInstallationToken(ctx, 100, []string{"org/repo"}, map[string]string{"contents": "read"})
+	_, _ = provider.GetInstallationToken(ctx, 100, []string{"org/repo"}, map[string]string{"contents": "write"})
+	if callCount != 2 {
+		t.Errorf("different permissions: expected 2 API calls, got %d", callCount)
+	}
+
+	// Different repos, same permissions → different cache keys → 2 API calls.
+	callCount = 0
+	_, _ = provider.GetInstallationToken(ctx, 101, []string{"org/repo-a"}, map[string]string{"contents": "read"})
+	_, _ = provider.GetInstallationToken(ctx, 101, []string{"org/repo-b"}, map[string]string{"contents": "read"})
+	if callCount != 2 {
+		t.Errorf("different repos: expected 2 API calls, got %d", callCount)
+	}
+
+	// Repo ordering should not affect the cache key → cache hit on second call.
+	callCount = 0
+	_, _ = provider.GetInstallationToken(ctx, 200, []string{"org/b", "org/a"}, map[string]string{"contents": "read"})
+	_, _ = provider.GetInstallationToken(ctx, 200, []string{"org/a", "org/b"}, map[string]string{"contents": "read"})
+	if callCount != 1 {
+		t.Errorf("repo ordering: expected 1 API call (cache hit), got %d", callCount)
 	}
 }
 
