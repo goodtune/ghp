@@ -75,35 +75,35 @@ class GhpRepoSelect extends HTMLElement {
         .chips:empty { display: none; }
         .chip {
           display: inline-flex; align-items: center; gap: 0.25rem;
-          background: #21262d; border: 1px solid #30363d; border-radius: 2rem;
-          padding: 0.2rem 0.5rem; font-size: 0.8rem; color: #c9d1d9;
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          background: var(--color-border-subtle, #21262d); border: 1px solid var(--color-border, #30363d); border-radius: 2rem;
+          padding: 0.2rem 0.5rem; font-size: 0.8rem; color: var(--color-text, #c9d1d9);
+          font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
         }
         .chip button {
-          background: none; border: none; color: #8b949e; cursor: pointer;
+          background: none; border: none; color: var(--color-text-secondary, #8b949e); cursor: pointer;
           font-size: 0.9rem; padding: 0; line-height: 1; display: flex; align-items: center;
         }
-        .chip button:hover { color: #f85149; }
+        .chip button:hover { color: var(--color-danger, #f85149); }
         .wrap { position: relative; }
         .search-input {
-          width: 100%; padding: 0.5rem; background: #0d1117;
-          border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9;
+          width: 100%; padding: 0.5rem; background: var(--color-input-bg, #0d1117);
+          border: 1px solid var(--color-border, #30363d); border-radius: 6px; color: var(--color-text, #c9d1d9);
           font-size: 0.875rem; font-family: inherit;
         }
-        .search-input:focus { outline: none; border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(88,166,255,0.3); }
+        .search-input:focus { outline: none; border-color: var(--color-focus, #58a6ff); box-shadow: 0 0 0 3px var(--color-focus-ring, rgba(88,166,255,0.3)); }
         .search-input:disabled { opacity: 0.5; cursor: not-allowed; }
         .dropdown {
           position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
-          background: #161b22; border: 1px solid #30363d; border-top: none;
+          background: var(--color-surface, #161b22); border: 1px solid var(--color-border, #30363d); border-top: none;
           border-radius: 0 0 6px 6px; max-height: 200px; overflow-y: auto;
           display: none;
         }
         .dropdown.open { display: block; }
         .option {
-          padding: 0.5rem 0.75rem; cursor: pointer; font-size: 0.875rem; color: #c9d1d9;
+          padding: 0.5rem 0.75rem; cursor: pointer; font-size: 0.875rem; color: var(--color-text, #c9d1d9);
         }
-        .option:hover { background: #21262d; }
-        .option.no-results { color: #8b949e; cursor: default; }
+        .option:hover { background: var(--color-border-subtle, #21262d); }
+        .option.no-results { color: var(--color-text-secondary, #8b949e); cursor: default; }
         .option.no-results:hover { background: none; }
       </style>
       <div class="chips" id="chips"></div>
