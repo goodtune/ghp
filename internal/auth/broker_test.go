@@ -322,6 +322,9 @@ func TestBrokerCallback(t *testing.T) {
 	if len(claims.Audience) != 1 || claims.Audience[0] != "https://app.example.com/auth/callback" {
 		t.Errorf("unexpected aud: %v", claims.Audience)
 	}
+	if claims.Issuer != "https://proxy.example.com" {
+		t.Errorf("expected iss=https://proxy.example.com, got %s", claims.Issuer)
+	}
 	if claims.ExpiresAt == nil {
 		t.Fatal("expected exp claim")
 	}
@@ -329,6 +332,11 @@ func TestBrokerCallback(t *testing.T) {
 	expDelta := time.Until(claims.ExpiresAt.Time)
 	if expDelta < 55*time.Second || expDelta > 65*time.Second {
 		t.Errorf("expected exp ~60s from now, got %v", expDelta)
+	}
+
+	// Verify kid header is present.
+	if token.Header["kid"] == nil || token.Header["kid"] == "" {
+		t.Error("expected kid header in JWT")
 	}
 }
 
@@ -496,109 +504,6 @@ func generateTestRSAKey(t *testing.T) (*rsa.PrivateKey, string) {
 	return privKey, string(pemBytes)
 }
 
-func TestBrokerCallback_RS256(t *testing.T) {
-	privKey, privPEM := generateTestRSAKey(t)
-
-	// Mock GitHub OAuth token exchange and user info endpoints.
-	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/login/oauth/access_token":
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"access_token": "gho_test_token",
-				"token_type":   "bearer",
-				"expires_in":   28800,
-			})
-		case "/user":
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":         99999,
-				"login":      "testuser",
-				"email":      "testuser@github.com",
-				"avatar_url": "https://avatars.githubusercontent.com/u/99999",
-			})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer ghServer.Close()
-
-	cfg := &config.Config{
-		GitHub: config.GitHubConfig{
-			ClientID:     "test-client-id",
-			ClientSecret: "test-client-secret",
-		},
-		Server: config.ServerConfig{
-			BaseURL: "https://proxy.example.com",
-		},
-		Auth: config.AuthConfig{
-			JWTPrivateKey:    privPEM,
-			AllowedRedirects: []string{"https://app.example.com/auth/callback"},
-		},
-	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
-	h.githubBaseURL = ghServer.URL
-	h.githubAPIBaseURL = ghServer.URL
-
-	stateToken := "test-state-rs256"
-	h.brokerStates.Add(stateToken, &brokerState{
-		RedirectURI:     "https://app.example.com/auth/callback",
-		DownstreamState: "csrf456",
-	})
-
-	req := httptest.NewRequest("GET",
-		"/auth/callback?code=test-code&state="+stateToken, nil)
-	w := httptest.NewRecorder()
-	h.handleBrokerCallback(w, req)
-
-	if w.Code != http.StatusTemporaryRedirect {
-		t.Fatalf("expected 307, got %d: %s", w.Code, w.Body.String())
-	}
-
-	loc, err := url.Parse(w.Header().Get("Location"))
-	if err != nil {
-		t.Fatalf("invalid Location header: %v", err)
-	}
-	if loc.Query().Get("state") != "csrf456" {
-		t.Errorf("expected state=csrf456, got %s", loc.Query().Get("state"))
-	}
-
-	tokenStr := loc.Query().Get("token")
-	if tokenStr == "" {
-		t.Fatal("missing token in redirect")
-	}
-
-	// Verify the JWT uses RS256 and can be verified with the public key only.
-	token, err := jwt.ParseWithClaims(tokenStr, &BrokerClaims{},
-		func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-			}
-			return &privKey.PublicKey, nil
-		})
-	if err != nil {
-		t.Fatalf("failed to parse RS256 JWT: %v", err)
-	}
-	if token.Header["alg"] != "RS256" {
-		t.Errorf("expected alg=RS256, got %v", token.Header["alg"])
-	}
-
-	claims, ok := token.Claims.(*BrokerClaims)
-	if !ok {
-		t.Fatal("unexpected claims type")
-	}
-	if claims.Subject != "testuser" {
-		t.Errorf("expected sub=testuser, got %s", claims.Subject)
-	}
-	if len(claims.Audience) != 1 || claims.Audience[0] != "https://app.example.com/auth/callback" {
-		t.Errorf("unexpected aud: %v", claims.Audience)
-	}
-	expDelta := time.Until(claims.ExpiresAt.Time)
-	if expDelta < 55*time.Second || expDelta > 65*time.Second {
-		t.Errorf("expected exp ~60s from now, got %v", expDelta)
-	}
-}
-
 func TestHandleJWKS(t *testing.T) {
 	_, privPEM := generateTestRSAKey(t)
 
@@ -623,6 +528,7 @@ func TestHandleJWKS(t *testing.T) {
 			Kty string `json:"kty"`
 			Use string `json:"use"`
 			Alg string `json:"alg"`
+			Kid string `json:"kid"`
 			N   string `json:"n"`
 			E   string `json:"e"`
 		} `json:"keys"`
@@ -642,6 +548,9 @@ func TestHandleJWKS(t *testing.T) {
 	}
 	if key.Use != "sig" {
 		t.Errorf("expected use=sig, got %s", key.Use)
+	}
+	if key.Kid == "" {
+		t.Error("expected non-empty kid field")
 	}
 	if key.N == "" || key.E == "" {
 		t.Error("expected non-empty n and e fields")

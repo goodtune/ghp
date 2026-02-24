@@ -57,7 +57,9 @@ type Handler struct {
 	logger    *slog.Logger
 
 	// rsaPrivKey is the RSA private key used to sign broker JWTs with RS256.
-	// When nil, the broker falls back to HS256 using cfg.Auth.JWTSecret.
+	// When nil, broker endpoints are disabled entirely.
+	// Note: this key is set once at NewHandler time; config hot-reload (SIGUSR1)
+	// does not update it — a server restart is required to change the signing key.
 	rsaPrivKey *rsa.PrivateKey
 
 	// sessions maps session tokens to active user sessions.

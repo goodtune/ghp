@@ -273,11 +273,15 @@ app.get("/auth/callback", async (req, res) => {
 
 | Claim | Description |
 |-------|-------------|
+| `iss` | Issuer — the proxy's `base_url` (or `"ghp"` if not configured) |
 | `sub` | GitHub username (e.g. `octocat`) |
 | `avatar_url` | GitHub avatar URL |
 | `aud` | The `redirect_uri` this token was issued for |
 | `iat` | Issued-at timestamp (Unix epoch) |
 | `exp` | Expiry timestamp — 60 seconds after `iat` |
+
+The JWT header includes a `kid` (Key ID) field that matches the `kid` in the JWKS
+endpoint, enabling downstream services to select the correct key for verification.
 
 The token is **single-use and short-lived**. It exists only to bootstrap a local
 session — downstream services should not store or reuse it beyond that.
