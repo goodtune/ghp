@@ -1,8 +1,12 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -387,7 +391,6 @@ func TestBrokerCallback_NoState(t *testing.T) {
 	}
 }
 
-
 func TestBrokerCallback_InvalidState(t *testing.T) {
 	cfg := &config.Config{
 		Auth: config.AuthConfig{JWTSecret: "test-secret"},
@@ -486,4 +489,244 @@ func TestBrokerCallbackURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+// generateTestRSAKey is a helper that creates a 2048-bit RSA key and returns
+// it along with the PEM-encoded private key string.
+func generateTestRSAKey(t *testing.T) (*rsa.PrivateKey, string) {
+	t.Helper()
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate RSA key: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(privKey)
+	if err != nil {
+		t.Fatalf("failed to marshal RSA key: %v", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	return privKey, string(pemBytes)
+}
+
+func TestBrokerCallback_RS256(t *testing.T) {
+	privKey, privPEM := generateTestRSAKey(t)
+
+	// Mock GitHub OAuth token exchange and user info endpoints.
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login/oauth/access_token":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"access_token": "gho_test_token",
+				"token_type":   "bearer",
+				"expires_in":   28800,
+			})
+		case "/user":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":         99999,
+				"login":      "testuser",
+				"email":      "testuser@github.com",
+				"avatar_url": "https://avatars.githubusercontent.com/u/99999",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ghServer.Close()
+
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{
+			ClientID:     "test-client-id",
+			ClientSecret: "test-client-secret",
+		},
+		Server: config.ServerConfig{
+			BaseURL: "https://proxy.example.com",
+		},
+		Auth: config.AuthConfig{
+			JWTPrivateKey:    privPEM,
+			AllowedRedirects: []string{"https://app.example.com/auth/callback"},
+		},
+	}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+	h.githubBaseURL = ghServer.URL
+	h.githubAPIBaseURL = ghServer.URL
+
+	stateToken := "test-state-rs256"
+	h.brokerStates.Add(stateToken, &brokerState{
+		RedirectURI:     "https://app.example.com/auth/callback",
+		DownstreamState: "csrf456",
+	})
+
+	req := httptest.NewRequest("GET",
+		"/auth/callback?code=test-code&state="+stateToken, nil)
+	w := httptest.NewRecorder()
+	h.handleBrokerCallback(w, req)
+
+	if w.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307, got %d: %s", w.Code, w.Body.String())
+	}
+
+	loc, err := url.Parse(w.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("invalid Location header: %v", err)
+	}
+	if loc.Query().Get("state") != "csrf456" {
+		t.Errorf("expected state=csrf456, got %s", loc.Query().Get("state"))
+	}
+
+	tokenStr := loc.Query().Get("token")
+	if tokenStr == "" {
+		t.Fatal("missing token in redirect")
+	}
+
+	// Verify the JWT uses RS256 and can be verified with the public key only.
+	token, err := jwt.ParseWithClaims(tokenStr, &BrokerClaims{},
+		func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+			}
+			return &privKey.PublicKey, nil
+		})
+	if err != nil {
+		t.Fatalf("failed to parse RS256 JWT: %v", err)
+	}
+	if token.Header["alg"] != "RS256" {
+		t.Errorf("expected alg=RS256, got %v", token.Header["alg"])
+	}
+
+	claims, ok := token.Claims.(*BrokerClaims)
+	if !ok {
+		t.Fatal("unexpected claims type")
+	}
+	if claims.Subject != "testuser" {
+		t.Errorf("expected sub=testuser, got %s", claims.Subject)
+	}
+	if len(claims.Audience) != 1 || claims.Audience[0] != "https://app.example.com/auth/callback" {
+		t.Errorf("unexpected aud: %v", claims.Audience)
+	}
+	expDelta := time.Until(claims.ExpiresAt.Time)
+	if expDelta < 55*time.Second || expDelta > 65*time.Second {
+		t.Errorf("expected exp ~60s from now, got %v", expDelta)
+	}
+}
+
+func TestHandleJWKS(t *testing.T) {
+	_, privPEM := generateTestRSAKey(t)
+
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			JWTPrivateKey:    privPEM,
+			AllowedRedirects: []string{"https://app.example.com/auth/callback"},
+		},
+	}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+
+	req := httptest.NewRequest("GET", "/auth/jwks.json", nil)
+	w := httptest.NewRecorder()
+	h.handleJWKS(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var jwks struct {
+		Keys []struct {
+			Kty string `json:"kty"`
+			Use string `json:"use"`
+			Alg string `json:"alg"`
+			N   string `json:"n"`
+			E   string `json:"e"`
+		} `json:"keys"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&jwks); err != nil {
+		t.Fatalf("failed to decode JWKS: %v", err)
+	}
+	if len(jwks.Keys) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(jwks.Keys))
+	}
+	key := jwks.Keys[0]
+	if key.Kty != "RSA" {
+		t.Errorf("expected kty=RSA, got %s", key.Kty)
+	}
+	if key.Alg != "RS256" {
+		t.Errorf("expected alg=RS256, got %s", key.Alg)
+	}
+	if key.Use != "sig" {
+		t.Errorf("expected use=sig, got %s", key.Use)
+	}
+	if key.N == "" || key.E == "" {
+		t.Error("expected non-empty n and e fields")
+	}
+}
+
+func TestHandleJWKS_NoKey(t *testing.T) {
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			JWTSecret: "test-secret-key-for-hmac-256-xx",
+		},
+	}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+
+	req := httptest.NewRequest("GET", "/auth/jwks.json", nil)
+	w := httptest.NewRecorder()
+	h.handleJWKS(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when no RSA key configured, got %d", w.Code)
+	}
+}
+
+func TestLoadRSAPrivateKey(t *testing.T) {
+	privKey, privPEM := generateTestRSAKey(t)
+
+	t.Run("valid PKCS8 PEM", func(t *testing.T) {
+		key, err := loadRSAPrivateKey(privPEM, "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if key == nil {
+			t.Fatal("expected non-nil key")
+		}
+		if key.PublicKey.N.Cmp(privKey.PublicKey.N) != 0 {
+			t.Error("loaded key does not match original")
+		}
+	})
+
+	t.Run("valid PKCS1 PEM", func(t *testing.T) {
+		pkcs1PEM := pem.EncodeToMemory(&pem.Block{
+			Type:  "RSA PRIVATE KEY",
+			Bytes: x509.MarshalPKCS1PrivateKey(privKey),
+		})
+		key, err := loadRSAPrivateKey(string(pkcs1PEM), "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if key == nil {
+			t.Fatal("expected non-nil key")
+		}
+	})
+
+	t.Run("empty inputs", func(t *testing.T) {
+		key, err := loadRSAPrivateKey("", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if key != nil {
+			t.Error("expected nil key for empty inputs")
+		}
+	})
+
+	t.Run("invalid PEM", func(t *testing.T) {
+		_, err := loadRSAPrivateKey("not a pem", "")
+		if err == nil {
+			t.Error("expected error for invalid PEM")
+		}
+	})
+
+	t.Run("invalid key file path", func(t *testing.T) {
+		_, err := loadRSAPrivateKey("", "/nonexistent/path/key.pem")
+		if err == nil {
+			t.Error("expected error for nonexistent key file")
+		}
+	})
 }
