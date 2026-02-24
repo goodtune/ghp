@@ -118,6 +118,72 @@ func TestAccessLog_SensitiveHeadersRedacted(t *testing.T) {
 	}
 }
 
+func TestAccessLog_ExtendedSensitiveRequestHeadersRedacted(t *testing.T) {
+	var buf bytes.Buffer
+	aw := newAccessLogWriter(&buf)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := accessLogHandler(backend.GitHub, inner, aw)
+
+	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
+	req.Header.Set("X-Auth-Token", "secret-auth")
+	req.Header.Set("X-Api-Key", "secret-api-key")
+	req.Header.Set("X-Access-Token", "secret-access-token")
+	req.Header.Set("User-Agent", "git/2.40")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	var entry accessLogEntry
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	for _, h := range []string{"X-Auth-Token", "X-Api-Key", "X-Access-Token"} {
+		if v := entry.Request.Headers[h]; len(v) == 0 || v[0] != "REDACTED" {
+			t.Errorf("%s header should be REDACTED, got %v", h, v)
+		}
+	}
+	// Non-sensitive headers should pass through.
+	if ua := entry.Request.Headers["User-Agent"]; len(ua) == 0 || ua[0] != "git/2.40" {
+		t.Errorf("User-Agent should not be redacted, got %v", ua)
+	}
+}
+
+func TestAccessLog_SetCookieResponseHeaderRedacted(t *testing.T) {
+	var buf bytes.Buffer
+	aw := newAccessLogWriter(&buf)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Set-Cookie", "session=secret; HttpOnly; Secure")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := accessLogHandler(backend.GitHub, inner, aw)
+
+	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	var entry accessLogEntry
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if v := entry.RespHeaders["Set-Cookie"]; len(v) == 0 || v[0] != "REDACTED" {
+		t.Errorf("Set-Cookie response header should be REDACTED, got %v", v)
+	}
+	// Non-sensitive response headers should pass through.
+	if ct := entry.RespHeaders["Content-Type"]; len(ct) == 0 || ct[0] != "text/plain" {
+		t.Errorf("Content-Type should not be redacted, got %v", ct)
+	}
+}
+
 func TestAccessLog_ErrorLevel(t *testing.T) {
 	var buf bytes.Buffer
 	aw := newAccessLogWriter(&buf)

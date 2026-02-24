@@ -35,6 +35,9 @@ type Server struct {
 
 // New creates a new Server.
 func New(cfg *config.Config, logger *slog.Logger, logWriter io.Writer) *Server {
+	if logWriter == nil {
+		logWriter = io.Discard
+	}
 	return &Server{cfg: cfg, logger: logger, logWriter: logWriter}
 }
 

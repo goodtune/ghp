@@ -86,6 +86,9 @@ type accessLogWriter struct {
 }
 
 func newAccessLogWriter(w io.Writer) *accessLogWriter {
+	if w == nil {
+		w = io.Discard
+	}
 	return &accessLogWriter{w: w}
 }
 
@@ -96,8 +99,8 @@ func (c *accessLogWriter) writeEntry(entry *accessLogEntry) {
 	}
 	data = append(data, '\n')
 	c.mu.Lock()
-	c.w.Write(data)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	c.w.Write(data) // best-effort; access log write errors are non-critical
 }
 
 // accessLogHandler wraps an http.Handler with Caddy-compatible JSON access
@@ -118,17 +121,23 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) ht
 		headers := make(map[string][]string, len(r.Header))
 		for k, v := range r.Header {
 			switch strings.ToLower(k) {
-			case "authorization", "proxy-authorization", "cookie":
+			case "authorization", "proxy-authorization", "cookie",
+				"x-auth-token", "x-api-key", "x-access-token":
 				headers[k] = []string{"REDACTED"}
 			default:
 				headers[k] = v
 			}
 		}
 
-		// Capture response headers.
+		// Capture response headers, redacting sensitive values.
 		respHeaders := make(map[string][]string, len(rec.Header()))
 		for k, v := range rec.Header() {
-			respHeaders[k] = v
+			switch strings.ToLower(k) {
+			case "set-cookie":
+				respHeaders[k] = []string{"REDACTED"}
+			default:
+				respHeaders[k] = v
+			}
 		}
 
 		level := "info"
