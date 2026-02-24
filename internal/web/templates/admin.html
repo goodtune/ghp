@@ -288,10 +288,10 @@
                 const created = new Date(u.created_at).toLocaleString();
                 const badgeClass = u.role === 'admin' ? 'badge-admin' : 'badge-user';
                 html += '<tr>';
-                html += '<td>' + esc(u.username) + '</td>';
+                html += '<td>' + esc(u.github_username) + '</td>';
                 html += '<td><span class="badge ' + badgeClass + '">' + esc(u.role) + '</span></td>';
                 html += '<td>' + created + '</td>';
-                html += '<td><a class="link" href="#" onclick="viewUserTokens(\'' + u.id + '\', \'' + esc(u.username) + '\'); return false;">View tokens</a></td>';
+                html += '<td><a class="link" href="#" onclick="viewUserTokens(\'' + u.id + '\', \'' + esc(u.github_username) + '\'); return false;">View tokens</a></td>';
                 html += '</tr>';
             }
             html += '</table></div>';
@@ -364,7 +364,14 @@
                 else if (expires < now) { status = 'expired'; badgeClass = 'badge-expired'; }
                 else { status = 'active'; badgeClass = 'badge-active'; }
 
-                const scopes = typeof t.scopes === 'string' ? t.scopes : JSON.stringify(t.scopes);
+                let scopes;
+                if (typeof t.scopes === 'string') {
+                    scopes = t.scopes;
+                } else if (t.scopes && typeof t.scopes === 'object') {
+                    scopes = Object.entries(t.scopes).map(([k, v]) => k + ':' + v).join(', ');
+                } else {
+                    scopes = '';
+                }
                 const repos = Array.isArray(t.repositories) ? t.repositories.join(', ') : (t.repositories || '');
                 const tokenType = t.token_type || 'proxy';
                 const typeBadge = tokenType === 'agent' ? 'badge-agent' : 'badge-proxy';

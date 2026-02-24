@@ -80,6 +80,11 @@ class GhpStepper extends HTMLElement {
     this._render();
   }
 
+  hideNav() {
+    const nav = this.shadowRoot && this.shadowRoot.querySelector('.nav');
+    if (nav) nav.style.display = 'none';
+  }
+
   _updateStepVisibility() {
     // Update dots.
     const dots = this.shadowRoot.querySelectorAll('.dot');
