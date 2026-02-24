@@ -3,6 +3,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -17,6 +18,9 @@ import (
 	ghpgithub "github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/token"
 )
+
+// maxRequestBodySize is the maximum allowed request body size for API endpoints.
+const maxRequestBodySize = 1 << 20 // 1 MB
 
 // API handles the service API endpoints (token management, users, audit).
 type API struct {
@@ -76,9 +80,15 @@ type createTokenRequest struct {
 func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	session := auth.SessionFromContext(r.Context())
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	var req createTokenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"message": "Request body too large"})
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		}
 		return
 	}
 
