@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,6 +28,8 @@ const (
 	// SessionDuration is how long a browser session lasts.
 	SessionDuration = 30 * 24 * time.Hour
 
+	// maxRequestBodySize is the maximum allowed request body size for API endpoints.
+	maxRequestBodySize = 1 << 20 // 1 MB
 	// maxSessions is the maximum number of concurrent user sessions held in memory.
 	maxSessions = 10_000
 	// maxStates is the maximum number of in-flight OAuth state tokens.
@@ -397,8 +400,14 @@ func (h *Handler) handleTestLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Role     string `json:"role"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+		}
 		return
 	}
 	if req.Username == "" {
