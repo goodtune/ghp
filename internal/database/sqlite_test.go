@@ -83,6 +83,32 @@ func TestUserCRUD(t *testing.T) {
 		t.Errorf("username after update = %q, want alice-updated", got3.GitHubUsername)
 	}
 
+	// Upsert with role change (simulates admin list change).
+	user.Role = "admin"
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatalf("UpsertUser (role promotion): %v", err)
+	}
+	got4, err := store.GetUserByGitHubID(ctx, 12345)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got4.Role != "admin" {
+		t.Errorf("role after promotion = %q, want admin", got4.Role)
+	}
+
+	// Upsert with role demotion.
+	user.Role = "user"
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatalf("UpsertUser (role demotion): %v", err)
+	}
+	got5, err := store.GetUserByGitHubID(ctx, 12345)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got5.Role != "user" {
+		t.Errorf("role after demotion = %q, want user", got5.Role)
+	}
+
 	// List users.
 	users, err := store.ListUsers(ctx)
 	if err != nil {

@@ -96,6 +96,7 @@ func (s *PostgresStore) UpsertUser(ctx context.Context, user *User) error {
 		ON CONFLICT(github_id) DO UPDATE SET
 			github_username = EXCLUDED.github_username,
 			github_email = EXCLUDED.github_email,
+			role = EXCLUDED.role,
 			updated_at = EXCLUDED.updated_at
 		RETURNING id, role, created_at, updated_at
 	`, user.ID, user.GitHubID, user.GitHubUsername, user.GitHubEmail, user.Role, now, now,

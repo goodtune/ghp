@@ -119,6 +119,7 @@ func (s *SQLiteStore) UpsertUser(ctx context.Context, user *User) error {
 		ON CONFLICT(github_id) DO UPDATE SET
 			github_username = excluded.github_username,
 			github_email = excluded.github_email,
+			role = excluded.role,
 			updated_at = excluded.updated_at
 	`, user.ID, user.GitHubID, user.GitHubUsername, user.GitHubEmail, user.Role, now, now)
 	if err != nil {
