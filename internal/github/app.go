@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -12,9 +14,9 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	ghub "github.com/google/go-github/v68/github"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -71,19 +73,25 @@ type AppConfig struct {
 	BaseURL    string // GitHub API base URL, defaults to https://api.github.com
 }
 
+// installationTokenTTL is the duration used for the LRU TTL on cached
+// installation tokens. GitHub issues tokens with a 1-hour validity, so we
+// evict cached entries 5 minutes early to avoid using near-expired tokens.
+const installationTokenTTL = 55 * time.Minute
+
+// maxCachedInstallationTokens is the maximum number of installation tokens
+// held in memory simultaneously.
+const maxCachedInstallationTokens = 1_000
+
 // AppTokenProvider generates GitHub App installation tokens.
 type AppTokenProvider struct {
 	appID   int64
 	key     *rsa.PrivateKey
 	baseURL string
 	client  *http.Client
-	mu      sync.Mutex
-	cache   map[int64]cachedToken
-}
-
-type cachedToken struct {
-	token     string
-	expiresAt time.Time
+	// cache maps a composite key (installationID + repos + permissions) to a
+	// raw token string. Entries are automatically evicted after
+	// installationTokenTTL via the expirable.LRU TTL mechanism.
+	cache *expirable.LRU[string, string]
 }
 
 // NewAppTokenProvider creates a provider from the given config.
@@ -125,20 +133,46 @@ func NewAppTokenProvider(cfg AppConfig) (*AppTokenProvider, error) {
 		key:     key,
 		baseURL: baseURL,
 		client:  &http.Client{Timeout: 30 * time.Second},
-		cache:   make(map[int64]cachedToken),
+		cache:   expirable.NewLRU[string, string](maxCachedInstallationTokens, nil, installationTokenTTL),
 	}, nil
+}
+
+// installationCacheKey returns a stable cache key that uniquely identifies a
+// (installationID, repos, permissions) tuple. The repos and permissions are
+// sorted before hashing so that call-site ordering does not affect the key.
+func installationCacheKey(installationID int64, repos []string, permissions map[string]string) string {
+	sortedRepos := make([]string, len(repos))
+	copy(sortedRepos, repos)
+	sort.Strings(sortedRepos)
+
+	permKeys := make([]string, 0, len(permissions))
+	for k := range permissions {
+		permKeys = append(permKeys, k)
+	}
+	sort.Strings(permKeys)
+	permParts := make([]string, 0, len(permissions))
+	for _, k := range permKeys {
+		permParts = append(permParts, k+"="+permissions[k])
+	}
+
+	raw := fmt.Sprintf("%d\x00%s\x00%s",
+		installationID,
+		strings.Join(sortedRepos, "\x1f"),
+		strings.Join(permParts, "\x1f"),
+	)
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 // GetInstallationToken returns a GitHub installation token for the given
 // installation, scoped to the specified repositories and permissions.
-// Results are cached until 5 minutes before expiry.
+// Results are cached, keyed by installation ID plus the requested repos and
+// permissions, and evicted automatically after installationTokenTTL.
 func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installationID int64, repos []string, permissions map[string]string) (string, error) {
-	p.mu.Lock()
-	if ct, ok := p.cache[installationID]; ok && time.Now().Before(ct.expiresAt.Add(-5*time.Minute)) {
-		p.mu.Unlock()
-		return ct.token, nil
+	cacheKey := installationCacheKey(installationID, repos, permissions)
+	if tok, ok := p.cache.Get(cacheKey); ok {
+		return tok, nil
 	}
-	p.mu.Unlock()
 
 	// Generate JWT.
 	signed, err := p.signJWT()
@@ -205,10 +239,9 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 		return "", fmt.Errorf("decoding response: %w", err)
 	}
 
-	// Cache.
-	p.mu.Lock()
-	p.cache[installationID] = cachedToken{token: result.Token, expiresAt: result.ExpiresAt}
-	p.mu.Unlock()
+	// Cache the token. The LRU TTL handles expiry; we rely on installationTokenTTL
+	// being shorter than GitHub's 1-hour token validity.
+	p.cache.Add(cacheKey, result.Token)
 
 	return result.Token, nil
 }
