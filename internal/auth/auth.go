@@ -523,14 +523,17 @@ type githubUser struct {
 }
 
 func (h *Handler) exchangeCode(code string, redirectURI string) (accessToken, refreshToken string, expiresIn int, err error) {
-	body := fmt.Sprintf("client_id=%s&client_secret=%s&code=%s",
-		h.cfg.GitHub.ClientID, h.cfg.GitHub.ClientSecret, code)
+	params := url.Values{
+		"client_id":     {h.cfg.GitHub.ClientID},
+		"client_secret": {h.cfg.GitHub.ClientSecret},
+		"code":          {code},
+	}
 	if redirectURI != "" {
-		body += "&redirect_uri=" + url.QueryEscape(redirectURI)
+		params.Set("redirect_uri", redirectURI)
 	}
 
 	req, err := http.NewRequest("POST", h.getGitHubBaseURL()+"/login/oauth/access_token",
-		strings.NewReader(body))
+		strings.NewReader(params.Encode()))
 	if err != nil {
 		return "", "", 0, err
 	}
