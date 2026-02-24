@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -38,6 +39,51 @@ func TestLoadTLSConfig(t *testing.T) {
 	}
 	if tlsCfg.Certificates[0].Leaf == nil {
 		t.Fatal("expected leaf cert to be parsed")
+	}
+	// Default min_version should be TLS 1.2.
+	if tlsCfg.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("expected MinVersion TLS 1.2, got %d", tlsCfg.MinVersion)
+	}
+}
+
+func TestLoadTLSConfigMinVersion(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := generateTestCert(t, dir, "test.example.com")
+
+	tests := []struct {
+		minVersion string
+		want       uint16
+		wantErr    bool
+	}{
+		{"", tls.VersionTLS12, false},
+		{"1.2", tls.VersionTLS12, false},
+		{"1.3", tls.VersionTLS13, false},
+		{"1.1", 0, true},
+		{"invalid", 0, true},
+	}
+
+	for _, tc := range tests {
+		t.Run("min_version="+tc.minVersion, func(t *testing.T) {
+			cfg := &config.TLSConfig{
+				Certificates: []config.CertificateConfig{
+					{CertFile: certFile, KeyFile: keyFile},
+				},
+				MinVersion: tc.minVersion,
+			}
+			tlsCfg, err := loadTLSConfig(cfg)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tlsCfg.MinVersion != tc.want {
+				t.Fatalf("expected MinVersion %d, got %d", tc.want, tlsCfg.MinVersion)
+			}
+		})
 	}
 }
 
