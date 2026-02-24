@@ -30,6 +30,33 @@ archives:
       - README.md
       - LICENSE
 
+nfpms:
+  - id: ghp
+    package_name: ghp
+    vendor: goodtune
+    homepage: https://github.com/goodtune/ghp
+    maintainer: goodtune <goodtune@users.noreply.github.com>
+    description: GitHub Proxy for Autonomous Coding Agents
+    license: MIT
+    formats:
+      - rpm
+      - deb
+      - apk
+    bindir: /usr/bin
+    contents:
+      - src: packaging/systemd/ghp.service
+        dst: /usr/lib/systemd/system/ghp.service
+        type: config
+      - src: packaging/systemd/ghp.socket
+        dst: /usr/lib/systemd/system/ghp.socket
+        type: config
+      - src: packaging/config.yaml
+        dst: /etc/ghp/config.yaml
+        type: config|noreplace
+    scripts:
+      postinstall: packaging/scripts/postinstall.sh
+      preremove: packaging/scripts/preremove.sh
+
 checksum:
   name_template: checksums.txt
   algorithm: sha256

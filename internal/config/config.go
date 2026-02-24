@@ -168,6 +168,22 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// ReloadFrom re-reads a YAML config file and updates hot-reloadable fields
+// in-place. Fields that require a restart (database, server listen addresses,
+// TLS certificates) are not updated.
+func (c *Config) ReloadFrom(path string) error {
+	fresh, err := Load(path)
+	if err != nil {
+		return err
+	}
+	c.Admins = fresh.Admins
+	c.Tokens = fresh.Tokens
+	c.Logging = fresh.Logging
+	c.Metrics = fresh.Metrics
+	c.Auth = fresh.Auth
+	return nil
+}
+
 // IsAdmin returns true if the given GitHub username is in the admin list.
 func (c *Config) IsAdmin(username string) bool {
 	for _, admin := range c.Admins {

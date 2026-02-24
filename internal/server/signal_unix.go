@@ -13,12 +13,15 @@ func shutdownSignals() []os.Signal {
 	return []os.Signal{syscall.SIGTERM, syscall.SIGINT}
 }
 
-func setupPlatformSignals(logger *slog.Logger) {
+func setupPlatformSignals(logger *slog.Logger, onReload func()) {
 	sigUSR1 := make(chan os.Signal, 1)
 	signal.Notify(sigUSR1, syscall.SIGUSR1)
 	go func() {
 		for range sigUSR1 {
-			logger.Info("received SIGUSR1, reopening log files")
+			logger.Info("received SIGUSR1, reloading configuration")
+			if onReload != nil {
+				onReload()
+			}
 		}
 	}()
 }

@@ -15,7 +15,14 @@ import (
 func newServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Run the server (proxy + web UI + API)",
+		Short: "Start the HTTP server (proxy + web UI + API)",
+		Long: `Start the GHP server which runs the GitHub API reverse proxy,
+management web UI, and REST API.
+
+Use --migrate to automatically apply any pending database schema
+migrations before the server begins accepting connections. This is
+the recommended mode for packaged deployments where the binary may
+be upgraded between restarts.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfgPath, _ := cmd.Flags().GetString("config")
 			if cfgPath == "" {
@@ -41,12 +48,12 @@ func newServeCmd() *cobra.Command {
 
 			logger.Info("server_start", "msg", "starting ghp server")
 
-			srv := server.New(cfg, logger, logWriter)
+			srv := server.New(cfg, cfgPath, logger, logWriter)
 			return srv.Run(context.Background())
 		},
 	}
 
-	cmd.Flags().Bool("migrate", false, "Run database migrations before starting the server")
+	cmd.Flags().Bool("migrate", false, "Run pending database migrations before starting the server")
 
 	return cmd
 }

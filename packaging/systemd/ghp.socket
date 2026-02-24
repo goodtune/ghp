@@ -1,0 +1,15 @@
+[Unit]
+Description=GHP - GitHub Proxy Socket
+Documentation=https://github.com/goodtune/ghp
+
+[Socket]
+ListenStream=0.0.0.0:80
+ListenStream=0.0.0.0:443
+NoDelay=true
+ReusePort=true
+
+# Buffer connections during service restarts for zero-downtime upgrades.
+Backlog=4096
+
+[Install]
+WantedBy=sockets.target

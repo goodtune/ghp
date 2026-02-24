@@ -1,0 +1,35 @@
+[Unit]
+Description=GHP - GitHub Proxy for Autonomous Coding Agents
+Documentation=https://github.com/goodtune/ghp
+After=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/ghp serve --migrate --config /etc/ghp/config.yaml
+ExecReload=/bin/kill -USR1 $MAINPID
+
+DynamicUser=yes
+StateDirectory=ghp
+ConfigurationDirectory=ghp
+LogsDirectory=ghp
+
+Restart=on-failure
+RestartSec=5s
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
