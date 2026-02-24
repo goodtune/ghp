@@ -9,7 +9,7 @@
   const root = document.documentElement;
 
   function getSystemTheme() {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    return 'light';
   }
 
   function apply(theme) {
@@ -24,9 +24,17 @@
     }
   }
 
-  // Initialise.
+  // Initialise — set data-theme immediately (before paint), update icon once DOM is ready.
   const saved = localStorage.getItem(KEY);
-  apply(saved || getSystemTheme());
+  const initialTheme = saved || getSystemTheme();
+  root.setAttribute('data-theme', initialTheme);
+
+  // Icon can't be set until the button exists, so defer that.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => apply(initialTheme));
+  } else {
+    apply(initialTheme);
+  }
 
   // Listen for system changes when no explicit preference.
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {

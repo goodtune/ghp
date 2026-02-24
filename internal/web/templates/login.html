@@ -39,9 +39,15 @@
             margin-bottom: 2rem;
             font-size: 0.95rem;
         }
+        .login-theme-toggle {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+        }
     </style>
 </head>
 <body>
+    <button class="theme-toggle login-theme-toggle" id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
     <div class="login-card">
         <img src="/static/octobear.png" alt="ghp" class="login-logo">
         <h1 class="login-title">ghp</h1>

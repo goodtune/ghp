@@ -8,8 +8,8 @@
   --color-text:         #2a1f1a;
   --color-text-secondary:#7a6b5e;
   --color-text-heading: #1a1210;
-  --color-accent:       #1a9a87;
-  --color-accent-hover: #158575;
+  --color-accent:       #3b6fb5;
+  --color-accent-hover: #2d5a96;
   --color-accent-text:  #ffffff;
   --color-danger:       #c53030;
   --color-danger-hover: #a82828;
@@ -20,8 +20,8 @@
   --color-status-revoked:    #9a8a7c;
   --color-status-revoked-bg: rgba(154,138,124,0.1);
   --color-input-bg:     #f5f0eb;
-  --color-focus:        #2cb5a0;
-  --color-focus-ring:   rgba(44,181,160,0.3);
+  --color-focus:        #3b6fb5;
+  --color-focus-ring:   rgba(59,111,181,0.3);
   --color-overlay:      rgba(26,18,16,0.5);
   --color-warning:      #b45309;
 
@@ -49,8 +49,8 @@
   --color-text:         #ede5db;
   --color-text-secondary:#9a8a7c;
   --color-text-heading: #f5f0eb;
-  --color-accent:       #2cb5a0;
-  --color-accent-hover: #3ccdb5;
+  --color-accent:       #5b8fd6;
+  --color-accent-hover: #7aa8e8;
   --color-accent-text:  #1a1210;
   --color-danger:       #d94040;
   --color-danger-hover: #e85555;
@@ -61,8 +61,8 @@
   --color-status-revoked:    #6a5a4e;
   --color-status-revoked-bg: rgba(106,90,78,0.15);
   --color-input-bg:     #1a1210;
-  --color-focus:        #2cb5a0;
-  --color-focus-ring:   rgba(44,181,160,0.3);
+  --color-focus:        #5b8fd6;
+  --color-focus-ring:   rgba(91,143,214,0.3);
   --color-overlay:      rgba(10,6,4,0.7);
   --color-warning:      #f0883e;
 
@@ -71,37 +71,7 @@
   --shadow-lg:    0 8px 24px rgba(0,0,0,0.4);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --color-bg:           #1a1210;
-    --color-surface:      #2a2220;
-    --color-border:       #3d3230;
-    --color-border-subtle:#332a28;
-    --color-text:         #ede5db;
-    --color-text-secondary:#9a8a7c;
-    --color-text-heading: #f5f0eb;
-    --color-accent:       #2cb5a0;
-    --color-accent-hover: #3ccdb5;
-    --color-accent-text:  #1a1210;
-    --color-danger:       #d94040;
-    --color-danger-hover: #e85555;
-    --color-status-active:    #3fb950;
-    --color-status-active-bg: rgba(63,185,80,0.15);
-    --color-status-expired:    #d9534f;
-    --color-status-expired-bg: rgba(217,83,79,0.15);
-    --color-status-revoked:    #6a5a4e;
-    --color-status-revoked-bg: rgba(106,90,78,0.15);
-    --color-input-bg:     #1a1210;
-    --color-focus:        #2cb5a0;
-    --color-focus-ring:   rgba(44,181,160,0.3);
-    --color-overlay:      rgba(10,6,4,0.7);
-    --color-warning:      #f0883e;
-
-    --shadow-sm:    0 1px 2px rgba(0,0,0,0.2);
-    --shadow-md:    0 4px 12px rgba(0,0,0,0.3);
-    --shadow-lg:    0 8px 24px rgba(0,0,0,0.4);
-  }
-}
+/* Dark mode only activates via [data-theme="dark"] set by theme.js */
 
 /* ── Base resets ──────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -417,8 +387,8 @@ body {
 .badge-expired { background: var(--color-status-expired-bg); color: var(--color-status-expired); }
 .badge-revoked { background: var(--color-status-revoked-bg); color: var(--color-status-revoked); }
 .badge-proxy   { background: var(--color-border-subtle); color: var(--color-text-secondary); }
-.badge-agent   { background: rgba(44,181,160,0.15); color: var(--color-accent); }
-.badge-admin   { background: rgba(44,181,160,0.15); color: var(--color-accent); }
+.badge-agent   { background: rgba(59,111,181,0.12); color: var(--color-accent); }
+.badge-admin   { background: rgba(59,111,181,0.12); color: var(--color-accent); }
 .badge-user    { background: var(--color-border-subtle); color: var(--color-text-secondary); }
 .badge-dev     { background: rgba(180,83,9,0.15); color: var(--color-warning); }
 
@@ -549,8 +519,13 @@ body {
 /* ── Empty state ─────────────────────────────────────────────── */
 .empty-state {
   text-align: center;
-  padding: 3rem 1rem;
+  padding: 4rem 1rem;
   color: var(--color-text-secondary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 40vh;
 }
 
 .empty-state img {

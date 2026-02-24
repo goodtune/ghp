@@ -126,7 +126,7 @@ func (s *Server) Run(ctx context.Context) error {
 		concreteATP = atp
 	}
 	api := NewAPI(s.cfg, store, tokenSvc, authHandler, enc, concreteATP, s.logger)
-	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
+	webUI := web.NewHandler(authHandler, store, s.cfg.DevMode, s.logger)
 
 	// Build HTTP mux.
 	mux := http.NewServeMux()
