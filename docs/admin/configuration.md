@@ -88,7 +88,9 @@ admins:
 
 Generate an encryption key:
 
-    export GHP_ENCRYPTION_KEY=$(openssl rand -hex 32)
+```bash
+export GHP_ENCRYPTION_KEY=$(openssl rand -hex 32)
+```
 
 This key encrypts GitHub tokens at rest. Store it securely — if lost, stored
 tokens cannot be decrypted. Do not put it in the config file; use an

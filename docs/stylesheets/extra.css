@@ -1,0 +1,7 @@
+pre {
+    overflow: auto;
+}
+
+article {
+    max-width: none !important;
+}
