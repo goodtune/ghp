@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 
@@ -33,7 +34,8 @@ be upgraded between restarts.`,
 				return err
 			}
 
-			logger := newLogger(cfg)
+			logger, logWriter, cleanupLogger := newLogger(cfg)
+			defer cleanupLogger()
 
 			migrate, _ := cmd.Flags().GetBool("migrate")
 			if migrate {
@@ -46,7 +48,7 @@ be upgraded between restarts.`,
 
 			logger.Info("server_start", "msg", "starting ghp server")
 
-			srv := server.New(cfg, cfgPath, logger)
+			srv := server.New(cfg, cfgPath, logger, logWriter)
 			return srv.Run(context.Background())
 		},
 	}
@@ -56,7 +58,7 @@ be upgraded between restarts.`,
 	return cmd
 }
 
-func newLogger(cfg *config.Config) *slog.Logger {
+func newLogger(cfg *config.Config) (*slog.Logger, io.Writer, func()) {
 	var level slog.Level
 	switch cfg.Logging.Level {
 	case "debug":
@@ -71,17 +73,17 @@ func newLogger(cfg *config.Config) *slog.Logger {
 
 	opts := &slog.HandlerOptions{Level: level}
 
-	switch cfg.Logging.Output {
-	case "file":
-		if cfg.Logging.File.Path != "" {
-			f, err := os.OpenFile(cfg.Logging.File.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err != nil {
-				// Fall back to stdout.
-				return slog.New(slog.NewJSONHandler(os.Stdout, opts))
-			}
-			return slog.New(slog.NewJSONHandler(f, opts))
+	var w io.Writer = os.Stdout
+	cleanup := func() {}
+	if cfg.Logging.Output == "file" && cfg.Logging.File.Path != "" {
+		f, err := os.OpenFile(cfg.Logging.File.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			w = f
+			cleanup = func() { f.Close() }
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: failed to open log file %q: %v; falling back to stdout\n", cfg.Logging.File.Path, err)
 		}
 	}
 
-	return slog.New(slog.NewJSONHandler(os.Stdout, opts))
+	return slog.New(slog.NewJSONHandler(w, opts)), w, cleanup
 }
