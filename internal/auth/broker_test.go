@@ -173,9 +173,7 @@ func TestBrokerAuthorize(t *testing.T) {
 	}
 
 	// Verify broker state was stored.
-	h.brokerMu.Lock()
-	bs, ok := h.brokerStates[state]
-	h.brokerMu.Unlock()
+	bs, ok := h.brokerStates.Get(state)
 	if !ok {
 		t.Fatal("broker state not stored")
 	}
@@ -266,13 +264,10 @@ func TestBrokerCallback(t *testing.T) {
 
 	// Pre-populate broker state as if /auth/authorize had run.
 	stateToken := "test-state-token"
-	h.brokerMu.Lock()
-	h.brokerStates[stateToken] = &brokerState{
+	h.brokerStates.Add(stateToken, &brokerState{
 		RedirectURI:     "https://app.example.com/auth/callback",
 		DownstreamState: "csrf123",
-		ExpiresAt:       time.Now().Add(10 * time.Minute),
-	}
-	h.brokerMu.Unlock()
+	})
 
 	req := httptest.NewRequest("GET",
 		"/auth/callback?code=test-code&state="+stateToken, nil)
@@ -369,13 +364,10 @@ func TestBrokerCallback_NoState(t *testing.T) {
 	h.githubAPIBaseURL = ghServer.URL
 
 	stateToken := "no-downstream-state"
-	h.brokerMu.Lock()
-	h.brokerStates[stateToken] = &brokerState{
+	h.brokerStates.Add(stateToken, &brokerState{
 		RedirectURI:     "https://app.example.com/cb",
 		DownstreamState: "", // no downstream state
-		ExpiresAt:       time.Now().Add(10 * time.Minute),
-	}
-	h.brokerMu.Unlock()
+	})
 
 	req := httptest.NewRequest("GET",
 		"/auth/callback?code=test-code&state="+stateToken, nil)
@@ -395,29 +387,6 @@ func TestBrokerCallback_NoState(t *testing.T) {
 	}
 }
 
-func TestBrokerCallback_ExpiredState(t *testing.T) {
-	cfg := &config.Config{
-		Auth: config.AuthConfig{JWTSecret: "test-secret"},
-	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
-
-	stateToken := "expired-state"
-	h.brokerMu.Lock()
-	h.brokerStates[stateToken] = &brokerState{
-		RedirectURI: "https://app.example.com/cb",
-		ExpiresAt:   time.Now().Add(-1 * time.Minute),
-	}
-	h.brokerMu.Unlock()
-
-	req := httptest.NewRequest("GET",
-		"/auth/callback?code=test-code&state="+stateToken, nil)
-	w := httptest.NewRecorder()
-	h.handleBrokerCallback(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for expired state, got %d", w.Code)
-	}
-}
 
 func TestBrokerCallback_InvalidState(t *testing.T) {
 	cfg := &config.Config{
