@@ -37,10 +37,11 @@ func NewHandler(ah *auth.Handler, devMode bool, logger *slog.Logger) *Handler {
 
 // RegisterRoutes adds web UI routes to the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /{$}", h.handleIndex)
-	mux.HandleFunc("GET /login", h.handleLogin)
-	mux.HandleFunc("GET /admin", h.handleAdmin)
-	mux.Handle("GET /static/", http.FileServerFS(staticFS))
+	sec := securityHeadersMiddleware
+	mux.Handle("GET /{$}", sec(http.HandlerFunc(h.handleIndex)))
+	mux.Handle("GET /login", sec(http.HandlerFunc(h.handleLogin)))
+	mux.Handle("GET /admin", sec(http.HandlerFunc(h.handleAdmin)))
+	mux.Handle("GET /static/", sec(http.FileServerFS(staticFS)))
 }
 
 func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
