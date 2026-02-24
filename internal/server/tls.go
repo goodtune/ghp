@@ -15,10 +15,14 @@ func loadTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 		return nil, nil
 	}
 
+	minVersion, err := parseTLSMinVersion(cfg.MinVersion)
+	if err != nil {
+		return nil, err
+	}
+
 	tlsCfg := &tls.Config{
-		// Explicitly require TLS 1.2+ to document intent and guard against
-		// future Go default changes.
-		MinVersion: tls.VersionTLS12,
+		// Minimum TLS version from config, defaulting to TLS 1.2.
+		MinVersion: minVersion,
 		// Enable HTTP/2 via ALPN negotiation.
 		NextProtos: []string{"h2", "http/1.1"},
 	}
@@ -39,4 +43,17 @@ func loadTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 	}
 
 	return tlsCfg, nil
+}
+
+// parseTLSMinVersion maps a version string ("1.2", "1.3") to the corresponding
+// tls constant. An empty string defaults to TLS 1.2.
+func parseTLSMinVersion(v string) (uint16, error) {
+	switch v {
+	case "", "1.2":
+		return tls.VersionTLS12, nil
+	case "1.3":
+		return tls.VersionTLS13, nil
+	default:
+		return 0, fmt.Errorf("unsupported tls.min_version %q: allowed values are \"1.2\" and \"1.3\"", v)
+	}
 }
