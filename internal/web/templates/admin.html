@@ -4,108 +4,97 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ghp — Admin</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 1rem; }
-        header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 0; border-bottom: 1px solid #30363d; margin-bottom: 2rem; }
-        header h1 { font-size: 1.25rem; color: #f0f6fc; }
-        .user-info { display: flex; align-items: center; gap: 1rem; }
-        .user-info span { color: #8b949e; }
-        .btn { display: inline-block; background: #238636; color: #fff; padding: 0.5rem 1rem; border-radius: 6px; text-decoration: none; font-weight: 600; border: none; cursor: pointer; font-size: 0.875rem; }
-        .btn:hover { background: #2ea043; }
-        .btn-danger { background: #da3633; }
-        .btn-danger:hover { background: #f85149; }
-        .btn-secondary { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; }
-        .btn-secondary:hover { background: #30363d; }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .section { margin-bottom: 2rem; }
-        .section h2 { font-size: 1.1rem; color: #f0f6fc; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #30363d; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #21262d; font-size: 0.875rem; }
-        th { color: #8b949e; font-weight: 600; }
-        .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
-        .badge-active { background: rgba(35,134,54,0.2); color: #3fb950; }
-        .badge-expired { background: rgba(218,54,51,0.2); color: #f85149; }
-        .badge-revoked { background: rgba(139,148,158,0.2); color: #8b949e; }
-        .create-form { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1.5rem; margin-bottom: 2rem; }
-        .form-group { margin-bottom: 1rem; }
-        .form-group label { display: block; margin-bottom: 0.25rem; font-size: 0.875rem; color: #8b949e; }
-        .form-group input, .form-group select { width: 100%; padding: 0.5rem; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 0.875rem; }
-        .form-group select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8.825a.5.5 0 0 1-.354-.146l-3.5-3.5a.5.5 0 1 1 .708-.708L6 7.618l3.146-3.147a.5.5 0 1 1 .708.708l-3.5 3.5A.5.5 0 0 1 6 8.825z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 0.5rem center; padding-right: 1.5rem; }
-        .form-group input:focus, .form-group select:focus { outline: none; border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(88,166,255,0.3); }
-        .token-display { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-top: 1rem; font-family: monospace; word-break: break-all; }
-        .empty { text-align: center; color: #8b949e; padding: 2rem; }
-        a.link { color: #58a6ff; text-decoration: none; }
-        a.link:hover { text-decoration: underline; }
-    </style>
+    <link rel="stylesheet" href="/static/theme.css">
+    <script src="/static/theme.js"></script>
     <script src="/static/ghp-repo-select.js"></script>
     <script src="/static/ghp-permission-select.js"></script>
+    <script src="/static/ghp-stepper.js"></script>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>ghp <span style="color:#8b949e;font-weight:400">/ admin</span></h1>
-            <div class="user-info">
-                <span>{{ .Username }} ({{ .Role }})</span>
-                <a href="/" class="btn btn-secondary">Dashboard</a>
-                <button class="btn btn-secondary" onclick="logout()">Sign out</button>
-            </div>
-        </header>
+    <header class="header">
+        <div class="header-brand">
+            <img src="/static/octobear.png" alt="" width="32" height="32">
+            <span>ghp</span>
+            <span class="badge-admin">admin</span>
+        </div>
+        <div class="header-actions">
+            <a href="/" class="btn btn-ghost">Dashboard</a>
+            <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
+            <span class="username">{{ .Username }}</span>
+            <button class="btn btn-ghost" onclick="logout()">Sign out</button>
+        </div>
+    </header>
 
-        <div class="section">
-            <h2>Users</h2>
+    <main class="container">
+        <div class="tabs">
+            <button class="tab active" data-tab="users" onclick="switchTab('users')">Users</button>
+            <button class="tab" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
+        </div>
+
+        <div id="panel-users" class="tab-panel active">
             <div id="users-list"></div>
         </div>
 
-        <div class="section">
-            <h2>Create Agent Token</h2>
-            <div class="create-form">
-                <div class="form-group">
-                    <label for="installation-id">Installation</label>
-                    <select id="installation-id" onchange="onInstallationChange()">
-                        <option value="">Loading installations...</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Repositories</label>
-                    <ghp-repo-select id="repo-select" mode="multi" placeholder="Search repositories..." disabled></ghp-repo-select>
-                </div>
-                <div class="form-group">
-                    <label>Permissions</label>
-                    <ghp-permission-select id="perm-select"></ghp-permission-select>
-                </div>
-                <div class="form-group">
-                    <label for="duration">Duration</label>
-                    <select id="duration">
-                        <option value="8h">8 hours</option>
-                        <option value="24h" selected>24 hours</option>
-                        <option value="48h">48 hours</option>
-                        <option value="168h">7 days</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="session">Session identifier (optional)</label>
-                    <input type="text" id="session" placeholder="ci-agent-run-42">
-                </div>
-                <button class="btn" id="create-btn" onclick="createAgentToken()">Create Agent Token</button>
-                <div id="new-token" style="display:none">
-                    <div class="token-display" id="token-value"></div>
-                    <p style="color:#f0883e;margin-top:0.5rem;font-size:0.8rem">This token will only be shown once. Copy it now.</p>
+        <div id="panel-tokens" class="tab-panel">
+            <div class="section-header">
+                <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+                    <div class="filter-bar">
+                        <select id="filter-status" onchange="filterTokens()">
+                            <option value="">All statuses</option>
+                            <option value="active">Active</option>
+                            <option value="expired">Expired</option>
+                            <option value="revoked">Revoked</option>
+                        </select>
+                        <span id="filter-user-label" style="font-size:0.875rem;color:var(--color-text-secondary)"></span>
+                        <button id="clear-filter" class="btn btn-ghost" style="display:none;font-size:0.8rem;padding:0.25rem 0.5rem" onclick="clearUserFilter()">Show all</button>
+                    </div>
+                    <button class="btn btn-primary" onclick="openAgentStepper()">New Agent Token</button>
                 </div>
             </div>
-        </div>
-
-        <div class="section">
-            <h2>All Tokens</h2>
             <div id="all-tokens"></div>
         </div>
+    </main>
 
-        <div class="section">
-            <h2>Audit Log</h2>
-            <div id="audit-log"></div>
+    <ghp-stepper id="agent-stepper">
+        <div slot="step-0">
+            <div class="form-group">
+                <label for="installation-id">Installation</label>
+                <select id="installation-id" onchange="onInstallationChange()">
+                    <option value="">Loading installations...</option>
+                </select>
+            </div>
         </div>
-    </div>
+        <div slot="step-1">
+            <div class="form-group">
+                <label>Repositories</label>
+                <ghp-repo-select id="repo-select" mode="multi" placeholder="Select installation first..." disabled></ghp-repo-select>
+            </div>
+        </div>
+        <div slot="step-2">
+            <div class="form-group">
+                <label>Permissions</label>
+                <ghp-permission-select id="perm-select"></ghp-permission-select>
+            </div>
+        </div>
+        <div slot="step-3">
+            <div class="form-group">
+                <label for="duration">Duration</label>
+                <select id="duration">
+                    <option value="8h">8 hours</option>
+                    <option value="24h" selected>24 hours</option>
+                    <option value="48h">48 hours</option>
+                    <option value="168h">7 days</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="session">Session identifier (optional)</label>
+                <input type="text" id="session" placeholder="ci-agent-run-42">
+            </div>
+        </div>
+        <div slot="step-4" id="step-confirm">
+            <!-- JS renders confirm summary + create button + token display -->
+        </div>
+    </ghp-stepper>
 
     <script>
         // ── API helper ──────────────────────────────────────────────
@@ -116,13 +105,33 @@
             return resp.json();
         }
 
-        // ── State ───────────────────────────────────────────────────
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        async function logout() {
+            await api('POST', '/auth/logout');
+            window.location.href = '/login';
+        }
+
+        // ── Tab switching ────────────────────────────────────────────
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tab));
+        }
+
+        // ── State ────────────────────────────────────────────────────
         let installations = [];
+        let allTokens = [];
+        let filterUserId = null;
+        let filterUsername = null;
 
         const repoSelect = document.getElementById('repo-select');
         const permSelect = document.getElementById('perm-select');
 
-        // ── Installation select ────────────────────────────────────
+        // ── Installation select ──────────────────────────────────────
         async function loadInstallations() {
             const sel = document.getElementById('installation-id');
             try {
@@ -148,7 +157,6 @@
         async function onInstallationChange() {
             const id = parseInt(document.getElementById('installation-id').value);
             repoSelect.clear();
-            document.getElementById('new-token').style.display = 'none';
 
             if (!id) {
                 repoSelect.disabled = true;
@@ -175,26 +183,63 @@
             }
         }
 
-        // ── Create token ───────────────────────────────────────────
+        // ── Agent stepper ────────────────────────────────────────────
+        const agentStepper = document.getElementById('agent-stepper');
+        agentStepper.steps = [
+            { title: 'Select Installation', validate: () => !!document.getElementById('installation-id').value },
+            { title: 'Select Repositories', validate: () => repoSelect.value.length > 0 },
+            { title: 'Set Permissions', validate: () => Object.keys(permSelect.value).length > 0 },
+            { title: 'Details' },
+            { title: 'Confirm & Create' },
+        ];
+
+        function openAgentStepper() {
+            document.getElementById('installation-id').value = '';
+            repoSelect.clear();
+            repoSelect.disabled = true;
+            repoSelect.setAttribute('placeholder', 'Select installation first...');
+            permSelect.permissions = {};
+            document.getElementById('duration').value = '24h';
+            document.getElementById('session').value = '';
+            document.getElementById('step-confirm').innerHTML = '';
+            agentStepper.open();
+        }
+
+        agentStepper.addEventListener('step-change', (e) => {
+            if (e.detail.step === 4) {
+                const instId = document.getElementById('installation-id').value;
+                const inst = installations.find(i => i.id === parseInt(instId));
+                const repos = repoSelect.value;
+                const scopes = permSelect.value;
+                const duration = document.getElementById('duration').value;
+                const session = document.getElementById('session').value;
+
+                const scopeChips = Object.entries(scopes)
+                    .map(([k, v]) => '<span class="scope-chip">' + esc(k + ':' + v) + '</span>')
+                    .join('');
+
+                const repoList = Array.isArray(repos) ? repos.join(', ') : repos;
+
+                let html = '<div class="confirm-summary">';
+                html += '<p><strong>Installation:</strong> ' + esc(inst ? inst.account.login : instId) + '</p>';
+                html += '<p><strong>Repositories:</strong> ' + esc(repoList) + '</p>';
+                html += '<p><strong>Permissions:</strong> ' + scopeChips + '</p>';
+                html += '<p><strong>Duration:</strong> ' + esc(duration) + '</p>';
+                if (session) html += '<p><strong>Session:</strong> ' + esc(session) + '</p>';
+                html += '</div>';
+                html += '<button class="btn btn-primary" id="create-btn" onclick="createAgentToken()">Create Agent Token</button>';
+
+                document.getElementById('step-confirm').innerHTML = html;
+            }
+        });
+
+        // ── Create agent token ───────────────────────────────────────
         async function createAgentToken() {
             const installationId = parseInt(document.getElementById('installation-id').value);
             const duration = document.getElementById('duration').value;
             const session = document.getElementById('session').value;
             const selectedRepos = repoSelect.value;
             const scopes = permSelect.value;
-
-            if (!installationId) {
-                alert('Please select an installation.');
-                return;
-            }
-            if (selectedRepos.length === 0) {
-                alert('Please select at least one repository.');
-                return;
-            }
-            if (Object.keys(scopes).length === 0) {
-                alert('Please select at least one permission.');
-                return;
-            }
 
             const scopeStr = Object.entries(scopes).map(([k, v]) => k + ':' + v).join(',');
 
@@ -213,61 +258,95 @@
 
             const data = await api('POST', '/api/tokens', body);
 
-            btn.disabled = false;
-            btn.textContent = 'Create Agent Token';
-
             if (data.token) {
-                document.getElementById('token-value').textContent = data.token;
-                document.getElementById('new-token').style.display = 'block';
+                let html = '<div class="token-display">' + esc(data.token) + '</div>';
+                html += '<p style="color:var(--color-warning);margin-top:0.5rem;font-size:0.875rem">';
+                html += 'This token will only be shown once. Copy it now.</p>';
+                document.getElementById('step-confirm').innerHTML = html;
+                agentStepper.hideNav();
                 loadAllTokens();
             } else {
+                btn.disabled = false;
+                btn.textContent = 'Create Agent Token';
                 alert(data.message || 'Failed to create agent token');
             }
         }
 
-        // ── Users / Tokens / Audit ─────────────────────────────────
+        // ── Users ────────────────────────────────────────────────────
         async function loadUsers() {
             const users = await api('GET', '/api/users');
             const container = document.getElementById('users-list');
 
             if (!Array.isArray(users) || users.length === 0) {
-                container.innerHTML = '<div class="empty">No users found</div>';
+                container.innerHTML = '<div class="empty-state"><p>No users found</p></div>';
                 return;
             }
 
-            let html = '<table><tr><th>Username</th><th>GitHub ID</th><th>Role</th><th>Created</th><th></th></tr>';
+            let html = '<div class="table-wrap"><table>';
+            html += '<tr><th>Username</th><th>Role</th><th>Created</th><th></th></tr>';
             for (const u of users) {
                 const created = new Date(u.created_at).toLocaleString();
+                const badgeClass = u.role === 'admin' ? 'badge-admin' : 'badge-user';
                 html += '<tr>';
                 html += '<td>' + esc(u.username) + '</td>';
-                html += '<td>' + (u.github_id || '-') + '</td>';
-                html += '<td>' + esc(u.role) + '</td>';
+                html += '<td><span class="badge ' + badgeClass + '">' + esc(u.role) + '</span></td>';
                 html += '<td>' + created + '</td>';
-                html += '<td><a class="link" href="#" onclick="loadUserTokens(\'' + u.id + '\', \'' + esc(u.username) + '\'); return false;">View tokens</a></td>';
+                html += '<td><a class="link" href="#" onclick="viewUserTokens(\'' + u.id + '\', \'' + esc(u.username) + '\'); return false;">View tokens</a></td>';
                 html += '</tr>';
             }
-            html += '</table>';
+            html += '</table></div>';
             container.innerHTML = html;
         }
 
-        async function loadUserTokens(userId, username) {
-            const tokens = await api('GET', '/api/users/' + userId + '/tokens');
-            const container = document.getElementById('all-tokens');
-
-            if (!Array.isArray(tokens) || tokens.length === 0) {
-                container.innerHTML = '<div class="empty">No tokens for ' + esc(username) + '</div>';
-                return;
-            }
-
-            container.innerHTML = '<p style="color:#8b949e;margin-bottom:0.5rem">Showing tokens for <strong>' + esc(username) + '</strong></p>' + renderTokenTable(tokens);
+        // ── User token filter ────────────────────────────────────────
+        function viewUserTokens(userId, username) {
+            filterUserId = userId;
+            filterUsername = username;
+            switchTab('tokens');
+            filterTokens();
         }
 
+        function clearUserFilter() {
+            filterUserId = null;
+            filterUsername = null;
+            filterTokens();
+        }
+
+        // ── Tokens ───────────────────────────────────────────────────
         async function loadAllTokens() {
             const tokens = await api('GET', '/api/tokens?all=true');
-            const container = document.getElementById('all-tokens');
+            allTokens = Array.isArray(tokens) ? tokens : [];
+            filterTokens();
+        }
 
-            if (!Array.isArray(tokens) || tokens.length === 0) {
-                container.innerHTML = '<div class="empty">No tokens found</div>';
+        function filterTokens() {
+            let tokens = allTokens;
+
+            // Filter by user
+            if (filterUserId) {
+                tokens = tokens.filter(t => t.user_id === filterUserId);
+                document.getElementById('filter-user-label').textContent = 'Showing tokens for ' + filterUsername;
+                document.getElementById('clear-filter').style.display = '';
+            } else {
+                document.getElementById('filter-user-label').textContent = '';
+                document.getElementById('clear-filter').style.display = 'none';
+            }
+
+            // Filter by status
+            const statusFilter = document.getElementById('filter-status').value;
+            if (statusFilter) {
+                tokens = tokens.filter(t => {
+                    const now = new Date();
+                    const expires = new Date(t.expires_at);
+                    if (t.revoked_at) return statusFilter === 'revoked';
+                    if (expires < now) return statusFilter === 'expired';
+                    return statusFilter === 'active';
+                });
+            }
+
+            const container = document.getElementById('all-tokens');
+            if (tokens.length === 0) {
+                container.innerHTML = '<div class="empty-state"><p>No tokens found</p></div>';
                 return;
             }
 
@@ -275,81 +354,71 @@
         }
 
         function renderTokenTable(tokens) {
-            let html = '<table><tr><th>Prefix</th><th>Type</th><th>Repositories</th><th>Scopes</th><th>Session</th><th>Status</th><th>Requests</th><th>Expires</th><th></th></tr>';
+            let html = '<div class="table-wrap"><table>';
+            html += '<tr><th>Prefix</th><th>Type</th><th>Repos</th><th>Scopes</th><th>Session</th><th>Status</th><th>Expires</th><th></th></tr>';
             for (const t of tokens) {
                 const now = new Date();
                 const expires = new Date(t.expires_at);
-                let status, badge;
-                if (t.revoked_at) { status = 'Revoked'; badge = 'badge-revoked'; }
-                else if (expires < now) { status = 'Expired'; badge = 'badge-expired'; }
-                else { status = 'Active'; badge = 'badge-active'; }
+                let status, badgeClass;
+                if (t.revoked_at) { status = 'revoked'; badgeClass = 'badge-revoked'; }
+                else if (expires < now) { status = 'expired'; badgeClass = 'badge-expired'; }
+                else { status = 'active'; badgeClass = 'badge-active'; }
 
                 const scopes = typeof t.scopes === 'string' ? t.scopes : JSON.stringify(t.scopes);
                 const repos = Array.isArray(t.repositories) ? t.repositories.join(', ') : (t.repositories || '');
+                const tokenType = t.token_type || 'proxy';
+                const typeBadge = tokenType === 'agent' ? 'badge-agent' : 'badge-proxy';
+
                 html += '<tr>';
-                html += '<td>' + esc(t.token_prefix) + '...</td>';
-                html += '<td>' + esc(t.token_type || 'proxy') + '</td>';
+                html += '<td class="text-mono">' + esc(t.token_prefix) + '...</td>';
+                html += '<td><span class="badge ' + typeBadge + '">' + esc(tokenType) + '</span></td>';
                 html += '<td>' + esc(repos) + '</td>';
                 html += '<td>' + esc(scopes) + '</td>';
                 html += '<td>' + esc(t.session_id || '-') + '</td>';
-                html += '<td><span class="badge ' + badge + '">' + status + '</span></td>';
-                html += '<td>' + (t.request_count || 0) + '</td>';
-                html += '<td>' + expires.toLocaleString() + '</td>';
-                html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" onclick="revokeToken(\'' + t.id + '\')">Revoke</button>' : '') + '</td>';
+                html += '<td><span class="badge ' + badgeClass + '">' + status + '</span></td>';
+                html += '<td>' + formatExpiry(t.expires_at, t.revoked_at) + '</td>';
+                html += '<td>' + (status === 'active' ? '<button class="btn btn-danger" onclick="revokeToken(\'' + t.id + '\')">Revoke</button>' : '') + '</td>';
                 html += '</tr>';
             }
-            html += '</table>';
+            html += '</table></div>';
             return html;
         }
 
+        // ── Format expiry ────────────────────────────────────────────
+        function formatExpiry(expiresAt, revokedAt) {
+            if (revokedAt) return 'Revoked';
+            const now = new Date();
+            const expires = new Date(expiresAt);
+            const diffMs = expires - now;
+
+            if (diffMs <= 0) {
+                const ago = Math.abs(diffMs);
+                return 'Expired ' + formatRelative(ago) + ' ago';
+            }
+            return 'Expires in ' + formatRelative(diffMs);
+        }
+
+        function formatRelative(ms) {
+            const minutes = Math.floor(ms / 60000);
+            const hours = Math.floor(ms / 3600000);
+            const days = Math.floor(ms / 86400000);
+            if (days > 0) return days + 'd';
+            if (hours > 0) return hours + 'h';
+            if (minutes > 0) return minutes + 'm';
+            return '<1m';
+        }
+
+        // ── Revoke token ─────────────────────────────────────────────
         async function revokeToken(id) {
             if (!confirm('Revoke this token?')) return;
             await api('DELETE', '/api/tokens/' + id);
             loadAllTokens();
         }
 
-        async function loadAudit() {
-            const entries = await api('GET', '/api/audit');
-            const container = document.getElementById('audit-log');
-
-            if (!Array.isArray(entries) || entries.length === 0) {
-                container.innerHTML = '<div class="empty">No audit entries</div>';
-                return;
-            }
-
-            let html = '<table><tr><th>Time</th><th>Action</th><th>Method</th><th>Path</th><th>Repository</th><th>Status</th><th>Duration</th></tr>';
-            for (const e of entries.slice(0, 100)) {
-                const ts = new Date(e.timestamp).toLocaleString();
-                html += '<tr>';
-                html += '<td>' + ts + '</td>';
-                html += '<td>' + esc(e.action) + '</td>';
-                html += '<td>' + esc(e.method || '-') + '</td>';
-                html += '<td>' + esc(e.path || '-') + '</td>';
-                html += '<td>' + esc(e.repository || '-') + '</td>';
-                html += '<td>' + (e.status_code || '-') + '</td>';
-                html += '<td>' + (e.duration_ms ? e.duration_ms + 'ms' : '-') + '</td>';
-                html += '</tr>';
-            }
-            html += '</table>';
-            container.innerHTML = html;
-        }
-
-        function esc(s) {
-            const d = document.createElement('div');
-            d.textContent = s;
-            return d.innerHTML;
-        }
-
-        async function logout() {
-            await api('POST', '/auth/logout');
-            window.location.href = '/login';
-        }
-
-        // ── Init ───────────────────────────────────────────────────
+        // ── Init ─────────────────────────────────────────────────────
         loadInstallations();
         loadUsers();
         loadAllTokens();
-        loadAudit();
     </script>
 </body>
 </html>
