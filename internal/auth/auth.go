@@ -70,6 +70,11 @@ type Handler struct {
 	// brokerStates holds in-flight broker OAuth flow states (short-lived).
 	brokerStates *expirable.LRU[string, *brokerState]
 
+	// Rate limiters for sensitive endpoints (keyed by IP address).
+	loginLimiter     *IPRateLimiter // POST /auth/test-login
+	githubLimiter    *IPRateLimiter // GET  /auth/github
+	authorizeLimiter *IPRateLimiter // GET  /auth/authorize
+
 	// Overridable base URLs for GitHub endpoints (used in tests).
 	githubBaseURL    string // defaults to "https://github.com"
 	githubAPIBaseURL string // defaults to "https://api.github.com"
@@ -78,13 +83,16 @@ type Handler struct {
 // NewHandler creates a new auth handler.
 func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor, logger *slog.Logger) *Handler {
 	h := &Handler{
-		cfg:          cfg,
-		store:        store,
-		encryptor:    enc,
-		logger:       logger,
-		sessions:     expirable.NewLRU[string, *Session](maxSessions, nil, SessionDuration),
-		states:       expirable.NewLRU[string, struct{}](maxStates, nil, stateTTL),
-		brokerStates: expirable.NewLRU[string, *brokerState](maxBrokerStates, nil, brokerStateTTL),
+		cfg:              cfg,
+		store:            store,
+		encryptor:        enc,
+		logger:           logger,
+		sessions:         expirable.NewLRU[string, *Session](maxSessions, nil, SessionDuration),
+		states:           expirable.NewLRU[string, struct{}](maxStates, nil, stateTTL),
+		brokerStates:     expirable.NewLRU[string, *brokerState](maxBrokerStates, nil, brokerStateTTL),
+		loginLimiter:     NewIPRateLimiter(30, time.Minute, "/auth/test-login", logger),
+		githubLimiter:    NewIPRateLimiter(10, time.Minute, "/auth/github", logger),
+		authorizeLimiter: NewIPRateLimiter(10, time.Minute, "/auth/authorize", logger),
 	}
 	if cfg.Auth.JWTPrivateKey != "" || cfg.Auth.JWTPrivateKeyFile != "" {
 		var pemData string
@@ -122,7 +130,7 @@ func (h *Handler) secureCookies() bool {
 
 // RegisterRoutes adds auth routes to the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /auth/github", h.handleGitHubLogin)
+	mux.Handle("GET /auth/github", h.githubLimiter.Middleware(http.HandlerFunc(h.handleGitHubLogin)))
 	mux.HandleFunc("GET /auth/github/callback", h.handleGitHubCallback)
 	mux.HandleFunc("POST /auth/logout", h.handleLogout)
 	mux.HandleFunc("GET /auth/status", h.handleStatus)
@@ -132,7 +140,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		if h.rsaPrivKey == nil {
 			h.logger.Error("jwt_private_key configuration is invalid; oauth broker endpoints disabled")
 		} else {
-			mux.HandleFunc("GET /auth/authorize", h.handleBrokerAuthorize)
+			mux.Handle("GET /auth/authorize", h.authorizeLimiter.Middleware(http.HandlerFunc(h.handleBrokerAuthorize)))
 			mux.HandleFunc("GET /auth/callback", h.handleBrokerCallback)
 			mux.HandleFunc("GET /.well-known/jwks.json", h.handleJWKS)
 			h.logger.Info("oauth broker endpoints enabled")
@@ -145,7 +153,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Dev-mode only: test login endpoint that bypasses GitHub OAuth.
 	if h.cfg.DevMode {
 		h.logger.Warn("dev mode enabled: /auth/test-login endpoint is active")
-		mux.HandleFunc("POST /auth/test-login", h.handleTestLogin)
+		mux.Handle("POST /auth/test-login", h.loginLimiter.Middleware(http.HandlerFunc(h.handleTestLogin)))
 	}
 }
 
