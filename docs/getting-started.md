@@ -49,6 +49,22 @@ Set the token as `GH_TOKEN` in the agent's environment:
 That's it. The agent now uses GitHub through the proxy with scoped permissions.
 Standard `gh` CLI, GitHub SDKs, and raw HTTP all work transparently.
 
+!!! warning "Use HTTPS for Git operations"
+    ghp only proxies HTTPS traffic. **SSH Git operations are not supported** and
+    will fail when `github.com` DNS is pointed at the proxy. Make sure your
+    agents clone repositories over HTTPS, not SSH:
+
+        # Correct — uses HTTPS through the proxy
+        git clone https://github.com/owner/repo.git
+
+        # Will not work — SSH bypasses the proxy entirely
+        git clone git@github.com:owner/repo.git
+
+    If your agents or tools default to SSH, you can override the protocol
+    globally with:
+
+        git config --global url."https://github.com/".insteadOf git@github.com:
+
 ## Manage Tokens
 
 List your active tokens:

@@ -36,7 +36,7 @@ ghp routes traffic by `Host` header across four virtualhosts:
 | Host | Handler |
 |------|---------|
 | `api.github.com` | API proxy — scope enforcement, credential injection, audit logging |
-| `github.com` | Transparent passthrough — git clone/push with `ghx_`/`gha_` token interception |
+| `github.com` | Transparent passthrough — HTTPS git clone/push with `ghx_`/`gha_` token interception (SSH is **not** supported) |
 | `*.githubcopilot.com` | Transparent passthrough for Copilot traffic — audit logging and metrics captured, no scope enforcement |
 | Configured management host | Web UI, OAuth, token management API |
 
@@ -52,6 +52,15 @@ a reverse proxy), the `Host` header alone drives routing.
 - **Audit trail** — every proxied request is logged with token, repository, method, path, and status
 - **Expiration** — tokens have a configurable lifetime (default 24h, max 7 days)
 - **Revocation** — tokens can be revoked immediately via CLI or web UI
+
+### HTTPS Only — No SSH Support
+
+ghp intercepts GitHub credentials via HTTP `Authorization` headers, which means
+it can only proxy HTTPS traffic. **Git's SSH protocol is not supported.** Because
+the deployment model redirects `github.com` DNS to the proxy server, any agent
+or user on the affected network that attempts to use SSH-based Git URLs
+(`git@github.com:...`) will fail to connect. All Git operations must use HTTPS
+URLs instead.
 
 ### Copilot Passthrough
 

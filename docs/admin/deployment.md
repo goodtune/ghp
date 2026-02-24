@@ -42,6 +42,22 @@ github.com          → <ghp-server-ip>
 Agents then connect to ghp transparently — no client configuration beyond
 `GH_TOKEN` is needed.
 
+!!! warning "SSH Git traffic will break"
+    Redirecting `github.com` to the ghp server means that **SSH-based Git
+    operations will fail** for any client on the affected network. ghp only
+    proxies HTTPS traffic; it does not implement the SSH protocol and there are
+    no plans to add SSH support.
+
+    Ensure all agents and users on the network are configured to clone over
+    HTTPS, not SSH. You can enforce this globally on agent machines with:
+
+        git config --global url."https://github.com/".insteadOf git@github.com:
+
+    If your network includes developers who rely on SSH for their own
+    workflows, consider scoping the DNS override narrowly — for example, only
+    applying it to the agent VLAN or using `/etc/hosts` on individual agent
+    machines rather than a network-wide DNS change.
+
 ### Run Migrations
 
     ghp migrate --config /etc/ghp/server.yaml
