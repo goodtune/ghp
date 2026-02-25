@@ -356,6 +356,13 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
+	h.ClearSession(w, r)
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Logged out"})
+}
+
+// ClearSession removes the user's session and clears the session cookie.
+func (h *Handler) ClearSession(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(SessionCookieName); err == nil {
 		h.deleteSession(cookie.Value)
 	}
@@ -367,8 +374,6 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Secure:   h.secureCookies(),
 		MaxAge:   -1,
 	})
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Logged out"})
 }
 
 func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {

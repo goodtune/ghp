@@ -6,162 +6,182 @@
     <title>ghp — Admin</title>
     <link rel="stylesheet" href="/static/theme.css">
     <script src="/static/theme.js"></script>
+    <script type="module" src="/static/datastar.min.js"></script>
     <script src="/static/ghp-repo-select.js"></script>
     <script src="/static/ghp-permission-select.js"></script>
-    <script src="/static/ghp-stepper.js"></script>
 </head>
-<body>
+<body data-signals="{tab: 'users', agentOpen: false, agentStep: 0, installationId: '', agentRepos: '[]', agentPerms: '{}', agentDuration: '24h', agentSession: ''}">
     <header class="header">
         <div class="header-brand">
             <img src="/static/octobear.png" alt="" width="32" height="32">
-            <span>ghp</span>
+            <span>GitHub Proxy</span>
             <span class="badge-admin">admin</span>
         </div>
         <nav class="header-actions">
             <a href="/" class="btn btn-ghost">Dashboard</a>
             <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
             <span class="username">{{ .Username }}</span>
-            <button class="btn btn-ghost" onclick="logout()">Sign out</button>
+            <button class="btn btn-ghost" data-on:click="@post('/ui/logout')">Sign out</button>
         </nav>
     </header>
 
     <main class="container">
         <div class="tabs" role="tablist">
-            <button class="tab active" role="tab" aria-selected="true" data-tab="users" onclick="switchTab('users')">Users</button>
-            <button class="tab" role="tab" aria-selected="false" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
+            <button class="tab" role="tab" data-class:active="$tab === 'users'" data-on:click="$tab = 'users'">Users</button>
+            <button class="tab" role="tab" data-class:active="$tab === 'tokens'" data-on:click="$tab = 'tokens'">Tokens</button>
         </div>
 
-        <!-- Users panel -->
-        <section id="panel-users" class="tab-panel active" role="tabpanel">
-            {{ if .Users }}
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Username</th>
-                            <th>Role</th>
-                            <th>Created</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {{ range .Users }}
-                        <tr>
-                            <td>{{ .Username }}</td>
-                            <td><span class="badge badge-{{ .Role }}">{{ .Role }}</span></td>
-                            <td>{{ .Created }}</td>
-                        </tr>
-                        {{ end }}
-                    </tbody>
-                </table>
-            </div>
-            {{ else }}
-            <div class="empty-state">
-                <p>No users found.</p>
-            </div>
-            {{ end }}
+        <!-- Users panel (SSE-loaded, hidden when tokens tab active) -->
+        <section data-show="$tab === 'users'" id="admin-users-panel" role="tabpanel">
+            <div class="loading">Loading...</div>
         </section>
 
-        <!-- Tokens panel -->
-        <section id="panel-tokens" class="tab-panel" role="tabpanel">
-            <div class="section-header">
-                <h2>All Tokens</h2>
-                <button class="btn btn-primary" onclick="openAgentStepper()">New Agent Token</button>
-            </div>
-
-            {{ if .Tokens }}
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Prefix</th>
-                            <th>Type</th>
-                            <th>Repos</th>
-                            <th>Scopes</th>
-                            <th>Session</th>
-                            <th>Status</th>
-                            <th>Expires</th>
-                            <th></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {{ range .Tokens }}
-                        <tr>
-                            <td class="text-mono">{{ .Prefix }}...</td>
-                            <td><span class="badge badge-{{ .Type }}">{{ .Type }}</span></td>
-                            <td>{{ .Repos }}</td>
-                            <td>{{ range .Scopes }}<span class="scope-chip">{{ . }}</span> {{ end }}</td>
-                            <td>{{ if .SessionID }}{{ .SessionID }}{{ else }}-{{ end }}</td>
-                            <td><span class="badge badge-{{ .Status }}">{{ .Status }}</span></td>
-                            <td>{{ .ExpiryText }}</td>
-                            <td>
-                                {{ if eq .Status "active" }}
-                                <form class="revoke-form" data-token-id="{{ .RawID }}">
-                                    <button type="submit" class="btn btn-danger" onclick="return confirm('Revoke this token?')">Revoke</button>
-                                </form>
-                                {{ end }}
-                            </td>
-                        </tr>
-                        {{ end }}
-                    </tbody>
-                </table>
-            </div>
-            {{ else }}
-            <div class="empty-state">
-                <img src="/static/octobear.png" alt="">
-                <p>No tokens found.</p>
-            </div>
-            {{ end }}
+        <!-- Tokens panel (SSE-loaded, hidden when users tab active) -->
+        <section data-show="$tab === 'tokens'" id="admin-tokens-panel" role="tabpanel">
+            <div class="loading">Loading...</div>
         </section>
+
+        <!-- Establish persistent SSE connection for live admin data -->
+        <div data-init="@get('/ui/admin/stream')"></div>
+
+        <!-- Hidden inputs bridge web component values to Datastar signals -->
+        <input type="hidden" id="agent-repos-signal" data-bind:agentRepos>
+        <input type="hidden" id="agent-perms-signal" data-bind:agentPerms>
+
+        <!-- ── Agent token creation stepper ─────────────────────── -->
+        <div class="modal-overlay" data-class:open="$agentOpen" data-on:click="$agentOpen = false">
+            <div class="modal" onclick="event.stopPropagation()">
+                <button class="stepper-close" data-on:click="$agentOpen = false" aria-label="Close">&times;</button>
+
+                <div class="stepper-dots">
+                    <span class="stepper-dot" data-class:active="$agentStep === 0" data-class:completed="$agentStep > 0"></span>
+                    <span class="stepper-dot" data-class:active="$agentStep === 1" data-class:completed="$agentStep > 1"></span>
+                    <span class="stepper-dot" data-class:active="$agentStep === 2" data-class:completed="$agentStep > 2"></span>
+                    <span class="stepper-dot" data-class:active="$agentStep === 3" data-class:completed="$agentStep > 3"></span>
+                    <span class="stepper-dot" data-class:active="$agentStep === 4"></span>
+                </div>
+
+                <!-- Step 0: Select Installation -->
+                <div data-show="$agentStep === 0">
+                    <h3 class="stepper-title">Select Installation</h3>
+                    <div class="form-group">
+                        <label for="installation-id">Installation</label>
+                        <select id="installation-id" data-bind:installationId onchange="onInstallationChange()">
+                            <option value="">Loading installations...</option>
+                        </select>
+                    </div>
+                    <div class="stepper-actions">
+                        <span></span>
+                        <button class="btn btn-primary" onclick="if(!document.getElementById('installation-id').value)event.stopImmediatePropagation()" data-on:click="$agentStep = 1">Next</button>
+                    </div>
+                </div>
+
+                <!-- Step 1: Select Repositories -->
+                <div data-show="$agentStep === 1">
+                    <h3 class="stepper-title">Select Repositories</h3>
+                    <div class="form-group">
+                        <label>Repositories</label>
+                        <ghp-repo-select id="agent-repo-select" mode="multi" placeholder="Select installation first..." disabled></ghp-repo-select>
+                    </div>
+                    <div class="stepper-actions">
+                        <button class="btn btn-ghost" data-on:click="$agentStep = 0">Back</button>
+                        <button class="btn btn-primary" onclick="if(!syncAgentRepos())event.stopImmediatePropagation()" data-on:click="$agentStep = 2">Next</button>
+                    </div>
+                </div>
+
+                <!-- Step 2: Permissions -->
+                <div data-show="$agentStep === 2">
+                    <h3 class="stepper-title">Set Permissions</h3>
+                    <div class="form-group">
+                        <label>Permissions</label>
+                        <ghp-permission-select id="agent-perm-select"></ghp-permission-select>
+                    </div>
+                    <div class="stepper-actions">
+                        <button class="btn btn-ghost" data-on:click="$agentStep = 1">Back</button>
+                        <button class="btn btn-primary" onclick="if(!syncAgentPerms())event.stopImmediatePropagation()" data-on:click="$agentStep = 3">Next</button>
+                    </div>
+                </div>
+
+                <!-- Step 3: Details -->
+                <div data-show="$agentStep === 3">
+                    <h3 class="stepper-title">Details</h3>
+                    <div class="form-group">
+                        <label for="agent-duration">Duration</label>
+                        <select id="agent-duration" data-bind:agentDuration>
+                            <option value="8h">8 hours</option>
+                            <option value="24h" selected>24 hours</option>
+                            <option value="48h">48 hours</option>
+                            <option value="168h">7 days</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="agent-session">Session identifier (optional)</label>
+                        <input type="text" id="agent-session" data-bind:agentSession placeholder="ci-agent-run-42">
+                    </div>
+                    <div class="stepper-actions">
+                        <button class="btn btn-ghost" data-on:click="$agentStep = 2">Back</button>
+                        <button class="btn btn-primary" onclick="populateAgentConfirm()" data-on:click="$agentStep = 4">Next</button>
+                    </div>
+                </div>
+
+                <!-- Step 4: Confirm & Create -->
+                <div data-show="$agentStep === 4" id="agent-step-confirm">
+                    <h3 class="stepper-title">Confirm &amp; Create</h3>
+                    <dl class="confirm-summary" id="agent-confirm-details"></dl>
+                    <button class="btn btn-primary" data-on:click="@post('/ui/agent-tokens')">Create Agent Token</button>
+                    <div class="stepper-actions">
+                        <button class="btn btn-ghost" data-on:click="$agentStep = 3">Back</button>
+                        <span></span>
+                    </div>
+                </div>
+            </div>
+        </div>
     </main>
 
-    <!-- Agent token stepper — the only interactive part -->
-    <ghp-stepper id="agent-stepper">
-        <div slot="step-0">
-            <div class="form-group">
-                <label for="installation-id">Installation</label>
-                <select id="installation-id" onchange="onInstallationChange()">
-                    <option value="">Loading installations...</option>
-                </select>
-            </div>
-        </div>
-        <div slot="step-1">
-            <div class="form-group">
-                <label>Repositories</label>
-                <ghp-repo-select id="repo-select" mode="multi" placeholder="Select installation first..." disabled></ghp-repo-select>
-            </div>
-        </div>
-        <div slot="step-2">
-            <div class="form-group">
-                <label>Permissions</label>
-                <ghp-permission-select id="perm-select"></ghp-permission-select>
-            </div>
-        </div>
-        <div slot="step-3">
-            <div class="form-group">
-                <label for="duration">Duration</label>
-                <select id="duration">
-                    <option value="8h">8 hours</option>
-                    <option value="24h" selected>24 hours</option>
-                    <option value="48h">48 hours</option>
-                    <option value="168h">7 days</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="session">Session identifier (optional)</label>
-                <input type="text" id="session" placeholder="ci-agent-run-42">
-            </div>
-        </div>
-        <div slot="step-4" id="step-confirm"></div>
-    </ghp-stepper>
-
     <script>
-        // ── Minimal JS: tabs, stepper, API calls ─────────────────
+        // ── Minimal JS: bridge web components + load installations ──
 
-        async function api(method, path, body) {
-            const opts = { method, headers: { 'Content-Type': 'application/json' } };
-            if (body) opts.body = JSON.stringify(body);
-            const resp = await fetch(path, opts);
-            return resp.json();
+        const agentRepoSelect = document.getElementById('agent-repo-select');
+        const agentPermSelect = document.getElementById('agent-perm-select');
+        const agentReposSignal = document.getElementById('agent-repos-signal');
+        const agentPermsSignal = document.getElementById('agent-perms-signal');
+        let installations = [];
+
+        function syncAgentRepos() {
+            const v = agentRepoSelect.value;
+            if (!Array.isArray(v) || v.length === 0) return false;
+            agentReposSignal.value = JSON.stringify(v);
+            agentReposSignal.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+        }
+
+        function syncAgentPerms() {
+            const v = agentPermSelect.value;
+            if (Object.keys(v).length === 0) return false;
+            agentPermsSignal.value = JSON.stringify(v);
+            agentPermsSignal.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+        }
+
+        function populateAgentConfirm() {
+            syncAgentRepos();
+            syncAgentPerms();
+            const instId = document.getElementById('installation-id').value;
+            const inst = installations.find(i => i.id === parseInt(instId));
+            const repos = agentRepoSelect.value;
+            const scopes = agentPermSelect.value;
+            const duration = document.getElementById('agent-duration').value;
+            const session = document.getElementById('agent-session').value;
+            const chips = Object.entries(scopes)
+                .map(([k, v]) => '<span class="scope-chip">' + esc(k + ':' + v) + '</span>')
+                .join(' ');
+            const repoList = Array.isArray(repos) ? repos.join(', ') : repos;
+            let html = '<dt>Installation</dt><dd>' + esc(inst ? inst.account.login : instId) + '</dd>';
+            html += '<dt>Repositories</dt><dd>' + esc(repoList) + '</dd>';
+            html += '<dt>Permissions</dt><dd>' + chips + '</dd>';
+            html += '<dt>Duration</dt><dd>' + esc(duration) + '</dd>';
+            if (session) html += '<dt>Session</dt><dd>' + esc(session) + '</dd>';
+            document.getElementById('agent-confirm-details').innerHTML = html;
         }
 
         function esc(s) {
@@ -170,51 +190,35 @@
             return d.innerHTML;
         }
 
-        async function logout() {
-            await fetch('/auth/logout', { method: 'POST' });
-            window.location.href = '/login';
+        async function onInstallationChange() {
+            const id = parseInt(document.getElementById('installation-id').value);
+            agentRepoSelect.clear();
+            if (!id) {
+                agentRepoSelect.disabled = true;
+                agentPermSelect.permissions = {};
+                return;
+            }
+            const inst = installations.find(i => i.id === id);
+            agentPermSelect.permissions = inst ? (inst.permissions || {}) : {};
+            agentRepoSelect.disabled = true;
+            agentRepoSelect.setAttribute('placeholder', 'Loading repositories...');
+            try {
+                const resp = await fetch('/api/github/installations/' + id + '/repositories');
+                const data = await resp.json();
+                agentRepoSelect.repos = Array.isArray(data) ? data : [];
+                agentRepoSelect.disabled = false;
+                agentRepoSelect.setAttribute('placeholder', 'Search repositories...');
+            } catch (err) {
+                agentRepoSelect.setAttribute('placeholder', 'Failed to load repositories');
+            }
         }
 
-        // ── Tabs ─────────────────────────────────────────────────
-        function switchTab(tab) {
-            document.querySelectorAll('.tab').forEach(t => {
-                const isActive = t.dataset.tab === tab;
-                t.classList.toggle('active', isActive);
-                t.setAttribute('aria-selected', isActive);
-            });
-            document.querySelectorAll('.tab-panel').forEach(p => {
-                p.classList.toggle('active', p.id === 'panel-' + tab);
-            });
-        }
-
-        // ── Revoke via API ───────────────────────────────────────
-        document.querySelectorAll('.revoke-form').forEach(form => {
-            form.addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const id = form.dataset.tokenId;
-                await fetch('/api/tokens/' + id, { method: 'DELETE' });
-                window.location.reload();
-            });
-        });
-
-        // ── Agent stepper ────────────────────────────────────────
-        let installations = [];
-        const repoSelect = document.getElementById('repo-select');
-        const permSelect = document.getElementById('perm-select');
-        const agentStepper = document.getElementById('agent-stepper');
-
-        agentStepper.steps = [
-            { title: 'Select Installation', validate: () => !!document.getElementById('installation-id').value },
-            { title: 'Select Repositories', validate: () => repoSelect.value.length > 0 },
-            { title: 'Set Permissions', validate: () => Object.keys(permSelect.value).length > 0 },
-            { title: 'Details' },
-            { title: 'Confirm & Create' },
-        ];
-
-        async function loadInstallations() {
+        // Load installations on page load.
+        (async function() {
             const sel = document.getElementById('installation-id');
             try {
-                const data = await api('GET', '/api/github/installations');
+                const resp = await fetch('/api/github/installations');
+                const data = await resp.json();
                 if (!Array.isArray(data) || data.length === 0) {
                     sel.innerHTML = '<option value="">No installations found</option>';
                     return;
@@ -230,105 +234,7 @@
             } catch (err) {
                 sel.innerHTML = '<option value="">Failed to load installations</option>';
             }
-        }
-
-        async function onInstallationChange() {
-            const id = parseInt(document.getElementById('installation-id').value);
-            repoSelect.clear();
-            if (!id) {
-                repoSelect.disabled = true;
-                permSelect.permissions = {};
-                return;
-            }
-            const inst = installations.find(i => i.id === id);
-            permSelect.permissions = inst ? (inst.permissions || {}) : {};
-            repoSelect.disabled = true;
-            repoSelect.setAttribute('placeholder', 'Loading repositories...');
-            try {
-                const data = await api('GET', '/api/github/installations/' + id + '/repositories');
-                repoSelect.repos = Array.isArray(data) ? data : [];
-                repoSelect.disabled = false;
-                repoSelect.setAttribute('placeholder', 'Search repositories...');
-            } catch (err) {
-                repoSelect.setAttribute('placeholder', 'Failed to load repositories');
-            }
-        }
-
-        function openAgentStepper() {
-            document.getElementById('installation-id').value = '';
-            repoSelect.clear();
-            repoSelect.disabled = true;
-            repoSelect.setAttribute('placeholder', 'Select installation first...');
-            permSelect.permissions = {};
-            document.getElementById('duration').value = '24h';
-            document.getElementById('session').value = '';
-            document.getElementById('step-confirm').innerHTML = '';
-            agentStepper.open();
-        }
-
-        agentStepper.addEventListener('step-change', (e) => {
-            if (e.detail.step === 4) {
-                const instId = document.getElementById('installation-id').value;
-                const inst = installations.find(i => i.id === parseInt(instId));
-                const repos = repoSelect.value;
-                const scopes = permSelect.value;
-                const duration = document.getElementById('duration').value;
-                const session = document.getElementById('session').value;
-
-                const chips = Object.entries(scopes)
-                    .map(([k, v]) => '<span class="scope-chip">' + esc(k + ':' + v) + '</span>')
-                    .join(' ');
-                const repoList = Array.isArray(repos) ? repos.join(', ') : repos;
-
-                let html = '<dl class="confirm-summary">';
-                html += '<dt>Installation</dt><dd>' + esc(inst ? inst.account.login : instId) + '</dd>';
-                html += '<dt>Repositories</dt><dd>' + esc(repoList) + '</dd>';
-                html += '<dt>Permissions</dt><dd>' + chips + '</dd>';
-                html += '<dt>Duration</dt><dd>' + esc(duration) + '</dd>';
-                if (session) html += '<dt>Session</dt><dd>' + esc(session) + '</dd>';
-                html += '</dl>';
-                html += '<button class="btn btn-primary" id="create-btn" onclick="createAgentToken()">Create Agent Token</button>';
-                document.getElementById('step-confirm').innerHTML = html;
-            }
-        });
-
-        async function createAgentToken() {
-            const installationId = parseInt(document.getElementById('installation-id').value);
-            const duration = document.getElementById('duration').value;
-            const session = document.getElementById('session').value;
-            const selectedRepos = repoSelect.value;
-            const scopes = permSelect.value;
-            const scopeStr = Object.entries(scopes).map(([k, v]) => k + ':' + v).join(',');
-
-            const body = {
-                type: 'agent',
-                installation_id: installationId,
-                repositories: selectedRepos,
-                scopes: scopeStr,
-                duration: duration,
-            };
-            if (session) body.session_id = session;
-
-            const btn = document.getElementById('create-btn');
-            btn.disabled = true;
-            btn.textContent = 'Creating...';
-
-            const data = await api('POST', '/api/tokens', body);
-
-            if (data.token) {
-                let html = '<div class="token-display">' + esc(data.token) + '</div>';
-                html += '<p class="token-warning">This token will only be shown once. Copy it now.</p>';
-                document.getElementById('step-confirm').innerHTML = html;
-                agentStepper.hideNav();
-            } else {
-                btn.disabled = false;
-                btn.textContent = 'Create Agent Token';
-                alert(data.message || 'Failed to create agent token');
-            }
-        }
-
-        // ── Init ─────────────────────────────────────────────────
-        loadInstallations();
+        })();
     </script>
 </body>
 </html>

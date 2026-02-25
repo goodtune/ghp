@@ -9,10 +9,13 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/token"
 )
 
 //go:embed templates/*.html
@@ -21,13 +24,42 @@ var templateFS embed.FS
 //go:embed static/*
 var staticFS embed.FS
 
+// tokenNotifier broadcasts token change events to admin SSE connections.
+// Uses the close-and-replace channel pattern for fan-out notification.
+type tokenNotifier struct {
+	mu sync.Mutex
+	ch chan struct{}
+}
+
+func newTokenNotifier() *tokenNotifier {
+	return &tokenNotifier{ch: make(chan struct{})}
+}
+
+// Wait returns a channel that will be closed on the next Notify call.
+func (n *tokenNotifier) Wait() <-chan struct{} {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.ch
+}
+
+// Notify wakes all goroutines waiting on the current channel.
+func (n *tokenNotifier) Notify() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	close(n.ch)
+	n.ch = make(chan struct{})
+}
+
 // Handler serves the web UI.
 type Handler struct {
-	auth      *auth.Handler
-	store     database.Store
-	devMode   bool
-	logger    *slog.Logger
-	templates *template.Template
+	auth            *auth.Handler
+	store           database.Store
+	tokenService    *token.Service
+	defaultDuration time.Duration
+	devMode         bool
+	logger          *slog.Logger
+	templates       *template.Template
+	tokenNotify     *tokenNotifier
 }
 
 // TokenView is a server-side view model for a proxy token.
@@ -52,23 +84,37 @@ type UserView struct {
 }
 
 // NewHandler creates a new web UI handler.
-func NewHandler(ah *auth.Handler, store database.Store, devMode bool, logger *slog.Logger) *Handler {
+func NewHandler(ah *auth.Handler, store database.Store, ts *token.Service, defaultDuration time.Duration, devMode bool, logger *slog.Logger) *Handler {
 	tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
 	return &Handler{
-		auth:      ah,
-		store:     store,
-		devMode:   devMode,
-		logger:    logger,
-		templates: tmpl,
+		auth:            ah,
+		store:           store,
+		tokenService:    ts,
+		defaultDuration: defaultDuration,
+		devMode:         devMode,
+		logger:          logger,
+		templates:       tmpl,
+		tokenNotify:     newTokenNotifier(),
 	}
 }
 
 // RegisterRoutes adds web UI routes to the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+	// Page routes (full HTML).
 	mux.HandleFunc("GET /{$}", h.handleIndex)
 	mux.HandleFunc("GET /login", h.handleLogin)
 	mux.HandleFunc("GET /admin", h.handleAdmin)
 	mux.Handle("GET /static/", http.FileServerFS(staticFS))
+
+	// SSE routes (Datastar fragments).
+	mux.Handle("GET /ui/dashboard/stream", h.auth.RequireAuth(http.HandlerFunc(h.handleDashboardStreamSSE)))
+	mux.Handle("GET /ui/stepper/{step}", h.auth.RequireAuth(http.HandlerFunc(h.handleStepperSSE)))
+	mux.Handle("POST /ui/stepper/{step}", h.auth.RequireAuth(http.HandlerFunc(h.handleStepperSSE)))
+	mux.Handle("DELETE /ui/tokens/{id}", h.auth.RequireAuth(http.HandlerFunc(h.handleRevokeTokenSSE)))
+	mux.Handle("POST /ui/tokens", h.auth.RequireAuth(http.HandlerFunc(h.handleCreateTokenSSE)))
+	mux.Handle("POST /ui/agent-tokens", h.auth.RequireAdmin(http.HandlerFunc(h.handleCreateAgentTokenSSE)))
+	mux.Handle("POST /ui/logout", h.auth.RequireAuth(http.HandlerFunc(h.handleLogoutSSE)))
+	mux.Handle("GET /ui/admin/stream", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminStreamSSE)))
 }
 
 func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +134,7 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"Username": session.Username,
 		"Role":     session.Role,
 		"Tokens":   buildTokenViews(tokens),
+		"DevMode":  h.devMode,
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "dashboard.html", data); err != nil {
@@ -114,23 +161,9 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	users, err := h.store.ListUsers(r.Context())
-	if err != nil {
-		h.logger.Error("failed to list users", "error", err)
-		users = nil
-	}
-
-	tokens, err := h.store.ListAllProxyTokens(r.Context())
-	if err != nil {
-		h.logger.Error("failed to list all tokens", "error", err)
-		tokens = nil
-	}
-
 	data := map[string]interface{}{
 		"Username": session.Username,
 		"Role":     session.Role,
-		"Users":    buildUserViews(users),
-		"Tokens":   buildTokenViews(tokens),
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "admin.html", data); err != nil {
@@ -188,6 +221,7 @@ func buildTokenViews(tokens []*database.ProxyToken) []TokenView {
 		for k, v := range scopeMap {
 			scopes = append(scopes, k+":"+v)
 		}
+		sort.Strings(scopes)
 
 		tokenType := t.TokenType
 		if tokenType == "" {

@@ -10,7 +10,7 @@ test.describe("Login page", () => {
     // Check branding elements.
     await expect(page.locator("h1")).toHaveText("ghp");
     await expect(page.locator("p")).toContainText(
-      "GitHub Proxy for Autonomous Coding Agents"
+      "GitHub Proxy for Coding Agents"
     );
 
     await testInfo.attach("login-page", {

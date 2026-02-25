@@ -6,219 +6,145 @@
     <title>ghp — Dashboard</title>
     <link rel="stylesheet" href="/static/theme.css">
     <script src="/static/theme.js"></script>
+    <script type="module" src="/static/datastar.min.js"></script>
+    {{ if not .DevMode }}
     <script src="/static/ghp-repo-select.js"></script>
+    {{ end }}
     <script src="/static/ghp-permission-select.js"></script>
-    <script src="/static/ghp-stepper.js"></script>
 </head>
-<body>
+<body data-signals="{stepperOpen: false, repo: '', duration: '24h', session: '', perms: '{}'}">
     <header class="header">
         <div class="header-brand">
             <img src="/static/octobear.png" alt="" width="32" height="32">
-            <span>ghp</span>
+            <span>GitHub Proxy</span>
         </div>
         <nav class="header-actions">
             <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
             <span class="username">{{ .Username }}</span>
             {{ if eq .Role "admin" }}<a href="/admin" class="btn btn-ghost">Admin</a>{{ end }}
-            <button class="btn btn-ghost" onclick="logout()">Sign out</button>
+            <button class="btn btn-ghost" data-on:click="@post('/ui/logout')">Sign out</button>
         </nav>
     </header>
 
     <main class="container">
-        <div class="section-header">
-            <h2>Your Tokens</h2>
-            <button class="btn btn-primary" id="new-token-btn" onclick="openStepper()">New Token</button>
+        <!-- Persistent SSE connection for live dashboard updates -->
+        <div data-init="@get('/ui/dashboard/stream')"></div>
+
+        <div id="dashboard-tokens">
+            <div class="section-header">
+                <h2>Your Tokens</h2>
+                {{ if .Tokens }}
+                <button class="btn btn-primary" data-on:click="$stepperOpen = true; $repo = ''; $perms = '{}'; $duration = '24h'; $session = ''; @get('/ui/stepper/0')">New Token</button>
+                {{ end }}
+            </div>
+
+            {{ if .Tokens }}
+            <section class="token-grid" id="token-grid">
+                {{ range .Tokens }}
+                <article class="token-card" id="token-{{ .RawID }}">
+                    <div class="token-card-header">
+                        <div>
+                            <h3 class="token-card-repo">{{ .Repos }}</h3>
+                            <span class="token-card-prefix">{{ .Prefix }}...</span>
+                        </div>
+                        <span class="status status-{{ .Status }}">
+                            <span class="status-dot"></span>
+                            {{ .ExpiryText }}
+                        </span>
+                    </div>
+                    <ul class="token-card-scopes">
+                        {{ range .Scopes }}
+                        <li class="scope-chip">{{ . }}</li>
+                        {{ end }}
+                    </ul>
+                    {{ if .SessionID }}
+                    <p class="token-card-session">{{ .SessionID }}</p>
+                    {{ end }}
+                    <footer class="token-card-footer">
+                        <span class="token-card-meta">{{ .Type }}</span>
+                        {{ if eq .Status "active" }}
+                        <button class="btn btn-danger" onclick="if(!confirm('Revoke this token?'))event.stopImmediatePropagation()" data-on:click="@delete('/ui/tokens/{{ .RawID }}')">Revoke</button>
+                        {{ end }}
+                    </footer>
+                </article>
+                {{ end }}
+            </section>
+            {{ else }}
+            <section class="empty-state">
+                <img src="/static/octobear.png" alt="">
+                <p>No tokens yet. Create one to get started.</p>
+                <button class="btn btn-primary" data-on:click="$stepperOpen = true; $repo = ''; $perms = '{}'; $duration = '24h'; $session = ''; @get('/ui/stepper/0')">New Token</button>
+            </section>
+            {{ end }}
         </div>
 
-        {{ if .Tokens }}
-        <section class="token-grid">
-            {{ range .Tokens }}
-            <article class="token-card">
-                <div class="token-card-header">
-                    <div>
-                        <h3 class="token-card-repo">{{ .Repos }}</h3>
-                        <span class="token-card-prefix">{{ .Prefix }}...</span>
-                    </div>
-                    <span class="status status-{{ .Status }}">
-                        <span class="status-dot"></span>
-                        {{ .ExpiryText }}
-                    </span>
-                </div>
-                <ul class="token-card-scopes">
-                    {{ range .Scopes }}
-                    <li class="scope-chip">{{ . }}</li>
-                    {{ end }}
-                </ul>
-                {{ if .SessionID }}
-                <p class="token-card-session">{{ .SessionID }}</p>
-                {{ end }}
-                <footer class="token-card-footer">
-                    <span class="token-card-meta">{{ .Type }}</span>
-                    {{ if eq .Status "active" }}
-                    <form method="POST" action="/api/tokens/{{ .RawID }}" class="revoke-form">
-                        <input type="hidden" name="_method" value="DELETE">
-                        <button type="submit" class="btn btn-danger" onclick="return confirm('Revoke this token?')">Revoke</button>
-                    </form>
-                    {{ end }}
-                </footer>
-            </article>
-            {{ end }}
-        </section>
-        {{ else }}
-        <section class="empty-state">
-            <img src="/static/octobear.png" alt="">
-            <p>No tokens yet. Create one to get started.</p>
-            <button class="btn btn-primary" onclick="openStepper()">New Token</button>
-        </section>
-        {{ end }}
+        <!-- ── Token creation stepper (SSE-driven) ───────────────── -->
+        <div class="modal-overlay" data-class:open="$stepperOpen" data-on:click="$stepperOpen = false">
+            <div class="modal" onclick="event.stopPropagation()">
+                <button class="stepper-close" data-on:click="$stepperOpen = false" aria-label="Close">&times;</button>
+                <div id="stepper-content"></div>
+            </div>
+        </div>
     </main>
 
-    <!-- Stepper for creating tokens — the only interactive part -->
-    <ghp-stepper id="stepper">
-        <div slot="step-0">
-            <div class="form-group">
-                <label>Repository</label>
-                <ghp-repo-select id="repo-select" mode="single" placeholder="Loading repositories..."></ghp-repo-select>
-            </div>
-        </div>
-        <div slot="step-1">
-            <div class="form-group">
-                <label>Permissions</label>
-                <ghp-permission-select id="perm-select"></ghp-permission-select>
-            </div>
-        </div>
-        <div slot="step-2">
-            <div class="form-group">
-                <label for="duration">Duration</label>
-                <select id="duration">
-                    <option value="8h">8 hours</option>
-                    <option value="24h" selected>24 hours</option>
-                    <option value="48h">48 hours</option>
-                    <option value="168h">7 days</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="session">Session identifier (optional)</label>
-                <input type="text" id="session" placeholder="claude-code-feature-123">
-            </div>
-        </div>
-        <div slot="step-3" id="step-confirm"></div>
-    </ghp-stepper>
-
     <script>
-        // ── Minimal JS: stepper interaction, API calls, theme ─────
-
-        async function api(method, path, body) {
-            const opts = { method, headers: { 'Content-Type': 'application/json' } };
-            if (body) opts.body = JSON.stringify(body);
-            const resp = await fetch(path, opts);
-            return resp.json();
-        }
-
-        function esc(s) {
-            const d = document.createElement('div');
-            d.textContent = s;
-            return d.innerHTML;
-        }
-
-        async function logout() {
-            await fetch('/auth/logout', { method: 'POST' });
-            window.location.href = '/login';
-        }
-
-        // ── Revoke via API (DELETE doesn't work with forms) ──────
-        document.querySelectorAll('.revoke-form').forEach(form => {
-            form.addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const action = form.getAttribute('action');
-                await fetch(action, { method: 'DELETE' });
-                window.location.reload();
-            });
-        });
-
-        // ── Stepper setup ────────────────────────────────────────
-        const stepper = document.getElementById('stepper');
-        const repoSelect = document.getElementById('repo-select');
-        const permSelect = document.getElementById('perm-select');
-
+        // Default proxy permissions for the permission select web component.
         const proxyPermissions = {
             contents: 'write', pulls: 'write', issues: 'write',
             statuses: 'write', checks: 'write', actions: 'write', metadata: 'read'
         };
-        permSelect.permissions = proxyPermissions;
 
-        stepper.steps = [
-            { title: 'Select Repository', validate: () => !!repoSelect.value },
-            { title: 'Set Permissions', validate: () => Object.keys(permSelect.value).length > 0 },
-            { title: 'Details' },
-            { title: 'Confirm & Create' },
-        ];
+        {{ if not .DevMode }}
+        // Sync repo web component value to Datastar signal.
+        window.syncRepo = function() {
+            const rs = document.getElementById('repo-select');
+            const signal = document.getElementById('repo-signal');
+            if (!rs || !signal) return false;
+            const v = rs.value;
+            if (!v) return false;
+            signal.value = v;
+            signal.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+        };
+        {{ end }}
 
-        function openStepper() {
-            repoSelect.value = '';
-            permSelect.permissions = proxyPermissions;
-            document.getElementById('duration').value = '24h';
-            document.getElementById('session').value = '';
-            document.getElementById('step-confirm').innerHTML = '';
-            stepper.open();
-        }
+        // Sync permission web component value to Datastar signal.
+        window.syncPerms = function() {
+            const ps = document.getElementById('perm-select');
+            const signal = document.getElementById('perms-signal');
+            if (!ps || !signal) return false;
+            const v = ps.value;
+            if (!v || Object.keys(v).length === 0) return false;
+            signal.value = JSON.stringify(v);
+            signal.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+        };
 
-        stepper.addEventListener('step-change', (e) => {
-            if (e.detail.step === 3) {
-                const repo = repoSelect.value;
-                const scopes = permSelect.value;
-                const duration = document.getElementById('duration').value;
-                const session = document.getElementById('session').value;
-
-                const chips = Object.entries(scopes)
-                    .map(([k, v]) => '<span class="scope-chip">' + esc(k + ':' + v) + '</span>')
-                    .join(' ');
-
-                let html = '<dl class="confirm-summary">';
-                html += '<dt>Repository</dt><dd>' + esc(repo) + '</dd>';
-                html += '<dt>Permissions</dt><dd>' + chips + '</dd>';
-                html += '<dt>Duration</dt><dd>' + esc(duration) + '</dd>';
-                if (session) html += '<dt>Session</dt><dd>' + esc(session) + '</dd>';
-                html += '</dl>';
-                html += '<button class="btn btn-primary" id="create-btn" onclick="createToken()">Create Token</button>';
-                document.getElementById('step-confirm').innerHTML = html;
+        // Initialize web components when they appear via SSE patches.
+        new MutationObserver(function(mutations) {
+            for (const m of mutations) {
+                for (const node of m.addedNodes) {
+                    if (node.nodeType !== 1) continue;
+                    const root = node.querySelector ? node : null;
+                    if (!root) continue;
+                    {{ if not .DevMode }}
+                    const rs = root.querySelector('ghp-repo-select') || (root.matches && root.matches('ghp-repo-select') ? root : null);
+                    if (rs && !rs._init) {
+                        rs._init = true;
+                        fetch('/api/github/repositories').then(r => r.json()).then(data => {
+                            if (Array.isArray(data)) rs.repos = data;
+                            rs.setAttribute('placeholder', 'Search repositories...');
+                        });
+                    }
+                    {{ end }}
+                    const ps = root.querySelector('ghp-permission-select') || (root.matches && root.matches('ghp-permission-select') ? root : null);
+                    if (ps && !ps._init) {
+                        ps._init = true;
+                        ps.permissions = proxyPermissions;
+                    }
+                }
             }
-        });
-
-        async function createToken() {
-            const repo = repoSelect.value;
-            const scopes = permSelect.value;
-            const duration = document.getElementById('duration').value;
-            const session = document.getElementById('session').value;
-            const scopeStr = Object.entries(scopes).map(([k, v]) => k + ':' + v).join(',');
-
-            const body = { repository: repo, scopes: scopeStr, duration: duration };
-            if (session) body.session_id = session;
-
-            const btn = document.getElementById('create-btn');
-            btn.disabled = true;
-            btn.textContent = 'Creating...';
-
-            const data = await api('POST', '/api/tokens', body);
-
-            if (data.token) {
-                let html = '<div class="token-display">' + esc(data.token) + '</div>';
-                html += '<p class="token-warning">This token will only be shown once. Copy it now.</p>';
-                document.getElementById('step-confirm').innerHTML = html;
-                stepper.hideNav();
-            } else {
-                btn.disabled = false;
-                btn.textContent = 'Create Token';
-                alert(data.message || 'Failed to create token');
-            }
-        }
-
-        // ── Load repos for the stepper ───────────────────────────
-        (async function() {
-            const data = await api('GET', '/api/github/repositories');
-            if (Array.isArray(data)) repoSelect.repos = data;
-            repoSelect.setAttribute('placeholder', 'Search repositories...');
-        })();
+        }).observe(document.body, { childList: true, subtree: true });
     </script>
 </body>
 </html>

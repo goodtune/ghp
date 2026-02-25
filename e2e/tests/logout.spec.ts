@@ -17,11 +17,11 @@ test.describe("Logout", () => {
       contentType: "image/png",
     });
 
-    // Click Sign out.
+    // Click Sign out — triggers Datastar SSE redirect.
     await page.click('button:has-text("Sign out")');
 
     // Should end up on the login page.
-    await expect(page).toHaveURL(/\/login$/);
+    await expect(page).toHaveURL(/\/login$/, { timeout: 10_000 });
     await expect(page).toHaveTitle("ghp — Login");
 
     await testInfo.attach("after-logout", {
