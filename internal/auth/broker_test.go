@@ -57,6 +57,38 @@ func TestValidateRedirectURI(t *testing.T) {
 	}
 }
 
+func TestValidateRedirectURI_PathScopedWildcard(t *testing.T) {
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			AllowedRedirects: []string{
+				"*.example.com/auth/callback",
+			},
+		},
+	}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+
+	tests := []struct {
+		name string
+		uri  string
+		want bool
+	}{
+		{"path-scoped wildcard match", "https://app.example.com/auth/callback", true},
+		{"path-scoped deep subdomain match", "https://a.b.example.com/auth/callback", true},
+		{"path-scoped wrong path rejected", "https://app.example.com/other", false},
+		{"path-scoped bare domain rejected", "https://example.com/auth/callback", false},
+		{"path-scoped wrong domain rejected", "https://app.other.com/auth/callback", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := h.validateRedirectURI(tt.uri)
+			if got != tt.want {
+				t.Errorf("validateRedirectURI(%q) = %v, want %v", tt.uri, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateRedirectURI_DevMode(t *testing.T) {
 	cfg := &config.Config{
 		DevMode: true,
@@ -97,6 +129,13 @@ func TestMatchesRedirectPattern(t *testing.T) {
 		{"wildcard path mismatch", "https://app.example.com/other", "*.example.com/auth/callback", false},
 		{"wildcard path prefix match", "https://app.example.com/auth/callback?foo=bar", "*.example.com/auth/callback", true},
 		{"wildcard path bare domain rejected", "https://example.com/auth/callback", "*.example.com/auth/callback", false},
+		{"wildcard path subdirectory allowed", "https://app.example.com/auth/callback/extra", "*.example.com/auth/callback", true},
+		// HasPrefix semantics: a pattern path is a string prefix, not a path segment
+		// boundary. "/auth/callbackmalicious" starts with "/auth/callback" and therefore
+		// matches. Operators should use trailing-slash patterns (e.g.
+		// "*.example.com/auth/callback/") or exact URLs when this matters.
+		{"wildcard path prefix overlap matches", "https://app.example.com/auth/callbackmalicious", "*.example.com/auth/callback", true},
+		{"wildcard path with port", "https://app.example.com:8443/auth/callback", "*.example.com/auth/callback", true},
 	}
 
 	for _, tt := range tests {
