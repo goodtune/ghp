@@ -11,7 +11,7 @@ import (
 // Set at build time via -ldflags.
 var version = "dev"
 
-func main() {
+func newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "ghp",
 		Short: "GitHub Proxy for Autonomous Coding Agents",
@@ -29,7 +29,11 @@ func main() {
 		newDocCmd(rootCmd),
 	)
 
-	if err := rootCmd.Execute(); err != nil {
+	return rootCmd
+}
+
+func main() {
+	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

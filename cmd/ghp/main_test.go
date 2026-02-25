@@ -5,34 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/spf13/cobra"
 )
-
-// buildRootCmd constructs the root cobra.Command tree mirroring main().
-func buildRootCmd() *cobra.Command {
-	rootCmd := &cobra.Command{
-		Use:   "ghp",
-		Short: "GitHub Proxy for Autonomous Coding Agents",
-		Long:  "ghp is a GitHub API reverse proxy that issues scoped, auditable tokens to autonomous coding agents.",
-	}
-	rootCmd.PersistentFlags().String("config", "", "path to server configuration file (or set GHP_CONFIG)")
-	rootCmd.AddCommand(
-		newServeCmd(),
-		newMigrateCmd(),
-		newAuthCmd(),
-		newTokenCmd(),
-		newVersionCmd(),
-		newDocCmd(rootCmd),
-	)
-	return rootCmd
-}
 
 // TestHelpOutput_Root verifies that the root help text mentions all subcommands and flags.
 func TestHelpOutput_Root(t *testing.T) {
-	rootCmd := buildRootCmd()
+	rootCmd := newRootCmd()
 	buf := &bytes.Buffer{}
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
@@ -105,6 +86,44 @@ func TestHelpOutput_Auth(t *testing.T) {
 	}
 }
 
+// TestHelpOutput_AuthLogin verifies that "ghp auth login --help" describes the command correctly.
+func TestHelpOutput_AuthLogin(t *testing.T) {
+	cmd := newAuthCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"login", "--help"})
+	_ = cmd.Execute()
+
+	output := buf.String()
+	for _, want := range []string{
+		"GitHub OAuth",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("auth login help: expected %q to appear in output:\n%s", want, output)
+		}
+	}
+}
+
+// TestHelpOutput_AuthStatus verifies that "ghp auth status --help" describes the command correctly.
+func TestHelpOutput_AuthStatus(t *testing.T) {
+	cmd := newAuthCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"status", "--help"})
+	_ = cmd.Execute()
+
+	output := buf.String()
+	for _, want := range []string{
+		"authentication status",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("auth status help: expected %q to appear in output:\n%s", want, output)
+		}
+	}
+}
+
 // TestHelpOutput_Token verifies that "ghp token --help" mentions create, list, and revoke subcommands.
 func TestHelpOutput_Token(t *testing.T) {
 	cmd := newTokenCmd()
@@ -143,6 +162,44 @@ func TestHelpOutput_TokenCreate(t *testing.T) {
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("token create help: expected %q to appear in output:\n%s", want, output)
+		}
+	}
+}
+
+// TestHelpOutput_TokenList verifies that "ghp token list --help" describes the command correctly.
+func TestHelpOutput_TokenList(t *testing.T) {
+	cmd := newTokenCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"list", "--help"})
+	_ = cmd.Execute()
+
+	output := buf.String()
+	for _, want := range []string{
+		"active tokens",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("token list help: expected %q to appear in output:\n%s", want, output)
+		}
+	}
+}
+
+// TestHelpOutput_TokenRevoke verifies that "ghp token revoke --help" mentions the token-id argument.
+func TestHelpOutput_TokenRevoke(t *testing.T) {
+	cmd := newTokenCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"revoke", "--help"})
+	_ = cmd.Execute()
+
+	output := buf.String()
+	for _, want := range []string{
+		"token-id",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("token revoke help: expected %q to appear in output:\n%s", want, output)
 		}
 	}
 }
@@ -186,7 +243,13 @@ func TestAuthLoginCmd_NoServerURL(t *testing.T) {
 
 // TestAuthLoginCmd_WithServerURL verifies that auth login prints the authentication URL when configured.
 func TestAuthLoginCmd_WithServerURL(t *testing.T) {
-	t.Setenv("GHP_SERVER_URL", "http://localhost:9999")
+	// Use a real httptest server for a consistent URL (no network call is made by login).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request to stub server: %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "")
 	t.Setenv("HOME", t.TempDir())
 
@@ -200,8 +263,8 @@ func TestAuthLoginCmd_WithServerURL(t *testing.T) {
 		t.Fatalf("auth login error: %v", err)
 	}
 	output := buf.String()
-	if !strings.Contains(output, "http://localhost:9999/auth/github") {
-		t.Errorf("expected auth URL in output, got: %q", output)
+	if !strings.Contains(output, srv.URL+"/auth/github") {
+		t.Errorf("expected auth URL %q in output, got: %q", srv.URL+"/auth/github", output)
 	}
 }
 
@@ -312,7 +375,7 @@ func TestTokenCreateCmd_NoConfig(t *testing.T) {
 	}
 }
 
-// TestTokenCreateCmd_ProxyToken verifies that token create calls the stub server and prints the token.
+// TestTokenCreateCmd_ProxyToken verifies that token create sends correct body and prints the token.
 func TestTokenCreateCmd_ProxyToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || r.URL.Path != "/api/tokens" {
@@ -320,6 +383,15 @@ func TestTokenCreateCmd_ProxyToken(t *testing.T) {
 		}
 		var body map[string]interface{}
 		json.NewDecoder(r.Body).Decode(&body)
+		if body["type"] != "proxy" {
+			t.Errorf("expected type 'proxy', got %v", body["type"])
+		}
+		if body["repository"] != "owner/repo" {
+			t.Errorf("expected repository 'owner/repo', got %v", body["repository"])
+		}
+		if body["scopes"] != "contents:read" {
+			t.Errorf("expected scopes 'contents:read', got %v", body["scopes"])
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -351,7 +423,13 @@ func TestTokenCreateCmd_ProxyToken(t *testing.T) {
 
 // TestTokenCreateCmd_AgentTokenMissingRepos verifies that agent token creation requires --repos.
 func TestTokenCreateCmd_AgentTokenMissingRepos(t *testing.T) {
-	t.Setenv("GHP_SERVER_URL", "http://localhost:9999")
+	// Use a real httptest server for a consistent URL (validation fails before any HTTP call).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request to stub server: %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
 	t.Setenv("HOME", t.TempDir())
 
@@ -566,5 +644,91 @@ func TestLoadCLIConfig_Defaults(t *testing.T) {
 	}
 	if cfg.UserToken != "" {
 		t.Errorf("UserToken: expected empty, got %q", cfg.UserToken)
+	}
+}
+
+// TestLoadCLIConfig_FromFile verifies that values are loaded from the YAML config file when env vars are unset.
+func TestLoadCLIConfig_FromFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GHP_SERVER_URL", "")
+	t.Setenv("GHP_USER_TOKEN", "")
+
+	configDir := filepath.Join(home, ".config", "ghp")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	configContent := "server_url: http://file-server:8080\nuser_token: file-token\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := loadCLIConfig()
+	if err != nil {
+		t.Fatalf("loadCLIConfig error: %v", err)
+	}
+	if cfg.ServerURL != "http://file-server:8080" {
+		t.Errorf("ServerURL: got %q, want %q", cfg.ServerURL, "http://file-server:8080")
+	}
+	if cfg.UserToken != "file-token" {
+		t.Errorf("UserToken: got %q, want %q", cfg.UserToken, "file-token")
+	}
+}
+
+// TestLoadCLIConfig_EnvVarsPriorityOverFile verifies that env vars win when both env vars and file are set.
+func TestLoadCLIConfig_EnvVarsPriorityOverFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GHP_SERVER_URL", "http://env-server:8080")
+	t.Setenv("GHP_USER_TOKEN", "env-token")
+
+	configDir := filepath.Join(home, ".config", "ghp")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	configContent := "server_url: http://file-server:9090\nuser_token: file-token\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := loadCLIConfig()
+	if err != nil {
+		t.Fatalf("loadCLIConfig error: %v", err)
+	}
+	if cfg.ServerURL != "http://env-server:8080" {
+		t.Errorf("ServerURL: got %q, want env value %q", cfg.ServerURL, "http://env-server:8080")
+	}
+	if cfg.UserToken != "env-token" {
+		t.Errorf("UserToken: got %q, want env value %q", cfg.UserToken, "env-token")
+	}
+}
+
+// TestLoadCLIConfig_InsecurePerms verifies that loadCLIConfig still loads config when file has insecure permissions.
+func TestLoadCLIConfig_InsecurePerms(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GHP_SERVER_URL", "")
+	t.Setenv("GHP_USER_TOKEN", "")
+
+	configDir := filepath.Join(home, ".config", "ghp")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	configContent := "server_url: http://file-server:8080\nuser_token: file-token\n"
+	// Write with insecure permissions (world-readable) to trigger the warning path.
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	// Config should still be loaded despite insecure permissions (the function warns but does not fail).
+	cfg, err := loadCLIConfig()
+	if err != nil {
+		t.Fatalf("loadCLIConfig error: %v", err)
+	}
+	if cfg.ServerURL != "http://file-server:8080" {
+		t.Errorf("ServerURL: got %q, want %q", cfg.ServerURL, "http://file-server:8080")
+	}
+	if cfg.UserToken != "file-token" {
+		t.Errorf("UserToken: got %q, want %q", cfg.UserToken, "file-token")
 	}
 }
