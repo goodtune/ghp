@@ -9,6 +9,9 @@ test.describe("Admin", () => {
   test("loads users panel via SSE on page load", async ({ page }, testInfo) => {
     await page.goto("/admin");
 
+    // Admin nav link is active.
+    await expect(page.locator('header a.nav-link.active')).toHaveText("Admin");
+
     // Users tab is active by default.
     const usersPanel = page.locator("#admin-users-panel");
     await expect(usersPanel).toBeVisible();

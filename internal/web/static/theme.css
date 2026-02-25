@@ -122,11 +122,29 @@ body {
   letter-spacing: -0.02em;
 }
 
-.header-brand .badge-admin {
-  font-size: 0.75rem;
+.header-nav {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.nav-link {
+  padding: 0.375rem 0.75rem;
+  font-size: 0.875rem;
   font-weight: 500;
   color: var(--color-text-secondary);
-  margin-left: 0.25rem;
+  text-decoration: none;
+  border-radius: var(--radius-md);
+  transition: color var(--transition), background var(--transition);
+}
+
+.nav-link:hover {
+  color: var(--color-text);
+  background: var(--color-border-subtle);
+}
+
+.nav-link.active {
+  color: var(--color-accent);
+  background: rgba(59,111,181,0.08);
 }
 
 .header-actions {
@@ -135,9 +153,15 @@ body {
   gap: 0.75rem;
 }
 
-.header-actions .username {
-  font-size: 0.875rem;
-  color: var(--color-text-secondary);
+.avatar-link {
+  display: flex;
+}
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
 }
 
 /* ── Buttons ─────────────────────────────────────────────────── */

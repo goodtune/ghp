@@ -11,8 +11,8 @@ test.describe("Dashboard", () => {
 
     await expect(page).toHaveTitle("ghp — Dashboard");
 
-    // Header shows the username.
-    await expect(page.locator("header")).toContainText("testuser");
+    // Header shows the user avatar.
+    await expect(page.locator("header .avatar")).toBeVisible();
 
     // Sign out button is present.
     await expect(

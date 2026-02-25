@@ -133,6 +133,7 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"Username": session.Username,
 		"Role":     session.Role,
+		"Page":     "dashboard",
 		"Tokens":   buildTokenViews(tokens),
 		"DevMode":  h.devMode,
 	}
@@ -164,6 +165,7 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"Username": session.Username,
 		"Role":     session.Role,
+		"Page":     "admin",
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "admin.html", data); err != nil {
