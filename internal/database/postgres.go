@@ -306,6 +306,59 @@ func (s *PostgresStore) ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, 
 	return scanPostgresProxyTokenRows(rows)
 }
 
+func (s *PostgresStore) ListAllProxyTokensFiltered(ctx context.Context, filter ProxyTokenFilter) ([]*ProxyToken, int, error) {
+	where := "WHERE 1=1"
+	var args []interface{}
+	argN := 1
+
+	if filter.Status != "" {
+		switch filter.Status {
+		case "active":
+			where += " AND revoked_at IS NULL AND expires_at > NOW()"
+		case "expired":
+			where += " AND revoked_at IS NULL AND expires_at <= NOW()"
+		case "revoked":
+			where += " AND revoked_at IS NOT NULL"
+		}
+	}
+	if filter.UserID != "" {
+		where += fmt.Sprintf(" AND user_id = $%d", argN)
+		args = append(args, filter.UserID)
+		argN++
+	}
+	if filter.Repo != "" {
+		where += fmt.Sprintf(" AND repositories::text ILIKE $%d", argN)
+		args = append(args, "%"+filter.Repo+"%")
+		argN++
+	}
+	if filter.Scope != "" {
+		where += fmt.Sprintf(" AND scopes::text ILIKE $%d", argN)
+		args = append(args, "%"+filter.Scope+"%")
+		argN++
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM proxy_tokens "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	query := fmt.Sprintf(
+		"SELECT %s FROM proxy_tokens %s ORDER BY created_at DESC LIMIT %d OFFSET %d",
+		pgProxyTokenCols, where, limit, filter.Offset,
+	)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	tokens, err := scanPostgresProxyTokenRows(rows)
+	return tokens, total, err
+}
+
 func scanPostgresProxyTokenRows(rows *sql.Rows) ([]*ProxyToken, error) {
 	var tokens []*ProxyToken
 	for rows.Next() {

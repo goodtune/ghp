@@ -110,6 +110,7 @@ type Store interface {
 	GetProxyTokenByID(ctx context.Context, id string) (*ProxyToken, error)
 	ListProxyTokens(ctx context.Context, userID string) ([]*ProxyToken, error)
 	ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, error)
+	ListAllProxyTokensFiltered(ctx context.Context, filter ProxyTokenFilter) ([]*ProxyToken, int, error)
 	RevokeProxyToken(ctx context.Context, id string) error
 	UpdateProxyTokenUsage(ctx context.Context, id string) error
 
@@ -119,6 +120,16 @@ type Store interface {
 
 	// Lifecycle
 	Close() error
+}
+
+// ProxyTokenFilter controls filtering and pagination for token listings.
+type ProxyTokenFilter struct {
+	Status string // "active", "expired", "revoked", or "" for all
+	UserID string // filter by user ID (exact match)
+	Repo   string // substring match on repositories JSON
+	Scope  string // substring match on scopes JSON
+	Limit  int    // page size (default 25)
+	Offset int    // pagination offset
 }
 
 // AuditFilter defines criteria for querying the audit log.

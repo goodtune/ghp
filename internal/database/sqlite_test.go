@@ -307,6 +307,152 @@ func TestAuditLog(t *testing.T) {
 	}
 }
 
+func TestListAllProxyTokensFiltered(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// Create a user.
+	user := &User{GitHubID: 1, GitHubUsername: "filteruser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a GitHub token.
+	gt := &GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           "enc_access",
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create several tokens with different repos and scopes.
+	tokens := []struct {
+		hash   string
+		prefix string
+		repos  string
+		scopes string
+	}{
+		{"hash1", "ghx_aa", `["org/alpha"]`, `{"contents":"read"}`},
+		{"hash2", "ghx_bb", `["org/beta"]`, `{"contents":"write"}`},
+		{"hash3", "ghx_cc", `["org/alpha","org/gamma"]`, `{"pulls":"read"}`},
+		{"hash4", "ghx_dd", `["other/delta"]`, `{"contents":"read"}`},
+	}
+	for _, tc := range tokens {
+		pt := &ProxyToken{
+			TokenHash:     tc.hash,
+			TokenPrefix:   tc.prefix,
+			TokenType:     "proxy",
+			UserID:        &user.ID,
+			GitHubTokenID: &gt.ID,
+			Repositories:  json.RawMessage(tc.repos),
+			Scopes:        json.RawMessage(tc.scopes),
+			SessionID:     "sess-1",
+			ExpiresAt:     time.Now().Add(24 * time.Hour),
+		}
+		if err := store.CreateProxyToken(ctx, pt); err != nil {
+			t.Fatalf("CreateProxyToken(%s): %v", tc.hash, err)
+		}
+	}
+
+	// Revoke the first token.
+	all, err := store.ListAllProxyTokens(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Find the token with hash1 and revoke it.
+	for _, tok := range all {
+		if tok.TokenHash == "hash1" {
+			if err := store.RevokeProxyToken(ctx, tok.ID); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+
+	// Test: filter by status="revoked" returns only the revoked token.
+	result, total, err := store.ListAllProxyTokensFiltered(ctx, ProxyTokenFilter{Status: "revoked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Errorf("revoked total = %d, want 1", total)
+	}
+	if len(result) != 1 {
+		t.Errorf("revoked results = %d, want 1", len(result))
+	} else if result[0].TokenHash != "hash1" {
+		t.Errorf("revoked token hash = %q, want hash1", result[0].TokenHash)
+	}
+
+	// Test: filter by status="active" returns the non-revoked, non-expired tokens.
+	result, total, err = store.ListAllProxyTokensFiltered(ctx, ProxyTokenFilter{Status: "active"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Errorf("active total = %d, want 3", total)
+	}
+	if len(result) != 3 {
+		t.Errorf("active results = %d, want 3", len(result))
+	}
+
+	// Test: filter by repo substring "alpha" matches tokens with "org/alpha".
+	result, total, err = store.ListAllProxyTokensFiltered(ctx, ProxyTokenFilter{Repo: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Errorf("repo alpha total = %d, want 2", total)
+	}
+	if len(result) != 2 {
+		t.Errorf("repo alpha results = %d, want 2", len(result))
+	}
+
+	// Test: filter by scope substring "contents" matches tokens with contents scope.
+	result, total, err = store.ListAllProxyTokensFiltered(ctx, ProxyTokenFilter{Scope: "contents"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Errorf("scope contents total = %d, want 3", total)
+	}
+
+	// Test: limit/offset pagination.
+	result, total, err = store.ListAllProxyTokensFiltered(ctx, ProxyTokenFilter{Limit: 2, Offset: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4 {
+		t.Errorf("all total = %d, want 4", total)
+	}
+	if len(result) != 2 {
+		t.Errorf("page 1 results = %d, want 2", len(result))
+	}
+
+	result2, total2, err := store.ListAllProxyTokensFiltered(ctx, ProxyTokenFilter{Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total2 != 4 {
+		t.Errorf("page 2 total = %d, want 4", total2)
+	}
+	if len(result2) != 2 {
+		t.Errorf("page 2 results = %d, want 2", len(result2))
+	}
+
+	// Ensure pages don't overlap.
+	for _, r1 := range result {
+		for _, r2 := range result2 {
+			if r1.ID == r2.ID {
+				t.Errorf("token %s appears on both pages", r1.ID)
+			}
+		}
+	}
+}
+
 // Ensure temporary files are cleaned up.
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())

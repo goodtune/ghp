@@ -367,6 +367,55 @@ func (s *SQLiteStore) ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, er
 	return scanProxyTokenRows(rows)
 }
 
+func (s *SQLiteStore) ListAllProxyTokensFiltered(ctx context.Context, filter ProxyTokenFilter) ([]*ProxyToken, int, error) {
+	where := "WHERE 1=1"
+	var args []interface{}
+
+	if filter.Status != "" {
+		switch filter.Status {
+		case "active":
+			where += " AND revoked_at IS NULL AND expires_at > datetime('now')"
+		case "expired":
+			where += " AND revoked_at IS NULL AND expires_at <= datetime('now')"
+		case "revoked":
+			where += " AND revoked_at IS NOT NULL"
+		}
+	}
+	if filter.UserID != "" {
+		where += " AND user_id = ?"
+		args = append(args, filter.UserID)
+	}
+	if filter.Repo != "" {
+		where += " AND repositories LIKE ?"
+		args = append(args, "%"+filter.Repo+"%")
+	}
+	if filter.Scope != "" {
+		where += " AND scopes LIKE ?"
+		args = append(args, "%"+filter.Scope+"%")
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM proxy_tokens "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	query := fmt.Sprintf(
+		"SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at FROM proxy_tokens %s ORDER BY created_at DESC LIMIT %d OFFSET %d",
+		where, limit, filter.Offset,
+	)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	tokens, err := scanProxyTokenRows(rows)
+	return tokens, total, err
+}
+
 func scanProxyTokenRows(rows *sql.Rows) ([]*ProxyToken, error) {
 	var tokens []*ProxyToken
 	for rows.Next() {
