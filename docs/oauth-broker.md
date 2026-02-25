@@ -48,7 +48,7 @@ auth:
 |-------|-------------|
 | `auth.jwt_private_key` | PEM-encoded RSA private key used to sign broker JWTs with RS256 (asymmetric). Downstream services verify tokens using the public key from `/.well-known/jwks.json` without being able to forge them. |
 | `auth.jwt_private_key_file` | Path to a PEM-encoded RSA private key file. Used when `jwt_private_key` is not set directly. |
-| `auth.allowed_redirects` | List of permitted `redirect_uri` values. Supports exact URLs and wildcard domain patterns (e.g. `*.example.com`). |
+| `auth.allowed_redirects` | List of permitted `redirect_uri` values. Supports exact URLs and wildcard domain patterns (e.g. `*.example.com` or `*.example.com/auth/callback`). See [Security Considerations](#security-considerations) for guidance on choosing patterns. |
 
 Environment variables: `GHP_AUTH_JWT_PRIVATE_KEY` (PEM contents), `GHP_AUTH_JWT_PRIVATE_KEY_FILE` (file path)
 
@@ -307,6 +307,7 @@ No direct GitHub API calls are required on the downstream side.
 | CSRF | The `state` parameter round-trips through the entire flow, allowing the downstream service to verify it. |
 | HTTP downgrade | The proxy rejects `redirect_uri` values that do not use HTTPS (except `localhost` in dev mode). |
 | Token forgery | RS256 (asymmetric) signing ensures downstream services can verify tokens using the public key without being able to forge them. |
+| Wildcard subdomain trust | Wildcard patterns like `*.example.com` trust **all** subdomains, including ones that could be taken over via subdomain hijacking or shared hosting. Prefer path-scoped wildcards (e.g. `*.example.com/auth/callback`) to limit exposure, or use exact URL matches for production deployments. |
 
 ## Proxy Endpoints
 
