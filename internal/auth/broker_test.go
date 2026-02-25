@@ -93,6 +93,10 @@ func TestMatchesRedirectPattern(t *testing.T) {
 		{"wildcard no match bare domain", "https://example.com/cb", "*.example.com", false},
 		{"wildcard deep subdomain", "https://a.b.example.com/cb", "*.example.com", true},
 		{"wildcard wrong domain", "https://app.other.com/cb", "*.example.com", false},
+		{"wildcard path match", "https://app.example.com/auth/callback", "*.example.com/auth/callback", true},
+		{"wildcard path mismatch", "https://app.example.com/other", "*.example.com/auth/callback", false},
+		{"wildcard path prefix match", "https://app.example.com/auth/callback?foo=bar", "*.example.com/auth/callback", true},
+		{"wildcard path bare domain rejected", "https://example.com/auth/callback", "*.example.com/auth/callback", false},
 	}
 
 	for _, tt := range tests {

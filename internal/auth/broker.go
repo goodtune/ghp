@@ -197,15 +197,33 @@ func (h *Handler) validateRedirectURI(uri string) bool {
 
 // matchesRedirectPattern checks whether a parsed URI matches a single allowlist
 // entry. Patterns can be exact URLs or wildcard domains like "*.example.com".
+// Wildcard patterns may include a path prefix (e.g. "*.example.com/auth/callback")
+// to limit which paths are trusted on the matching subdomains.
 func matchesRedirectPattern(rawURI string, parsed *url.URL, pattern string) bool {
-	// Wildcard domain pattern: *.example.com
+	// Wildcard domain pattern: *.example.com or *.example.com/path
 	if strings.HasPrefix(pattern, "*.") {
-		suffix := pattern[1:] // ".example.com"
+		// Separate the host portion from an optional path in the pattern.
+		patternHost := pattern
+		patternPath := ""
+		if idx := strings.Index(pattern[2:], "/"); idx >= 0 {
+			patternHost = pattern[:idx+2]
+			patternPath = pattern[idx+2:]
+		}
+
+		suffix := patternHost[1:] // ".example.com"
 		host := parsed.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
 		}
-		return strings.HasSuffix(host, suffix) && len(host) > len(suffix)
+		if !strings.HasSuffix(host, suffix) || len(host) <= len(suffix) {
+			return false
+		}
+
+		// If the pattern includes a path, require the URI path to match.
+		if patternPath != "" {
+			return strings.HasPrefix(parsed.Path, patternPath)
+		}
+		return true
 	}
 
 	// Exact URL match (normalize trailing slashes).
