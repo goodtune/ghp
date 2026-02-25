@@ -29,11 +29,12 @@ import (
 
 // Server is the main ghp server.
 type Server struct {
-	cfg        *config.Config
-	configPath string
-	logger     *slog.Logger
-	logWriter  io.Writer
-	store      database.Store
+	cfg          *config.Config
+	configPath   string
+	logger       *slog.Logger
+	logWriter    io.Writer
+	store        database.Store
+	forceDevMode bool
 }
 
 // New creates a new Server.
@@ -42,6 +43,13 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger, logWriter i
 		logWriter = io.Discard
 	}
 	return &Server{cfg: cfg, configPath: configPath, logger: logger, logWriter: logWriter}
+}
+
+// SetForceDevMode allows the startup loopback check to be skipped when dev
+// mode is enabled on a non-loopback address (e.g. for integration testing).
+// This must only be set via an explicit operator opt-in (--force-dev-mode).
+func (s *Server) SetForceDevMode(v bool) {
+	s.forceDevMode = v
 }
 
 // reloadConfig re-reads the configuration file and updates hot-reloadable
@@ -86,6 +94,22 @@ func (s *Server) Run(ctx context.Context) error {
 		s.logger.Warn("could not check migrations", "error", err)
 	} else if len(pending) > 0 {
 		return fmt.Errorf("database has %d pending migration(s): run 'ghp migrate' first", len(pending))
+	}
+
+	// Dev mode safeguard: refuse to start when listening on a non-loopback
+	// address unless the operator has explicitly opted in with --force-dev-mode.
+	if s.cfg.DevMode && !s.forceDevMode {
+		listenAddr := s.cfg.Server.Listen
+		if s.cfg.Server.HTTPSListen != "" {
+			listenAddr = s.cfg.Server.HTTPSListen
+		}
+		if !isLoopbackListenAddr(listenAddr) {
+			return fmt.Errorf(
+				"dev mode cannot be enabled when listening on a non-loopback address (%s); "+
+					"bind to 127.0.0.1 / ::1 / localhost, or pass --force-dev-mode to override",
+				listenAddr,
+			)
+		}
 	}
 
 	// Sync admin roles from config on startup.
@@ -449,4 +473,23 @@ func notifySystemd(state string) {
 	}
 	defer conn.Close()
 	conn.Write([]byte(state))
+}
+
+// isLoopbackListenAddr returns true when addr (in "host:port" form, or just
+// "host", or ":port") is bound to a loopback interface.
+// ":port" and "0.0.0.0:port" are treated as non-loopback (all interfaces).
+func isLoopbackListenAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" {
+		// ":port" binds to all interfaces.
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

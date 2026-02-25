@@ -45,7 +45,7 @@ func TestHelpOutput_Serve(t *testing.T) {
 	_ = cmd.Execute()
 
 	output := buf.String()
-	for _, want := range []string{"--migrate"} {
+	for _, want := range []string{"--migrate", "--force-dev-mode"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("serve help: expected %q to appear in output:\n%s", want, output)
 		}

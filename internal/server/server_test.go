@@ -101,3 +101,26 @@ func TestHostDispatch_EmptyManagementHost(t *testing.T) {
 		})
 	}
 }
+
+func TestIsLoopbackListenAddr(t *testing.T) {
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:8080", true},
+		{"[::1]:8080", true},
+		{"::1", true},
+		{"localhost:8080", true},
+		{"localhost", true},
+		{":8080", false},      // all interfaces
+		{"0.0.0.0:8080", false},
+		{"0.0.0.0", false},
+		{"192.168.1.1:8080", false},
+	}
+	for _, tt := range tests {
+		got := isLoopbackListenAddr(tt.addr)
+		if got != tt.want {
+			t.Errorf("isLoopbackListenAddr(%q) = %v, want %v", tt.addr, got, tt.want)
+		}
+	}
+}

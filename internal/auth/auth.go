@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -432,6 +433,13 @@ func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 // handleTestLogin creates a test user and session without GitHub OAuth.
 // Only available when DevMode is enabled. This must never be used in production.
 func (h *Handler) handleTestLogin(w http.ResponseWriter, r *http.Request) {
+	// Reject requests that do not originate from a loopback address even when
+	// dev mode is enabled, providing defense-in-depth against accidental exposure.
+	if !isLoopbackRemoteAddr(r.RemoteAddr) {
+		http.Error(w, "test login is only available from loopback addresses", http.StatusForbidden)
+		return
+	}
+
 	var req struct {
 		Username string `json:"username"`
 		Role     string `json:"role"`
@@ -616,4 +624,15 @@ func (h *Handler) getGitHubAPIBaseURL() string {
 		return h.githubAPIBaseURL
 	}
 	return "https://api.github.com"
+}
+
+// isLoopbackRemoteAddr returns true when remoteAddr (in "host:port" or "host"
+// form) is a loopback address (127.0.0.0/8 or ::1).
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

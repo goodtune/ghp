@@ -49,11 +49,14 @@ be upgraded between restarts.`,
 			logger.Info("server_start", "msg", "starting ghp server")
 
 			srv := server.New(cfg, cfgPath, logger, logWriter)
+			forceDevMode, _ := cmd.Flags().GetBool("force-dev-mode")
+			srv.SetForceDevMode(forceDevMode)
 			return srv.Run(context.Background())
 		},
 	}
 
 	cmd.Flags().Bool("migrate", false, "Run pending database migrations before starting the server")
+	cmd.Flags().Bool("force-dev-mode", false, "Allow dev mode on non-loopback addresses (unsafe; for testing only)")
 
 	return cmd
 }

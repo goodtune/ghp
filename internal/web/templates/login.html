@@ -6,7 +6,8 @@
     <title>ghp — Login</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }
+        .dev-banner { position: fixed; top: 0; left: 0; right: 0; background: #da3633; color: #fff; text-align: center; padding: 0.5rem 1rem; font-weight: 600; font-size: 0.875rem; letter-spacing: 0.02em; }
         .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 2rem; max-width: 400px; width: 100%; text-align: center; }
         h1 { font-size: 1.5rem; margin-bottom: 0.5rem; color: #f0f6fc; }
         p { color: #8b949e; margin-bottom: 1.5rem; font-size: 0.9rem; }
@@ -16,6 +17,7 @@
     </style>
 </head>
 <body>
+    {{ if .DevMode }}<div class="dev-banner">⚠ DEV MODE ACTIVE — test-login endpoint is enabled; do not use in production</div>{{ end }}
     <div class="card">
         <div class="logo">&#128274;</div>
         <h1>ghp</h1>
