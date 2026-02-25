@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -90,14 +89,15 @@ func newTokenCmd() *cobra.Command {
 				return fmt.Errorf("failed: %s", result["message"])
 			}
 
-			fmt.Printf("Token:        %s\n", result["token"])
-			fmt.Printf("Type:         %s\n", result["type"])
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Token:        %s\n", result["token"])
+			fmt.Fprintf(out, "Type:         %s\n", result["type"])
 			if reposList, ok := result["repositories"].([]interface{}); ok && len(reposList) > 0 {
 				parts := make([]string, len(reposList))
 				for i, r := range reposList {
 					parts[i] = fmt.Sprint(r)
 				}
-				fmt.Printf("Repositories: %s\n", strings.Join(parts, ", "))
+				fmt.Fprintf(out, "Repositories: %s\n", strings.Join(parts, ", "))
 			}
 
 			if scopes, ok := result["scopes"].(map[string]interface{}); ok {
@@ -105,16 +105,16 @@ func newTokenCmd() *cobra.Command {
 				for k, v := range scopes {
 					parts = append(parts, fmt.Sprintf("%s:%s", k, v))
 				}
-				fmt.Printf("Scopes:       %s\n", joinStrings(parts, ", "))
+				fmt.Fprintf(out, "Scopes:       %s\n", joinStrings(parts, ", "))
 			}
 
-			fmt.Printf("Expires:      %s\n", result["expires_at"])
+			fmt.Fprintf(out, "Expires:      %s\n", result["expires_at"])
 			if sid, ok := result["session_id"].(string); ok && sid != "" {
-				fmt.Printf("Session:      %s\n", sid)
+				fmt.Fprintf(out, "Session:      %s\n", sid)
 			}
 
-			fmt.Printf("\nConfigure your agent:\n")
-			fmt.Printf("  export GH_TOKEN=%s\n", result["token"])
+			fmt.Fprintf(out, "\nConfigure your agent:\n")
+			fmt.Fprintf(out, "  export GH_TOKEN=%s\n", result["token"])
 
 			return nil
 		},
@@ -157,11 +157,11 @@ func newTokenCmd() *cobra.Command {
 			json.NewDecoder(resp.Body).Decode(&tokens)
 
 			if len(tokens) == 0 {
-				fmt.Println("No tokens found.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No tokens found.")
 				return nil
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "ID\tTYPE\tREPOS\tSCOPES\tSESSION\tEXPIRES\tREQUESTS")
 			for _, t := range tokens {
 				prefix := fmt.Sprint(t["token_prefix"])
@@ -246,7 +246,7 @@ func newTokenCmd() *cobra.Command {
 			json.NewDecoder(resp.Body).Decode(&result)
 
 			if resp.StatusCode == http.StatusOK {
-				fmt.Printf("Token %s revoked.\n", tokenID)
+				fmt.Fprintf(cmd.OutOrStdout(), "Token %s revoked.\n", tokenID)
 			} else {
 				return fmt.Errorf("failed: %s", result["message"])
 			}
