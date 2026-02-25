@@ -81,6 +81,7 @@ func TestHandleTestLogin_BodyTooLarge(t *testing.T) {
 	// Body must be valid-looking JSON so the decoder reads past the 1 MB limit.
 	body := strings.NewReader(`{"username":"` + strings.Repeat("x", maxRequestBodySize) + `"}`)
 	req := httptest.NewRequest("POST", "/auth/test-login", body)
+	req.RemoteAddr = "127.0.0.1:1234"
 	w := httptest.NewRecorder()
 	h.handleTestLogin(w, req)
 
@@ -94,11 +95,47 @@ func TestHandleTestLogin_InvalidJSON(t *testing.T) {
 	h := NewHandler(cfg, nil, nil, slog.Default())
 
 	req := httptest.NewRequest("POST", "/auth/test-login", strings.NewReader("not valid json"))
+	req.RemoteAddr = "127.0.0.1:1234"
 	w := httptest.NewRecorder()
 	h.handleTestLogin(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+}
+
+func TestHandleTestLogin_NonLoopbackRejected(t *testing.T) {
+	cfg := &config.Config{DevMode: true}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+
+	req := httptest.NewRequest("POST", "/auth/test-login", strings.NewReader(`{"username":"alice"}`))
+	req.RemoteAddr = "203.0.113.1:5678" // non-loopback address
+	w := httptest.NewRecorder()
+	h.handleTestLogin(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected %d for non-loopback RemoteAddr, got %d", http.StatusForbidden, w.Code)
+	}
+}
+
+func TestIsLoopbackRemoteAddr(t *testing.T) {
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:1234", true},
+		{"[::1]:1234", true},
+		{"::1", true},
+		{"127.0.0.1", true},
+		{"192.168.1.1:80", false},
+		{"0.0.0.0:80", false},
+		{"203.0.113.5:443", false},
+	}
+	for _, tt := range tests {
+		got := isLoopbackRemoteAddr(tt.addr)
+		if got != tt.want {
+			t.Errorf("isLoopbackRemoteAddr(%q) = %v, want %v", tt.addr, got, tt.want)
+		}
 	}
 }
 

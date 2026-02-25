@@ -53,6 +53,7 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"Username": session.Username,
 		"Role":     session.Role,
+		"DevMode":  h.devMode,
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "dashboard.html", data); err != nil {
@@ -82,6 +83,7 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"Username": session.Username,
 		"Role":     session.Role,
+		"DevMode":  h.devMode,
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "admin.html", data); err != nil {
@@ -97,7 +99,11 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.templates.ExecuteTemplate(w, "login.html", nil); err != nil {
+	data := map[string]interface{}{
+		"DevMode": h.devMode,
+	}
+
+	if err := h.templates.ExecuteTemplate(w, "login.html", data); err != nil {
 		h.logger.Error("template execution failed", "error", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 	}
