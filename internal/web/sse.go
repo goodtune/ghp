@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/starfederation/datastar-go/datastar"
@@ -185,7 +186,16 @@ var fragmentTemplates = template.Must(template.New("fragments").Parse(`
             </thead>
             <tbody>
                 {{ range .Users }}
-                <tr>
+                <tr id="user-row-{{ .ID }}" class="expandable-row" data-on:click="
+                    if ($expandedUser === '{{ .ID }}') {
+                        $expandedUser = '';
+                        document.getElementById('user-expansion-{{ .ID }}')?.remove();
+                    } else {
+                        if ($expandedUser) document.getElementById('user-expansion-' + $expandedUser)?.remove();
+                        $expandedUser = '{{ .ID }}';
+                        @get('/ui/admin/users/{{ .ID }}/tokens')
+                    }
+                ">
                     <td>{{ .Username }}</td>
                     <td><span class="badge badge-{{ .Role }}">{{ .Role }}</span></td>
                     <td>{{ .Created }}</td>
@@ -251,25 +261,47 @@ var fragmentTemplates = template.Must(template.New("fragments").Parse(`
 </div>
 {{- end -}}
 
+{{- define "user-tokens-expansion" -}}
+<tr id="user-expansion-{{ .UserID }}">
+    <td colspan="3" class="expansion-cell">
+        {{ if .Tokens }}
+        <div class="token-grid">
+            {{ range .Tokens }}
+            {{ template "token-card" . }}
+            {{ end }}
+        </div>
+        {{ else }}
+        <p class="expansion-empty">No tokens for this user.</p>
+        {{ end }}
+    </td>
+</tr>
+{{- end -}}
+
 {{- define "admin-tokens-panel" -}}
 <section id="admin-tokens-panel">
     <div class="section-header">
         <h2>All Tokens</h2>
         <button class="btn btn-primary" data-on:click="$agentOpen = true; $agentStep = 0">New Agent Token</button>
     </div>
+    <div class="filter-bar">
+        <select data-bind:filterStatus>
+            <option value="">All statuses</option>
+            <option value="active"{{ if eq .FilterStatus "active" }} selected{{ end }}>Active</option>
+            <option value="expired"{{ if eq .FilterStatus "expired" }} selected{{ end }}>Expired</option>
+            <option value="revoked"{{ if eq .FilterStatus "revoked" }} selected{{ end }}>Revoked</option>
+        </select>
+        <input type="text" placeholder="User..." data-bind:filterUser value="{{ .FilterUser }}">
+        <input type="text" placeholder="Repository..." data-bind:filterRepo value="{{ .FilterRepo }}">
+        <input type="text" placeholder="Scope..." data-bind:filterScope value="{{ .FilterScope }}">
+        <button class="btn btn-ghost" data-on:click="$filterPage = 1; @get('/ui/admin/tokens')">Filter</button>
+    </div>
     {{ if .Tokens }}
     <div class="table-wrap">
         <table>
             <thead>
                 <tr>
-                    <th>Prefix</th>
-                    <th>Type</th>
-                    <th>Repos</th>
-                    <th>Scopes</th>
-                    <th>Session</th>
-                    <th>Status</th>
-                    <th>Expires</th>
-                    <th></th>
+                    <th>Prefix</th><th>Type</th><th>User</th><th>Repos</th>
+                    <th>Scopes</th><th>Session</th><th>Status</th><th>Expires</th><th></th>
                 </tr>
             </thead>
             <tbody>
@@ -277,21 +309,31 @@ var fragmentTemplates = template.Must(template.New("fragments").Parse(`
                 <tr id="token-row-{{ .RawID }}">
                     <td class="text-mono">{{ .Prefix }}...</td>
                     <td><span class="badge badge-{{ .Type }}">{{ .Type }}</span></td>
+                    <td>{{ .Username }}</td>
                     <td>{{ .Repos }}</td>
                     <td>{{ range .Scopes }}<span class="scope-chip">{{ . }}</span> {{ end }}</td>
                     <td>{{ if .SessionID }}{{ .SessionID }}{{ else }}-{{ end }}</td>
                     <td><span class="badge badge-{{ .Status }}">{{ .Status }}</span></td>
                     <td>{{ .ExpiryText }}</td>
-                    <td>
-                        {{ if eq .Status "active" }}
+                    <td>{{ if eq .Status "active" }}
                         <button class="btn btn-danger" onclick="if(!confirm('Revoke this token?'))event.stopImmediatePropagation()" data-on:click="@delete('/ui/tokens/{{ .RawID }}')">Revoke</button>
-                        {{ end }}
-                    </td>
+                    {{ end }}</td>
                 </tr>
                 {{ end }}
             </tbody>
         </table>
     </div>
+    {{ if gt .TotalPages 1 }}
+    <div class="pagination">
+        {{ if gt .Page 1 }}
+        <button class="btn btn-ghost" data-on:click="$filterPage = {{ .PrevPage }}; @get('/ui/admin/tokens')">Previous</button>
+        {{ end }}
+        <span class="pagination-info">Page {{ .Page }} of {{ .TotalPages }}</span>
+        {{ if lt .Page .TotalPages }}
+        <button class="btn btn-ghost" data-on:click="$filterPage = {{ .NextPage }}; @get('/ui/admin/tokens')">Next</button>
+        {{ end }}
+    </div>
+    {{ end }}
     {{ else }}
     <div class="empty-state">
         <img src="/static/octobear.png" alt="">
@@ -540,9 +582,98 @@ func (h *Handler) handleAdminUsersPanelSSE(w http.ResponseWriter, r *http.Reques
 	h.sendAdminUsersPanel(sse, r.Context())
 }
 
-func (h *Handler) handleAdminTokensPanelSSE(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleAdminUserTokensSSE(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+
+	tokens, err := h.store.ListProxyTokens(r.Context(), userID)
+	if err != nil {
+		h.logger.Error("failed to list user tokens", "error", err)
+		tokens = nil
+	}
+
 	sse := datastar.NewSSE(w, r)
-	h.sendAdminTokensPanel(sse, r.Context())
+	var buf bytes.Buffer
+	if err := fragmentTemplates.ExecuteTemplate(&buf, "user-tokens-expansion", map[string]interface{}{
+		"UserID": userID,
+		"Tokens": buildTokenViews(tokens),
+	}); err != nil {
+		h.logger.Error("fragment render failed", "error", err)
+		return
+	}
+	sse.PatchElements(buf.String(),
+		datastar.WithSelectorID("user-row-"+userID),
+		datastar.WithModeAfter(),
+	)
+}
+
+type adminTokenFilterSignals struct {
+	FilterStatus string `json:"filterStatus"`
+	FilterUser   string `json:"filterUser"`
+	FilterRepo   string `json:"filterRepo"`
+	FilterScope  string `json:"filterScope"`
+	FilterPage   int    `json:"filterPage"`
+}
+
+func (h *Handler) handleAdminTokensPanelSSE(w http.ResponseWriter, r *http.Request) {
+	var signals adminTokenFilterSignals
+	_ = datastar.ReadSignals(r, &signals)
+
+	page := signals.FilterPage
+	if page < 1 {
+		page = 1
+	}
+	pageSize := 25
+
+	// Resolve username filter to userID.
+	var userID string
+	if signals.FilterUser != "" {
+		users, _ := h.store.ListUsers(r.Context())
+		for _, u := range users {
+			if strings.Contains(strings.ToLower(u.GitHubUsername), strings.ToLower(signals.FilterUser)) {
+				userID = u.ID
+				break
+			}
+		}
+		if userID == "" {
+			userID = "no-match"
+		}
+	}
+
+	filter := database.ProxyTokenFilter{
+		Status: signals.FilterStatus,
+		UserID: userID,
+		Repo:   signals.FilterRepo,
+		Scope:  signals.FilterScope,
+		Limit:  pageSize,
+		Offset: (page - 1) * pageSize,
+	}
+
+	tokens, total, err := h.store.ListAllProxyTokensFiltered(r.Context(), filter)
+	if err != nil {
+		h.logger.Error("failed to list filtered tokens", "error", err)
+		tokens = nil
+	}
+
+	userMap := h.buildUserMap(r.Context())
+
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	sse := datastar.NewSSE(w, r)
+	data := map[string]interface{}{
+		"Tokens":       buildAdminTokenViews(tokens, userMap),
+		"FilterStatus": signals.FilterStatus,
+		"FilterUser":   signals.FilterUser,
+		"FilterRepo":   signals.FilterRepo,
+		"FilterScope":  signals.FilterScope,
+		"Page":         page,
+		"TotalPages":   totalPages,
+		"PrevPage":     page - 1,
+		"NextPage":     page + 1,
+	}
+	h.renderFragment(sse, "admin-tokens-panel", data)
 }
 
 func (h *Handler) handleAdminStreamSSE(w http.ResponseWriter, r *http.Request) {
@@ -581,15 +712,31 @@ func (h *Handler) sendAdminUsersPanel(sse *datastar.ServerSentEventGenerator, ct
 }
 
 func (h *Handler) sendAdminTokensPanel(sse *datastar.ServerSentEventGenerator, ctx context.Context) {
-	tokens, err := h.store.ListAllProxyTokens(ctx)
+	tokens, _, err := h.store.ListAllProxyTokensFiltered(ctx, database.ProxyTokenFilter{})
 	if err != nil {
 		h.logger.Error("failed to list all tokens", "error", err)
 		tokens = nil
 	}
 
+	userMap := h.buildUserMap(ctx)
+
+	total := len(tokens)
+	totalPages := 1
+	if total > 25 {
+		totalPages = (total + 24) / 25
+	}
+
 	var buf bytes.Buffer
 	if err := fragmentTemplates.ExecuteTemplate(&buf, "admin-tokens-panel", map[string]interface{}{
-		"Tokens": buildTokenViews(tokens),
+		"Tokens":       buildAdminTokenViews(tokens, userMap),
+		"FilterStatus": "",
+		"FilterUser":   "",
+		"FilterRepo":   "",
+		"FilterScope":  "",
+		"Page":         1,
+		"TotalPages":   totalPages,
+		"PrevPage":     0,
+		"NextPage":     2,
 	}); err != nil {
 		h.logger.Error("admin tokens panel render failed", "error", err)
 		return

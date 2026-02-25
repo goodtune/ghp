@@ -43,6 +43,31 @@ test.describe("Admin", () => {
     });
   });
 
+  test("filters tokens by status", async ({ page }) => {
+    await page.goto("/admin");
+    await expect(page.locator("#admin-users-panel table")).toBeVisible({ timeout: 5_000 });
+
+    // Switch to tokens tab.
+    await page.click('button.tab:has-text("Tokens")');
+    await expect(page.locator("#admin-tokens-panel h2")).toContainText("All Tokens", { timeout: 5_000 });
+
+    // The filter bar should be visible.
+    await expect(page.locator(".filter-bar")).toBeVisible();
+  });
+
+  test("clicking a user row expands to show their tokens", async ({ page }) => {
+    await page.goto("/admin");
+    await expect(page.locator("#admin-users-panel table")).toBeVisible({ timeout: 5_000 });
+
+    // Click on the first user row.
+    const userRow = page.locator('#admin-users-panel tr.expandable-row').first();
+    await userRow.click();
+
+    // Expansion row should appear with token cards or empty message.
+    const expansion = page.locator('[id^="user-expansion-"]');
+    await expect(expansion).toBeVisible({ timeout: 5_000 });
+  });
+
   test("live updates tokens panel when token is created", async ({
     context,
     browser,

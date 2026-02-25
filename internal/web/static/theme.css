@@ -474,11 +474,30 @@ body {
   font-family: var(--font-sans);
 }
 
+.filter-bar input[type="text"] {
+  width: 10rem;
+}
+
 .filter-bar select:focus,
 .filter-bar input:focus {
   outline: none;
   border-color: var(--color-focus);
   box-shadow: 0 0 0 3px var(--color-focus-ring);
+}
+
+/* ── Pagination ──────────────────────────────────────────────── */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 0.75rem 0;
+}
+
+.pagination-info {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
 }
 
 /* ── Forms ────────────────────────────────────────────────────── */
@@ -723,4 +742,24 @@ a.link:hover {
 
 .text-mono {
   font-family: var(--font-mono);
+}
+
+/* ── Expandable rows ───────────────────────────────────────────── */
+.expandable-row {
+    cursor: pointer;
+}
+
+.expandable-row:hover td {
+    background: var(--color-bg);
+}
+
+.expansion-cell {
+    padding: 1rem !important;
+    background: var(--color-bg);
+}
+
+.expansion-empty {
+    font-size: 0.875rem;
+    color: var(--color-text-secondary);
+    padding: 0.5rem 0;
 }

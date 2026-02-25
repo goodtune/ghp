@@ -2,6 +2,7 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -73,6 +74,7 @@ type TokenView struct {
 	Status     string // "active", "expired", "revoked"
 	ExpiryText string // "Expires in 6h", "Expired 2d ago", "Revoked"
 	RawID      string // for revoke action
+	Username   string // for admin display
 }
 
 // UserView is a server-side view model for a user.
@@ -115,6 +117,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /ui/agent-tokens", h.auth.RequireAdmin(http.HandlerFunc(h.handleCreateAgentTokenSSE)))
 	mux.Handle("POST /ui/logout", h.auth.RequireAuth(http.HandlerFunc(h.handleLogoutSSE)))
 	mux.Handle("GET /ui/admin/users", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminUsersPanelSSE)))
+	mux.Handle("GET /ui/admin/users/{id}/tokens", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminUserTokensSSE)))
 	mux.Handle("GET /ui/admin/tokens", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminTokensPanelSSE)))
 	mux.Handle("GET /ui/admin/stream", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminStreamSSE)))
 }
@@ -258,6 +261,30 @@ func buildUserViews(users []*database.User) []UserView {
 			Role:     u.Role,
 			Created:  u.CreatedAt.Format("2 Jan 2006"),
 		})
+	}
+	return views
+}
+
+// buildUserMap returns a userID-to-username lookup map.
+func (h *Handler) buildUserMap(ctx context.Context) map[string]string {
+	users, err := h.store.ListUsers(ctx)
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]string, len(users))
+	for _, u := range users {
+		m[u.ID] = u.GitHubUsername
+	}
+	return m
+}
+
+// buildAdminTokenViews enriches token views with usernames for admin display.
+func buildAdminTokenViews(tokens []*database.ProxyToken, userMap map[string]string) []TokenView {
+	views := buildTokenViews(tokens)
+	for i, t := range tokens {
+		if t.UserID != nil && userMap != nil {
+			views[i].Username = userMap[*t.UserID]
+		}
 	}
 	return views
 }
