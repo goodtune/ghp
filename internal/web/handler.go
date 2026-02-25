@@ -114,6 +114,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /ui/tokens", h.auth.RequireAuth(http.HandlerFunc(h.handleCreateTokenSSE)))
 	mux.Handle("POST /ui/agent-tokens", h.auth.RequireAdmin(http.HandlerFunc(h.handleCreateAgentTokenSSE)))
 	mux.Handle("POST /ui/logout", h.auth.RequireAuth(http.HandlerFunc(h.handleLogoutSSE)))
+	mux.Handle("GET /ui/admin/users", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminUsersPanelSSE)))
+	mux.Handle("GET /ui/admin/tokens", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminTokensPanelSSE)))
 	mux.Handle("GET /ui/admin/stream", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminStreamSSE)))
 }
 

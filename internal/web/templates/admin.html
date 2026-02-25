@@ -31,19 +31,17 @@
 
     <main class="container">
         <div class="tabs" role="tablist">
-            <button class="tab" role="tab" data-class:active="$tab === 'users'" data-on:click="$tab = 'users'">Users</button>
-            <button class="tab" role="tab" data-class:active="$tab === 'tokens'" data-on:click="$tab = 'tokens'">Tokens</button>
+            <button class="tab" role="tab" data-class:active="$tab === 'users'"
+                data-on:click="$tab = 'users'; @get('/ui/admin/users')">Users</button>
+            <button class="tab" role="tab" data-class:active="$tab === 'tokens'"
+                data-on:click="$tab = 'tokens'; @get('/ui/admin/tokens')">Tokens</button>
         </div>
 
         <!-- Users panel (SSE-loaded, hidden when tokens tab active) -->
-        <section data-show="$tab === 'users'" id="admin-users-panel" role="tabpanel">
-            <div class="loading">Loading...</div>
-        </section>
+        <div data-show="$tab === 'users'" id="admin-users-panel" role="tabpanel"></div>
 
-        <!-- Tokens panel (SSE-loaded, hidden when users tab active) -->
-        <section data-show="$tab === 'tokens'" id="admin-tokens-panel" role="tabpanel">
-            <div class="loading">Loading...</div>
-        </section>
+        <!-- Tokens panel (SSE-loaded on-demand, hidden when users tab active) -->
+        <div data-show="$tab === 'tokens'" id="admin-tokens-panel" role="tabpanel"></div>
 
         <!-- Establish persistent SSE connection for live admin data -->
         <div data-init="@get('/ui/admin/stream')"></div>

@@ -28,20 +28,14 @@ test.describe("Admin", () => {
 
   test("switches to tokens tab via SSE", async ({ page }, testInfo) => {
     await page.goto("/admin");
+    await expect(page.locator("#admin-users-panel table")).toBeVisible({ timeout: 5_000 });
 
-    // Wait for initial SSE load.
-    await expect(page.locator("#admin-users-panel table")).toBeVisible({
-      timeout: 5_000,
-    });
+    // Tokens panel should not have content initially.
+    await expect(page.locator("#admin-tokens-panel h2")).not.toBeVisible();
 
-    // Switch to Tokens tab.
+    // Switch to Tokens tab — fires SSE GET.
     await page.click('button.tab:has-text("Tokens")');
-
-    const tokensPanel = page.locator("#admin-tokens-panel");
-    await expect(tokensPanel).toBeVisible();
-
-    // The tokens panel should have the "All Tokens" header (from SSE).
-    await expect(tokensPanel.locator("h2")).toContainText("All Tokens");
+    await expect(page.locator("#admin-tokens-panel h2")).toContainText("All Tokens", { timeout: 5_000 });
 
     await testInfo.attach("admin-tokens", {
       body: await page.screenshot({ fullPage: true }),

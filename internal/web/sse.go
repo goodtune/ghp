@@ -535,12 +535,21 @@ func (h *Handler) handleCreateAgentTokenSSE(w http.ResponseWriter, r *http.Reque
 
 // ── SSE: admin panel stream ──────────────────────────────────────────
 
+func (h *Handler) handleAdminUsersPanelSSE(w http.ResponseWriter, r *http.Request) {
+	sse := datastar.NewSSE(w, r)
+	h.sendAdminUsersPanel(sse, r.Context())
+}
+
+func (h *Handler) handleAdminTokensPanelSSE(w http.ResponseWriter, r *http.Request) {
+	sse := datastar.NewSSE(w, r)
+	h.sendAdminTokensPanel(sse, r.Context())
+}
+
 func (h *Handler) handleAdminStreamSSE(w http.ResponseWriter, r *http.Request) {
 	sse := datastar.NewSSE(w, r)
 
-	// Send initial content for both panels.
+	// Send initial users panel only; tokens panel loads on-demand via tab click.
 	h.sendAdminUsersPanel(sse, r.Context())
-	h.sendAdminTokensPanel(sse, r.Context())
 
 	// Keep connection open — push token panel updates on change.
 	for {
