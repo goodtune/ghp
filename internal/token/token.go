@@ -59,7 +59,7 @@ type CreateRequest struct {
 	GitHubTokenID  string            // Required for proxy tokens.
 	InstallationID int64             // Required for agent tokens.
 	Repository     string            // Deprecated: use Repositories instead.
-	Repositories   []string          // Optional for proxy tokens, required for agent tokens.
+	Repositories   []string          // Optional — open-scoped (all repos) if empty.
 	Scopes         map[string]string // Optional — open-scoped if empty.
 	Duration       time.Duration
 	SessionID      string
@@ -109,9 +109,6 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 			repos = req.Repositories
 		}
 	case TokenTypeAgent:
-		if len(req.Repositories) == 0 {
-			return nil, fmt.Errorf("at least one repository is required for agent tokens")
-		}
 		if req.InstallationID == 0 {
 			return nil, fmt.Errorf("installation_id is required for agent tokens")
 		}
