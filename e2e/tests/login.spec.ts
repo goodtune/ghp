@@ -8,9 +8,9 @@ test.describe("Login page", () => {
     await expect(page).toHaveTitle("ghp — Login");
 
     // Check branding elements.
-    await expect(page.locator("h1")).toHaveText("ghp");
+    await expect(page.locator("h1")).toHaveText("GitHub Proxy");
     await expect(page.locator("p")).toContainText(
-      "GitHub Proxy for Coding Agents"
+      "Scoped tokens for coding agents"
     );
 
     await testInfo.attach("login-page", {
@@ -19,14 +19,13 @@ test.describe("Login page", () => {
     });
   });
 
-  test("has a Sign in with GitHub button linking to OAuth", async ({
-    page,
-  }) => {
+  test("has a sign in button", async ({ page }) => {
     await page.goto("/login");
 
-    const signInBtn = page.locator('a.btn:has-text("Sign in with GitHub")');
-    await expect(signInBtn).toBeVisible();
-    await expect(signInBtn).toHaveAttribute("href", "/auth/github");
+    // In dev mode, shows dev login form. In production, shows GitHub OAuth link.
+    const devLogin = page.locator('button:has-text("Sign in (dev)")');
+    const oauthLogin = page.locator('a:has-text("Sign in with GitHub")');
+    await expect(devLogin.or(oauthLogin)).toBeVisible();
   });
 
   test("unauthenticated root redirects to login", async ({ page }) => {

@@ -173,7 +173,7 @@ var fragmentTemplates = template.Must(template.New("fragments").Parse(`
 {{- end -}}
 
 {{- define "admin-users-panel" -}}
-<section id="admin-users-panel">
+<section id="admin-panel">
     {{ if .Users }}
     <div class="table-wrap">
         <table>
@@ -186,16 +186,7 @@ var fragmentTemplates = template.Must(template.New("fragments").Parse(`
             </thead>
             <tbody>
                 {{ range .Users }}
-                <tr id="user-row-{{ .ID }}" class="expandable-row" data-on:click="
-                    if ($expandedUser === '{{ .ID }}') {
-                        $expandedUser = '';
-                        document.getElementById('user-expansion-{{ .ID }}')?.remove();
-                    } else {
-                        if ($expandedUser) document.getElementById('user-expansion-' + $expandedUser)?.remove();
-                        $expandedUser = '{{ .ID }}';
-                        @get('/ui/admin/users/{{ .ID }}/tokens')
-                    }
-                ">
+                <tr class="expandable-row" data-on:click="@get('/admin/users/{{ .ID }}')">
                     <td>{{ .Username }}</td>
                     <td><span class="badge badge-{{ .Role }}">{{ .Role }}</span></td>
                     <td>{{ .Created }}</td>
@@ -207,6 +198,26 @@ var fragmentTemplates = template.Must(template.New("fragments").Parse(`
     {{ else }}
     <div class="empty-state">
         <p>No users found.</p>
+    </div>
+    {{ end }}
+</section>
+{{- end -}}
+
+{{- define "admin-user-detail" -}}
+<section id="admin-panel">
+    <div class="section-header">
+        <h2>{{ .Username }}</h2>
+        <button class="btn btn-ghost" data-on:click="@get('/admin')">Back to Users</button>
+    </div>
+    {{ if .Tokens }}
+    <div class="token-grid">
+        {{ range .Tokens }}
+        {{ template "token-card" . }}
+        {{ end }}
+    </div>
+    {{ else }}
+    <div class="empty-state">
+        <p>No tokens for this user.</p>
     </div>
     {{ end }}
 </section>
@@ -261,24 +272,9 @@ var fragmentTemplates = template.Must(template.New("fragments").Parse(`
 </div>
 {{- end -}}
 
-{{- define "user-tokens-expansion" -}}
-<tr id="user-expansion-{{ .UserID }}">
-    <td colspan="3" class="expansion-cell">
-        {{ if .Tokens }}
-        <div class="token-grid">
-            {{ range .Tokens }}
-            {{ template "token-card" . }}
-            {{ end }}
-        </div>
-        {{ else }}
-        <p class="expansion-empty">No tokens for this user.</p>
-        {{ end }}
-    </td>
-</tr>
-{{- end -}}
 
 {{- define "admin-tokens-panel" -}}
-<section id="admin-tokens-panel">
+<section id="admin-panel">
     <div class="section-header">
         <h2>All Tokens</h2>
         <button class="btn btn-primary" data-on:click="$agentOpen = true; $agentStep = 0">New Agent Token</button>
@@ -293,7 +289,7 @@ var fragmentTemplates = template.Must(template.New("fragments").Parse(`
         <input type="text" placeholder="User..." data-bind:filterUser value="{{ .FilterUser }}">
         <input type="text" placeholder="Repository..." data-bind:filterRepo value="{{ .FilterRepo }}">
         <input type="text" placeholder="Scope..." data-bind:filterScope value="{{ .FilterScope }}">
-        <button class="btn btn-ghost" data-on:click="$filterPage = 1; @get('/ui/admin/tokens')">Filter</button>
+        <button class="btn btn-ghost" data-on:click="$filterPage = 1; @get('/admin/tokens')">Filter</button>
     </div>
     {{ if .Tokens }}
     <div class="table-wrap">
@@ -326,11 +322,11 @@ var fragmentTemplates = template.Must(template.New("fragments").Parse(`
     {{ if gt .TotalPages 1 }}
     <div class="pagination">
         {{ if gt .Page 1 }}
-        <button class="btn btn-ghost" data-on:click="$filterPage = {{ .PrevPage }}; @get('/ui/admin/tokens')">Previous</button>
+        <button class="btn btn-ghost" data-on:click="$filterPage = {{ .PrevPage }}; @get('/admin/tokens')">Previous</button>
         {{ end }}
         <span class="pagination-info">Page {{ .Page }} of {{ .TotalPages }}</span>
         {{ if lt .Page .TotalPages }}
-        <button class="btn btn-ghost" data-on:click="$filterPage = {{ .NextPage }}; @get('/ui/admin/tokens')">Next</button>
+        <button class="btn btn-ghost" data-on:click="$filterPage = {{ .NextPage }}; @get('/admin/tokens')">Next</button>
         {{ end }}
     </div>
     {{ end }}
@@ -582,8 +578,15 @@ func (h *Handler) handleAdminUsersPanelSSE(w http.ResponseWriter, r *http.Reques
 	h.sendAdminUsersPanel(sse, r.Context())
 }
 
-func (h *Handler) handleAdminUserTokensSSE(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleAdminUserDetailSSE(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("id")
+
+	user, err := h.store.GetUserByID(r.Context(), userID)
+	if err != nil || user == nil {
+		h.logger.Error("failed to get user", "error", err, "user_id", userID)
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
 
 	tokens, err := h.store.ListProxyTokens(r.Context(), userID)
 	if err != nil {
@@ -592,18 +595,10 @@ func (h *Handler) handleAdminUserTokensSSE(w http.ResponseWriter, r *http.Reques
 	}
 
 	sse := datastar.NewSSE(w, r)
-	var buf bytes.Buffer
-	if err := fragmentTemplates.ExecuteTemplate(&buf, "user-tokens-expansion", map[string]interface{}{
-		"UserID": userID,
-		"Tokens": buildTokenViews(tokens),
-	}); err != nil {
-		h.logger.Error("fragment render failed", "error", err)
-		return
-	}
-	sse.PatchElements(buf.String(),
-		datastar.WithSelectorID("user-row-"+userID),
-		datastar.WithModeAfter(),
-	)
+	h.renderFragment(sse, "admin-user-detail", map[string]interface{}{
+		"Username": user.GitHubUsername,
+		"Tokens":   buildTokenViews(tokens),
+	})
 }
 
 type adminTokenFilterSignals struct {
@@ -677,21 +672,23 @@ func (h *Handler) handleAdminTokensPanelSSE(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *Handler) handleAdminStreamSSE(w http.ResponseWriter, r *http.Request) {
+	var signals struct {
+		Tab string `json:"tab"`
+	}
+	_ = datastar.ReadSignals(r, &signals)
+
 	sse := datastar.NewSSE(w, r)
 
-	// Send initial users panel only; tokens panel loads on-demand via tab click.
-	h.sendAdminUsersPanel(sse, r.Context())
-
-	// Keep connection open — push token panel updates on change.
-	for {
-		ch := h.tokenNotify.Wait()
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ch:
-			h.sendAdminTokensPanel(sse, r.Context())
-		}
+	// Send initial panel based on which tab is active.
+	switch signals.Tab {
+	case "tokens":
+		h.sendAdminTokensPanel(sse, r.Context())
+	default:
+		h.sendAdminUsersPanel(sse, r.Context())
 	}
+
+	// Keep connection open for future live update support.
+	<-r.Context().Done()
 }
 
 func (h *Handler) sendAdminUsersPanel(sse *datastar.ServerSentEventGenerator, ctx context.Context) {

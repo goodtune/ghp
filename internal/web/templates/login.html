@@ -44,15 +44,135 @@
             top: 1rem;
             right: 1rem;
         }
+        .login-form {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .login-form input,
+        .login-form select {
+            padding: 0.625rem 0.875rem;
+            font-size: 0.9rem;
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-md);
+            background: var(--color-bg);
+            color: var(--color-text);
+            transition: border-color 0.15s;
+        }
+        .login-form input:focus,
+        .login-form select:focus {
+            outline: none;
+            border-color: var(--color-accent);
+            box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 15%, transparent);
+        }
+        .login-form label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--color-text-secondary);
+            text-align: left;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .login-form .form-field {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        .login-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            width: 100%;
+        }
+        .login-btn svg {
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+        .login-divider {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            color: var(--color-text-secondary);
+            font-size: 0.8rem;
+            margin: 0.25rem 0;
+        }
+        .radio-group {
+            display: flex;
+            gap: 1rem;
+        }
+        .radio-option {
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+            font-size: 0.9rem;
+            font-weight: 400;
+            color: var(--color-text);
+            cursor: pointer;
+            text-transform: none;
+            letter-spacing: normal;
+        }
+        .radio-option input[type="radio"] {
+            accent-color: var(--color-accent);
+            width: 1rem;
+            height: 1rem;
+            margin: 0;
+        }
+        .login-divider::before,
+        .login-divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--color-border);
+        }
     </style>
 </head>
 <body>
+    {{ if .DevMode }}<div class="dev-banner">Development Mode — do not use in production</div>{{ end }}
     <button class="theme-toggle login-theme-toggle" id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
     <div class="login-card">
         <img src="/static/octobear.png" alt="ghp" class="login-logo">
-        <h1 class="login-title">ghp</h1>
-        <p class="login-subtitle">GitHub Proxy for Coding Agents</p>
-        <a href="/auth/github" class="btn btn-primary btn-lg" style="width:100%">Sign in with GitHub</a>
+        <h1 class="login-title">GitHub Proxy</h1>
+        <p class="login-subtitle">Scoped tokens for coding agents</p>
+        {{ if .DevMode }}
+        <form id="dev-login" class="login-form">
+            <div class="form-field">
+                <label for="dev-username">Username</label>
+                <input type="text" id="dev-username" placeholder="testuser" value="testuser">
+            </div>
+            <div class="form-field">
+                <label>Role</label>
+                <div class="radio-group">
+                    <label class="radio-option"><input type="radio" name="dev-role" value="user" checked> User</label>
+                    <label class="radio-option"><input type="radio" name="dev-role" value="admin"> Admin</label>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg login-btn">
+                <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                Sign in (dev)
+            </button>
+        </form>
+        <script>
+            document.getElementById('dev-login').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const resp = await fetch('/auth/test-login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        username: document.getElementById('dev-username').value,
+                        role: document.querySelector('input[name="dev-role"]:checked').value,
+                    }),
+                });
+                if (resp.ok) window.location.href = '/';
+            });
+        </script>
+        {{ else }}
+        <a href="/auth/github" class="btn btn-primary btn-lg login-btn">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            Sign in with GitHub
+        </a>
+        {{ end }}
     </div>
 </body>
 </html>

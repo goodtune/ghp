@@ -13,7 +13,7 @@ test.describe("Admin", () => {
     await expect(page.locator('header a.nav-link.active')).toHaveText("Admin");
 
     // Users tab is active by default.
-    const usersPanel = page.locator("#admin-users-panel");
+    const usersPanel = page.locator("#admin-panel");
     await expect(usersPanel).toBeVisible();
 
     // Wait for SSE to deliver the users table.
@@ -28,14 +28,14 @@ test.describe("Admin", () => {
 
   test("switches to tokens tab via SSE", async ({ page }, testInfo) => {
     await page.goto("/admin");
-    await expect(page.locator("#admin-users-panel table")).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator("#admin-panel table")).toBeVisible({ timeout: 5_000 });
 
     // Tokens panel should not have content initially.
-    await expect(page.locator("#admin-tokens-panel h2")).not.toBeVisible();
+    await expect(page.locator("#admin-panel h2")).not.toBeVisible();
 
     // Switch to Tokens tab — fires SSE GET.
     await page.click('button.tab:has-text("Tokens")');
-    await expect(page.locator("#admin-tokens-panel h2")).toContainText("All Tokens", { timeout: 5_000 });
+    await expect(page.locator("#admin-panel h2")).toContainText("All Tokens", { timeout: 5_000 });
 
     await testInfo.attach("admin-tokens", {
       body: await page.screenshot({ fullPage: true }),
@@ -45,27 +45,39 @@ test.describe("Admin", () => {
 
   test("filters tokens by status", async ({ page }) => {
     await page.goto("/admin");
-    await expect(page.locator("#admin-users-panel table")).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator("#admin-panel table")).toBeVisible({ timeout: 5_000 });
 
     // Switch to tokens tab.
     await page.click('button.tab:has-text("Tokens")');
-    await expect(page.locator("#admin-tokens-panel h2")).toContainText("All Tokens", { timeout: 5_000 });
+    await expect(page.locator("#admin-panel h2")).toContainText("All Tokens", { timeout: 5_000 });
 
     // The filter bar should be visible.
     await expect(page.locator(".filter-bar")).toBeVisible();
   });
 
-  test("clicking a user row expands to show their tokens", async ({ page }) => {
+  test("clicking a user row shows their token detail view", async ({ page }) => {
     await page.goto("/admin");
-    await expect(page.locator("#admin-users-panel table")).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator("#admin-panel table")).toBeVisible({ timeout: 5_000 });
 
     // Click on the first user row.
-    const userRow = page.locator('#admin-users-panel tr.expandable-row').first();
-    await userRow.click();
+    await page.locator('#admin-panel tr.expandable-row').first().click();
 
-    // Expansion row should appear with token cards or empty message.
-    const expansion = page.locator('[id^="user-expansion-"]');
-    await expect(expansion).toBeVisible({ timeout: 5_000 });
+    // Panel replaces with user detail view.
+    await expect(page.locator('#admin-panel .section-header h2')).toBeVisible({ timeout: 5_000 });
+
+    // Back button returns to users table.
+    await page.locator('#admin-panel button:has-text("Back to Users")').click();
+    await expect(page.locator("#admin-panel table")).toBeVisible({ timeout: 5_000 });
+  });
+
+  test("direct navigation to /admin/tokens loads tokens view", async ({ page }) => {
+    await page.goto("/admin/tokens");
+
+    // Tokens panel loads via SSE.
+    await expect(page.locator("#admin-panel h2")).toContainText("All Tokens", { timeout: 5_000 });
+
+    // Tokens tab is active.
+    await expect(page.locator('button.tab:has-text("Tokens")')).toHaveClass(/active/);
   });
 
   test("live updates tokens panel when token is created", async ({
@@ -78,13 +90,13 @@ test.describe("Admin", () => {
 
     // Wait for SSE to load.
     await expect(
-      adminPage.locator("#admin-users-panel table")
+      adminPage.locator("#admin-panel table")
     ).toBeVisible({ timeout: 5_000 });
 
     // Switch to tokens tab to verify it loaded.
     await adminPage.click('button.tab:has-text("Tokens")');
     await expect(
-      adminPage.locator("#admin-tokens-panel h2")
+      adminPage.locator("#admin-panel h2")
     ).toContainText("All Tokens");
 
     // Open dashboard in a second page (same context = same session).
@@ -132,7 +144,7 @@ test.describe("Admin", () => {
 
     // The newly created token should appear in the admin tokens table.
     await expect(
-      adminPage.locator("#admin-tokens-panel")
+      adminPage.locator("#admin-panel")
     ).toContainText("goodtune/live-update-test", { timeout: 10_000 });
   });
 });

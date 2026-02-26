@@ -102,13 +102,18 @@ func NewHandler(ah *auth.Handler, store database.Store, ts *token.Service, defau
 
 // RegisterRoutes adds web UI routes to the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	// Page routes (full HTML).
+	// Static assets.
+	mux.Handle("GET /static/", http.FileServerFS(staticFS))
+
+	// Page routes — serve full HTML or SSE fragment depending on request type.
 	mux.HandleFunc("GET /{$}", h.handleIndex)
 	mux.HandleFunc("GET /login", h.handleLogin)
 	mux.HandleFunc("GET /admin", h.handleAdmin)
-	mux.Handle("GET /static/", http.FileServerFS(staticFS))
+	mux.HandleFunc("GET /admin/tokens", h.handleAdminTokens)
+	mux.HandleFunc("GET /admin/users/{id}", h.handleAdminUserDetail)
+	mux.Handle("GET /admin/stream", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminStreamSSE)))
 
-	// SSE routes (Datastar fragments).
+	// SSE action routes.
 	mux.Handle("GET /ui/dashboard/stream", h.auth.RequireAuth(http.HandlerFunc(h.handleDashboardStreamSSE)))
 	mux.Handle("GET /ui/stepper/{step}", h.auth.RequireAuth(http.HandlerFunc(h.handleStepperSSE)))
 	mux.Handle("POST /ui/stepper/{step}", h.auth.RequireAuth(http.HandlerFunc(h.handleStepperSSE)))
@@ -116,10 +121,34 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /ui/tokens", h.auth.RequireAuth(http.HandlerFunc(h.handleCreateTokenSSE)))
 	mux.Handle("POST /ui/agent-tokens", h.auth.RequireAdmin(http.HandlerFunc(h.handleCreateAgentTokenSSE)))
 	mux.Handle("POST /ui/logout", h.auth.RequireAuth(http.HandlerFunc(h.handleLogoutSSE)))
-	mux.Handle("GET /ui/admin/users", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminUsersPanelSSE)))
-	mux.Handle("GET /ui/admin/users/{id}/tokens", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminUserTokensSSE)))
-	mux.Handle("GET /ui/admin/tokens", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminTokensPanelSSE)))
-	mux.Handle("GET /ui/admin/stream", h.auth.RequireAdmin(http.HandlerFunc(h.handleAdminStreamSSE)))
+}
+
+// isDatastarRequest returns true if the request was made by Datastar (SSE fragment expected).
+func isDatastarRequest(r *http.Request) bool {
+	return r.Header.Get("Datastar-Request") == "true"
+}
+
+// requireAdminSession checks auth and returns the session, or handles the error response.
+// Returns nil if the response has already been written (redirect or error).
+func (h *Handler) requireAdminSession(w http.ResponseWriter, r *http.Request) *auth.Session {
+	session := h.auth.GetSession(r)
+	if session == nil {
+		if isDatastarRequest(r) {
+			http.Error(w, "Authentication required", http.StatusUnauthorized)
+		} else {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+		}
+		return nil
+	}
+	if session.Role != "admin" {
+		if isDatastarRequest(r) {
+			http.Error(w, "Admin access required", http.StatusForbidden)
+		} else {
+			http.Error(w, "Admin access required", http.StatusForbidden)
+		}
+		return nil
+	}
+	return session
 }
 
 func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -150,27 +179,54 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	session := h.auth.GetSession(r)
+	session := h.requireAdminSession(w, r)
 	if session == nil {
-		if h.devMode {
-			if err := h.templates.ExecuteTemplate(w, "admin-login.html", nil); err != nil {
-				h.logger.Error("template execution failed", "error", err)
-				http.Error(w, "Internal error", http.StatusInternalServerError)
-			}
-			return
-		}
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	if session.Role != "admin" {
-		http.Error(w, "Admin access required", http.StatusForbidden)
 		return
 	}
 
+	if isDatastarRequest(r) {
+		h.handleAdminUsersPanelSSE(w, r)
+		return
+	}
+
+	h.renderAdminPage(w, session, "users")
+}
+
+func (h *Handler) handleAdminTokens(w http.ResponseWriter, r *http.Request) {
+	session := h.requireAdminSession(w, r)
+	if session == nil {
+		return
+	}
+
+	if isDatastarRequest(r) {
+		h.handleAdminTokensPanelSSE(w, r)
+		return
+	}
+
+	h.renderAdminPage(w, session, "tokens")
+}
+
+func (h *Handler) handleAdminUserDetail(w http.ResponseWriter, r *http.Request) {
+	session := h.requireAdminSession(w, r)
+	if session == nil {
+		return
+	}
+
+	if isDatastarRequest(r) {
+		h.handleAdminUserDetailSSE(w, r)
+		return
+	}
+
+	h.renderAdminPage(w, session, "users")
+}
+
+func (h *Handler) renderAdminPage(w http.ResponseWriter, session *auth.Session, tab string) {
 	data := map[string]interface{}{
 		"Username": session.Username,
 		"Role":     session.Role,
 		"Page":     "admin",
+		"Tab":      tab,
+		"DevMode":  h.devMode,
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "admin.html", data); err != nil {
@@ -186,7 +242,9 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.templates.ExecuteTemplate(w, "login.html", nil); err != nil {
+	if err := h.templates.ExecuteTemplate(w, "login.html", map[string]interface{}{
+		"DevMode": h.devMode,
+	}); err != nil {
 		h.logger.Error("template execution failed", "error", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 	}
