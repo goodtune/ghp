@@ -32,6 +32,9 @@ const (
 
 	// maxRequestBodySize is the maximum allowed request body size for API endpoints.
 	maxRequestBodySize = 1 << 20 // 1 MB
+	// maxTokenResponseSize is the maximum number of bytes read from GitHub's
+	// OAuth token and user-info endpoints. This guards against unbounded reads.
+	maxTokenResponseSize = 64 * 1024 // 64 KB
 	// maxSessions is the maximum number of concurrent user sessions held in memory.
 	maxSessions = 10_000
 	// maxStates is the maximum number of in-flight OAuth state tokens.
@@ -42,6 +45,9 @@ const (
 	maxBrokerStates = 1_000
 	// brokerStateTTL is how long a broker OAuth state token remains valid.
 	brokerStateTTL = 10 * time.Minute
+	// authHTTPTimeout is the timeout for outbound HTTP requests made by the
+	// auth handler (OAuth token exchange and GitHub user-info calls).
+	authHTTPTimeout = 30 * time.Second
 )
 
 // Session represents an authenticated user session.
@@ -80,6 +86,10 @@ type Handler struct {
 	githubLimiter    *IPRateLimiter // GET  /auth/github
 	authorizeLimiter *IPRateLimiter // GET  /auth/authorize
 
+	// httpClient is used for all outbound OAuth and GitHub API requests.
+	// It has a finite timeout to prevent goroutine/connection leaks.
+	httpClient *http.Client
+
 	// Overridable base URLs for GitHub endpoints (used in tests).
 	githubBaseURL    string // defaults to "https://github.com"
 	githubAPIBaseURL string // defaults to "https://api.github.com"
@@ -98,6 +108,7 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 		loginLimiter:     NewIPRateLimiter(30, time.Minute, "/auth/test-login", logger),
 		githubLimiter:    NewIPRateLimiter(10, time.Minute, "/auth/github", logger),
 		authorizeLimiter: NewIPRateLimiter(10, time.Minute, "/auth/authorize", logger),
+		httpClient:       &http.Client{Timeout: authHTTPTimeout},
 	}
 	if cfg.Auth.JWTPrivateKey != "" || cfg.Auth.JWTPrivateKeyFile != "" {
 		var pemData string
@@ -250,16 +261,19 @@ func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	state := generateState()
 	h.states.Add(state, struct{}{})
 
-	url := fmt.Sprintf("%s/login/oauth/authorize?client_id=%s&state=%s",
-		h.getGitHubBaseURL(), h.cfg.GitHub.ClientID, state)
+	params := url.Values{}
+	params.Set("client_id", h.cfg.GitHub.ClientID)
+	params.Set("redirect_uri", h.mainCallbackURL(r))
+	params.Set("state", state)
+	authURL := h.getGitHubBaseURL() + "/login/oauth/authorize?" + params.Encode()
 
 	// If the request accepts JSON (CLI), return the URL; otherwise redirect.
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"url": url})
+		json.NewEncoder(w).Encode(map[string]string{"url": authURL})
 		return
 	}
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+	http.Redirect(w, r, authURL, http.StatusTemporaryRedirect)
 }
 
 func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +316,15 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Exchange code for access token.
-	accessToken, refreshToken, expiresIn, err := h.exchangeCode(code, "")
+	// For the normal OAuth flow, pass the same redirect_uri that was sent in
+	// the authorization request so GitHub can verify the two values match.
+	// For the app installation flow (setup_action is set), the redirect_uri
+	// was not sent in the authorization request so we omit it here.
+	redirectURI := ""
+	if setupAction == "" {
+		redirectURI = h.mainCallbackURL(r)
+	}
+	accessToken, refreshToken, expiresIn, err := h.exchangeCode(code, redirectURI)
 	if err != nil {
 		h.logger.Error("OAuth code exchange failed", "error", err)
 		http.Error(w, "Authentication failed", http.StatusInternalServerError)
@@ -540,23 +562,35 @@ func (h *Handler) exchangeCode(code string, redirectURI string) (accessToken, re
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return "", "", 0, err
 	}
 	defer resp.Body.Close()
 
-	var result struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-		Error        string `json:"error"`
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseSize))
+		return "", "", 0, fmt.Errorf("GitHub token endpoint returned %d: %s", resp.StatusCode, body)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+
+	var result struct {
+		AccessToken      string `json:"access_token"`
+		RefreshToken     string `json:"refresh_token"`
+		ExpiresIn        int    `json:"expires_in"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxTokenResponseSize)).Decode(&result); err != nil {
 		return "", "", 0, err
 	}
 	if result.Error != "" {
+		if result.ErrorDescription != "" {
+			return "", "", 0, fmt.Errorf("OAuth error: %s: %s", result.Error, result.ErrorDescription)
+		}
 		return "", "", 0, fmt.Errorf("OAuth error: %s", result.Error)
+	}
+	if result.AccessToken == "" {
+		return "", "", 0, errors.New("OAuth response contained no access token")
 	}
 
 	if result.ExpiresIn == 0 {
@@ -574,19 +608,19 @@ func (h *Handler) getGitHubUser(accessToken string) (*githubUser, error) {
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseSize))
 		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, body)
 	}
 
 	var user githubUser
-	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxTokenResponseSize)).Decode(&user); err != nil {
 		return nil, err
 	}
 	return &user, nil
@@ -616,4 +650,18 @@ func (h *Handler) getGitHubAPIBaseURL() string {
 		return h.githubAPIBaseURL
 	}
 	return "https://api.github.com"
+}
+
+// mainCallbackURL returns the absolute URL of the GitHub OAuth callback endpoint
+// for the main login flow. It uses the configured BaseURL if available, otherwise
+// derives the URL from the incoming request.
+func (h *Handler) mainCallbackURL(r *http.Request) string {
+	if h.cfg.Server.BaseURL != "" {
+		return strings.TrimRight(h.cfg.Server.BaseURL, "/") + "/auth/github/callback"
+	}
+	scheme := "https"
+	if r.TLS == nil {
+		scheme = "http"
+	}
+	return fmt.Sprintf("%s://%s/auth/github/callback", scheme, r.Host)
 }

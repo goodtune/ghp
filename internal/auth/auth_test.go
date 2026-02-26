@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -190,6 +191,170 @@ func TestExchangeCode_URLEncoding(t *testing.T) {
 				if _, ok := parsed["redirect_uri"]; ok {
 					t.Error("redirect_uri should not be present when empty")
 				}
+			}
+		})
+	}
+}
+
+// TestExchangeCode_HTTPError verifies that a non-200 response from GitHub's
+// token endpoint is returned as an error rather than being silently ignored.
+func TestExchangeCode_HTTPError(t *testing.T) {
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"bad_verification_code"}`))
+	}))
+	defer ghServer.Close()
+
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{ClientID: "id", ClientSecret: "secret"},
+	}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+	h.githubBaseURL = ghServer.URL
+
+	_, _, _, err := h.exchangeCode("bad-code", "")
+	if err == nil {
+		t.Fatal("expected error for HTTP 400, got nil")
+	}
+}
+
+// TestExchangeCode_EmptyAccessToken verifies that an OAuth response with an
+// empty access_token is treated as an error.
+func TestExchangeCode_EmptyAccessToken(t *testing.T) {
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "",
+			"expires_in":   28800,
+		})
+	}))
+	defer ghServer.Close()
+
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{ClientID: "id", ClientSecret: "secret"},
+	}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+	h.githubBaseURL = ghServer.URL
+
+	_, _, _, err := h.exchangeCode("code", "")
+	if err == nil {
+		t.Fatal("expected error for empty access token, got nil")
+	}
+}
+
+// TestExchangeCode_ErrorDescription verifies that when GitHub returns both an
+// error code and an error_description, both are included in the returned error.
+func TestExchangeCode_ErrorDescription(t *testing.T) {
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":             "bad_verification_code",
+			"error_description": "The code passed is incorrect or expired.",
+		})
+	}))
+	defer ghServer.Close()
+
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{ClientID: "id", ClientSecret: "secret"},
+	}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+	h.githubBaseURL = ghServer.URL
+
+	_, _, _, err := h.exchangeCode("expired-code", "")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "bad_verification_code") {
+		t.Errorf("error should contain error code, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "incorrect or expired") {
+		t.Errorf("error should contain error_description, got: %v", err)
+	}
+}
+
+// TestHandleGitHubLogin_IncludesRedirectURI verifies that the GitHub
+// authorization URL constructed by handleGitHubLogin includes an explicit
+// redirect_uri parameter pointing to the callback endpoint.
+func TestHandleGitHubLogin_IncludesRedirectURI(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{ClientID: "test-client-id"},
+		Server: config.ServerConfig{BaseURL: "https://proxy.example.com"},
+	}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+
+	req := httptest.NewRequest("GET", "/auth/github", nil)
+	w := httptest.NewRecorder()
+	h.handleGitHubLogin(w, req)
+
+	if w.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected 307, got %d", w.Code)
+	}
+
+	loc, err := url.Parse(w.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("invalid Location header: %v", err)
+	}
+
+	redirectURI := loc.Query().Get("redirect_uri")
+	if redirectURI == "" {
+		t.Fatal("expected redirect_uri parameter in authorization URL")
+	}
+	const wantRedirectURI = "https://proxy.example.com/auth/github/callback"
+	if redirectURI != wantRedirectURI {
+		t.Errorf("redirect_uri = %q, want %q", redirectURI, wantRedirectURI)
+	}
+}
+
+// TestMainCallbackURL verifies that mainCallbackURL correctly derives the
+// callback URL from the configured BaseURL or from the incoming request.
+func TestMainCallbackURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		reqHost string
+		tls     bool
+		want    string
+	}{
+		{
+			name:    "with base URL",
+			baseURL: "https://proxy.example.com",
+			want:    "https://proxy.example.com/auth/github/callback",
+		},
+		{
+			name:    "base URL with trailing slash",
+			baseURL: "https://proxy.example.com/",
+			want:    "https://proxy.example.com/auth/github/callback",
+		},
+		{
+			name:    "no base URL, HTTPS",
+			reqHost: "proxy.example.com",
+			tls:     true,
+			want:    "https://proxy.example.com/auth/github/callback",
+		},
+		{
+			name:    "no base URL, HTTP",
+			reqHost: "proxy.example.com:8080",
+			want:    "http://proxy.example.com:8080/auth/github/callback",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Server: config.ServerConfig{BaseURL: tt.baseURL},
+			}
+			h := NewHandler(cfg, nil, nil, slog.Default())
+
+			req := httptest.NewRequest("GET", "/", nil)
+			if tt.reqHost != "" {
+				req.Host = tt.reqHost
+			}
+			if tt.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+
+			got := h.mainCallbackURL(req)
+			if got != tt.want {
+				t.Errorf("mainCallbackURL() = %q, want %q", got, tt.want)
 			}
 		})
 	}
