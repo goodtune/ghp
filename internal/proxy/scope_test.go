@@ -11,10 +11,10 @@ func TestEndpointScope(t *testing.T) {
 		wantPerm   string
 		wantLevel  string
 	}{
-		{"GET", "/repos/org/repo/pulls", "pulls", "read"},
-		{"POST", "/repos/org/repo/pulls", "pulls", "write"},
-		{"GET", "/repos/org/repo/pulls/123", "pulls", "read"},
-		{"PATCH", "/repos/org/repo/pulls/123", "pulls", "write"},
+		{"GET", "/repos/org/repo/pulls", "pull_requests", "read"},
+		{"POST", "/repos/org/repo/pulls", "pull_requests", "write"},
+		{"GET", "/repos/org/repo/pulls/123", "pull_requests", "read"},
+		{"PATCH", "/repos/org/repo/pulls/123", "pull_requests", "write"},
 		{"GET", "/repos/org/repo/contents/README.md", "contents", "read"},
 		{"PUT", "/repos/org/repo/contents/README.md", "contents", "write"},
 		{"GET", "/repos/org/repo/issues", "issues", "read"},
@@ -25,8 +25,8 @@ func TestEndpointScope(t *testing.T) {
 		{"GET", "/repos/org/repo/branches", "contents", "read"},
 		{"GET", "/repos/org/repo", "metadata", "read"},
 		{"GET", "/user", "metadata", "read"},
-		{"GET", "/repos/org/repo/pulls/1/files", "pulls", "read"},
-		{"POST", "/repos/org/repo/pulls/1/reviews", "pulls", "write"},
+		{"GET", "/repos/org/repo/pulls/1/files", "pull_requests", "read"},
+		{"POST", "/repos/org/repo/pulls/1/reviews", "pull_requests", "write"},
 		// Unknown endpoint.
 		{"GET", "/unknown/path", "", ""},
 	}
