@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"math"
 	"net/http"
@@ -100,9 +101,14 @@ func (h *Handler) renderFragment(name string, data interface{}) (string, error) 
 	return buf.String(), nil
 }
 
-// StaticFS returns the embedded static file system for use by the server.
-func StaticFS() embed.FS {
-	return staticFS
+// StaticFS returns the embedded static file system, rooted at the "static"
+// subdirectory so files can be served directly without path prefix.
+func StaticFS() fs.FS {
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		panic(fmt.Sprintf("fs.Sub(staticFS, \"static\"): %v", err))
+	}
+	return sub
 }
 
 // requireAuthWeb is middleware that redirects unauthenticated users to the login page.
