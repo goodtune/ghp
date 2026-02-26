@@ -1,0 +1,18 @@
+{{define "header"}}
+<header class="header">
+    <div class="header-left">
+        <img src="/static/mascot.png" alt="GitHub Proxy" class="header-logo">
+        <span class="header-title">GitHub Proxy</span>
+    </div>
+    <nav class="header-nav">
+        <a href="/dashboard/" class="header-link {{if eq .ActiveNav "dashboard"}}active{{end}}">Dashboard</a>
+        {{if eq .Role "admin"}}
+        <a href="/admin/" class="header-link {{if eq .ActiveNav "admin"}}active{{end}}">Admin</a>
+        {{end}}
+    </nav>
+    <div class="header-right">
+        <img src="https://github.com/{{.Username}}.png?size=32" alt="{{.Username}}" class="header-avatar">
+        <a href="/logout/" class="header-link">Sign out</a>
+    </div>
+</header>
+{{end}}

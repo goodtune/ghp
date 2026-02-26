@@ -1,0 +1,27 @@
+{{define "base"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{block "title" .}}GitHub Proxy{{end}}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0/bundles/datastar.js"></script>
+</head>
+<body>
+    {{if .DevMode}}
+    <div class="dev-banner">Development Mode — do not use in production</div>
+    {{end}}
+    {{if .ShowHeader}}
+    {{template "header" .}}
+    {{end}}
+    <main class="content">
+        {{block "content" .}}{{end}}
+    </main>
+    <div id="modal-overlay" class="modal-overlay" data-show="$modalOpen">
+        <div id="modal-content" class="modal-card" data-on-click.stop="">
+        </div>
+    </div>
+</body>
+</html>
+{{end}}
