@@ -70,11 +70,13 @@ func (h *Handler) initTemplates() {
 
 	// Fragment templates (for SSE partial updates — wizard steps, confirm dialogs)
 	h.fragTemplates = template.Must(template.ParseFS(templateFS,
+		"templates/token_card.html",
 		"templates/token_wizard_step1.html",
 		"templates/token_wizard_step2.html",
 		"templates/token_wizard_step3.html",
 		"templates/token_wizard_step4.html",
 		"templates/token_created.html",
+		"templates/revoke_confirm.html",
 	))
 }
 
@@ -126,6 +128,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Get("/dashboard/", h.handleDashboard)
 		r.Get("/dashboard/token/add/", h.handleWizardGet)
 		r.Post("/dashboard/token/add/", h.handleWizardPost)
+		r.Get("/dashboard/token/{id}/revoke/", h.handleRevokeConfirm)
+		r.Post("/dashboard/token/{id}/revoke/", h.handleRevoke)
 	})
 }
 
@@ -387,6 +391,85 @@ func (h *Handler) createTokenFromWizard(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	sse.PatchElements(html, datastar.WithSelectorID("modal-content"), datastar.WithModeInner())
+}
+
+// --- Revoke Handlers ---
+
+func (h *Handler) handleRevokeConfirm(w http.ResponseWriter, r *http.Request) {
+	tokenID := chi.URLParam(r, "id")
+	tok, err := h.store.GetProxyTokenByID(r.Context(), tokenID)
+	if err != nil {
+		h.logger.Error("failed to get token", "error", err)
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify ownership
+	session := auth.SessionFromContext(r.Context())
+	if tok.UserID == nil || *tok.UserID != session.UserID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	cards := prepareTokenCards([]*database.ProxyToken{tok})
+	data := map[string]interface{}{
+		"ID":          tok.ID,
+		"RepoDisplay": cards[0].RepoDisplay,
+		"TokenPrefix": tok.TokenPrefix,
+	}
+
+	sse := datastar.NewSSE(w, r)
+	html, err := h.renderFragment("revoke_confirm", data)
+	if err != nil {
+		h.logger.Error("render revoke_confirm failed", "error", err)
+		return
+	}
+	sse.PatchSignals([]byte(`{"modalOpen":true}`))
+	sse.PatchElements(html, datastar.WithSelectorID("modal-content"), datastar.WithModeInner())
+}
+
+func (h *Handler) handleRevoke(w http.ResponseWriter, r *http.Request) {
+	tokenID := chi.URLParam(r, "id")
+	tok, err := h.store.GetProxyTokenByID(r.Context(), tokenID)
+	if err != nil {
+		h.logger.Error("failed to get token", "error", err)
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify ownership
+	session := auth.SessionFromContext(r.Context())
+	if tok.UserID == nil || *tok.UserID != session.UserID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	if err := h.store.RevokeProxyToken(r.Context(), tokenID); err != nil {
+		h.logger.Error("failed to revoke token", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Re-fetch to get updated state
+	tok, err = h.store.GetProxyTokenByID(r.Context(), tokenID)
+	if err != nil {
+		h.logger.Error("failed to re-fetch token", "error", err)
+		return
+	}
+
+	cards := prepareTokenCards([]*database.ProxyToken{tok})
+
+	sse := datastar.NewSSE(w, r)
+	sse.PatchSignals([]byte(`{"modalOpen":false}`))
+
+	if len(cards) > 0 {
+		html, err := h.renderFragment("token_card", cards[0])
+		if err != nil {
+			h.logger.Error("render token_card failed", "error", err)
+			return
+		}
+		sse.PatchElements(html, datastar.WithSelectorID("token-"+tokenID))
+	}
 }
 
 // --- Token Card Helpers ---
