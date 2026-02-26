@@ -6,7 +6,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -312,5 +314,207 @@ func TestSmoke_AdminForbiddenForNonAdmin(t *testing.T) {
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-admin, got %d", resp.StatusCode)
+	}
+}
+
+// seedGitHubToken creates a dummy GitHub token for the user so the wizard
+// can call store.GetGitHubToken during token creation.
+func (h *testHarness) seedGitHubToken(t *testing.T, userID string) {
+	t.Helper()
+	encDummy, _ := h.enc.Encrypt("gho_test_dummy_token")
+	gt := &database.GitHubToken{
+		UserID:                userID,
+		AccessToken:           encDummy,
+		RefreshToken:          encDummy,
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+		Scopes:                "",
+	}
+	if err := h.store.UpsertGitHubToken(context.Background(), gt); err != nil {
+		t.Fatalf("seeding github token: %v", err)
+	}
+}
+
+// doSSERequest performs a request with SSE Accept header, a cookie jar for
+// wizard state, and optional form body. Returns the response body as a string.
+func (h *testHarness) doSSERequest(t *testing.T, srv *httptest.Server, jar http.CookieJar, method, path string, formData url.Values) string {
+	t.Helper()
+
+	client := srv.Client()
+	client.Jar = jar
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	var body io.Reader
+	if formData != nil {
+		body = strings.NewReader(formData.Encode())
+	}
+
+	req, err := http.NewRequest(method, srv.URL+path, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	if formData != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%s %s: expected 200, got %d", method, path, resp.StatusCode)
+	}
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestSmoke_WizardFullFlow(t *testing.T) {
+	h := newTestHarness(t)
+
+	userID := h.seedUser(t, "wizuser", "user", 5001)
+	h.seedGitHubToken(t, userID)
+	sessionCookie := h.createSession(t, userID, "wizuser", "user")
+
+	srv := httptest.NewServer(h.router)
+	t.Cleanup(srv.Close)
+
+	// Cookie jar to track both session and wizard cookies.
+	jar, _ := cookiejar.New(nil)
+	srvURL, _ := url.Parse(srv.URL)
+	jar.SetCookies(srvURL, []*http.Cookie{sessionCookie})
+
+	// GET wizard — opens modal with step 1.
+	body := h.doSSERequest(t, srv, jar, "GET", "/dashboard/token/add/", nil)
+	if !strings.Contains(body, "Select Repository") {
+		t.Fatal("wizard GET should return step 1 with 'Select Repository'")
+	}
+	if !strings.Contains(body, "modalOpen") {
+		t.Fatal("wizard GET should open the modal")
+	}
+
+	// POST step 1 → step 2: submit repository.
+	body = h.doSSERequest(t, srv, jar, "POST", "/dashboard/token/add/", url.Values{
+		"repository": {"owner/testrepo"},
+	})
+	if !strings.Contains(body, "Set Permissions") {
+		t.Fatal("step 1→2 should return step 2 with 'Set Permissions'")
+	}
+
+	// POST step 2 → step 3: submit permissions.
+	body = h.doSSERequest(t, srv, jar, "POST", "/dashboard/token/add/", url.Values{
+		"step":          {"2"},
+		"perm_contents": {"read"},
+	})
+	if !strings.Contains(body, "Duration") {
+		t.Fatal("step 2→3 should return step 3 with 'Duration'")
+	}
+
+	// POST step 3 → step 4: submit duration.
+	body = h.doSSERequest(t, srv, jar, "POST", "/dashboard/token/add/", url.Values{
+		"step":     {"3"},
+		"duration": {"1h"},
+	})
+	if !strings.Contains(body, "Confirm") {
+		t.Fatal("step 3→4 should return step 4 with 'Confirm'")
+	}
+	if !strings.Contains(body, "owner/testrepo") {
+		t.Fatal("step 4 summary should show the repository")
+	}
+	if !strings.Contains(body, "contents:read") {
+		t.Fatal("step 4 summary should show the permissions")
+	}
+
+	// POST step 4: create token.
+	body = h.doSSERequest(t, srv, jar, "POST", "/dashboard/token/add/", url.Values{
+		"step": {"4"},
+	})
+	if !strings.Contains(body, "ghx_") {
+		t.Fatal("step 4 should create a token starting with 'ghx_'")
+	}
+	if !strings.Contains(body, "token-display") {
+		t.Fatal("step 4 should show the token display")
+	}
+	if !strings.Contains(body, "only be shown once") {
+		t.Fatal("step 4 should warn that token is shown once")
+	}
+}
+
+func TestSmoke_AdminWizardUsesCorrectPaths(t *testing.T) {
+	h := newTestHarness(t)
+
+	adminID := h.seedUser(t, "admwiz", "admin", 5002)
+	h.seedGitHubToken(t, adminID)
+	sessionCookie := h.createSession(t, adminID, "admwiz", "admin")
+
+	srv := httptest.NewServer(h.router)
+	t.Cleanup(srv.Close)
+
+	jar, _ := cookiejar.New(nil)
+	srvURL, _ := url.Parse(srv.URL)
+	jar.SetCookies(srvURL, []*http.Cookie{sessionCookie})
+
+	// GET admin wizard — should use /admin/tokens/add/ in form action.
+	body := h.doSSERequest(t, srv, jar, "GET", "/admin/tokens/add/", nil)
+	if !strings.Contains(body, "Select Repository") {
+		t.Fatal("admin wizard GET should return step 1")
+	}
+	// SSE output JSON-escapes slashes in Datastar attributes.
+	if !strings.Contains(body, `admin`) || !strings.Contains(body, `tokens`) {
+		t.Fatal("admin wizard form action should reference admin/tokens path")
+	}
+	if strings.Contains(body, `dashboard`) {
+		t.Fatal("admin wizard form action should NOT reference dashboard path")
+	}
+
+	// POST step 1 — should still use admin path.
+	body = h.doSSERequest(t, srv, jar, "POST", "/admin/tokens/add/", url.Values{
+		"repository": {"admin/repo"},
+	})
+	if !strings.Contains(body, "Set Permissions") {
+		t.Fatal("admin wizard step 1→2 should return step 2")
+	}
+	if strings.Contains(body, `dashboard`) {
+		t.Fatal("admin wizard step 2 form should NOT reference dashboard path")
+	}
+}
+
+func TestSmoke_RevokeFlow(t *testing.T) {
+	h := newTestHarness(t)
+
+	userID := h.seedUser(t, "revoker", "user", 6001)
+	tokenID := h.seedToken(t, userID, "org/repo", map[string]string{"contents": "read"})
+	sessionCookie := h.createSession(t, userID, "revoker", "user")
+
+	srv := httptest.NewServer(h.router)
+	t.Cleanup(srv.Close)
+
+	jar, _ := cookiejar.New(nil)
+	srvURL, _ := url.Parse(srv.URL)
+	jar.SetCookies(srvURL, []*http.Cookie{sessionCookie})
+
+	// GET revoke confirm — shows confirmation modal.
+	body := h.doSSERequest(t, srv, jar, "GET", "/dashboard/token/"+tokenID+"/revoke/", nil)
+	if !strings.Contains(body, "modalOpen") {
+		t.Fatal("revoke confirm should open the modal")
+	}
+	if !strings.Contains(body, "ghx_test") {
+		t.Fatal("revoke confirm should show the token prefix")
+	}
+
+	// POST revoke — actually revokes the token.
+	body = h.doSSERequest(t, srv, jar, "POST", "/dashboard/token/"+tokenID+"/revoke/", nil)
+	if !strings.Contains(body, `"modalOpen":false`) {
+		t.Fatal("revoke should close the modal")
+	}
+	if !strings.Contains(body, "Revoked") || !strings.Contains(body, "status-revoked") {
+		t.Fatal("revoke should update the card to show revoked status")
 	}
 }
