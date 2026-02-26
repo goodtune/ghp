@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	ghub "github.com/google/go-github/v68/github"
@@ -29,18 +30,33 @@ const (
 // the API are kept in a long-lived in-memory cache keyed by a one-way SHA-256
 // hash of the token so the actual credential is never stored.
 type UsernameResolver struct {
-	store  database.Store
-	cache  *expirable.LRU[string, string]
-	logger *slog.Logger
+	store     database.Store
+	cache     *expirable.LRU[string, string]
+	logger    *slog.Logger
+	inflight  sync.Map // tracks in-progress lookups to prevent duplicate goroutines
+	newClient func(token string) *ghub.Client // injectable GitHub client factory
 }
 
 // NewUsernameResolver creates a resolver backed by store for database lookups
-// and an LRU cache for GitHub API lookups.
-func NewUsernameResolver(store database.Store, logger *slog.Logger) *UsernameResolver {
-	return &UsernameResolver{
+// and an LRU cache for GitHub API lookups. Optional functional options (e.g.
+// WithGitHubClientFactory) may be applied for customisation.
+func NewUsernameResolver(store database.Store, logger *slog.Logger, opts ...func(*UsernameResolver)) *UsernameResolver {
+	r := &UsernameResolver{
 		store:  store,
 		cache:  expirable.NewLRU[string, string](maxCachedUsernames, nil, usernameCacheTTL),
 		logger: logger,
+	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
+// WithGitHubClientFactory returns an option that replaces the default GitHub
+// client constructor. This is primarily intended for testing with mock servers.
+func WithGitHubClientFactory(fn func(token string) *ghub.Client) func(*UsernameResolver) {
+	return func(u *UsernameResolver) {
+		u.newClient = fn
 	}
 }
 
@@ -61,10 +77,12 @@ func (u *UsernameResolver) ResolveFromUserID(ctx context.Context, userID string)
 // raw GitHub token (e.g. gho_, ghp_, ghu_ prefixed). The result is cached
 // with a SHA-256 hash of the token as key. On a cache miss the lookup is
 // performed asynchronously so GitHub API latency does not block the caller;
-// empty string is returned for that first request. On any error the empty
-// string is returned silently so callers can treat this as best-effort.
+// empty string is returned for that first request. Only one in-flight lookup
+// is allowed per token to prevent goroutine storms under load. On any error
+// the empty string is returned silently so callers can treat this as
+// best-effort.
 func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken string) string {
-	if rawToken == "" {
+	if rawToken == "" || !isGitHubUserToken(rawToken) {
 		return ""
 	}
 
@@ -73,10 +91,19 @@ func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken 
 		return username
 	}
 
+	// Guard against unbounded goroutine spawning: only one in-flight lookup
+	// is allowed per token hash at a time.
+	if _, loaded := u.inflight.LoadOrStore(key, struct{}{}); loaded {
+		return ""
+	}
+
 	// Cache miss: resolve the username asynchronously so that GitHub API
 	// latency does not impact the current request. The eventual result will be
 	// stored in the cache for future calls.
-	go u.resolveAndCacheGitHubUsername(key, rawToken)
+	go func() {
+		defer u.inflight.Delete(key)
+		u.resolveAndCacheGitHubUsername(key, rawToken)
+	}()
 
 	// Best-effort: if the username is not yet cached, return empty string.
 	return ""
@@ -92,7 +119,13 @@ func (u *UsernameResolver) resolveAndCacheGitHubUsername(key, rawToken string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	client := ghub.NewClient(nil).WithAuthToken(rawToken)
+	var client *ghub.Client
+	if u.newClient != nil {
+		client = u.newClient(rawToken)
+	} else {
+		client = ghub.NewClient(nil).WithAuthToken(rawToken)
+	}
+
 	user, _, err := client.Users.Get(ctx, "")
 	if err != nil {
 		if u.logger != nil {
