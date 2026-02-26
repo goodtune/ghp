@@ -11,6 +11,30 @@
         </svg>
         Sign in with GitHub
     </a>
+    {{if .DevMode}}
+    <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid var(--border);">
+    <form id="dev-login-form" style="display: flex; flex-direction: column; gap: 0.75rem;">
+        <p style="text-align: center; color: var(--text-muted); font-size: 0.85rem; margin: 0;">Dev mode — sign in without GitHub</p>
+        <input type="text" name="username" placeholder="Username" value="testuser" required
+               style="padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem;">
+        <select name="role" style="padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem;">
+            <option value="admin">admin</option>
+            <option value="user">user</option>
+        </select>
+        <button type="submit" class="btn-outline btn-full-width">Dev Login</button>
+    </form>
+    <script>
+    document.getElementById('dev-login-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var f = e.target;
+        fetch('/auth/test-login', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username: f.username.value, role: f.role.value})
+        }).then(function() { window.location.href = '/dashboard/'; });
+    });
+    </script>
+    {{end}}
 </div>
 {{end}}
 
