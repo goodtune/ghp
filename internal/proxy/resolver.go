@@ -75,14 +75,12 @@ func (r *ProxyTokenResolver) resolveAgentToken(ctx context.Context, pt *database
 	}
 
 	var repos []string
-	if err := json.Unmarshal(pt.Repositories, &repos); err != nil {
-		return "", fmt.Errorf("parsing repositories: %w", err)
-	}
+	// Repositories may be null for open-scoped tokens.
+	json.Unmarshal(pt.Repositories, &repos)
 
-	scopes, err := database.ParseScopes(pt.Scopes)
-	if err != nil {
-		return "", fmt.Errorf("parsing scopes: %w", err)
-	}
+	var scopes database.Scopes
+	// Scopes may be null for open-scoped tokens.
+	json.Unmarshal(pt.Scopes, &scopes)
 
 	return r.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, repos, scopes)
 }

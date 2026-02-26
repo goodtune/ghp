@@ -382,6 +382,92 @@ func TestScopedPassthrough_BasicAuth_GitPush_WrongRepository(t *testing.T) {
 	}
 }
 
+func TestScopedPassthrough_OpenScoped_AllowsAnyRepo(t *testing.T) {
+	// An open-scoped token should allow git operations to any repository.
+	handler, ghpToken := newOpenScopedPassthrough(t)
+
+	req := httptest.NewRequest("POST", "http://github.com/goodtune/any-repo.git/git-receive-pack", nil)
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for open-scoped token, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestScopedPassthrough_OpenScoped_AllowsGitPush(t *testing.T) {
+	// An open-scoped token should allow git push (contents:write) without restriction.
+	handler, ghpToken := newOpenScopedPassthrough(t)
+
+	req := httptest.NewRequest("POST", "http://github.com/goodtune/ghp.git/git-receive-pack", nil)
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for open-scoped token git push, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// newOpenScopedPassthrough creates a ScopedPassthroughHandler backed by an
+// open-scoped ghp_ token (no repository or permission restrictions).
+func newOpenScopedPassthrough(t *testing.T) (http.Handler, string) {
+	t.Helper()
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 99, GitHubUsername: "openuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("real-github-pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		// No Repository, no Scopes — open-scoped.
+		Duration:  24 * time.Hour,
+		SessionID: "open-test-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
+	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, slog.Default())
+
+	return handler, result.Token
+}
+
 // tlsTransport returns an http.RoundTripper that trusts the test server's cert.
 func tlsTransport(ts *httptest.Server) http.RoundTripper {
 	return &http.Transport{

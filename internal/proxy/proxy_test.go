@@ -384,3 +384,92 @@ func TestForwardRequest_RateLimitMetrics(t *testing.T) {
 		t.Errorf("expected GitHubRateLimitLimit=5000, got %v", got)
 	}
 }
+
+// newOpenScopedHandler creates a Handler with an open-scoped ghp_ token (no
+// repository or permission restrictions).
+func newOpenScopedHandler(t *testing.T) (*Handler, string) {
+	t.Helper()
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 99, GitHubUsername: "openuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("real-github-pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		// No Repository, no Scopes — open-scoped.
+		Duration:  24 * time.Hour,
+		SessionID: "open-test-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:          &config.Config{},
+		tokenService: tokenSvc,
+		store:        store,
+		encryptor:    enc,
+		logger:       slog.Default(),
+		client:       &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+	return h, result.Token
+}
+
+func TestServeHTTP_OpenScopedToken_AllowsAnyRepo(t *testing.T) {
+	// An open-scoped token (no repos, no scopes) should forward any
+	// repository request to GitHub without blocking.
+	h, ghpToken := newOpenScopedHandler(t)
+
+	req := httptest.NewRequest("POST", "http://api.github.com/repos/org/any-repo/pulls/1/comments", strings.NewReader(`{"body":"hello"}`))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for open-scoped token, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeHTTP_OpenScopedToken_AllowsWriteOperations(t *testing.T) {
+	// An open-scoped token should allow write operations without scope checks.
+	h, ghpToken := newOpenScopedHandler(t)
+
+	req := httptest.NewRequest("POST", "http://api.github.com/repos/goodtune/ghp/issues", strings.NewReader(`{"title":"test"}`))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for open-scoped token write, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}

@@ -112,6 +112,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Open-scoped tokens skip all filtering — forward directly to GitHub.
+	if isOpenScoped(pt) {
+		githubToken, err := h.getGitHubToken(r, pt)
+		if err != nil {
+			h.logger.Error("failed to get GitHub token", "error", err)
+			status, msg := installationTokenErrorResponse(err)
+			writeError(w, status, msg)
+			return
+		}
+		repo := ExtractRepoFromPath(apiPath)
+		status := h.forwardRequest(w, r, apiPath, rewriteAuth(githubToken))
+		if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
+			h.logger.Error("failed to record token usage", "error", err)
+		}
+		h.logRequest(r.Context(), pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
+		return
+	}
+
 	// Extract repository from path (if this is a /repos/ path).
 	repo := ExtractRepoFromPath(apiPath)
 
@@ -200,14 +218,12 @@ func (h *Handler) getAgentGitHubToken(ctx context.Context, pt *database.ProxyTok
 	}
 
 	var repos []string
-	if err := json.Unmarshal(pt.Repositories, &repos); err != nil {
-		return "", fmt.Errorf("parsing repositories: %w", err)
-	}
+	// Repositories may be null for open-scoped tokens.
+	json.Unmarshal(pt.Repositories, &repos)
 
-	scopes, err := database.ParseScopes(pt.Scopes)
-	if err != nil {
-		return "", fmt.Errorf("parsing scopes: %w", err)
-	}
+	var scopes database.Scopes
+	// Scopes may be null for open-scoped tokens.
+	json.Unmarshal(pt.Scopes, &scopes)
 
 	return h.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, repos, scopes)
 }

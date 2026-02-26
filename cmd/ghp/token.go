@@ -60,10 +60,12 @@ func newTokenCmd() *cobra.Command {
 				body["repositories"] = strings.Split(repos, ",")
 				body["installation_id"] = installationID
 			default:
-				if repo == "" {
-					return fmt.Errorf("--repo is required for proxy tokens")
+				// Proxy tokens are open-scoped by default — repo is optional.
+				if repos != "" {
+					body["repositories"] = strings.Split(repos, ",")
+				} else if repo != "" {
+					body["repository"] = repo
 				}
-				body["repository"] = repo
 			}
 
 			jsonBody, _ := json.Marshal(body)
@@ -120,13 +122,12 @@ func newTokenCmd() *cobra.Command {
 		},
 	}
 	createCmd.Flags().String("type", "proxy", "token type (proxy or agent)")
-	createCmd.Flags().String("repo", "", "repository (owner/repo) for proxy tokens")
-	createCmd.Flags().String("repos", "", "comma-separated repositories for agent tokens")
+	createCmd.Flags().String("repo", "", "single repository (owner/repo) — omit for open-scoped")
+	createCmd.Flags().String("repos", "", "comma-separated repositories — omit for open-scoped")
 	createCmd.Flags().Int64("installation-id", 0, "GitHub App installation ID for agent tokens")
-	createCmd.Flags().String("scope", "", "scopes (e.g., contents:read,pull_requests:write)")
+	createCmd.Flags().String("scope", "", "scopes (e.g., contents:read,pull_requests:write) — omit for open-scoped")
 	createCmd.Flags().String("duration", "24h", "token duration")
 	createCmd.Flags().String("session", "", "session identifier")
-	createCmd.MarkFlagRequired("scope")
 
 	// token list
 	listCmd := &cobra.Command{

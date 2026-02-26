@@ -284,8 +284,8 @@
                 else if (expires < now) { status = 'Expired'; badge = 'badge-expired'; }
                 else { status = 'Active'; badge = 'badge-active'; }
 
-                const scopes = typeof t.scopes === 'string' ? t.scopes : JSON.stringify(t.scopes);
-                const repos = Array.isArray(t.repositories) ? t.repositories.join(', ') : (t.repositories || '');
+                const scopes = (t.scopes && typeof t.scopes === 'object' && Object.keys(t.scopes).length > 0) ? JSON.stringify(t.scopes) : (t.scopes || '(open)');
+                const repos = (Array.isArray(t.repositories) && t.repositories.length > 0) ? t.repositories.join(', ') : '(open)';
                 html += '<tr>';
                 html += '<td>' + esc(t.token_prefix) + '...</td>';
                 html += '<td>' + esc(t.token_type || 'proxy') + '</td>';

@@ -102,10 +102,15 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	scopes, err := token.ParseScopeString(req.Scopes)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
-		return
+	// Scopes are optional — an empty string means open-scoped.
+	var scopes map[string]string
+	if req.Scopes != "" {
+		var err error
+		scopes, err = token.ParseScopeString(req.Scopes)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+			return
+		}
 	}
 
 	duration := a.cfg.Tokens.DefaultDuration
@@ -134,7 +139,12 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		createReq.GitHubTokenID = gt.ID
-		createReq.Repository = req.Repository
+		// Support both single repository and multiple repositories.
+		if len(req.Repositories) > 0 {
+			createReq.Repositories = req.Repositories
+		} else if req.Repository != "" {
+			createReq.Repository = req.Repository
+		}
 	case token.TokenTypeAgent:
 		createReq.InstallationID = req.InstallationID
 		createReq.Repositories = req.Repositories

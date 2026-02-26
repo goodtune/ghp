@@ -138,6 +138,21 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			metrics.ObserveProxyRequest(backend.GitHub, pt, r.Method, rec.status, time.Since(start), "git", username)
 		}()
 
+		// Open-scoped tokens skip all filtering — forward directly.
+		if isOpenScoped(pt) {
+			realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
+			if err != nil {
+				if logger != nil {
+					logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
+				}
+				writeError(rec, http.StatusUnauthorized, "Token resolution failed")
+				return
+			}
+			r.Header.Set("Authorization", rewriteAuth(realToken))
+			inner.ServeHTTP(rec, r)
+			return
+		}
+
 		// Enforce repository scope.
 		if !repositoryAllowed(repo, pt.Repositories) {
 			writeError(rec, http.StatusForbidden,
@@ -285,11 +300,31 @@ func extractClientToken(r *http.Request) (string, func(realToken string) string)
 	return "", nil
 }
 
-// repositoryAllowed returns true if the given repo is in the JSON array of repositories.
+// isOpenScoped returns true if the proxy token has no repository or permission
+// restrictions set, meaning it carries the full permissions of the underlying
+// credential and should not be filtered.
+func isOpenScoped(pt *database.ProxyToken) bool {
+	// Check repositories — null, empty JSON, or empty array means open.
+	var repos []string
+	repoOpen := json.Unmarshal(pt.Repositories, &repos) != nil || len(repos) == 0
+
+	// Check scopes — null, empty JSON, or empty map means open.
+	var scopes map[string]string
+	scopeOpen := json.Unmarshal(pt.Scopes, &scopes) != nil || len(scopes) == 0
+
+	return repoOpen && scopeOpen
+}
+
+// repositoryAllowed returns true if the given repo is in the JSON array of
+// repositories, or if the token is open-scoped (null/empty repositories list).
 func repositoryAllowed(repo string, reposJSON json.RawMessage) bool {
 	var repos []string
 	if err := json.Unmarshal(reposJSON, &repos); err != nil {
-		return false
+		// JSON null or invalid — treat as open-scoped (no restriction).
+		return true
+	}
+	if len(repos) == 0 {
+		return true
 	}
 	for _, r := range repos {
 		if strings.EqualFold(r, repo) {
