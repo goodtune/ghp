@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 
 	"github.com/goodtune/ghp/internal/config"
@@ -130,21 +131,21 @@ func (h *Handler) secureCookies() bool {
 	return strings.HasPrefix(h.cfg.Server.BaseURL, "https://")
 }
 
-// RegisterRoutes adds auth routes to the given mux.
-func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.Handle("GET /auth/github", h.githubLimiter.Middleware(http.HandlerFunc(h.handleGitHubLogin)))
-	mux.HandleFunc("GET /auth/github/callback", h.handleGitHubCallback)
-	mux.HandleFunc("POST /auth/logout", h.handleLogout)
-	mux.HandleFunc("GET /auth/status", h.handleStatus)
+// RegisterRoutes adds auth routes to the given chi router.
+func (h *Handler) RegisterRoutes(r chi.Router) {
+	r.With(h.githubLimiter.Middleware).Get("/auth/github", h.handleGitHubLogin)
+	r.Get("/auth/github/callback", h.handleGitHubCallback)
+	r.Post("/auth/logout", h.handleLogout)
+	r.Get("/auth/status", h.handleStatus)
 
 	// OAuth broker endpoints: delegate authentication to this proxy.
 	if h.cfg.Auth.JWTPrivateKey != "" || h.cfg.Auth.JWTPrivateKeyFile != "" {
 		if h.rsaPrivKey == nil {
 			h.logger.Error("jwt_private_key configuration is invalid; oauth broker endpoints disabled")
 		} else {
-			mux.Handle("GET /auth/authorize", h.authorizeLimiter.Middleware(http.HandlerFunc(h.handleBrokerAuthorize)))
-			mux.HandleFunc("GET /auth/callback", h.handleBrokerCallback)
-			mux.HandleFunc("GET /.well-known/jwks.json", h.handleJWKS)
+			r.With(h.authorizeLimiter.Middleware).Get("/auth/authorize", h.handleBrokerAuthorize)
+			r.Get("/auth/callback", h.handleBrokerCallback)
+			r.Get("/.well-known/jwks.json", h.handleJWKS)
 			h.logger.Info("oauth broker endpoints enabled")
 			if len(h.cfg.Auth.AllowedRedirects) == 0 {
 				h.logger.Warn("oauth broker enabled but no allowed redirects configured; all broker authorization requests will fail with \"redirect_uri not allowed\"")
@@ -155,7 +156,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Dev-mode only: test login endpoint that bypasses GitHub OAuth.
 	if h.cfg.DevMode {
 		h.logger.Warn("dev mode enabled: /auth/test-login endpoint is active")
-		mux.Handle("POST /auth/test-login", h.loginLimiter.Middleware(http.HandlerFunc(h.handleTestLogin)))
+		r.With(h.loginLimiter.Middleware).Post("/auth/test-login", h.handleTestLogin)
 	}
 }
 

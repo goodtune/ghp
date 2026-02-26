@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/goodtune/ghp/internal/auth"
 )
 
@@ -35,12 +37,19 @@ func NewHandler(ah *auth.Handler, devMode bool, logger *slog.Logger) *Handler {
 	}
 }
 
-// RegisterRoutes adds web UI routes to the given mux.
-func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /{$}", h.handleIndex)
-	mux.HandleFunc("GET /login", h.handleLogin)
-	mux.HandleFunc("GET /admin", h.handleAdmin)
-	mux.Handle("GET /static/", http.FileServerFS(staticFS))
+// StaticFS returns the embedded static file system for use by the server.
+func StaticFS() embed.FS {
+	return staticFS
+}
+
+// RegisterRoutes adds web UI routes to the given chi router.
+func (h *Handler) RegisterRoutes(r chi.Router) {
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/dashboard/", http.StatusMovedPermanently)
+	})
+	r.Get("/dashboard/", h.handleIndex)
+	r.Get("/login/", h.handleLogin)
+	r.Get("/admin/", h.handleAdmin)
 }
 
 func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	ghub "github.com/google/go-github/v68/github"
 
 	"github.com/goodtune/ghp/internal/auth"
@@ -45,22 +46,32 @@ func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *aut
 	}
 }
 
-// RegisterRoutes adds API routes to the given mux.
+// RegisterRoutes adds API routes to the given chi router.
 // All routes require authentication via the auth handler.
-func (a *API) RegisterRoutes(mux *http.ServeMux) {
-	mux.Handle("POST /api/tokens", a.authHandler.RequireAuth(a.tokenCreateLimiter.Middleware(http.HandlerFunc(a.handleCreateToken))))
-	mux.Handle("GET /api/tokens", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListTokens)))
-	mux.Handle("GET /api/tokens/{id}", a.authHandler.RequireAuth(http.HandlerFunc(a.handleGetToken)))
-	mux.Handle("DELETE /api/tokens/{id}", a.authHandler.RequireAuth(http.HandlerFunc(a.handleRevokeToken)))
+func (a *API) RegisterRoutes(r chi.Router) {
+	// Authenticated routes.
+	r.Group(func(r chi.Router) {
+		r.Use(a.authHandler.RequireAuth)
 
-	mux.Handle("GET /api/users", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListUsers)))
-	mux.Handle("GET /api/users/{id}/tokens", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListUserTokens)))
+		r.With(a.tokenCreateLimiter.Middleware).Post("/api/tokens/", a.handleCreateToken)
+		r.Get("/api/tokens/", a.handleListTokens)
+		r.Get("/api/tokens/{id}/", a.handleGetToken)
+		r.Delete("/api/tokens/{id}/", a.handleRevokeToken)
 
-	mux.Handle("GET /api/github/repositories", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListUserRepos)))
-	mux.Handle("GET /api/github/installations", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallations)))
-	mux.Handle("GET /api/github/installations/{id}/repositories", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallationRepos)))
+		r.Get("/api/github/repositories/", a.handleListUserRepos)
+		r.Get("/api/audit/", a.handleListAudit)
+	})
 
-	mux.Handle("GET /api/audit", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListAudit)))
+	// Admin routes.
+	r.Group(func(r chi.Router) {
+		r.Use(a.authHandler.RequireAdmin)
+
+		r.Get("/api/users/", a.handleListUsers)
+		r.Get("/api/users/{id}/tokens/", a.handleListUserTokens)
+
+		r.Get("/api/github/installations/", a.handleListInstallations)
+		r.Get("/api/github/installations/{id}/repositories/", a.handleListInstallationRepos)
+	})
 }
 
 type createTokenRequest struct {
@@ -188,7 +199,7 @@ func (a *API) handleListTokens(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleGetToken(w http.ResponseWriter, r *http.Request) {
 	session := auth.SessionFromContext(r.Context())
-	id := r.PathValue("id")
+	id := chi.URLParam(r, "id")
 
 	pt, err := a.store.GetProxyTokenByID(r.Context(), id)
 	if err != nil {
@@ -210,7 +221,7 @@ func (a *API) handleGetToken(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	session := auth.SessionFromContext(r.Context())
-	id := r.PathValue("id")
+	id := chi.URLParam(r, "id")
 
 	pt, err := a.store.GetProxyTokenByID(r.Context(), id)
 	if err != nil {
@@ -254,7 +265,7 @@ func (a *API) handleListUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleListUserTokens(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id := chi.URLParam(r, "id")
 	tokens, err := a.store.ListProxyTokens(r.Context(), id)
 	if err != nil {
 		a.logger.Error("failed to list user tokens", "error", err)
@@ -370,7 +381,7 @@ func (a *API) handleListInstallationRepos(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	idStr := r.PathValue("id")
+	idStr := chi.URLParam(r, "id")
 	installationID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid installation ID"})

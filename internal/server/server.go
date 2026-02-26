@@ -14,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
+
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/config"
@@ -22,9 +25,9 @@ import (
 	"github.com/goodtune/ghp/internal/docs"
 	"github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/proxy"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/goodtune/ghp/internal/token"
 	"github.com/goodtune/ghp/internal/web"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Server is the main ghp server.
@@ -128,32 +131,33 @@ func (s *Server) Run(ctx context.Context) error {
 	api := NewAPI(s.cfg, store, tokenSvc, authHandler, enc, concreteATP, s.logger)
 	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
 
-	// Build HTTP mux.
-	mux := http.NewServeMux()
+	// Build Chi router.
+	r := chi.NewRouter()
+	r.Use(chimw.RedirectSlashes)
 
 	// Auth routes.
-	authHandler.RegisterRoutes(mux)
+	authHandler.RegisterRoutes(r)
 
 	// API routes.
-	api.RegisterRoutes(mux)
+	api.RegisterRoutes(r)
 
 	// Web UI routes.
-	webUI.RegisterRoutes(mux)
+	webUI.RegisterRoutes(r)
+
+	// Static files (embedded).
+	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServerFS(web.StaticFS())))
 
 	// Documentation site (embedded mkdocs output).
-	mux.Handle("/docs/", http.StripPrefix("/docs/", docs.Handler()))
-	mux.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/docs/", http.StatusMovedPermanently)
-	})
+	r.Handle("/docs/*", http.StripPrefix("/docs/", docs.Handler()))
 
 	// Metrics route (on management mux, not on GitHub-facing virtualhosts).
 	if s.cfg.Metrics.Enabled {
-		mux.Handle("/metrics", promhttp.Handler())
+		r.Handle("/metrics", promhttp.Handler())
 	}
 
 	// Proxy routes — these catch /api/v3/* and /api/graphql.
-	mux.Handle("/api/v3/", proxyHandler)
-	mux.Handle("/api/graphql", proxyHandler)
+	r.Handle("/api/v3/*", proxyHandler)
+	r.Handle("/api/graphql", proxyHandler)
 
 	// Create passthrough handlers for github.com and *.githubcopilot.com.
 	resolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc, appTokenProvider)
@@ -172,7 +176,7 @@ func (s *Server) Run(ctx context.Context) error {
 		apiHandler:     accessLogHandler(backend.API, proxyHandler, aw),
 		githubHandler:  accessLogHandler(backend.GitHub, githubPassthrough, aw),
 		copilotHandler: accessLogHandler(backend.Copilot, copilotPassthrough, aw),
-		mgmtHandler:    accessLogHandler(backend.Mgmt, mux, aw),
+		mgmtHandler:    accessLogHandler(backend.Mgmt, r, aw),
 		managementHost: s.cfg.Server.ManagementHost,
 	})
 
