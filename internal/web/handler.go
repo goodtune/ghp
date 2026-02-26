@@ -169,7 +169,7 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		"Username":   session.Username,
 		"Role":       session.Role,
 		"ActiveNav":  "dashboard",
-		"Tokens":     prepareTokenCards(tokens),
+		"Tokens":     setRevokeURLs(prepareTokenCards(tokens), "/dashboard/token/"),
 	}
 
 	if err := h.renderPage(w, "dashboard.html", data); err != nil {
@@ -268,7 +268,7 @@ func (h *Handler) handleAdminUserDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	cards := prepareTokenCards(tokens)
+	cards := setRevokeURLs(prepareTokenCards(tokens), "/admin/"+username+"/")
 
 	data := map[string]interface{}{
 		"ShowHeader":   true,
@@ -536,6 +536,7 @@ func (h *Handler) handleWizardGet(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]interface{}{
 		"Repository": "",
+		"WizardURL":  r.URL.Path,
 	}
 	html, err := h.renderFragment("wizard_step1", data)
 	if err != nil {
@@ -592,6 +593,7 @@ func (h *Handler) handleWizardPost(w http.ResponseWriter, r *http.Request) {
 
 	sse := datastar.NewSSE(w, r)
 	data := h.wizardStepData(state)
+	data["WizardURL"] = r.URL.Path
 	tmplName := fmt.Sprintf("wizard_step%d", state.Step)
 	html, err := h.renderFragment(tmplName, data)
 	if err != nil {
@@ -779,7 +781,7 @@ func (h *Handler) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cards := prepareTokenCards([]*database.ProxyToken{tok})
+	cards := setRevokeURLs(prepareTokenCards([]*database.ProxyToken{tok}), "/dashboard/token/")
 
 	sse := datastar.NewSSE(w, r)
 	sse.PatchSignals([]byte(`{"modalOpen":false}`))
@@ -828,6 +830,7 @@ type TokenCardData struct {
 	IsActive    bool
 	ExpiresIn   string
 	ScopeList   []string
+	RevokeURL   string
 }
 
 func prepareTokenCards(tokens []*database.ProxyToken) []TokenCardData {
@@ -872,6 +875,16 @@ func prepareTokenCards(tokens []*database.ProxyToken) []TokenCardData {
 		sort.Strings(card.ScopeList)
 
 		cards = append(cards, card)
+	}
+	return cards
+}
+
+// setRevokeURLs sets the RevokeURL on each card using the given base path prefix.
+// The prefix should be like "/dashboard/token/" or "/admin/{username}/", and the
+// resulting URL will be prefix + tokenID + "/revoke/".
+func setRevokeURLs(cards []TokenCardData, prefix string) []TokenCardData {
+	for i := range cards {
+		cards[i].RevokeURL = prefix + cards[i].ID + "/revoke/"
 	}
 	return cards
 }

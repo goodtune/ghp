@@ -20,7 +20,7 @@
     <div class="token-card-footer">
         <span class="token-card-type">{{.TokenType}}</span>
         {{if .IsActive}}
-        <button class="btn-danger btn-outline" data-on-click="@get('/dashboard/token/{{.ID}}/revoke/')">Revoke</button>
+        <button class="btn-danger btn-outline" data-on-click="@get('{{.RevokeURL}}')">Revoke</button>
         {{end}}
     </div>
 </div>

@@ -7,7 +7,7 @@
 </div>
 <button class="modal-close" data-on-click="$modalOpen = false">&times;</button>
 <h2>Select Repository</h2>
-<form data-on-submit.prevent="@post('/dashboard/token/add/')">
+<form data-on-submit.prevent="@post('{{.WizardURL}}')">
     <div class="form-group">
         <label for="repository">Repository</label>
         <input type="text" id="repository" name="repository" placeholder="owner/repo" value="{{.Repository}}" required>

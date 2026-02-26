@@ -7,7 +7,7 @@
 </div>
 <button class="modal-close" data-on-click="$modalOpen = false">&times;</button>
 <h2>Set Permissions</h2>
-<form data-on-submit.prevent="@post('/dashboard/token/add/')">
+<form data-on-submit.prevent="@post('{{.WizardURL}}')">
     <input type="hidden" name="step" value="2">
     <h3 class="form-section-title">Permissions</h3>
     <div class="permissions-list">
@@ -28,7 +28,7 @@
         {{end}}
     </div>
     <div class="modal-actions">
-        <button type="button" class="btn-outline" data-on-click="@post('/dashboard/token/add/', {body: new URLSearchParams({back: 'true', step: '2'})})">Back</button>
+        <button type="button" class="btn-outline" data-on-click="@post('{{.WizardURL}}', {body: new URLSearchParams({back: 'true', step: '2'})})">Back</button>
         <button type="submit" class="btn-primary">Next</button>
     </div>
 </form>

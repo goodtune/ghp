@@ -26,7 +26,7 @@
     </div>
 </div>
 <div class="modal-actions">
-    <button class="btn-outline" data-on-click="@post('/dashboard/token/add/', {body: new URLSearchParams({back: 'true', step: '4'})})">Back</button>
-    <button class="btn-primary" data-on-click="@post('/dashboard/token/add/', {body: new URLSearchParams({step: '4'})})">Create Token</button>
+    <button class="btn-outline" data-on-click="@post('{{.WizardURL}}', {body: new URLSearchParams({back: 'true', step: '4'})})">Back</button>
+    <button class="btn-primary" data-on-click="@post('{{.WizardURL}}', {body: new URLSearchParams({step: '4'})})">Create Token</button>
 </div>
 {{end}}

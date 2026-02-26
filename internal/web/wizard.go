@@ -30,7 +30,7 @@ func setWizardCookie(w http.ResponseWriter, enc *crypto.Encryptor, state *Wizard
 	http.SetCookie(w, &http.Cookie{
 		Name:     wizardCookieName,
 		Value:    encrypted,
-		Path:     "/dashboard/token/add/",
+		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
