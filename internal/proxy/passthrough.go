@@ -330,9 +330,10 @@ func (si tokenScopeInfo) repoAllowed(repo string) bool {
 }
 
 // parseScopeInfo parses the Repositories and Scopes JSON fields of a proxy
-// token. JSON null and empty arrays/maps are normalised to nil (no
-// restriction). Returns an error for invalid JSON so callers fail safely
-// rather than silently treating corrupt data as open-scoped.
+// token. JSON null decodes to a nil slice/map and JSON empty arrays/maps
+// decode to zero-length values; both are treated as "no restriction" by
+// callers that check len(...) == 0. Returns an error for invalid JSON so
+// callers fail safely rather than silently treating corrupt data as open-scoped.
 func parseScopeInfo(pt *database.ProxyToken) (tokenScopeInfo, error) {
 	var repos []string
 	if err := json.Unmarshal(pt.Repositories, &repos); err != nil {

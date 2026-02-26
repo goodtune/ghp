@@ -56,11 +56,11 @@
             <h2>Create Token</h2>
             <div class="create-form">
                 <div class="form-group">
-                    <label>Repositories (optional — leave empty for open-scoped)</label>
+                    <label>Repositories (optional — leave empty to allow any repo)</label>
                     <ghp-repo-select id="repo-select" mode="multi" placeholder="Loading repositories..."></ghp-repo-select>
                 </div>
                 <div class="form-group">
-                    <label>Permissions (optional — leave empty for open-scoped)</label>
+                    <label>Permissions (optional — leave empty to allow any permission; leaving both fields empty creates an open-scoped token)</label>
                     <ghp-permission-select id="perm-select"></ghp-permission-select>
                 </div>
                 <div class="form-group">

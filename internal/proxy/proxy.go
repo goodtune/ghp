@@ -106,17 +106,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// GraphQL handled separately.
-	if apiPath == "/graphql" {
-		h.handleGraphQL(w, r, pt, rewriteAuth, start)
-		return
-	}
-
 	// Parse the token's scope restrictions once; fail-closed on corrupt JSON.
+	// Must happen before GraphQL routing so that corrupt JSON is never treated
+	// as open-scoped, even on the GraphQL path.
 	si, err := parseScopeInfo(pt)
 	if err != nil {
 		h.logger.Error("failed to parse token scope", "error", err)
 		writeError(w, http.StatusInternalServerError, "Internal error")
+		return
+	}
+
+	// GraphQL handled separately.
+	if apiPath == "/graphql" {
+		h.handleGraphQL(w, r, pt, si, rewriteAuth, start)
 		return
 	}
 
@@ -183,9 +185,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.logRequest(r.Context(), pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
 }
 
-func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, rewriteAuth func(string) string, start time.Time) {
-	// For GraphQL, we forward the request and check the token's scopes in a simplified manner.
-	// Full GraphQL query parsing is complex; for now, we require that the token has at least one scope.
+func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, si tokenScopeInfo, rewriteAuth func(string) string, start time.Time) {
+	// Repository-restricted tokens cannot have their repo restrictions enforced
+	// on GraphQL requests because GraphQL queries can span arbitrary repositories
+	// without a parseable path structure. Block GraphQL to prevent bypassing
+	// repository scope restrictions.
+	if len(si.Repos) > 0 {
+		writeError(w, http.StatusForbidden,
+			"Token is repository-restricted; GraphQL is not supported for repository-scoped tokens")
+		h.logRequest(r.Context(), pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+		return
+	}
+
+	// For permission-scoped tokens (scopes set, no repo restrictions), we forward
+	// to GitHub. Full GraphQL query parsing to enforce per-operation permission
+	// checks is not implemented; the underlying GitHub token enforces actual access.
 	githubToken, err := h.getGitHubToken(r, pt)
 	if err != nil {
 		h.logger.Error("failed to get GitHub token for GraphQL", "error", err)

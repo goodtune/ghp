@@ -668,3 +668,79 @@ func TestServeHTTP_ScopeOnly_DeniesInsufficientPermission(t *testing.T) {
 		t.Errorf("expected error to mention required pull_requests:write permission, got: %s", body)
 	}
 }
+
+func TestServeHTTP_OpenScopedToken_GraphQLAllowed(t *testing.T) {
+	// An open-scoped token (no repos, no scopes) must be allowed to use GraphQL.
+	h, ghpToken := newOpenScopedHandler(t)
+
+	req := httptest.NewRequest("POST", "http://api.github.com/graphql", strings.NewReader(`{"query":"{ viewer { login } }"}`))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for open-scoped token on GraphQL, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeHTTP_RepoOnly_GraphQLDenied(t *testing.T) {
+	// A repo-restricted token must be denied on GraphQL because repo restrictions
+	// cannot be enforced on arbitrary GraphQL queries without query parsing.
+	h, ghpToken := newRepoOnlyHandler(t, "goodtune/ghp")
+
+	req := httptest.NewRequest("POST", "http://api.github.com/graphql", strings.NewReader(`{"query":"{ viewer { login } }"}`))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for repo-restricted token on GraphQL, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "repository-restricted") {
+		t.Errorf("expected error to mention repository restriction, got: %s", body)
+	}
+}
+
+func TestServeHTTP_ScopeOnly_GraphQLAllowed(t *testing.T) {
+	// A scope-only token (scopes set, no repo restrictions) must be allowed to
+	// use GraphQL. Per-operation permission enforcement on GraphQL is not
+	// implemented; the underlying GitHub token enforces actual access.
+	h, ghpToken := newScopeOnlyHandler(t, map[string]string{
+		"contents": "read",
+	})
+
+	req := httptest.NewRequest("POST", "http://api.github.com/graphql", strings.NewReader(`{"query":"{ viewer { login } }"}`))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for scope-only token on GraphQL, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeHTTP_RepoAndScopeToken_GraphQLDenied(t *testing.T) {
+	// A fully-scoped token (repos AND scopes set) must also be denied on GraphQL
+	// because repo restrictions cannot be enforced without query parsing.
+	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
+		"contents": "read",
+	})
+
+	req := httptest.NewRequest("POST", "http://api.github.com/graphql", strings.NewReader(`{"query":"{ viewer { login } }"}`))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for fully-scoped token on GraphQL, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}

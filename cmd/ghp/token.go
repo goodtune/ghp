@@ -122,10 +122,10 @@ func newTokenCmd() *cobra.Command {
 		},
 	}
 	createCmd.Flags().String("type", "proxy", "token type (proxy or agent)")
-	createCmd.Flags().String("repo", "", "single repository (owner/repo) — omit for open-scoped")
-	createCmd.Flags().String("repos", "", "comma-separated repositories — omit for open-scoped")
+	createCmd.Flags().String("repo", "", "single repository (owner/repo) — omit to allow any repo")
+	createCmd.Flags().String("repos", "", "comma-separated repositories — omit to allow any repo")
 	createCmd.Flags().Int64("installation-id", 0, "GitHub App installation ID for agent tokens")
-	createCmd.Flags().String("scope", "", "scopes (e.g., contents:read,pull_requests:write) — omit for open-scoped")
+	createCmd.Flags().String("scope", "", "scopes (e.g., contents:read,pull_requests:write) — omit to allow any permission; omitting both repos and scope creates an open-scoped token")
 	createCmd.Flags().String("duration", "24h", "token duration")
 	createCmd.Flags().String("session", "", "session identifier")
 
