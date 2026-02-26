@@ -35,6 +35,9 @@ var (
 		Help: "Total number of proxied requests.",
 	}, []string{"backend", "method", "status", "token_type", "type", "user", "app"})
 
+	// Note: this gauge is driven by in-process increment/decrement calls and is
+	// not seeded from the database on startup. After a process restart it begins
+	// at zero rather than reflecting the real count of active tokens in the store.
 	TokenActive = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ghp_token_active",
 		Help: "Number of active tokens per user.",

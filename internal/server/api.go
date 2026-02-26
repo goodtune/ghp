@@ -16,6 +16,7 @@ import (
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	ghpgithub "github.com/goodtune/ghp/internal/github"
+	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
 )
 
@@ -145,6 +146,9 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	metrics.TokenCreatedTotal.WithLabelValues(session.UserID).Inc()
+	metrics.TokenActive.WithLabelValues(session.UserID).Inc()
+
 	// Audit log.
 	a.store.CreateAuditEntry(r.Context(), &database.AuditEntry{
 		UserID:    session.UserID,
@@ -241,6 +245,13 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
+
+	ownerID := session.UserID
+	if pt.UserID != nil && *pt.UserID != "" {
+		ownerID = *pt.UserID
+	}
+	metrics.TokenRevokedTotal.WithLabelValues(ownerID).Inc()
+	metrics.TokenActive.WithLabelValues(ownerID).Dec()
 
 	// Audit log.
 	a.store.CreateAuditEntry(r.Context(), &database.AuditEntry{
