@@ -12,7 +12,9 @@ import (
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
+	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
 // captureTransport records the last request sent through it and responds with 200.
@@ -42,7 +44,7 @@ func TestForwardRequest_EnterpriseHeader(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://localhost/repos/org/repo", nil)
 
-	status := h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token")
+	status := h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token", "")
 
 	if status != http.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
@@ -133,7 +135,7 @@ func TestForwardRequest_NoEnterpriseHeader(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://localhost/repos/org/repo", nil)
 
-	h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token")
+	h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token", "")
 
 	if ct.lastReq == nil {
 		t.Fatal("no request captured")
@@ -324,5 +326,58 @@ func TestServeHTTP_NonGhpToken_GraphQLPathNormalization(t *testing.T) {
 	// Verify the request was sent to /graphql, not /api/graphql.
 	if ct.lastReq.URL.Path != "/graphql" {
 		t.Errorf("expected path /graphql, got %s", ct.lastReq.URL.Path)
+	}
+}
+
+// rateLimitTransport responds with a 200 and the given rate limit headers.
+type rateLimitTransport struct {
+	remaining string
+	limit     string
+}
+
+func (t *rateLimitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rec := httptest.NewRecorder()
+	rec.Header().Set("X-RateLimit-Remaining", t.remaining)
+	rec.Header().Set("X-RateLimit-Limit", t.limit)
+	rec.WriteHeader(http.StatusOK)
+	return rec.Result(), nil
+}
+
+func TestForwardRequest_RateLimitMetrics(t *testing.T) {
+	rt := &rateLimitTransport{remaining: "42", limit: "5000"}
+	h := &Handler{
+		cfg:    &config.Config{},
+		logger: slog.Default(),
+		client: &http.Client{Transport: rt, Timeout: 5 * time.Second},
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://localhost/repos/org/repo", nil)
+
+	h.forwardRequest(rr, req, "/repos/org/repo", "test-token", "ratelimit-testuser")
+
+	// Verify GitHubRateLimitRemaining was set from the response header.
+	var m io_prometheus_client.Metric
+	remaining, err := metrics.GitHubRateLimitRemaining.GetMetricWithLabelValues("ratelimit-testuser")
+	if err != nil {
+		t.Fatalf("GitHubRateLimitRemaining.GetMetricWithLabelValues: %v", err)
+	}
+	if err := remaining.Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got := m.GetGauge().GetValue(); got != 42 {
+		t.Errorf("expected GitHubRateLimitRemaining=42, got %v", got)
+	}
+
+	// Verify GitHubRateLimitLimit was set from the response header.
+	limitMetric, err := metrics.GitHubRateLimitLimit.GetMetricWithLabelValues("ratelimit-testuser")
+	if err != nil {
+		t.Fatalf("GitHubRateLimitLimit.GetMetricWithLabelValues: %v", err)
+	}
+	if err := limitMetric.Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got := m.GetGauge().GetValue(); got != 5000 {
+		t.Errorf("expected GitHubRateLimitLimit=5000, got %v", got)
 	}
 }

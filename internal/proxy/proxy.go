@@ -142,7 +142,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forward the request to GitHub.
-	status := h.forwardRequest(w, r, apiPath, rewriteAuth(githubToken))
+	status := h.forwardRequest(w, r, apiPath, rewriteAuth(githubToken), proxyTokenUserID(pt))
 
 	// Record usage.
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
@@ -163,7 +163,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		return
 	}
 
-	status := h.forwardRequest(w, r, "/graphql", rewriteAuth(githubToken))
+	status := h.forwardRequest(w, r, "/graphql", rewriteAuth(githubToken), proxyTokenUserID(pt))
 
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 		h.logger.Error("failed to record token usage", "error", err)
@@ -220,7 +220,9 @@ func (h *Handler) getProxyGitHubToken(r *http.Request, pt *database.ProxyToken) 
 		if err != nil {
 			h.logger.Warn("github token refresh failed, using existing token",
 				"token_id", gt.ID, "error", err)
+			metrics.GitHubTokenRefreshTotal.WithLabelValues(gt.UserID, "failure").Inc()
 		} else {
+			metrics.GitHubTokenRefreshTotal.WithLabelValues(gt.UserID, "success").Inc()
 			return newToken, nil
 		}
 	}
@@ -383,7 +385,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	io.Copy(w, resp.Body)
 }
 
-func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader string) int {
+func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader, userID string) int {
 	targetURL := githubAPIBase + path
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
@@ -418,7 +420,7 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 	}
 	defer resp.Body.Close()
 
-	// Copy rate limit headers for observability.
+	// Copy rate limit headers for observability and update Prometheus metrics.
 	for _, key := range []string{
 		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Used",
 	} {
@@ -427,10 +429,16 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 		}
 	}
 
-	// Log rate limit info.
+	// Record rate limit metrics from response headers, labeled by user.
 	if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "" {
 		if n, err := strconv.Atoi(remaining); err == nil {
 			h.logger.Debug("github rate limit", "remaining", n, "limit", resp.Header.Get("X-RateLimit-Limit"))
+			metrics.GitHubRateLimitRemaining.WithLabelValues(userID).Set(float64(n))
+		}
+	}
+	if limit := resp.Header.Get("X-RateLimit-Limit"); limit != "" {
+		if n, err := strconv.Atoi(limit); err == nil {
+			metrics.GitHubRateLimitLimit.WithLabelValues(userID).Set(float64(n))
 		}
 	}
 
@@ -450,10 +458,7 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 }
 
 func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, method, path, repo string, status int, dur time.Duration, action string) {
-	userID := ""
-	if pt.UserID != nil {
-		userID = *pt.UserID
-	}
+	userID := proxyTokenUserID(pt)
 	h.logger.Info(action,
 		"token_id", pt.ID,
 		"user_id", userID,
@@ -520,4 +525,12 @@ func writeError(w http.ResponseWriter, status int, message string) {
 		"message":           message,
 		"documentation_url": "https://docs.github.com/rest",
 	})
+}
+
+// proxyTokenUserID returns the user ID string for a ProxyToken, or "" if unset.
+func proxyTokenUserID(pt *database.ProxyToken) string {
+	if pt.UserID != nil {
+		return *pt.UserID
+	}
+	return ""
 }
