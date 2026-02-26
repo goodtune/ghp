@@ -44,7 +44,7 @@ func TestForwardRequest_EnterpriseHeader(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://localhost/repos/org/repo", nil)
 
-	status := h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token", "")
+	status := h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token")
 
 	if status != http.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
@@ -135,7 +135,7 @@ func TestForwardRequest_NoEnterpriseHeader(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://localhost/repos/org/repo", nil)
 
-	h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token", "")
+	h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token")
 
 	if ct.lastReq == nil {
 		t.Fatal("no request captured")
@@ -353,8 +353,11 @@ func TestForwardRequest_RateLimitMetrics(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://localhost/repos/org/repo", nil)
+	// Prepare a username slot and set the user so rate-limit metrics are labelled.
+	req, _ = PrepareUsernameSlot(req)
+	SetUsername(req, "ratelimit-testuser")
 
-	h.forwardRequest(rr, req, "/repos/org/repo", "test-token", "ratelimit-testuser")
+	h.forwardRequest(rr, req, "/repos/org/repo", "test-token")
 
 	// Verify GitHubRateLimitRemaining was set from the response header.
 	var m io_prometheus_client.Metric

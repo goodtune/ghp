@@ -136,7 +136,8 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	authHandler := auth.NewHandler(s.cfg, store, enc, s.logger)
-	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, s.logger)
+	usernameResolver := proxy.NewUsernameResolver(store, s.logger)
+	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, usernameResolver, s.logger)
 
 	// Recover the concrete *github.AppTokenProvider for admin API endpoints.
 	var concreteATP *github.AppTokenProvider
@@ -178,7 +179,7 @@ func (s *Server) Run(ctx context.Context) error {
 	githubInner := proxy.NewPassthroughHandler(
 		"https://github.com", resolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
-		githubInner, tokenSvc, resolver, s.logger)
+		githubInner, tokenSvc, resolver, usernameResolver, s.logger)
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 
