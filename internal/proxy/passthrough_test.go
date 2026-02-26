@@ -468,6 +468,188 @@ func newOpenScopedPassthrough(t *testing.T) (http.Handler, string) {
 	return handler, result.Token
 }
 
+// newRepoOnlyPassthrough creates a ScopedPassthroughHandler backed by a
+// repo-restricted ghp_ token with no permission scopes.
+func newRepoOnlyPassthrough(t *testing.T, repo string) (http.Handler, string) {
+	t.Helper()
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 42, GitHubUsername: "repouser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("real-github-pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Repository:    repo,
+		// No Scopes — repo-filtered but any git operation allowed.
+		Duration:  24 * time.Hour,
+		SessionID: "repo-only-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
+	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, slog.Default())
+
+	return handler, result.Token
+}
+
+// newScopeOnlyPassthrough creates a ScopedPassthroughHandler backed by a
+// permission-scoped ghp_ token with no repository restriction.
+func newScopeOnlyPassthrough(t *testing.T, scopes map[string]string) (http.Handler, string) {
+	t.Helper()
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 43, GitHubUsername: "scopeuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("real-github-pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		// No Repository — permission-scoped only, applies to any repo.
+		Scopes:    scopes,
+		Duration:  24 * time.Hour,
+		SessionID: "scope-only-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
+	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, slog.Default())
+
+	return handler, result.Token
+}
+
+func TestScopedPassthrough_RepoOnly_AllowsPushOnCorrectRepo(t *testing.T) {
+	// A repo-only token (repos set, no scopes) must allow git push on the
+	// allowed repository — no permission enforcement applies.
+	handler, ghpToken := newRepoOnlyPassthrough(t, "goodtune/ghp")
+
+	req := httptest.NewRequest("POST", "http://github.com/goodtune/ghp.git/git-receive-pack", nil)
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for repo-only token git push on correct repo, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestScopedPassthrough_RepoOnly_DeniesWrongRepo(t *testing.T) {
+	// A repo-only token (repos set, no scopes) must deny git operations
+	// against repositories not in its allowlist.
+	handler, ghpToken := newRepoOnlyPassthrough(t, "goodtune/ghp")
+
+	req := httptest.NewRequest("POST", "http://github.com/goodtune/other-repo.git/git-receive-pack", nil)
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for repo-only token on wrong repo, got %d", rr.Code)
+	}
+}
+
+func TestScopedPassthrough_ScopeOnly_AllowsPushOnAnyRepo(t *testing.T) {
+	// A scope-only token (no repos, scopes set) must allow git push on any
+	// repository when the permission is satisfied — no repo restriction applies.
+	handler, ghpToken := newScopeOnlyPassthrough(t, map[string]string{
+		"contents": "write",
+	})
+
+	req := httptest.NewRequest("POST", "http://github.com/any-org/any-repo.git/git-receive-pack", nil)
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for scope-only token git push on any repo, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestScopedPassthrough_ScopeOnly_DeniesInsufficientPermission(t *testing.T) {
+	// A scope-only token (no repos, scopes set) must deny git push when the
+	// token only grants contents:read.
+	handler, ghpToken := newScopeOnlyPassthrough(t, map[string]string{
+		"contents": "read",
+	})
+
+	req := httptest.NewRequest("POST", "http://github.com/any-org/any-repo.git/git-receive-pack", nil)
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for scope-only token with insufficient permission, got %d", rr.Code)
+	}
+}
+
 // tlsTransport returns an http.RoundTripper that trusts the test server's cert.
 func tlsTransport(ts *httptest.Server) http.RoundTripper {
 	return &http.Transport{

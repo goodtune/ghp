@@ -473,3 +473,198 @@ func TestServeHTTP_OpenScopedToken_AllowsWriteOperations(t *testing.T) {
 		t.Fatalf("expected 200 for open-scoped token write, got %d; body: %s", rr.Code, rr.Body.String())
 	}
 }
+
+// newRepoOnlyHandler creates a Handler with a repo-restricted ghp_ token but
+// no permission scopes. The token filters by repository but allows any endpoint.
+func newRepoOnlyHandler(t *testing.T, repo string) (*Handler, string) {
+	t.Helper()
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 42, GitHubUsername: "repouser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("real-github-pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Repository:    repo,
+		// No Scopes — repo-filtered but any endpoint allowed.
+		Duration:  24 * time.Hour,
+		SessionID: "repo-only-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:          &config.Config{},
+		tokenService: tokenSvc,
+		store:        store,
+		encryptor:    enc,
+		logger:       slog.Default(),
+		client:       &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+	return h, result.Token
+}
+
+// newScopeOnlyHandler creates a Handler with a permission-scoped ghp_ token
+// but no repository restriction. The token filters by permission but applies
+// to any repository.
+func newScopeOnlyHandler(t *testing.T, scopes map[string]string) (*Handler, string) {
+	t.Helper()
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 43, GitHubUsername: "scopeuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("real-github-pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		// No Repository — scoped by permission only, applies to any repo.
+		Scopes:    scopes,
+		Duration:  24 * time.Hour,
+		SessionID: "scope-only-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:          &config.Config{},
+		tokenService: tokenSvc,
+		store:        store,
+		encryptor:    enc,
+		logger:       slog.Default(),
+		client:       &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+	return h, result.Token
+}
+
+func TestServeHTTP_RepoOnly_AllowsCorrectRepoWriteOp(t *testing.T) {
+	// A repo-only token (repos set, no scopes) must allow write operations
+	// on the allowed repository — no permission enforcement applies.
+	h, ghpToken := newRepoOnlyHandler(t, "goodtune/ghp")
+
+	req := httptest.NewRequest("POST", "http://api.github.com/repos/goodtune/ghp/pulls/1/comments", strings.NewReader(`{"body":"hello"}`))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for repo-only token on correct repo write, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeHTTP_RepoOnly_DeniesWrongRepo(t *testing.T) {
+	// A repo-only token (repos set, no scopes) must deny requests to
+	// repositories not in its allowlist.
+	h, ghpToken := newRepoOnlyHandler(t, "goodtune/ghp")
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/goodtune/other-repo/pulls", nil)
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for repo-only token on wrong repo, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "goodtune/other-repo") {
+		t.Errorf("expected error to mention the denied repository, got: %s", body)
+	}
+}
+
+func TestServeHTTP_ScopeOnly_AllowsAnyRepo(t *testing.T) {
+	// A scope-only token (no repos, scopes set) must allow requests to any
+	// repository as long as the endpoint permission is satisfied.
+	h, ghpToken := newScopeOnlyHandler(t, map[string]string{
+		"pull_requests": "read",
+	})
+
+	// Request to an arbitrary repo — repo restriction is absent.
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/some-org/some-repo/pulls", nil)
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for scope-only token on any repo, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeHTTP_ScopeOnly_DeniesInsufficientPermission(t *testing.T) {
+	// A scope-only token (no repos, scopes set) must deny requests that
+	// require a permission not granted — regardless of repository.
+	h, ghpToken := newScopeOnlyHandler(t, map[string]string{
+		"pull_requests": "read",
+	})
+
+	// Attempt a write operation that requires pull_requests:write.
+	req := httptest.NewRequest("POST", "http://api.github.com/repos/some-org/some-repo/pulls/1/comments", strings.NewReader(`{"body":"hello"}`))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for scope-only token with insufficient permission, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "pull_requests:write") {
+		t.Errorf("expected error to mention required pull_requests:write permission, got: %s", body)
+	}
+}

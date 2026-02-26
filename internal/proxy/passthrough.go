@@ -138,8 +138,18 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			metrics.ObserveProxyRequest(backend.GitHub, pt, r.Method, rec.status, time.Since(start), "git", username)
 		}()
 
-		// Open-scoped tokens skip all filtering — forward directly.
-		if isOpenScoped(pt) {
+		// Parse the token's scope restrictions once; fail-closed on corrupt JSON.
+		si, err := parseScopeInfo(pt)
+		if err != nil {
+			if logger != nil {
+				logger.Error("git scope enforcement: failed to parse token scope", "error", err)
+			}
+			writeError(rec, http.StatusInternalServerError, "Internal error")
+			return
+		}
+
+		// Open-scoped tokens (no repos AND no scopes) skip all filtering — forward directly.
+		if si.isOpenScoped() {
 			realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
 			if err != nil {
 				if logger != nil {
@@ -153,29 +163,23 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			return
 		}
 
-		// Enforce repository scope.
-		if !repositoryAllowed(repo, pt.Repositories) {
+		// Enforce repository scope only when the token has repo restrictions.
+		// A token with repos=null carries no repo restriction (applies to any repo).
+		if len(si.Repos) > 0 && !si.repoAllowed(repo) {
 			writeError(rec, http.StatusForbidden,
 				fmt.Sprintf("Token is not scoped to %s", repo))
 			return
 		}
 
-		// Enforce permission scope.
-		scopes, err := database.ParseScopes(pt.Scopes)
-		if err != nil {
-			if logger != nil {
-				logger.Error("git scope enforcement: failed to parse scopes", "error", err)
-			}
-			writeError(rec, http.StatusInternalServerError, "Internal error")
-			return
-		}
-		if !scopes.HasPermission(permission, level) {
+		// Enforce permission scope only when the token has scope restrictions.
+		// A token with scopes=null carries no permission restriction (any endpoint allowed).
+		if len(si.Scopes) > 0 && !si.Scopes.HasPermission(permission, level) {
 			writeError(rec, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
 			return
 		}
 
-		// Scope checks passed — forward with resolved token.
+		// Scope checks passed (or dimension is unrestricted) — forward with resolved token.
 		realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
 		if err != nil {
 			if logger != nil {
@@ -300,36 +304,43 @@ func extractClientToken(r *http.Request) (string, func(realToken string) string)
 	return "", nil
 }
 
-// isOpenScoped returns true if the proxy token has no repository or permission
-// restrictions set, meaning it carries the full permissions of the underlying
-// credential and should not be filtered.
-func isOpenScoped(pt *database.ProxyToken) bool {
-	// Check repositories — null, empty JSON, or empty array means open.
-	var repos []string
-	repoOpen := json.Unmarshal(pt.Repositories, &repos) != nil || len(repos) == 0
-
-	// Check scopes — null, empty JSON, or empty map means open.
-	var scopes map[string]string
-	scopeOpen := json.Unmarshal(pt.Scopes, &scopes) != nil || len(scopes) == 0
-
-	return repoOpen && scopeOpen
+// tokenScopeInfo holds the parsed repository and permission scopes for a proxy
+// token. A nil/empty slice or map means no restriction for that dimension.
+type tokenScopeInfo struct {
+	Repos  []string
+	Scopes database.Scopes
 }
 
-// repositoryAllowed returns true if the given repo is in the JSON array of
-// repositories, or if the token is open-scoped (null/empty repositories list).
-func repositoryAllowed(repo string, reposJSON json.RawMessage) bool {
-	var repos []string
-	if err := json.Unmarshal(reposJSON, &repos); err != nil {
-		// JSON null or invalid — treat as open-scoped (no restriction).
-		return true
-	}
-	if len(repos) == 0 {
-		return true
-	}
-	for _, r := range repos {
+// isOpenScoped returns true when neither repository nor permission restrictions
+// are set, meaning the token carries the full permissions of the underlying
+// credential without any filtering.
+func (si tokenScopeInfo) isOpenScoped() bool {
+	return len(si.Repos) == 0 && len(si.Scopes) == 0
+}
+
+// repoAllowed returns true if repo is in the token's repository allowlist.
+// Must only be called when len(si.Repos) > 0.
+func (si tokenScopeInfo) repoAllowed(repo string) bool {
+	for _, r := range si.Repos {
 		if strings.EqualFold(r, repo) {
 			return true
 		}
 	}
 	return false
+}
+
+// parseScopeInfo parses the Repositories and Scopes JSON fields of a proxy
+// token. JSON null and empty arrays/maps are normalised to nil (no
+// restriction). Returns an error for invalid JSON so callers fail safely
+// rather than silently treating corrupt data as open-scoped.
+func parseScopeInfo(pt *database.ProxyToken) (tokenScopeInfo, error) {
+	var repos []string
+	if err := json.Unmarshal(pt.Repositories, &repos); err != nil {
+		return tokenScopeInfo{}, fmt.Errorf("parsing token repositories: %w", err)
+	}
+	var scopes database.Scopes
+	if err := json.Unmarshal(pt.Scopes, &scopes); err != nil {
+		return tokenScopeInfo{}, fmt.Errorf("parsing token scopes: %w", err)
+	}
+	return tokenScopeInfo{Repos: repos, Scopes: scopes}, nil
 }

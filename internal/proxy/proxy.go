@@ -112,8 +112,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Open-scoped tokens skip all filtering — forward directly to GitHub.
-	if isOpenScoped(pt) {
+	// Parse the token's scope restrictions once; fail-closed on corrupt JSON.
+	si, err := parseScopeInfo(pt)
+	if err != nil {
+		h.logger.Error("failed to parse token scope", "error", err)
+		writeError(w, http.StatusInternalServerError, "Internal error")
+		return
+	}
+
+	// Open-scoped tokens (no repos AND no scopes) skip all filtering — forward directly to GitHub.
+	if si.isOpenScoped() {
 		githubToken, err := h.getGitHubToken(r, pt)
 		if err != nil {
 			h.logger.Error("failed to get GitHub token", "error", err)
@@ -133,26 +141,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Extract repository from path (if this is a /repos/ path).
 	repo := ExtractRepoFromPath(apiPath)
 
-	// If a repo is identified, enforce the token's repository scope.
-	if repo != "" && !repositoryAllowed(repo, pt.Repositories) {
+	// Enforce repository scope only when the token has repo restrictions.
+	// A token with repos=null carries no repo restriction (applies to any repo).
+	if repo != "" && len(si.Repos) > 0 && !si.repoAllowed(repo) {
 		writeError(w, http.StatusForbidden,
 			fmt.Sprintf("Token is not scoped to %s", repo))
 		h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
 
-	// Check endpoint permission scope for known endpoints.
+	// Enforce permission scope only when the token has scope restrictions.
 	// Unrecognized endpoints are forwarded — GitHub's token handles access.
+	// A token with scopes=null carries no permission restriction (any endpoint allowed).
 	permission, level := EndpointScope(r.Method, apiPath)
-	if permission != "" && permission != "metadata" {
-		scopes, err := database.ParseScopes(pt.Scopes)
-		if err != nil {
-			h.logger.Error("failed to parse token scopes", "error", err)
-			writeError(w, http.StatusInternalServerError, "Internal error")
-			return
-		}
-
-		if !scopes.HasPermission(permission, level) {
+	if permission != "" && permission != "metadata" && len(si.Scopes) > 0 {
+		if !si.Scopes.HasPermission(permission, level) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
 			h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
@@ -217,15 +220,12 @@ func (h *Handler) getAgentGitHubToken(ctx context.Context, pt *database.ProxyTok
 		return "", fmt.Errorf("agent token missing installation_id")
 	}
 
-	var repos []string
-	// Repositories may be null for open-scoped tokens.
-	json.Unmarshal(pt.Repositories, &repos)
+	si, err := parseScopeInfo(pt)
+	if err != nil {
+		return "", fmt.Errorf("parsing agent token scope: %w", err)
+	}
 
-	var scopes database.Scopes
-	// Scopes may be null for open-scoped tokens.
-	json.Unmarshal(pt.Scopes, &scopes)
-
-	return h.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, repos, scopes)
+	return h.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, si.Repos, si.Scopes)
 }
 
 func (h *Handler) getProxyGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {

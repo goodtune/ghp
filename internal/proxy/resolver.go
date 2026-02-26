@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/goodtune/ghp/internal/crypto"
@@ -74,13 +73,10 @@ func (r *ProxyTokenResolver) resolveAgentToken(ctx context.Context, pt *database
 		return "", fmt.Errorf("agent token missing installation_id")
 	}
 
-	var repos []string
-	// Repositories may be null for open-scoped tokens.
-	json.Unmarshal(pt.Repositories, &repos)
+	si, err := parseScopeInfo(pt)
+	if err != nil {
+		return "", fmt.Errorf("parsing agent token scope: %w", err)
+	}
 
-	var scopes database.Scopes
-	// Scopes may be null for open-scoped tokens.
-	json.Unmarshal(pt.Scopes, &scopes)
-
-	return r.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, repos, scopes)
+	return r.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, si.Repos, si.Scopes)
 }
