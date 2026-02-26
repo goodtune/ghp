@@ -40,7 +40,7 @@ func TestObserveProxyRequest_REST(t *testing.T) {
 	}
 
 	before := getCounterValue(t, ProxyRequestTotal, labels)
-	ObserveProxyRequest("api.github.com", pt, "GET", 200, 100*time.Millisecond, "rest")
+	ObserveProxyRequest("api.github.com", pt, "GET", 200, 100*time.Millisecond, "rest", "testuser")
 	after := getCounterValue(t, ProxyRequestTotal, labels)
 
 	if after-before != 1 {
@@ -66,7 +66,7 @@ func TestObserveProxyRequest_GraphQL(t *testing.T) {
 	}
 
 	before := getCounterValue(t, ProxyRequestTotal, labels)
-	ObserveProxyRequest("api.github.com", pt, "POST", 200, 50*time.Millisecond, "graphql")
+	ObserveProxyRequest("api.github.com", pt, "POST", 200, 50*time.Millisecond, "graphql", "testuser")
 	after := getCounterValue(t, ProxyRequestTotal, labels)
 
 	if after-before != 1 {
@@ -92,7 +92,7 @@ func TestObserveProxyRequest_Git(t *testing.T) {
 	}
 
 	before := getCounterValue(t, ProxyRequestTotal, labels)
-	ObserveProxyRequest("github.com", pt, "POST", 200, 200*time.Millisecond, "git")
+	ObserveProxyRequest("github.com", pt, "POST", 200, 200*time.Millisecond, "git", "testuser")
 	after := getCounterValue(t, ProxyRequestTotal, labels)
 
 	if after-before != 1 {
@@ -120,7 +120,7 @@ func TestObserveProxyRequest_WithInstallationID(t *testing.T) {
 	}
 
 	before := getCounterValue(t, ProxyRequestTotal, labels)
-	ObserveProxyRequest("api.github.com", pt, "GET", 200, 100*time.Millisecond, "rest")
+	ObserveProxyRequest("api.github.com", pt, "GET", 200, 100*time.Millisecond, "rest", "testuser")
 	after := getCounterValue(t, ProxyRequestTotal, labels)
 
 	if after-before != 1 {
@@ -130,5 +130,5 @@ func TestObserveProxyRequest_WithInstallationID(t *testing.T) {
 
 func TestObserveProxyRequest_NilPt(t *testing.T) {
 	// Should not panic.
-	ObserveProxyRequest("api.github.com", nil, "GET", 200, 100*time.Millisecond, "rest")
+	ObserveProxyRequest("api.github.com", nil, "GET", 200, 100*time.Millisecond, "rest", "")
 }

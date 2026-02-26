@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goodtune/ghp/internal/metrics"
+	"github.com/goodtune/ghp/internal/proxy"
 )
 
 // responseRecorder wraps http.ResponseWriter to capture status and size.
@@ -110,6 +111,10 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) ht
 		start := time.Now()
 		rec := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
 
+		// Prepare a mutable slot in the request context so downstream
+		// handlers can inject the resolved GitHub username.
+		r, usernameSlot := proxy.PrepareUsernameSlot(r)
+
 		next.ServeHTTP(rec, r)
 
 		dur := time.Since(start)
@@ -161,7 +166,7 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) ht
 				Headers:    headers,
 			},
 			BytesRead:   0,
-			UserID:      "",
+			UserID:      *usernameSlot,
 			Duration:    dur.Seconds(),
 			Size:        rec.size,
 			Status:      rec.status,

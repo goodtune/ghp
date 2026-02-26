@@ -36,18 +36,20 @@ type Handler struct {
 	store            database.Store
 	encryptor        *crypto.Encryptor
 	appTokenProvider AppTokenProvider // may be nil
+	usernameResolver *UsernameResolver
 	logger           *slog.Logger
 	client           *http.Client
 }
 
 // NewHandler creates a new reverse proxy handler.
-func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc *crypto.Encryptor, atp AppTokenProvider, logger *slog.Logger) *Handler {
+func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc *crypto.Encryptor, atp AppTokenProvider, ur *UsernameResolver, logger *slog.Logger) *Handler {
 	return &Handler{
 		cfg:              cfg,
 		tokenService:     ts,
 		store:            store,
 		encryptor:        enc,
 		appTokenProvider: atp,
+		usernameResolver: ur,
 		logger:           logger,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
@@ -96,6 +98,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the GitHub username from the token's user ID and inject it
+	// into the request context so the access-log middleware can read it.
+	if h.usernameResolver != nil && pt.UserID != nil {
+		if username := h.usernameResolver.ResolveFromUserID(r.Context(), *pt.UserID); username != "" {
+			SetUsername(r, username)
+		}
+	}
+
 	// GraphQL handled separately.
 	if apiPath == "/graphql" {
 		h.handleGraphQL(w, r, pt, rewriteAuth, start)
@@ -109,7 +119,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if repo != "" && !repositoryAllowed(repo, pt.Repositories) {
 		writeError(w, http.StatusForbidden,
 			fmt.Sprintf("Token is not scoped to %s", repo))
-		h.logRequest(r.Context(), pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+		h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
 
@@ -127,7 +137,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !scopes.HasPermission(permission, level) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
-			h.logRequest(r.Context(), pt, r.Method, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+			h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
 		}
 	}
@@ -149,7 +159,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to record token usage", "error", err)
 	}
 
-	h.logRequest(r.Context(), pt, r.Method, apiPath, repo, status, time.Since(start), "proxy_request")
+	h.logRequest(r.Context(), pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
 }
 
 func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, rewriteAuth func(string) string, start time.Time) {
@@ -169,7 +179,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		h.logger.Error("failed to record token usage", "error", err)
 	}
 
-	h.logRequest(r.Context(), pt, r.Method, "/graphql", "", status, time.Since(start), "proxy_request")
+	h.logRequest(r.Context(), pt, r, "/graphql", "", status, time.Since(start), "proxy_request")
 }
 
 func (h *Handler) getGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {
@@ -324,6 +334,10 @@ func (h *Handler) refreshGitHubToken(ctx context.Context, gt *database.GitHubTok
 // ghp_* from other systems, or personal access tokens) so they reach GitHub
 // without interference.
 func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, path string) {
+	// Grab the raw GitHub token before forwarding so we can resolve the
+	// username for metrics/access-log purposes without storing the token.
+	rawToken := extractRawGitHubToken(r)
+
 	targetURL := githubAPIBase + path
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
@@ -376,6 +390,15 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 		}
 		for _, v := range vals {
 			w.Header().Add(key, v)
+		}
+	}
+
+	// Resolve the GitHub username from the raw token and inject it into the
+	// request context before writing the response so the access-log
+	// middleware can capture it.
+	if rawToken != "" && h.usernameResolver != nil {
+		if username := h.usernameResolver.ResolveFromGitHubToken(r.Context(), rawToken); username != "" {
+			SetUsername(r, username)
 		}
 	}
 
@@ -449,17 +472,22 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 	return resp.StatusCode
 }
 
-func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, method, path, repo string, status int, dur time.Duration, action string) {
+func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, r *http.Request, path, repo string, status int, dur time.Duration, action string) {
 	userID := ""
 	if pt.UserID != nil {
 		userID = *pt.UserID
 	}
+
+	// Use the GitHub username for logging and metrics when available.
+	username := GetUsername(r)
+
 	h.logger.Info(action,
 		"token_id", pt.ID,
 		"user_id", userID,
+		"github_username", username,
 		"session", pt.SessionID,
 		"repo", repo,
-		"method", method,
+		"method", r.Method,
 		"path", path,
 		"status", status,
 		"duration_ms", dur.Milliseconds(),
@@ -470,12 +498,12 @@ func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, metho
 	if path == "/graphql" {
 		apiType = "graphql"
 	}
-	metrics.ObserveProxyRequest(backend.API, pt, method, status, dur, apiType)
+	metrics.ObserveProxyRequest(backend.API, pt, r.Method, status, dur, apiType, username)
 
 	entry := &database.AuditEntry{
 		UserID:     userID,
 		Action:     action,
-		Method:     method,
+		Method:     r.Method,
 		Path:       path,
 		Repository: repo,
 		StatusCode: status,

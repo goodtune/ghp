@@ -76,14 +76,14 @@ var (
 // ObserveProxyRequest records proxy-level request metrics for a completed request.
 // If pt is nil the call is a no-op. apiType describes the request type (for example
 // "rest", "graphql", or "git") used for the "type" metric label; callers should pass
-// an appropriate value or "" if the type is unknown.
-func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string, status int, dur time.Duration, apiType string) {
+// an appropriate value or "" if the type is unknown. The username parameter should be
+// the GitHub username of the token owner (not the internal user ID).
+func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string, status int, dur time.Duration, apiType string, username string) {
 	if pt == nil {
 		return
 	}
-	userID := ""
-	if pt.UserID != nil {
-		userID = *pt.UserID
+	if username == "" {
+		username = "unknown"
 	}
 	app := ""
 	if pt.InstallationID != nil {
@@ -91,6 +91,6 @@ func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string,
 	}
 	statusStr := strconv.Itoa(status)
 
-	ProxyRequestDuration.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, userID, app).Observe(dur.Seconds())
-	ProxyRequestTotal.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, userID, app).Inc()
+	ProxyRequestDuration.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, username, app).Observe(dur.Seconds())
+	ProxyRequestTotal.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, username, app).Inc()
 }

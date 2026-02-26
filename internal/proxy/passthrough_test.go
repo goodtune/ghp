@@ -226,7 +226,7 @@ func newScopedPassthrough(t *testing.T, repo string, scopes map[string]string) (
 
 	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
 	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
-	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, slog.Default())
+	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, slog.Default())
 
 	return handler, result.Token
 }
