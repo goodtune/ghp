@@ -1,0 +1,27 @@
+{{define "token_card"}}
+<div id="token-{{.ID}}" class="token-card">
+    <div class="token-card-header">
+        <span class="token-card-repo">{{.RepoDisplay}}</span>
+        {{if .IsActive}}
+        <span class="status-badge status-active">Expires in {{.ExpiresIn}}</span>
+        {{else}}
+        <span class="status-badge status-revoked">Revoked</span>
+        {{end}}
+    </div>
+    <div class="token-card-prefix monospace">{{.TokenPrefix}}...</div>
+    <div class="token-card-permissions">
+        {{range .ScopeList}}
+        <span class="permission-tag">{{.}}</span>
+        {{end}}
+    </div>
+    {{if .SessionID}}
+    <div class="token-card-session">{{.SessionID}}</div>
+    {{end}}
+    <div class="token-card-footer">
+        <span class="token-card-type">{{.TokenType}}</span>
+        {{if .IsActive}}
+        <button class="btn-danger btn-outline" data-on-click="@get('/dashboard/token/{{.ID}}/revoke/')">Revoke</button>
+        {{end}}
+    </div>
+</div>
+{{end}}

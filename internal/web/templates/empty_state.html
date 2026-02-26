@@ -1,0 +1,7 @@
+{{define "empty_state"}}
+<div class="empty-state">
+    <img src="/static/mascot-grey.png" alt="" class="empty-state-mascot">
+    <p class="empty-state-text">No tokens yet. Create one to get started.</p>
+    <button class="btn-primary" data-on-click="@get('/dashboard/token/add/')">New Token</button>
+</div>
+{{end}}
