@@ -230,7 +230,9 @@ func (h *Handler) getProxyGitHubToken(r *http.Request, pt *database.ProxyToken) 
 		if err != nil {
 			h.logger.Warn("github token refresh failed, using existing token",
 				"token_id", gt.ID, "error", err)
+			metrics.GitHubTokenRefreshTotal.WithLabelValues(gt.UserID, "failure").Inc()
 		} else {
+			metrics.GitHubTokenRefreshTotal.WithLabelValues(gt.UserID, "success").Inc()
 			return newToken, nil
 		}
 	}
@@ -441,7 +443,7 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 	}
 	defer resp.Body.Close()
 
-	// Copy rate limit headers for observability.
+	// Copy rate limit headers for observability and update Prometheus metrics.
 	for _, key := range []string{
 		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Used",
 	} {
@@ -450,10 +452,17 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 		}
 	}
 
-	// Log rate limit info.
+	// Record rate limit metrics from response headers, labeled by GitHub username.
+	username := GetUsername(r)
 	if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "" {
 		if n, err := strconv.Atoi(remaining); err == nil {
 			h.logger.Debug("github rate limit", "remaining", n, "limit", resp.Header.Get("X-RateLimit-Limit"))
+			metrics.GitHubRateLimitRemaining.WithLabelValues(username).Set(float64(n))
+		}
+	}
+	if limit := resp.Header.Get("X-RateLimit-Limit"); limit != "" {
+		if n, err := strconv.Atoi(limit); err == nil {
+			metrics.GitHubRateLimitLimit.WithLabelValues(username).Set(float64(n))
 		}
 	}
 
@@ -517,7 +526,6 @@ func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, r *ht
 		h.logger.Error("failed to create audit entry", "error", err)
 	}
 }
-
 
 // installationTokenErrorResponse inspects err for an *InstallationTokenError
 // and returns the upstream status code with a descriptive message listing
