@@ -1,0 +1,35 @@
+{{define "wizard_step2"}}
+<div class="wizard-dots">
+    <span class="wizard-dot active"></span>
+    <span class="wizard-dot active"></span>
+    <span class="wizard-dot"></span>
+    <span class="wizard-dot"></span>
+</div>
+<button class="modal-close" data-on-click="$modalOpen = false">&times;</button>
+<h2>Set Permissions</h2>
+<form data-on-submit.prevent="@post('/dashboard/token/add/')">
+    <input type="hidden" name="step" value="2">
+    <h3 class="form-section-title">Permissions</h3>
+    <div class="permissions-list">
+        {{range .Permissions}}
+        <div class="permission-row">
+            <div class="permission-info">
+                <span class="permission-name">{{.DisplayName}}</span>
+                <span class="permission-desc">{{.Description}}</span>
+            </div>
+            <select name="perm_{{.Key}}">
+                <option value="">No access</option>
+                <option value="read" {{if eq .CurrentValue "read"}}selected{{end}}>Read</option>
+                {{if not .ReadOnly}}
+                <option value="write" {{if eq .CurrentValue "write"}}selected{{end}}>Write</option>
+                {{end}}
+            </select>
+        </div>
+        {{end}}
+    </div>
+    <div class="modal-actions">
+        <button type="button" class="btn-outline" data-on-click="@post('/dashboard/token/add/', {body: new URLSearchParams({back: 'true', step: '2'})})">Back</button>
+        <button type="submit" class="btn-primary">Next</button>
+    </div>
+</form>
+{{end}}

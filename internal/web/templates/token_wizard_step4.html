@@ -1,0 +1,32 @@
+{{define "wizard_step4"}}
+<div class="wizard-dots">
+    <span class="wizard-dot active"></span>
+    <span class="wizard-dot active"></span>
+    <span class="wizard-dot active"></span>
+    <span class="wizard-dot active"></span>
+</div>
+<button class="modal-close" data-on-click="$modalOpen = false">&times;</button>
+<h2>Confirm &amp; Create</h2>
+<div class="wizard-summary">
+    <div class="summary-row">
+        <span class="summary-label">Repository</span>
+        <span class="summary-value">{{.Repository}}</span>
+    </div>
+    <div class="summary-row">
+        <span class="summary-label">Permissions</span>
+        <div class="summary-value">
+            {{range .ScopeList}}
+            <span class="permission-tag">{{.}}</span>
+            {{end}}
+        </div>
+    </div>
+    <div class="summary-row">
+        <span class="summary-label">Duration</span>
+        <span class="summary-value">{{.Duration}}</span>
+    </div>
+</div>
+<div class="modal-actions">
+    <button class="btn-outline" data-on-click="@post('/dashboard/token/add/', {body: new URLSearchParams({back: 'true', step: '4'})})">Back</button>
+    <button class="btn-primary" data-on-click="@post('/dashboard/token/add/', {body: new URLSearchParams({step: '4'})})">Create Token</button>
+</div>
+{{end}}

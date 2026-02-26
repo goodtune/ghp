@@ -1,0 +1,20 @@
+{{define "wizard_step1"}}
+<div class="wizard-dots">
+    <span class="wizard-dot active"></span>
+    <span class="wizard-dot"></span>
+    <span class="wizard-dot"></span>
+    <span class="wizard-dot"></span>
+</div>
+<button class="modal-close" data-on-click="$modalOpen = false">&times;</button>
+<h2>Select Repository</h2>
+<form data-on-submit.prevent="@post('/dashboard/token/add/')">
+    <div class="form-group">
+        <label for="repository">Repository</label>
+        <input type="text" id="repository" name="repository" placeholder="owner/repo" value="{{.Repository}}" required>
+    </div>
+    <div class="modal-actions">
+        <span></span>
+        <button type="submit" class="btn-primary">Next</button>
+    </div>
+</form>
+{{end}}

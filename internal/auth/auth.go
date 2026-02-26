@@ -184,7 +184,7 @@ func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 			http.Error(w, `{"message":"Authentication required"}`, http.StatusUnauthorized)
 			return
 		}
-		ctx := context.WithValue(r.Context(), sessionKey{}, session)
+		ctx := ContextWithSession(r.Context(), session)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -202,6 +202,11 @@ func (h *Handler) RequireAdmin(next http.Handler) http.Handler {
 }
 
 type sessionKey struct{}
+
+// ContextWithSession stores a session in the given context.
+func ContextWithSession(ctx context.Context, session *Session) context.Context {
+	return context.WithValue(ctx, sessionKey{}, session)
+}
 
 // SessionFromContext retrieves the session from context.
 func SessionFromContext(ctx context.Context) *Session {
