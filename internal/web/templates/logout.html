@@ -1,0 +1,16 @@
+{{define "title"}}Sign out — GitHub Proxy{{end}}
+
+{{define "content"}}
+<div class="login-card">
+    <h2>Sign out</h2>
+    <p>Are you sure you want to sign out?</p>
+    <div class="modal-actions">
+        <a href="/dashboard/" class="btn-outline">Cancel</a>
+        <form method="POST" action="/logout/">
+            <button type="submit" class="btn-danger">Sign Out</button>
+        </form>
+    </div>
+</div>
+{{end}}
+
+{{template "base" .}}

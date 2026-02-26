@@ -61,7 +61,7 @@ func (h *Handler) initTemplates() {
 		"templates/token_card.html",
 		"templates/empty_state.html",
 	))
-	pages := []string{"login.html", "dashboard.html", "admin.html", "admin-login.html"}
+	pages := []string{"login.html", "dashboard.html", "admin.html", "admin-login.html", "logout.html"}
 	h.pageTemplates = make(map[string]*template.Template, len(pages))
 	for _, page := range pages {
 		t := template.Must(template.Must(base.Clone()).ParseFS(templateFS, "templates/"+page))
@@ -130,6 +130,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/dashboard/token/add/", h.handleWizardPost)
 		r.Get("/dashboard/token/{id}/revoke/", h.handleRevokeConfirm)
 		r.Post("/dashboard/token/{id}/revoke/", h.handleRevoke)
+		r.Get("/logout/", h.handleLogoutConfirm)
+		r.Post("/logout/", h.handleLogoutExecute)
 	})
 }
 
@@ -470,6 +472,28 @@ func (h *Handler) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		}
 		sse.PatchElements(html, datastar.WithSelectorID("token-"+tokenID))
 	}
+}
+
+// --- Logout Handlers ---
+
+func (h *Handler) handleLogoutConfirm(w http.ResponseWriter, r *http.Request) {
+	session := auth.SessionFromContext(r.Context())
+	data := map[string]interface{}{
+		"ShowHeader": true,
+		"DevMode":    h.devMode,
+		"Username":   session.Username,
+		"Role":       session.Role,
+		"ActiveNav":  "",
+	}
+	if err := h.renderPage(w, "logout.html", data); err != nil {
+		h.logger.Error("template execution failed", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+	}
+}
+
+func (h *Handler) handleLogoutExecute(w http.ResponseWriter, r *http.Request) {
+	h.auth.Logout(w, r)
+	http.Redirect(w, r, "/login/", http.StatusSeeOther)
 }
 
 // --- Token Card Helpers ---

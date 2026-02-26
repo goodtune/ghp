@@ -249,6 +249,22 @@ func (h *Handler) deleteSession(token string) {
 	h.sessions.Remove(token)
 }
 
+// Logout clears the session for the given request and sets a cookie to remove
+// the browser session. It is intended to be called by the web UI handler.
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(SessionCookieName); err == nil {
+		h.deleteSession(cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.secureCookies(),
+		MaxAge:   -1,
+	})
+}
+
 func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	state := generateState()
 	h.states.Add(state, struct{}{})
