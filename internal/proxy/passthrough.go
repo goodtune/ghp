@@ -77,10 +77,25 @@ type ScopeEnforcer interface {
 // match a git smart HTTP path, the token's repository and permission scopes are
 // verified before the request is forwarded. Non-git paths and non-client tokens
 // pass through unchanged.
-func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, logger *slog.Logger) http.Handler {
+//
+// The optional usernameResolver is used to resolve GitHub usernames for both
+// client tokens (via the database) and raw GitHub tokens (via the GitHub API)
+// so that they appear in metrics and access logs.
+func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clientTok, rewriteAuth := extractClientToken(r)
 		if clientTok == "" {
+			// Not a client token — try to resolve the GitHub username
+			// from the raw token for access-log / metrics visibility.
+			if ur != nil {
+				if raw := extractRawGitHubToken(r); raw != "" {
+					inner.ServeHTTP(w, r)
+					if username := ur.ResolveFromGitHubToken(r.Context(), raw); username != "" {
+						SetUsername(r, username)
+					}
+					return
+				}
+			}
 			inner.ServeHTTP(w, r)
 			return
 		}
@@ -108,10 +123,19 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			return
 		}
 
+		// Resolve the GitHub username for metrics and access-log use.
+		username := ""
+		if ur != nil && pt.UserID != nil {
+			username = ur.ResolveFromUserID(r.Context(), *pt.UserID)
+			if username != "" {
+				SetUsername(r, username)
+			}
+		}
+
 		// Wrap response writer to capture status code for metrics.
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		defer func() {
-			metrics.ObserveProxyRequest(backend.GitHub, pt, r.Method, rec.status, time.Since(start), "git")
+			metrics.ObserveProxyRequest(backend.GitHub, pt, r.Method, rec.status, time.Since(start), "git", username)
 		}()
 
 		// Enforce repository scope.
