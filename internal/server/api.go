@@ -246,8 +246,12 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	metrics.TokenRevokedTotal.WithLabelValues(session.UserID).Inc()
-	metrics.TokenActive.WithLabelValues(session.UserID).Dec()
+	ownerID := session.UserID
+	if pt.UserID != nil && *pt.UserID != "" {
+		ownerID = *pt.UserID
+	}
+	metrics.TokenRevokedTotal.WithLabelValues(ownerID).Inc()
+	metrics.TokenActive.WithLabelValues(ownerID).Dec()
 
 	// Audit log.
 	a.store.CreateAuditEntry(r.Context(), &database.AuditEntry{

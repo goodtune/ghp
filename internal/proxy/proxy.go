@@ -372,6 +372,10 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	defer resp.Body.Close()
 
 	// Copy response headers, filtering out hop-by-hop headers.
+	// Note: ghp_github_ratelimit_remaining / ghp_github_ratelimit_limit Prometheus
+	// gauges are NOT updated here because passthrough requests carry native PATs
+	// (e.g. gho_*, ghp_* from other systems) with no associated ghp user_id to use
+	// as a metric label. Rate limit headers are still forwarded to the caller below.
 	for key, vals := range resp.Header {
 		if hopByHop[http.CanonicalHeaderKey(key)] {
 			continue
