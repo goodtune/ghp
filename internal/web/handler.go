@@ -423,6 +423,7 @@ func (h *Handler) handleAdminTokenRevokeConfirm(w http.ResponseWriter, r *http.R
 	tok, err := h.store.GetProxyTokenByID(r.Context(), tokenID)
 	if err != nil {
 		h.logger.Error("failed to get token", "error", err)
+		http.Error(w, "Token not found", http.StatusNotFound)
 		return
 	}
 
@@ -448,6 +449,7 @@ func (h *Handler) handleAdminTokenRevoke(w http.ResponseWriter, r *http.Request)
 	tokenID := chi.URLParam(r, "id")
 	if err := h.store.RevokeProxyToken(r.Context(), tokenID); err != nil {
 		h.logger.Error("failed to revoke token", "error", err)
+		http.Error(w, "Failed to revoke token", http.StatusInternalServerError)
 		return
 	}
 
@@ -463,6 +465,7 @@ func (h *Handler) handleAdminUserTokenRevokeConfirm(w http.ResponseWriter, r *ht
 	tok, err := h.store.GetProxyTokenByID(r.Context(), tokenID)
 	if err != nil {
 		h.logger.Error("failed to get token", "error", err)
+		http.Error(w, "Token not found", http.StatusNotFound)
 		return
 	}
 
@@ -489,6 +492,7 @@ func (h *Handler) handleAdminUserTokenRevoke(w http.ResponseWriter, r *http.Requ
 	tokenID := chi.URLParam(r, "id")
 	if err := h.store.RevokeProxyToken(r.Context(), tokenID); err != nil {
 		h.logger.Error("failed to revoke token", "error", err)
+		http.Error(w, "Failed to revoke token", http.StatusInternalServerError)
 		return
 	}
 

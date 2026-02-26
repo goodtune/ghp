@@ -15,8 +15,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	chimw "github.com/go-chi/chi/v5/middleware"
-
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/config"
@@ -133,7 +131,6 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Build Chi router.
 	r := chi.NewRouter()
-	r.Use(chimw.RedirectSlashes)
 
 	// Auth routes.
 	authHandler.RegisterRoutes(r)
