@@ -89,10 +89,10 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			// from the raw token for access-log / metrics visibility.
 			if ur != nil {
 				if raw := extractRawGitHubToken(r); raw != "" {
-					inner.ServeHTTP(w, r)
 					if username := ur.ResolveFromGitHubToken(r.Context(), raw); username != "" {
 						SetUsername(r, username)
 					}
+					inner.ServeHTTP(w, r)
 					return
 				}
 			}

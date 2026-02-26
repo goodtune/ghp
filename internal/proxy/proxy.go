@@ -393,16 +393,17 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 		}
 	}
 
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
-
-	// After the response has been sent, resolve the GitHub username from the
-	// raw token and inject it into the request context for access-log use.
+	// Resolve the GitHub username from the raw token and inject it into the
+	// request context before writing the response so the access-log
+	// middleware can capture it.
 	if rawToken != "" && h.usernameResolver != nil {
 		if username := h.usernameResolver.ResolveFromGitHubToken(r.Context(), rawToken); username != "" {
 			SetUsername(r, username)
 		}
 	}
+
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader string) int {

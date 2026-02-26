@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,7 +40,8 @@ func TestExtractRawGitHubToken_Bearer(t *testing.T) {
 
 func TestExtractRawGitHubToken_BasicAuth(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
-	r.Header.Set("Authorization", basicAuth("x-access-token", "gho_mytoken"))
+	encoded := base64.StdEncoding.EncodeToString([]byte("x-access-token:gho_mytoken"))
+	r.Header.Set("Authorization", "Basic "+encoded)
 	got := extractRawGitHubToken(r)
 	if got != "gho_mytoken" {
 		t.Errorf("expected gho_mytoken, got %q", got)

@@ -82,6 +82,9 @@ func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string,
 	if pt == nil {
 		return
 	}
+	if username == "" {
+		username = "unknown"
+	}
 	app := ""
 	if pt.InstallationID != nil {
 		app = strconv.FormatInt(*pt.InstallationID, 10)

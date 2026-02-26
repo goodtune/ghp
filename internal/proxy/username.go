@@ -59,8 +59,10 @@ func (u *UsernameResolver) ResolveFromUserID(ctx context.Context, userID string)
 
 // ResolveFromGitHubToken determines the GitHub username that owns the given
 // raw GitHub token (e.g. gho_, ghp_, ghu_ prefixed). The result is cached
-// with a SHA-256 hash of the token as key. On any error the empty string is
-// returned silently so callers can treat it as best-effort.
+// with a SHA-256 hash of the token as key. On a cache miss the lookup is
+// performed asynchronously so GitHub API latency does not block the caller;
+// empty string is returned for that first request. On any error the empty
+// string is returned silently so callers can treat this as best-effort.
 func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken string) string {
 	if rawToken == "" {
 		return ""
@@ -71,20 +73,38 @@ func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken 
 		return username
 	}
 
+	// Cache miss: resolve the username asynchronously so that GitHub API
+	// latency does not impact the current request. The eventual result will be
+	// stored in the cache for future calls.
+	go u.resolveAndCacheGitHubUsername(key, rawToken)
+
+	// Best-effort: if the username is not yet cached, return empty string.
+	return ""
+}
+
+// resolveAndCacheGitHubUsername performs the GitHub API call to resolve the
+// username for the given token hash and stores it in the cache. It is intended
+// to be called from a goroutine so that GitHub API latency does not impact
+// the request that triggered the lookup.
+func (u *UsernameResolver) resolveAndCacheGitHubUsername(key, rawToken string) {
+	// Use a bounded background context so the lookup is not tied to the
+	// request lifetime, but also cannot hang indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	client := ghub.NewClient(nil).WithAuthToken(rawToken)
 	user, _, err := client.Users.Get(ctx, "")
 	if err != nil {
 		if u.logger != nil {
 			u.logger.Debug("github username lookup failed", "error", err)
 		}
-		return ""
+		return
 	}
 
 	username := user.GetLogin()
 	if username != "" {
 		u.cache.Add(key, username)
 	}
-	return username
 }
 
 // hashToken returns a hex-encoded SHA-256 digest of the token. This is used
