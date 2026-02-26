@@ -256,7 +256,7 @@ func generateToken(tt TokenType) (string, error) {
 	return PrefixForType(tt) + string(result), nil
 }
 
-// ParseScopeString parses a comma-separated scope string like "contents:read,pulls:write".
+// ParseScopeString parses a comma-separated scope string like "contents:read,pull_requests:write".
 func ParseScopeString(s string) (map[string]string, error) {
 	scopes := make(map[string]string)
 	parts := strings.Split(s, ",")

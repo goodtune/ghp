@@ -397,7 +397,7 @@ func installationPermissionsToMap(p *ghub.InstallationPermissions) map[string]st
 	add("metadata", p.Metadata)
 	add("packages", p.Packages)
 	add("pages", p.Pages)
-	add("pulls", p.PullRequests)
+	add("pull_requests", p.PullRequests)
 	add("security_events", p.SecurityEvents)
 	add("statuses", p.Statuses)
 	add("vulnerability_alerts", p.VulnerabilityAlerts)

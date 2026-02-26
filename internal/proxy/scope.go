@@ -45,14 +45,14 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/compare/.*$`, "GET", "contents", "read"},
 
 		// Pull requests
-		{`^/repos/[^/]+/[^/]+/pulls(/[0-9]+)?$`, "GET", "pulls", "read"},
-		{`^/repos/[^/]+/[^/]+/pulls$`, "POST", "pulls", "write"},
-		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+$`, "PATCH", "pulls", "write"},
-		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/merge$`, "PUT", "pulls", "write"},
-		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/(files|commits|reviews|comments|requested_reviewers)(/.*)?$`, "GET", "pulls", "read"},
-		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/(reviews|comments|requested_reviewers)(/.*)?$`, "POST", "pulls", "write"},
-		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/(reviews|comments|requested_reviewers)(/.*)?$`, "PUT", "pulls", "write"},
-		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/(reviews|comments|requested_reviewers)(/.*)?$`, "DELETE", "pulls", "write"},
+		{`^/repos/[^/]+/[^/]+/pulls(/[0-9]+)?$`, "GET", "pull_requests", "read"},
+		{`^/repos/[^/]+/[^/]+/pulls$`, "POST", "pull_requests", "write"},
+		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+$`, "PATCH", "pull_requests", "write"},
+		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/merge$`, "PUT", "pull_requests", "write"},
+		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/(files|commits|reviews|comments|requested_reviewers)(/.*)?$`, "GET", "pull_requests", "read"},
+		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/(reviews|comments|requested_reviewers)(/.*)?$`, "POST", "pull_requests", "write"},
+		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/(reviews|comments|requested_reviewers)(/.*)?$`, "PUT", "pull_requests", "write"},
+		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/(reviews|comments|requested_reviewers)(/.*)?$`, "DELETE", "pull_requests", "write"},
 
 		// Issues
 		{`^/repos/[^/]+/[^/]+/issues(/[0-9]+)?$`, "GET", "issues", "read"},

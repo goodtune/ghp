@@ -135,7 +135,7 @@ func TestPostgresProxyTokenCRUD(t *testing.T) {
 	}
 
 	// Test proxy token (ghx_ type).
-	scopes := json.RawMessage(`{"contents":"read","pulls":"write"}`)
+	scopes := json.RawMessage(`{"contents":"read","pull_requests":"write"}`)
 	repos := json.RawMessage(`["org/repo"]`)
 	pt := &ProxyToken{
 		TokenHash:     "sha256hash123",
