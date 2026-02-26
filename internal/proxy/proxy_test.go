@@ -210,7 +210,7 @@ func TestServeHTTP_GhpToken_WrongRepository(t *testing.T) {
 	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
 		"contents": "read",
 		"issues":   "read",
-		"pulls":    "read",
+		"pull_requests": "read",
 	})
 
 	req := httptest.NewRequest("POST", "http://api.github.com/repos/goodtune/pac-proxy/pulls/1/comments", strings.NewReader(`{"body":"hello"}`))
@@ -230,12 +230,12 @@ func TestServeHTTP_GhpToken_WrongRepository(t *testing.T) {
 }
 
 func TestServeHTTP_GhpToken_ReadOnlyDeniesWrite(t *testing.T) {
-	// A ghp_ token scoped to goodtune/ghp with read-only pulls permission
+	// A ghp_ token scoped to goodtune/ghp with read-only pull_requests permission
 	// must be rejected when attempting to write (POST a PR comment).
 	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
-		"contents": "read",
-		"issues":   "read",
-		"pulls":    "read",
+		"contents":      "read",
+		"issues":        "read",
+		"pull_requests": "read",
 	})
 
 	req := httptest.NewRequest("POST", "http://api.github.com/repos/goodtune/ghp/pulls/1/comments", strings.NewReader(`{"body":"hello"}`))
@@ -249,8 +249,8 @@ func TestServeHTTP_GhpToken_ReadOnlyDeniesWrite(t *testing.T) {
 		t.Fatalf("expected 403 for read-only token attempting write, got %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "pulls:write") {
-		t.Errorf("expected error to mention required pulls:write permission, got: %s", body)
+	if !strings.Contains(body, "pull_requests:write") {
+		t.Errorf("expected error to mention required pull_requests:write permission, got: %s", body)
 	}
 }
 
@@ -260,8 +260,8 @@ func TestServeHTTP_BasicAuth_GhpToken(t *testing.T) {
 	// recognise a ghp_ token in this format and enforce scopes just as it
 	// would for a Bearer token.
 	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
-		"contents": "read",
-		"pulls":    "read",
+		"contents":      "read",
+		"pull_requests": "read",
 	})
 
 	req := httptest.NewRequest("GET", "http://api.github.com/repos/goodtune/ghp/pulls", nil)
@@ -277,10 +277,10 @@ func TestServeHTTP_BasicAuth_GhpToken(t *testing.T) {
 
 func TestServeHTTP_BasicAuth_GhpToken_ScopeEnforcement(t *testing.T) {
 	// A ghp_ token sent via Basic auth must still have scopes enforced.
-	// A read-only pulls token should be rejected for write operations.
+	// A read-only pull_requests token should be rejected for write operations.
 	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
-		"contents": "read",
-		"pulls":    "read",
+		"contents":      "read",
+		"pull_requests": "read",
 	})
 
 	req := httptest.NewRequest("POST", "http://api.github.com/repos/goodtune/ghp/pulls/1/comments", strings.NewReader(`{"body":"hello"}`))
@@ -294,8 +294,8 @@ func TestServeHTTP_BasicAuth_GhpToken_ScopeEnforcement(t *testing.T) {
 		t.Fatalf("expected 403 for read-only Basic auth token attempting write, got %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "pulls:write") {
-		t.Errorf("expected error to mention required pulls:write permission, got: %s", body)
+	if !strings.Contains(body, "pull_requests:write") {
+		t.Errorf("expected error to mention required pull_requests:write permission, got: %s", body)
 	}
 }
 

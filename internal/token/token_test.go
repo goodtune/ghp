@@ -79,11 +79,11 @@ func TestParseScopeString(t *testing.T) {
 		want    map[string]string
 	}{
 		{
-			input: "contents:read,pulls:write,issues:write",
+			input: "contents:read,pull_requests:write,issues:write",
 			want: map[string]string{
-				"contents": "read",
-				"pulls":    "write",
-				"issues":   "write",
+				"contents":      "read",
+				"pull_requests": "write",
+				"issues":        "write",
 			},
 		},
 		{
