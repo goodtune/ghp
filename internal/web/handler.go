@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -432,7 +433,7 @@ func (h *Handler) handleAdminTokenRevokeConfirm(w http.ResponseWriter, r *http.R
 		"ID":          tok.ID,
 		"RepoDisplay": cards[0].RepoDisplay,
 		"TokenPrefix": tok.TokenPrefix,
-		"RevokeURL":   "/admin/tokens/" + tok.ID + "/revoke/",
+		"RevokeURL":   mustJoinPath("/admin/tokens/", tok.ID, "revoke/"),
 	}
 
 	sse := datastar.NewSSE(w, r)
@@ -474,7 +475,7 @@ func (h *Handler) handleAdminUserTokenRevokeConfirm(w http.ResponseWriter, r *ht
 		"ID":          tok.ID,
 		"RepoDisplay": cards[0].RepoDisplay,
 		"TokenPrefix": tok.TokenPrefix,
-		"RevokeURL":   "/admin/" + username + "/" + tok.ID + "/revoke/",
+		"RevokeURL":   mustJoinPath("/admin/", username, tok.ID, "revoke/"),
 	}
 
 	sse := datastar.NewSSE(w, r)
@@ -739,7 +740,7 @@ func (h *Handler) handleRevokeConfirm(w http.ResponseWriter, r *http.Request) {
 		"ID":          tok.ID,
 		"RepoDisplay": cards[0].RepoDisplay,
 		"TokenPrefix": tok.TokenPrefix,
-		"RevokeURL":   "/dashboard/token/" + tok.ID + "/revoke/",
+		"RevokeURL":   mustJoinPath("/dashboard/token/", tok.ID, "revoke/"),
 	}
 
 	sse := datastar.NewSSE(w, r)
@@ -884,7 +885,18 @@ func prepareTokenCards(tokens []*database.ProxyToken) []TokenCardData {
 // resulting URL will be prefix + tokenID + "/revoke/".
 func setRevokeURLs(cards []TokenCardData, prefix string) []TokenCardData {
 	for i := range cards {
-		cards[i].RevokeURL = prefix + cards[i].ID + "/revoke/"
+		cards[i].RevokeURL = mustJoinPath(prefix, cards[i].ID, "revoke/")
 	}
 	return cards
+}
+
+// mustJoinPath joins URL path segments using net/url.JoinPath. It preserves
+// trailing slashes on the last segment (e.g. "revoke/"). Panics on error,
+// which should not occur with well-formed path segments.
+func mustJoinPath(base string, segments ...string) string {
+	p, err := url.JoinPath(base, segments...)
+	if err != nil {
+		panic(fmt.Sprintf("url.JoinPath(%q, %v): %v", base, segments, err))
+	}
+	return p
 }
