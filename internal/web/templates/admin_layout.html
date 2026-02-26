@@ -1,0 +1,6 @@
+{{define "admin_tabs"}}
+<div class="admin-tabs">
+    <a href="/admin/" class="admin-tab {{if eq .ActiveTab "users"}}active{{end}}">Users</a>
+    <a href="/admin/tokens/" class="admin-tab {{if eq .ActiveTab "tokens"}}active{{end}}">Tokens</a>
+</div>
+{{end}}

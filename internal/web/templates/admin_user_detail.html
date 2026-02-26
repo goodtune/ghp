@@ -1,0 +1,20 @@
+{{define "title"}}{{.ViewUsername}} — Admin — GitHub Proxy{{end}}
+
+{{define "content"}}
+{{template "admin_tabs" .}}
+<div class="dashboard-header">
+    <h1>{{.ViewUsername}}</h1>
+    <a href="/admin/" class="btn-outline">Back to Users</a>
+</div>
+{{if .Tokens}}
+<div class="card-grid" id="token-grid">
+    {{range .Tokens}}
+    {{template "token_card" .}}
+    {{end}}
+</div>
+{{else}}
+<p class="empty-state-text">No tokens for this user.</p>
+{{end}}
+{{end}}
+
+{{template "base" .}}

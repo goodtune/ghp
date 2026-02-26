@@ -5,6 +5,6 @@
 <p class="monospace">{{.TokenPrefix}}...</p>
 <div class="modal-actions">
     <button class="btn-outline" data-on-click="$modalOpen = false">Cancel</button>
-    <button class="btn-danger" data-on-click="@post('/dashboard/token/{{.ID}}/revoke/')">Confirm Revoke</button>
+    <button class="btn-danger" data-on-click="@post('{{.RevokeURL}}')">Confirm Revoke</button>
 </div>
 {{end}}

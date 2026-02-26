@@ -1,0 +1,62 @@
+{{define "title"}}All Tokens — Admin — GitHub Proxy{{end}}
+
+{{define "content"}}
+{{template "admin_tabs" .}}
+<div class="dashboard-header">
+    <h1>All Tokens</h1>
+    <button class="btn-primary" data-on-click="@get('/admin/tokens/add/')">New Agent Token</button>
+</div>
+<div class="filter-bar">
+    <select id="filter-status" name="status">
+        <option value="active" {{if eq .FilterStatus "active"}}selected{{end}}>Active</option>
+        <option value="revoked" {{if eq .FilterStatus "revoked"}}selected{{end}}>Revoked</option>
+        <option value="" {{if eq .FilterStatus ""}}selected{{end}}>All</option>
+    </select>
+    <input type="text" id="filter-user" name="user" placeholder="Username..." value="{{.FilterUser}}">
+    <input type="text" id="filter-repo" name="repo" placeholder="Repository..." value="{{.FilterRepo}}">
+    <input type="text" id="filter-scope" name="scope" placeholder="Scope..." value="{{.FilterScope}}">
+    <button class="btn-outline" data-on-click="@get('/admin/tokens/?status=' + document.getElementById('filter-status').value + '&user=' + document.getElementById('filter-user').value + '&repo=' + document.getElementById('filter-repo').value + '&scope=' + document.getElementById('filter-scope').value)">Filter</button>
+</div>
+<div id="admin-tokens-table">
+{{template "admin_tokens_table" .}}
+</div>
+{{end}}
+
+{{define "admin_tokens_table"}}
+<table class="table">
+    <thead>
+        <tr>
+            <th>PREFIX</th>
+            <th>TYPE</th>
+            <th>USER</th>
+            <th>REPOS</th>
+            <th>SCOPES</th>
+            <th>SESSION</th>
+            <th>STATUS</th>
+            <th>EXPIRES</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {{range .Tokens}}
+        <tr>
+            <td class="monospace">{{.TokenPrefix}}...</td>
+            <td><span class="role-badge role-user">{{.TokenType}}</span></td>
+            <td>{{.Username}}</td>
+            <td>{{.RepoDisplay}}</td>
+            <td>
+                {{range .ScopeList}}
+                <span class="permission-tag">{{.}}</span>
+                {{end}}
+            </td>
+            <td>{{if .SessionID}}{{.SessionID}}{{else}}-{{end}}</td>
+            <td>{{if .IsActive}}<span class="status-badge status-active">active</span>{{else}}<span class="status-badge status-revoked">revoked</span>{{end}}</td>
+            <td>{{if .IsActive}}Expires in {{.ExpiresIn}}{{else}}-{{end}}</td>
+            <td>{{if .IsActive}}<button class="btn-danger btn-outline btn-sm" data-on-click="@get('/admin/tokens/{{.ID}}/revoke/')">Revoke</button>{{end}}</td>
+        </tr>
+        {{end}}
+    </tbody>
+</table>
+{{end}}
+
+{{template "base" .}}

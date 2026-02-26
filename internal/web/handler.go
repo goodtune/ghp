@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -60,8 +61,9 @@ func (h *Handler) initTemplates() {
 		"templates/header.html",
 		"templates/token_card.html",
 		"templates/empty_state.html",
+		"templates/admin_layout.html",
 	))
-	pages := []string{"login.html", "dashboard.html", "admin.html", "admin-login.html", "logout.html"}
+	pages := []string{"login.html", "dashboard.html", "admin_users.html", "admin_user_detail.html", "admin_tokens.html", "logout.html"}
 	h.pageTemplates = make(map[string]*template.Template, len(pages))
 	for _, page := range pages {
 		t := template.Must(template.Must(base.Clone()).ParseFS(templateFS, "templates/"+page))
@@ -77,6 +79,7 @@ func (h *Handler) initTemplates() {
 		"templates/token_wizard_step4.html",
 		"templates/token_created.html",
 		"templates/revoke_confirm.html",
+		"templates/admin_tokens.html",
 	))
 }
 
@@ -120,7 +123,6 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		http.Redirect(w, r, "/dashboard/", http.StatusMovedPermanently)
 	})
 	r.Get("/login/", h.handleLogin)
-	r.Get("/admin/", h.handleAdmin)
 
 	// Authenticated routes
 	r.Group(func(r chi.Router) {
@@ -132,6 +134,22 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/dashboard/token/{id}/revoke/", h.handleRevoke)
 		r.Get("/logout/", h.handleLogoutConfirm)
 		r.Post("/logout/", h.handleLogoutExecute)
+	})
+
+	// Admin routes
+	r.Group(func(r chi.Router) {
+		r.Use(h.requireAuthWeb)
+		r.Use(h.requireAdminWeb)
+
+		r.Get("/admin/", h.handleAdminUsers)
+		r.Get("/admin/tokens/", h.handleAdminTokens)
+		r.Get("/admin/tokens/add/", h.handleAdminWizardGet)
+		r.Post("/admin/tokens/add/", h.handleAdminWizardPost)
+		r.Get("/admin/tokens/{id}/revoke/", h.handleAdminTokenRevokeConfirm)
+		r.Post("/admin/tokens/{id}/revoke/", h.handleAdminTokenRevoke)
+		r.Get("/admin/{username}/", h.handleAdminUserDetail)
+		r.Get("/admin/{username}/{id}/revoke/", h.handleAdminUserTokenRevokeConfirm)
+		r.Post("/admin/{username}/{id}/revoke/", h.handleAdminUserTokenRevoke)
 	})
 }
 
@@ -160,22 +178,49 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	session := h.auth.GetSession(r)
-	if session == nil {
-		if h.devMode {
-			if err := h.renderPage(w, "admin-login.html", nil); err != nil {
-				h.logger.Error("template execution failed", "error", err)
-				http.Error(w, "Internal error", http.StatusInternalServerError)
-			}
+// --- Admin Data Types ---
+
+// AdminTokenData extends TokenCardData with username for the admin tokens table.
+type AdminTokenData struct {
+	TokenCardData
+	Username string
+}
+
+// UserDisplay is template data for the admin users table.
+type UserDisplay struct {
+	GitHubUsername     string
+	Role               string
+	CreatedAtFormatted string
+}
+
+// requireAdminWeb is middleware that restricts access to admin users.
+func (h *Handler) requireAdminWeb(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session := auth.SessionFromContext(r.Context())
+		if session == nil || session.Role != "admin" {
+			http.Error(w, "Admin access required", http.StatusForbidden)
 			return
 		}
-		http.Redirect(w, r, "/login/", http.StatusSeeOther)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (h *Handler) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
+	session := auth.SessionFromContext(r.Context())
+	users, err := h.store.ListUsers(r.Context())
+	if err != nil {
+		h.logger.Error("failed to list users", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
-	if session.Role != "admin" {
-		http.Error(w, "Admin access required", http.StatusForbidden)
-		return
+
+	var userDisplays []UserDisplay
+	for _, u := range users {
+		userDisplays = append(userDisplays, UserDisplay{
+			GitHubUsername:     u.GitHubUsername,
+			Role:               u.Role,
+			CreatedAtFormatted: u.CreatedAt.Format("2 Jan 2006"),
+		})
 	}
 
 	data := map[string]interface{}{
@@ -184,12 +229,282 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		"Username":   session.Username,
 		"Role":       session.Role,
 		"ActiveNav":  "admin",
+		"ActiveTab":  "users",
+		"Users":      userDisplays,
 	}
-
-	if err := h.renderPage(w, "admin.html", data); err != nil {
+	if err := h.renderPage(w, "admin_users.html", data); err != nil {
 		h.logger.Error("template execution failed", "error", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 	}
+}
+
+func (h *Handler) handleAdminUserDetail(w http.ResponseWriter, r *http.Request) {
+	session := auth.SessionFromContext(r.Context())
+	username := chi.URLParam(r, "username")
+
+	// Find user by username
+	users, err := h.store.ListUsers(r.Context())
+	if err != nil {
+		h.logger.Error("failed to list users", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	var targetUser *database.User
+	for _, u := range users {
+		if u.GitHubUsername == username {
+			targetUser = u
+			break
+		}
+	}
+	if targetUser == nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	tokens, err := h.store.ListProxyTokens(r.Context(), targetUser.ID)
+	if err != nil {
+		h.logger.Error("failed to list tokens", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	cards := prepareTokenCards(tokens)
+
+	data := map[string]interface{}{
+		"ShowHeader":   true,
+		"DevMode":      h.devMode,
+		"Username":     session.Username,
+		"Role":         session.Role,
+		"ActiveNav":    "admin",
+		"ActiveTab":    "users",
+		"ViewUsername": username,
+		"Tokens":       cards,
+	}
+	if err := h.renderPage(w, "admin_user_detail.html", data); err != nil {
+		h.logger.Error("template execution failed", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+	}
+}
+
+func (h *Handler) handleAdminTokens(w http.ResponseWriter, r *http.Request) {
+	session := auth.SessionFromContext(r.Context())
+
+	// Read filter params
+	filterStatus := r.URL.Query().Get("status")
+	if filterStatus == "" && !r.URL.Query().Has("status") {
+		filterStatus = "active" // default to active
+	}
+	filterUser := r.URL.Query().Get("user")
+	filterRepo := r.URL.Query().Get("repo")
+	filterScope := r.URL.Query().Get("scope")
+
+	allTokens, err := h.store.ListAllProxyTokens(r.Context())
+	if err != nil {
+		h.logger.Error("failed to list all tokens", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Get users for username lookup
+	users, _ := h.store.ListUsers(r.Context())
+	userMap := make(map[string]string) // userID -> username
+	for _, u := range users {
+		userMap[u.ID] = u.GitHubUsername
+	}
+
+	now := time.Now()
+	var filtered []*database.ProxyToken
+	for _, t := range allTokens {
+		// Status filter
+		isActive := t.RevokedAt == nil && t.ExpiresAt.After(now)
+		if filterStatus == "active" && !isActive {
+			continue
+		}
+		if filterStatus == "revoked" && isActive {
+			continue
+		}
+
+		// Username filter
+		if filterUser != "" {
+			uid := ""
+			if t.UserID != nil {
+				uid = *t.UserID
+			}
+			uname, ok := userMap[uid]
+			if !ok || !strings.Contains(strings.ToLower(uname), strings.ToLower(filterUser)) {
+				continue
+			}
+		}
+
+		// Repo filter
+		if filterRepo != "" {
+			var repos []string
+			json.Unmarshal(t.Repositories, &repos)
+			found := false
+			for _, repo := range repos {
+				if strings.Contains(strings.ToLower(repo), strings.ToLower(filterRepo)) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+
+		// Scope filter
+		if filterScope != "" {
+			var scopes map[string]string
+			json.Unmarshal(t.Scopes, &scopes)
+			found := false
+			for k, v := range scopes {
+				if strings.Contains(k+":"+v, filterScope) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+
+		filtered = append(filtered, t)
+	}
+
+	cards := prepareTokenCards(filtered)
+	var adminTokens []AdminTokenData
+	for i, card := range cards {
+		username := ""
+		if filtered[i].UserID != nil {
+			username = userMap[*filtered[i].UserID]
+		}
+		adminTokens = append(adminTokens, AdminTokenData{
+			TokenCardData: card,
+			Username:      username,
+		})
+	}
+
+	data := map[string]interface{}{
+		"ShowHeader":   true,
+		"DevMode":      h.devMode,
+		"Username":     session.Username,
+		"Role":         session.Role,
+		"ActiveNav":    "admin",
+		"ActiveTab":    "tokens",
+		"Tokens":       adminTokens,
+		"FilterStatus": filterStatus,
+		"FilterUser":   filterUser,
+		"FilterRepo":   filterRepo,
+		"FilterScope":  filterScope,
+	}
+
+	// Check if this is a Datastar SSE request (has Accept: text/event-stream)
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		sse := datastar.NewSSE(w, r)
+		html, err := h.renderFragment("admin_tokens_table", data)
+		if err != nil {
+			h.logger.Error("render admin tokens table failed", "error", err)
+			return
+		}
+		sse.PatchElements(html, datastar.WithSelectorID("admin-tokens-table"), datastar.WithModeInner())
+		return
+	}
+
+	if err := h.renderPage(w, "admin_tokens.html", data); err != nil {
+		h.logger.Error("template execution failed", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+	}
+}
+
+// --- Admin Revoke Handlers ---
+
+func (h *Handler) handleAdminTokenRevokeConfirm(w http.ResponseWriter, r *http.Request) {
+	tokenID := chi.URLParam(r, "id")
+	tok, err := h.store.GetProxyTokenByID(r.Context(), tokenID)
+	if err != nil {
+		h.logger.Error("failed to get token", "error", err)
+		return
+	}
+
+	cards := prepareTokenCards([]*database.ProxyToken{tok})
+	data := map[string]interface{}{
+		"ID":          tok.ID,
+		"RepoDisplay": cards[0].RepoDisplay,
+		"TokenPrefix": tok.TokenPrefix,
+		"RevokeURL":   "/admin/tokens/" + tok.ID + "/revoke/",
+	}
+
+	sse := datastar.NewSSE(w, r)
+	html, err := h.renderFragment("revoke_confirm", data)
+	if err != nil {
+		h.logger.Error("render revoke_confirm failed", "error", err)
+		return
+	}
+	sse.PatchSignals([]byte(`{"modalOpen":true}`))
+	sse.PatchElements(html, datastar.WithSelectorID("modal-content"), datastar.WithModeInner())
+}
+
+func (h *Handler) handleAdminTokenRevoke(w http.ResponseWriter, r *http.Request) {
+	tokenID := chi.URLParam(r, "id")
+	if err := h.store.RevokeProxyToken(r.Context(), tokenID); err != nil {
+		h.logger.Error("failed to revoke token", "error", err)
+		return
+	}
+
+	sse := datastar.NewSSE(w, r)
+	sse.PatchSignals([]byte(`{"modalOpen":false}`))
+	sse.PatchElements(`<script>window.location.reload()</script>`, datastar.WithSelectorID("modal-content"), datastar.WithModeInner())
+}
+
+// handleAdminUserTokenRevokeConfirm handles revoke confirm from the user detail page.
+func (h *Handler) handleAdminUserTokenRevokeConfirm(w http.ResponseWriter, r *http.Request) {
+	tokenID := chi.URLParam(r, "id")
+	username := chi.URLParam(r, "username")
+	tok, err := h.store.GetProxyTokenByID(r.Context(), tokenID)
+	if err != nil {
+		h.logger.Error("failed to get token", "error", err)
+		return
+	}
+
+	cards := prepareTokenCards([]*database.ProxyToken{tok})
+	data := map[string]interface{}{
+		"ID":          tok.ID,
+		"RepoDisplay": cards[0].RepoDisplay,
+		"TokenPrefix": tok.TokenPrefix,
+		"RevokeURL":   "/admin/" + username + "/" + tok.ID + "/revoke/",
+	}
+
+	sse := datastar.NewSSE(w, r)
+	html, err := h.renderFragment("revoke_confirm", data)
+	if err != nil {
+		h.logger.Error("render revoke_confirm failed", "error", err)
+		return
+	}
+	sse.PatchSignals([]byte(`{"modalOpen":true}`))
+	sse.PatchElements(html, datastar.WithSelectorID("modal-content"), datastar.WithModeInner())
+}
+
+// handleAdminUserTokenRevoke handles revoke execution from the user detail page.
+func (h *Handler) handleAdminUserTokenRevoke(w http.ResponseWriter, r *http.Request) {
+	tokenID := chi.URLParam(r, "id")
+	if err := h.store.RevokeProxyToken(r.Context(), tokenID); err != nil {
+		h.logger.Error("failed to revoke token", "error", err)
+		return
+	}
+
+	sse := datastar.NewSSE(w, r)
+	sse.PatchSignals([]byte(`{"modalOpen":false}`))
+	sse.PatchElements(`<script>window.location.reload()</script>`, datastar.WithSelectorID("modal-content"), datastar.WithModeInner())
+}
+
+// handleAdminWizardGet reuses the user wizard for admin token creation.
+func (h *Handler) handleAdminWizardGet(w http.ResponseWriter, r *http.Request) {
+	h.handleWizardGet(w, r)
+}
+
+// handleAdminWizardPost reuses the user wizard for admin token creation.
+func (h *Handler) handleAdminWizardPost(w http.ResponseWriter, r *http.Request) {
+	h.handleWizardPost(w, r)
 }
 
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -418,6 +733,7 @@ func (h *Handler) handleRevokeConfirm(w http.ResponseWriter, r *http.Request) {
 		"ID":          tok.ID,
 		"RepoDisplay": cards[0].RepoDisplay,
 		"TokenPrefix": tok.TokenPrefix,
+		"RevokeURL":   "/dashboard/token/" + tok.ID + "/revoke/",
 	}
 
 	sse := datastar.NewSSE(w, r)

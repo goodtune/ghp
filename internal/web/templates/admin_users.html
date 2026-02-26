@@ -1,0 +1,25 @@
+{{define "title"}}Admin — GitHub Proxy{{end}}
+
+{{define "content"}}
+{{template "admin_tabs" .}}
+<table class="table">
+    <thead>
+        <tr>
+            <th>USERNAME</th>
+            <th>ROLE</th>
+            <th>CREATED</th>
+        </tr>
+    </thead>
+    <tbody>
+        {{range .Users}}
+        <tr>
+            <td><a href="/admin/{{.GitHubUsername}}/">{{.GitHubUsername}}</a></td>
+            <td>{{if eq .Role "admin"}}<span class="role-badge role-admin">admin</span>{{else}}<span class="role-badge role-user">user</span>{{end}}</td>
+            <td>{{.CreatedAtFormatted}}</td>
+        </tr>
+        {{end}}
+    </tbody>
+</table>
+{{end}}
+
+{{template "base" .}}
