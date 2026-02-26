@@ -42,6 +42,6 @@ func TestParseScopes(t *testing.T) {
 		t.Errorf("contents = %q, want read", scopes["contents"])
 	}
 	if scopes["pull_requests"] != "write" {
-		t.Errorf("pulls = %q, want write", scopes["pull_requests"])
+		t.Errorf("pull_requests = %q, want write", scopes["pull_requests"])
 	}
 }
