@@ -421,8 +421,8 @@ func TestTokenCreateCmd_ProxyToken(t *testing.T) {
 	}
 }
 
-// TestTokenCreateCmd_AgentTokenMissingRepos verifies that agent token creation requires --repos.
-func TestTokenCreateCmd_AgentTokenMissingRepos(t *testing.T) {
+// TestTokenCreateCmd_AgentTokenMissingInstallationID verifies that agent token creation requires --installation-id.
+func TestTokenCreateCmd_AgentTokenMissingInstallationID(t *testing.T) {
 	// Use a real httptest server for a consistent URL (validation fails before any HTTP call).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected request to stub server: %s %s", r.Method, r.URL.Path)
@@ -441,10 +441,10 @@ func TestTokenCreateCmd_AgentTokenMissingRepos(t *testing.T) {
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error when --repos is missing for agent token")
+		t.Fatal("expected error when --installation-id is missing for agent token")
 	}
-	if !strings.Contains(err.Error(), "--repos") {
-		t.Errorf("expected '--repos' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "--installation-id") {
+		t.Errorf("expected '--installation-id' in error, got: %v", err)
 	}
 }
 
