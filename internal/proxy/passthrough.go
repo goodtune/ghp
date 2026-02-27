@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/goodtune/ghp/internal/backend"
+	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
@@ -78,13 +79,28 @@ type ScopeEnforcer interface {
 // verified before the request is forwarded. Non-git paths and non-client tokens
 // pass through unchanged.
 //
+// When cfg is non-nil, the token type border policy (cfg.Block) is enforced:
+// requests bearing a raw GitHub token whose type prefix is blocked are rejected
+// with 403 before they reach the upstream.
+//
 // The optional usernameResolver is used to resolve GitHub usernames for both
 // client tokens (via the database) and raw GitHub tokens (via the GitHub API)
 // so that they appear in metrics and access logs.
-func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger) http.Handler {
+func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger, cfg ...*config.Config) http.Handler {
+	var blockCfg *config.Config
+	if len(cfg) > 0 {
+		blockCfg = cfg[0]
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clientTok, rewriteAuth := extractClientToken(r)
 		if clientTok == "" {
+			// Check the token type border policy before forwarding.
+			if blockCfg != nil {
+				if raw := extractRawTokenForBlocking(r); raw != "" && blockCfg.IsTokenBlocked(raw) {
+					writeError(w, http.StatusForbidden, "Token type is not permitted by the border policy")
+					return
+				}
+			}
 			// Not a client token — try to resolve the GitHub username
 			// from the raw token for access-log / metrics visibility.
 			if ur != nil {
@@ -344,4 +360,38 @@ func parseScopeInfo(pt *database.ProxyToken) (tokenScopeInfo, error) {
 		return tokenScopeInfo{}, fmt.Errorf("parsing token scopes: %w", err)
 	}
 	return tokenScopeInfo{Repos: repos, Scopes: scopes}, nil
+}
+
+// extractRawTokenForBlocking extracts the raw credential from the Authorization
+// header for border-policy evaluation. Unlike extractRawGitHubToken it does not
+// filter by known user-token prefixes — it returns whatever credential is
+// present so that all five GitHub token types (ghp_, gho_, ghu_, ghs_, ghr_)
+// can be checked against the block configuration. Bearer/token scheme and
+// Basic auth with the x-access-token username convention are supported.
+// Returns "" when no credential is present or the header cannot be decoded.
+func extractRawTokenForBlocking(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		return ""
+	}
+	parts := strings.SplitN(auth, " ", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	scheme := strings.ToLower(parts[0])
+	credential := parts[1]
+	switch scheme {
+	case "bearer", "token":
+		return credential
+	case "basic":
+		decoded, err := base64.StdEncoding.DecodeString(credential)
+		if err != nil {
+			return ""
+		}
+		_, pass, ok := strings.Cut(string(decoded), ":")
+		if ok {
+			return pass
+		}
+	}
+	return ""
 }
