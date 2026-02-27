@@ -38,17 +38,10 @@ be upgraded between restarts.`,
 			defer cleanupLogger()
 
 			migrate, _ := cmd.Flags().GetBool("migrate")
-			if migrate {
-				logger.Info("running database migrations before startup")
-				if err := runMigrations(cfg); err != nil {
-					return fmt.Errorf("pre-startup migration: %w", err)
-				}
-				logger.Info("database migrations complete")
-			}
 
 			logger.Info("server_start", "msg", "starting ghp server")
 
-			srv := server.New(cfg, cfgPath, logger, logWriter)
+			srv := server.New(cfg, cfgPath, logger, logWriter, migrate)
 			return srv.Run(context.Background())
 		},
 	}
