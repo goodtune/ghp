@@ -22,17 +22,16 @@ the `GHP_` prefix.
 | `GHP_GITHUB_PRIVATE_KEY` | PEM-encoded private key content (for `gha_` agent tokens) | |
 | `GHP_GITHUB_PRIVATE_KEY_FILE` | Path to PEM private key file (for `gha_` agent tokens) | |
 | `GHP_GITHUB_ENTERPRISE_SLUG` | Enterprise slug for access restriction header | |
+| `GHP_TLS_CERT_FILE` | Path to TLS certificate file (convenience for single cert) | |
+| `GHP_TLS_KEY_FILE` | Path to TLS private key file (convenience for single cert) | |
 | `GHP_TLS_MIN_VERSION` | Minimum TLS version (`1.2` or `1.3`) | `1.2` |
 | `GHP_TOKENS_DEFAULT_DURATION` | Default token lifetime | `24h` |
 | `GHP_TOKENS_MAX_DURATION` | Maximum token lifetime | `168h` |
 | `GHP_METRICS_ENABLED` | Enable Prometheus `/metrics` endpoint on management host | `false` |
+| `GHP_ADMINS` | Comma-separated list of admin GitHub usernames | |
 | `GHP_AUTH_JWT_SECRET` | HMAC secret for OAuth broker JWTs (enables broker endpoints) | |
+| `GHP_AUTH_ALLOWED_REDIRECTS` | Comma-separated list of permitted OAuth redirect URIs | |
 | `GHP_DEV_MODE` | Enable test endpoints (never use in production) | `false` |
-
-!!! note "`auth.allowed_redirects` is not configurable via environment variable"
-    The `auth.allowed_redirects` setting is a list and must be configured in the YAML
-    configuration file (see the `auth.allowed_redirects` section in the full YAML reference
-    below). It is not currently configurable via a `GHP_` environment variable.
 
 ## Full YAML Reference
 
