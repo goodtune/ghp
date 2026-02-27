@@ -102,7 +102,7 @@ class GhpPermissionSelect extends HTMLElement {
       rows += `  <div class="perm-control">`;
 
       if (isMetadata) {
-        rows += `<select disabled><option>Read</option></select>`;
+        rows += `<select data-perm="${this._esc(perm)}" disabled><option>Read</option></select>`;
       } else {
         rows += `<select data-perm="${this._esc(perm)}">`;
         rows += `  <option value="">No access</option>`;
