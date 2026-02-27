@@ -13,6 +13,7 @@ operations. Use `--help` on any command for full details.
 | [`ghp migrate`](migrate.md) | Run database migrations |
 | [`ghp auth`](auth.md) | Authenticate with the ghp server |
 | [`ghp token`](token.md) | Create, list, and revoke proxy tokens |
+| [`ghp apptoken`](apptoken.md) | Generate a GitHub App installation access token |
 | `ghp version` | Print version information |
 
 ## Global Flags

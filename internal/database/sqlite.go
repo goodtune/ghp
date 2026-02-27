@@ -23,6 +23,12 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("opening sqlite: %w", err)
 	}
 
+	// In-memory databases are per-connection, so restrict the pool to a
+	// single connection to ensure all operations share the same database.
+	if dsn == ":memory:" || dsn == "file::memory:" {
+		db.SetMaxOpenConns(1)
+	}
+
 	// Enable WAL mode and foreign keys.
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",

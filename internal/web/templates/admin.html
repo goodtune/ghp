@@ -68,11 +68,11 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>Repositories</label>
+                    <label>Repositories (optional — leave empty to allow any repository)</label>
                     <ghp-repo-select id="repo-select" mode="multi" placeholder="Search repositories..." disabled></ghp-repo-select>
                 </div>
                 <div class="form-group">
-                    <label>Permissions</label>
+                    <label>Permissions (optional — leave empty to allow any permission; leaving both fields empty creates an open-scoped token)</label>
                     <ghp-permission-select id="perm-select"></ghp-permission-select>
                 </div>
                 <div class="form-group">
@@ -187,24 +187,17 @@
                 alert('Please select an installation.');
                 return;
             }
-            if (selectedRepos.length === 0) {
-                alert('Please select at least one repository.');
-                return;
-            }
-            if (Object.keys(scopes).length === 0) {
-                alert('Please select at least one permission.');
-                return;
-            }
 
+            // Build scope string (empty means open-scoped).
             const scopeStr = Object.entries(scopes).map(([k, v]) => k + ':' + v).join(',');
 
             const body = {
                 type: 'agent',
                 installation_id: installationId,
-                repositories: selectedRepos,
-                scopes: scopeStr,
                 duration: duration,
             };
+            if (selectedRepos.length > 0) body.repositories = selectedRepos;
+            if (scopeStr) body.scopes = scopeStr;
             if (session) body.session_id = session;
 
             const btn = document.getElementById('create-btn');

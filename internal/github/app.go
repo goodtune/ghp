@@ -159,9 +159,12 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 	// Request installation token.
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", p.baseURL, installationID)
 
-	body := map[string]interface{}{
-		"repositories": repos,
-		"permissions":  permissions,
+	body := map[string]interface{}{}
+	if repos != nil {
+		body["repositories"] = repos
+	}
+	if permissions != nil {
+		body["permissions"] = permissions
 	}
 	bodyJSON, _ := json.Marshal(body)
 

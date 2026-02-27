@@ -34,14 +34,15 @@ type Server struct {
 	logger     *slog.Logger
 	logWriter  io.Writer
 	store      database.Store
+	migrate    bool
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, configPath string, logger *slog.Logger, logWriter io.Writer) *Server {
+func New(cfg *config.Config, configPath string, logger *slog.Logger, logWriter io.Writer, migrate bool) *Server {
 	if logWriter == nil {
 		logWriter = io.Discard
 	}
-	return &Server{cfg: cfg, configPath: configPath, logger: logger, logWriter: logWriter}
+	return &Server{cfg: cfg, configPath: configPath, logger: logger, logWriter: logWriter, migrate: migrate}
 }
 
 // reloadConfig re-reads the configuration file and updates hot-reloadable
@@ -78,14 +79,21 @@ func (s *Server) Run(ctx context.Context) error {
 	defer store.Close()
 	s.store = store
 
-	// Check for pending migrations.
+	// Run or check migrations.
 	migrator := database.NewMigrator(store, s.cfg.Database.Driver)
-	pending, err := migrator.PendingMigrations(ctx)
-	if err != nil {
-		// If the migration table doesn't exist yet, that counts as pending.
-		s.logger.Warn("could not check migrations", "error", err)
-	} else if len(pending) > 0 {
-		return fmt.Errorf("database has %d pending migration(s): run 'ghp migrate' first", len(pending))
+	if s.migrate {
+		s.logger.Info("running database migrations before startup")
+		if err := migrator.Migrate(ctx); err != nil {
+			return fmt.Errorf("pre-startup migration: %w", err)
+		}
+		s.logger.Info("database migrations complete")
+	} else {
+		pending, err := migrator.PendingMigrations(ctx)
+		if err != nil {
+			s.logger.Warn("could not check migrations", "error", err)
+		} else if len(pending) > 0 {
+			return fmt.Errorf("database has %d pending migration(s): run 'ghp migrate' first", len(pending))
+		}
 	}
 
 	// Sync admin roles from config on startup.
