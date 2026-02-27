@@ -51,19 +51,21 @@ func newTokenCmd() *cobra.Command {
 
 			switch tokenType {
 			case "agent":
-				if repos == "" {
-					return fmt.Errorf("--repos is required for agent tokens")
-				}
 				if installationID == 0 {
 					return fmt.Errorf("--installation-id is required for agent tokens")
 				}
-				body["repositories"] = strings.Split(repos, ",")
 				body["installation_id"] = installationID
-			default:
-				if repo == "" {
-					return fmt.Errorf("--repo is required for proxy tokens")
+				// Repos are optional — omit to allow any repo in the installation.
+				if repos != "" {
+					body["repositories"] = strings.Split(repos, ",")
 				}
-				body["repository"] = repo
+			default:
+				// Proxy tokens are open-scoped by default — repo is optional.
+				if repos != "" {
+					body["repositories"] = strings.Split(repos, ",")
+				} else if repo != "" {
+					body["repository"] = repo
+				}
 			}
 
 			jsonBody, _ := json.Marshal(body)
@@ -120,13 +122,12 @@ func newTokenCmd() *cobra.Command {
 		},
 	}
 	createCmd.Flags().String("type", "proxy", "token type (proxy or agent)")
-	createCmd.Flags().String("repo", "", "repository (owner/repo) for proxy tokens")
-	createCmd.Flags().String("repos", "", "comma-separated repositories for agent tokens")
+	createCmd.Flags().String("repo", "", "single repository (owner/repo) — omit to allow any repo")
+	createCmd.Flags().String("repos", "", "comma-separated repositories — omit to allow any repo; omitting both repos and scope creates an open-scoped token")
 	createCmd.Flags().Int64("installation-id", 0, "GitHub App installation ID for agent tokens")
-	createCmd.Flags().String("scope", "", "scopes (e.g., contents:read,pull_requests:write)")
+	createCmd.Flags().String("scope", "", "scopes (e.g., contents:read,pull_requests:write) — omit to allow any permission; omitting both repos and scope creates an open-scoped token")
 	createCmd.Flags().String("duration", "24h", "token duration")
 	createCmd.Flags().String("session", "", "session identifier")
-	createCmd.MarkFlagRequired("scope")
 
 	// token list
 	listCmd := &cobra.Command{

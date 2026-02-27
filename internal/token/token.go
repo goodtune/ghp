@@ -58,9 +58,9 @@ type CreateRequest struct {
 	UserID         string
 	GitHubTokenID  string            // Required for proxy tokens.
 	InstallationID int64             // Required for agent tokens.
-	Repository     string            // Single repo — for proxy tokens.
-	Repositories   []string          // Multi repo — for agent tokens.
-	Scopes         map[string]string
+	Repository     string            // Deprecated: use Repositories instead.
+	Repositories   []string          // Optional — open-scoped (all repos) if empty.
+	Scopes         map[string]string // Optional — open-scoped if empty.
 	Duration       time.Duration
 	SessionID      string
 }
@@ -101,14 +101,14 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 	var repos []string
 	switch tt {
 	case TokenTypeProxy:
-		if req.Repository == "" {
-			return nil, fmt.Errorf("repository is required for proxy tokens")
+		// Proxy tokens are open-scoped by default — repositories are optional.
+		if req.Repository != "" {
+			repos = []string{req.Repository}
 		}
-		repos = []string{req.Repository}
+		if len(req.Repositories) > 0 {
+			repos = req.Repositories
+		}
 	case TokenTypeAgent:
-		if len(req.Repositories) == 0 {
-			return nil, fmt.Errorf("at least one repository is required for agent tokens")
-		}
 		if req.InstallationID == 0 {
 			return nil, fmt.Errorf("installation_id is required for agent tokens")
 		}
@@ -117,9 +117,8 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 		return nil, fmt.Errorf("unknown token type %q", tt)
 	}
 
-	if len(req.Scopes) == 0 {
-		return nil, fmt.Errorf("at least one scope is required")
-	}
+	// Scopes are optional — an empty map means the token is open-scoped
+	// and carries the full permissions of the underlying credential.
 	if req.Duration <= 0 {
 		return nil, fmt.Errorf("duration must be positive")
 	}
@@ -135,14 +134,26 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 	hash := Hash(plaintext)
 	prefix := plaintext[:8]
 
-	scopesJSON, err := json.Marshal(req.Scopes)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling scopes: %w", err)
+	// Marshal scopes — nil/empty map becomes JSON null.
+	var scopesJSON []byte
+	if len(req.Scopes) > 0 {
+		scopesJSON, err = json.Marshal(req.Scopes)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling scopes: %w", err)
+		}
+	} else {
+		scopesJSON = []byte("null")
 	}
 
-	reposJSON, err := json.Marshal(repos)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling repositories: %w", err)
+	// Marshal repositories — nil/empty slice becomes JSON null.
+	var reposJSON []byte
+	if len(repos) > 0 {
+		reposJSON, err = json.Marshal(repos)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling repositories: %w", err)
+		}
+	} else {
+		reposJSON = []byte("null")
 	}
 
 	expiresAt := time.Now().UTC().Add(req.Duration)

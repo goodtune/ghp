@@ -1,13 +1,13 @@
 import { test, expect } from "@playwright/test";
 import { loginTestUser } from "./helpers";
 
-/** Inject a repository into the ghp-repo-select component and select it. */
-async function selectRepo(page: any, repo: string) {
-  await page.evaluate((r: string) => {
+/** Inject repositories into the ghp-repo-select component and select them (multi mode). */
+async function selectRepos(page: any, repos: string[]) {
+  await page.evaluate((r: string[]) => {
     const el = document.getElementById("repo-select") as any;
-    el.repos = [r];
+    el.repos = r;
     el.value = r;
-  }, repo);
+  }, repos);
 }
 
 /** Select a permission level inside the ghp-permission-select component. */
@@ -36,18 +36,17 @@ test.describe("Token management", () => {
     await loginTestUser(context);
   });
 
-  test("can create a token via the form", async ({ page }, testInfo) => {
+  test("can create an open-scoped token (no repos, no permissions)", async ({
+    page,
+  }, testInfo) => {
     await page.goto("/");
     await page.waitForLoadState("networkidle");
 
-    // Set repo and permissions via the web components.
-    await selectRepo(page, "goodtune/myproject");
-    await selectPermission(page, "contents", "read");
-
+    // Do NOT select any repository or permission — open-scoped by default.
     await page.selectOption("#duration", "24h");
-    await page.fill("#session", "playwright-test-session");
+    await page.fill("#session", "playwright-open-scoped");
 
-    await testInfo.attach("token-form-filled", {
+    await testInfo.attach("open-scoped-form", {
       body: await page.screenshot({ fullPage: true }),
       contentType: "image/png",
     });
@@ -68,7 +67,77 @@ test.describe("Token management", () => {
       "This token will only be shown once"
     );
 
-    await testInfo.attach("token-created", {
+    // The token list should show (open) for repos and scopes.
+    const tokenList = page.locator("#token-list");
+    await expect(tokenList).toContainText("(open)");
+
+    await testInfo.attach("open-scoped-created", {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
+  });
+
+  test("can create a scoped token with repository and permissions", async ({
+    page,
+  }, testInfo) => {
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+
+    // Set repos (multi mode) and permissions via the web components.
+    await selectRepos(page, ["goodtune/myproject"]);
+    await selectPermission(page, "contents", "read");
+
+    await page.selectOption("#duration", "24h");
+    await page.fill("#session", "playwright-scoped-session");
+
+    await testInfo.attach("scoped-form-filled", {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
+
+    // Click Create Token.
+    await page.click('button:has-text("Create Token")');
+
+    // The new token display should become visible.
+    const tokenDisplay = page.locator("#new-token");
+    await expect(tokenDisplay).toBeVisible();
+
+    // The token value should start with ghx_.
+    const tokenValue = page.locator("#token-value");
+    await expect(tokenValue).toContainText("ghx_");
+
+    await testInfo.attach("scoped-token-created", {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
+  });
+
+  test("can create a token with multiple repositories", async ({
+    page,
+  }, testInfo) => {
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+
+    // Select multiple repos.
+    await selectRepos(page, [
+      "goodtune/project-a",
+      "goodtune/project-b",
+    ]);
+    await selectPermission(page, "contents", "read");
+
+    await page.fill("#session", "playwright-multi-repo");
+
+    await page.click('button:has-text("Create Token")');
+
+    const tokenDisplay = page.locator("#new-token");
+    await expect(tokenDisplay).toBeVisible();
+
+    // Both repos should appear in the token list.
+    const tokenList = page.locator("#token-list");
+    await expect(tokenList).toContainText("goodtune/project-a");
+    await expect(tokenList).toContainText("goodtune/project-b");
+
+    await testInfo.attach("multi-repo-created", {
       body: await page.screenshot({ fullPage: true }),
       contentType: "image/png",
     });
@@ -80,9 +149,7 @@ test.describe("Token management", () => {
     await page.goto("/");
     await page.waitForLoadState("networkidle");
 
-    // Create a token first.
-    await selectRepo(page, "goodtune/testproject");
-    await selectPermission(page, "contents", "read");
+    // Create an open-scoped token.
     await page.fill("#session", "e2e-list-test");
     await page.click('button:has-text("Create Token")');
 
@@ -91,7 +158,6 @@ test.describe("Token management", () => {
 
     // The token list should now contain our token details.
     const tokenList = page.locator("#token-list");
-    await expect(tokenList).toContainText("goodtune/testproject");
     await expect(tokenList).toContainText("Active");
   });
 
@@ -101,9 +167,7 @@ test.describe("Token management", () => {
     await page.goto("/");
     await page.waitForLoadState("networkidle");
 
-    // Create a token.
-    await selectRepo(page, "goodtune/revoke-test");
-    await selectPermission(page, "issues", "write");
+    // Create an open-scoped token.
     await page.click('button:has-text("Create Token")');
     await expect(page.locator("#new-token")).toBeVisible();
 
@@ -126,18 +190,22 @@ test.describe("Token management", () => {
     });
   });
 
-  test("shows validation when required fields are missing", async ({
-    page,
-  }) => {
+  test("repo select uses multi mode", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+
+    // Verify the repo-select is in multi mode.
+    const mode = await page.evaluate(() => {
+      const el = document.getElementById("repo-select") as any;
+      return el.getAttribute("mode");
+    });
+    expect(mode).toBe("multi");
+  });
+
+  test("form labels indicate optional fields", async ({ page }) => {
     await page.goto("/");
 
-    // Accept the alert dialog.
-    page.on("dialog", async (dialog) => {
-      expect(dialog.message()).toContain("required");
-      await dialog.accept();
-    });
-
-    // Try to create without filling required fields.
-    await page.click('button:has-text("Create Token")');
+    // Labels should indicate repos and permissions are optional.
+    await expect(page.locator(".create-form")).toContainText("optional");
   });
 });

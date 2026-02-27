@@ -106,35 +106,58 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Parse the token's scope restrictions once; fail-closed on corrupt JSON.
+	// Must happen before GraphQL routing so that corrupt JSON is never treated
+	// as open-scoped, even on the GraphQL path.
+	si, err := parseScopeInfo(pt)
+	if err != nil {
+		h.logger.Error("failed to parse token scope", "error", err)
+		writeError(w, http.StatusInternalServerError, "Internal error")
+		return
+	}
+
 	// GraphQL handled separately.
 	if apiPath == "/graphql" {
-		h.handleGraphQL(w, r, pt, rewriteAuth, start)
+		h.handleGraphQL(w, r, pt, si, rewriteAuth, start)
+		return
+	}
+
+	// Open-scoped tokens (no repos AND no scopes) skip all filtering — forward directly to GitHub.
+	if si.isOpenScoped() {
+		githubToken, err := h.getGitHubToken(r, pt)
+		if err != nil {
+			h.logger.Error("failed to get GitHub token", "error", err)
+			status, msg := installationTokenErrorResponse(err)
+			writeError(w, status, msg)
+			return
+		}
+		repo := ExtractRepoFromPath(apiPath)
+		status := h.forwardRequest(w, r, apiPath, rewriteAuth(githubToken))
+		if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
+			h.logger.Error("failed to record token usage", "error", err)
+		}
+		h.logRequest(r.Context(), pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
 		return
 	}
 
 	// Extract repository from path (if this is a /repos/ path).
 	repo := ExtractRepoFromPath(apiPath)
 
-	// If a repo is identified, enforce the token's repository scope.
-	if repo != "" && !repositoryAllowed(repo, pt.Repositories) {
+	// Enforce repository scope only when the token has repo restrictions.
+	// A token with repos=null carries no repo restriction (applies to any repo).
+	if repo != "" && len(si.Repos) > 0 && !si.repoAllowed(repo) {
 		writeError(w, http.StatusForbidden,
 			fmt.Sprintf("Token is not scoped to %s", repo))
 		h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
 
-	// Check endpoint permission scope for known endpoints.
+	// Enforce permission scope only when the token has scope restrictions.
 	// Unrecognized endpoints are forwarded — GitHub's token handles access.
+	// A token with scopes=null carries no permission restriction (any endpoint allowed).
 	permission, level := EndpointScope(r.Method, apiPath)
-	if permission != "" && permission != "metadata" {
-		scopes, err := database.ParseScopes(pt.Scopes)
-		if err != nil {
-			h.logger.Error("failed to parse token scopes", "error", err)
-			writeError(w, http.StatusInternalServerError, "Internal error")
-			return
-		}
-
-		if !scopes.HasPermission(permission, level) {
+	if permission != "" && permission != "metadata" && len(si.Scopes) > 0 {
+		if !si.Scopes.HasPermission(permission, level) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
 			h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
@@ -162,9 +185,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.logRequest(r.Context(), pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
 }
 
-func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, rewriteAuth func(string) string, start time.Time) {
-	// For GraphQL, we forward the request and check the token's scopes in a simplified manner.
-	// Full GraphQL query parsing is complex; for now, we require that the token has at least one scope.
+func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, si tokenScopeInfo, rewriteAuth func(string) string, start time.Time) {
+	// Repository-restricted tokens cannot have their repo restrictions enforced
+	// on GraphQL requests because GraphQL queries can span arbitrary repositories
+	// without a parseable path structure. Block GraphQL to prevent bypassing
+	// repository scope restrictions.
+	if len(si.Repos) > 0 {
+		writeError(w, http.StatusForbidden,
+			"Token is repository-restricted; GraphQL is not supported for repository-scoped tokens")
+		h.logRequest(r.Context(), pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+		return
+	}
+
+	// For permission-scoped tokens (scopes set, no repo restrictions), we forward
+	// to GitHub. Full GraphQL query parsing to enforce per-operation permission
+	// checks is not implemented; the underlying GitHub token enforces actual access.
 	githubToken, err := h.getGitHubToken(r, pt)
 	if err != nil {
 		h.logger.Error("failed to get GitHub token for GraphQL", "error", err)
@@ -199,17 +234,12 @@ func (h *Handler) getAgentGitHubToken(ctx context.Context, pt *database.ProxyTok
 		return "", fmt.Errorf("agent token missing installation_id")
 	}
 
-	var repos []string
-	if err := json.Unmarshal(pt.Repositories, &repos); err != nil {
-		return "", fmt.Errorf("parsing repositories: %w", err)
-	}
-
-	scopes, err := database.ParseScopes(pt.Scopes)
+	si, err := parseScopeInfo(pt)
 	if err != nil {
-		return "", fmt.Errorf("parsing scopes: %w", err)
+		return "", fmt.Errorf("parsing agent token scope: %w", err)
 	}
 
-	return h.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, repos, scopes)
+	return h.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, si.Repos, si.Scopes)
 }
 
 func (h *Handler) getProxyGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {

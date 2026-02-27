@@ -56,11 +56,11 @@
             <h2>Create Token</h2>
             <div class="create-form">
                 <div class="form-group">
-                    <label>Repository</label>
-                    <ghp-repo-select id="repo-select" mode="single" placeholder="Loading repositories..."></ghp-repo-select>
+                    <label>Repositories (optional — leave empty to allow any repo)</label>
+                    <ghp-repo-select id="repo-select" mode="multi" placeholder="Loading repositories..."></ghp-repo-select>
                 </div>
                 <div class="form-group">
-                    <label>Permissions</label>
+                    <label>Permissions (optional — leave empty to allow any permission; leaving both fields empty creates an open-scoped token)</label>
                     <ghp-permission-select id="perm-select"></ghp-permission-select>
                 </div>
                 <div class="form-group">
@@ -130,23 +130,17 @@
 
         // ── Create token ───────────────────────────────────────────
         async function createToken() {
-            const repo = repoSelect.value;
+            const selectedRepos = repoSelect.value; // array in multi mode
             const scopes = permSelect.value;
             const duration = document.getElementById('duration').value;
             const session = document.getElementById('session').value;
 
-            if (!repo) {
-                alert('Repository is required.');
-                return;
-            }
-            if (Object.keys(scopes).length === 0) {
-                alert('At least one permission is required.');
-                return;
-            }
-
+            // Build scope string (empty means open-scoped).
             const scopeStr = Object.entries(scopes).map(([k, v]) => k + ':' + v).join(',');
 
-            const body = { repository: repo, scopes: scopeStr, duration: duration };
+            const body = { duration: duration };
+            if (selectedRepos.length > 0) body.repositories = selectedRepos;
+            if (scopeStr) body.scopes = scopeStr;
             if (session) body.session_id = session;
 
             const btn = document.getElementById('create-btn');
@@ -192,8 +186,8 @@
                 else if (expires < now) { status = 'Expired'; badge = 'badge-expired'; }
                 else { status = 'Active'; badge = 'badge-active'; }
 
-                const scopes = typeof t.scopes === 'string' ? t.scopes : JSON.stringify(t.scopes);
-                const repos = Array.isArray(t.repositories) ? t.repositories.join(', ') : (t.repositories || '');
+                const scopes = (t.scopes && typeof t.scopes === 'object' && Object.keys(t.scopes).length > 0) ? JSON.stringify(t.scopes) : (t.scopes || '(open)');
+                const repos = (Array.isArray(t.repositories) && t.repositories.length > 0) ? t.repositories.join(', ') : '(open)';
                 html += '<tr>';
                 html += '<td>' + esc(t.token_prefix) + '...</td>';
                 html += '<td>' + esc(t.token_type || 'proxy') + '</td>';
