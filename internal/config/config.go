@@ -51,6 +51,7 @@ type GitHubConfig struct {
 	ClientSecret   string `koanf:"client_secret"`
 	PrivateKey     string `koanf:"private_key"`      // PEM contents directly (GHP_GITHUB_PRIVATE_KEY)
 	PrivateKeyFile string `koanf:"private_key_file"`  // Path to PEM file (GHP_GITHUB_PRIVATE_KEY_FILE)
+	BaseURL        string `koanf:"base_url"`          // GitHub API base URL for GHES (default: https://api.github.com)
 	EnterpriseSlug string `koanf:"enterprise_slug"`
 }
 
