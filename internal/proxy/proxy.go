@@ -174,8 +174,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// For the root endpoint, synthesize X-OAuth-Scopes from the token's
+	// permission scopes so that tools like "gh auth status" see the token's
+	// actual capabilities rather than the underlying credential's OAuth scopes.
+	// (GitHub App installation tokens don't carry X-OAuth-Scopes at all.)
+	var scopeOverride map[string]string
+	if apiPath == "/" && len(si.Scopes) > 0 {
+		scopeOverride = map[string]string{
+			"X-OAuth-Scopes": syntheticOAuthScopes(si.Scopes),
+		}
+	}
+
 	// Forward the request to GitHub.
-	status := h.forwardRequest(w, r, apiPath, rewriteAuth(githubToken))
+	status := h.forwardRequest(w, r, apiPath, rewriteAuth(githubToken), scopeOverride)
 
 	// Record usage.
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
@@ -438,7 +449,11 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	io.Copy(w, resp.Body)
 }
 
-func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader string) int {
+// forwardRequest forwards a proxied request to GitHub, substituting authHeader
+// as the Authorization value. The optional overrideHeaders map is applied after
+// copying upstream response headers, allowing callers to inject or replace
+// specific response headers (e.g. X-OAuth-Scopes) before the response is sent.
+func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader string, overrideHeaders ...map[string]string) int {
 	targetURL := githubAPIBase + path
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
@@ -496,12 +511,22 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 		}
 	}
 
-	// Copy other response headers.
+	// Copy other response headers.  X-OAuth-Scopes is included so that
+	// open-scoped tokens (backed by a real OAuth credential) pass through the
+	// correct scope information to clients such as "gh auth status".
 	for key, vals := range resp.Header {
-		if strings.HasPrefix(key, "X-GitHub") || key == "Link" || key == "Content-Type" {
+		if strings.HasPrefix(key, "X-GitHub") || key == "Link" || key == "Content-Type" || key == "X-Oauth-Scopes" {
 			for _, v := range vals {
 				w.Header().Add(key, v)
 			}
+		}
+	}
+
+	// Apply caller-supplied header overrides last so they take precedence over
+	// whatever the upstream returned.
+	if len(overrideHeaders) > 0 {
+		for k, v := range overrideHeaders[0] {
+			w.Header().Set(k, v)
 		}
 	}
 
@@ -509,6 +534,21 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 	io.Copy(w, resp.Body)
 
 	return resp.StatusCode
+}
+
+// syntheticOAuthScopes formats a Scopes map into a comma-separated string
+// suitable for the X-OAuth-Scopes response header. Entries are sorted
+// alphabetically for deterministic output.
+func syntheticOAuthScopes(scopes database.Scopes) string {
+	if len(scopes) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(scopes))
+	for perm, level := range scopes {
+		parts = append(parts, perm+":"+level)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }
 
 func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, r *http.Request, path, repo string, status int, dur time.Duration, action string) {

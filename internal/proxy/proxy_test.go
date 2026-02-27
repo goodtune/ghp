@@ -19,12 +19,18 @@ import (
 
 // captureTransport records the last request sent through it and responds with 200.
 type captureTransport struct {
-	lastReq *http.Request
+	lastReq         *http.Request
+	responseHeaders http.Header // optional headers to include in the response
 }
 
 func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.lastReq = req
 	rec := httptest.NewRecorder()
+	for k, vals := range t.responseHeaders {
+		for _, v := range vals {
+			rec.Header().Add(k, v)
+		}
+	}
 	rec.WriteHeader(http.StatusOK)
 	return rec.Result(), nil
 }
@@ -742,5 +748,212 @@ func TestServeHTTP_RepoAndScopeToken_GraphQLDenied(t *testing.T) {
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for fully-scoped token on GraphQL, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// newScopedHandlerWithTransport is like newScopedHandler but also returns the
+// captureTransport so tests can configure response headers.
+func newScopedHandlerWithTransport(t *testing.T, repo string, scopes map[string]string) (*Handler, string, *captureTransport) {
+	t.Helper()
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 77, GitHubUsername: "scopeduser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("real-github-pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Repository:    repo,
+		Scopes:        scopes,
+		Duration:      24 * time.Hour,
+		SessionID:     "test-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:          &config.Config{},
+		tokenService: tokenSvc,
+		store:        store,
+		encryptor:    enc,
+		logger:       slog.Default(),
+		client:       &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+	return h, result.Token, ct
+}
+
+func TestServeHTTP_ScopedToken_RootEndpoint_SynthesizesOAuthScopes(t *testing.T) {
+	// When a scoped ghp_ token is used to call GET /, the proxy should return
+	// X-OAuth-Scopes synthesized from the token's permissions rather than the
+	// underlying credential's OAuth scopes.
+	h, ghpToken, upstream := newScopedHandlerWithTransport(t, "goodtune/ghp", map[string]string{
+		"contents":      "read",
+		"pull_requests": "write",
+	})
+	// Simulate GitHub returning the real token's broader OAuth scopes.
+	upstream.responseHeaders = http.Header{
+		"X-Oauth-Scopes": []string{"repo, user"},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/", nil)
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	got := rr.Header().Get("X-OAuth-Scopes")
+	if got == "" {
+		t.Fatal("expected X-OAuth-Scopes header to be set")
+	}
+	// The synthesized scopes must reflect the token's restrictions, not the
+	// underlying credential's broader scopes.
+	if strings.Contains(got, "repo") || strings.Contains(got, "user") {
+		t.Errorf("synthesized X-OAuth-Scopes should not contain underlying OAuth scopes, got %q", got)
+	}
+	if !strings.Contains(got, "contents:read") {
+		t.Errorf("synthesized X-OAuth-Scopes should contain contents:read, got %q", got)
+	}
+	if !strings.Contains(got, "pull_requests:write") {
+		t.Errorf("synthesized X-OAuth-Scopes should contain pull_requests:write, got %q", got)
+	}
+}
+
+func TestServeHTTP_OpenScopedToken_RootEndpoint_PassesThroughOAuthScopes(t *testing.T) {
+	// When an open-scoped ghp_ token calls GET /, the proxy should forward
+	// the real X-OAuth-Scopes header from GitHub unchanged.
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 88, GitHubUsername: "openuser2", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("real-github-pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		// No repo, no scopes — open-scoped.
+		Duration:  24 * time.Hour,
+		SessionID: "open-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ct := &captureTransport{
+		responseHeaders: http.Header{
+			"X-Oauth-Scopes": []string{"repo, user:email"},
+		},
+	}
+	h := &Handler{
+		cfg:          &config.Config{},
+		tokenService: tokenSvc,
+		store:        store,
+		encryptor:    enc,
+		logger:       slog.Default(),
+		client:       &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/", nil)
+	req.Header.Set("Authorization", "Bearer "+result.Token)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	got := rr.Header().Get("X-OAuth-Scopes")
+	if got != "repo, user:email" {
+		t.Errorf("open-scoped token should pass through real X-OAuth-Scopes, got %q", got)
+	}
+}
+
+func TestSyntheticOAuthScopes(t *testing.T) {
+	tests := []struct {
+		name   string
+		scopes database.Scopes
+		want   string
+	}{
+		{
+			name:   "nil scopes",
+			scopes: nil,
+			want:   "",
+		},
+		{
+			name:   "empty scopes",
+			scopes: database.Scopes{},
+			want:   "",
+		},
+		{
+			name:   "single scope",
+			scopes: database.Scopes{"contents": "read"},
+			want:   "contents:read",
+		},
+		{
+			name:   "multiple scopes sorted",
+			scopes: database.Scopes{"pull_requests": "write", "contents": "read", "issues": "write"},
+			want:   "contents:read, issues:write, pull_requests:write",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := syntheticOAuthScopes(tc.scopes)
+			if got != tc.want {
+				t.Errorf("syntheticOAuthScopes(%v) = %q, want %q", tc.scopes, got, tc.want)
+			}
+		})
 	}
 }
