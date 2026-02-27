@@ -153,61 +153,12 @@ func TestForwardRequest_NoEnterpriseHeader(t *testing.T) {
 }
 
 // newScopedHandler creates a Handler with a real token.Service backed by SQLite,
-// issues a ghp_ token scoped to the given repository and scopes, and returns
+// issues a ghx_ token scoped to the given repository and scopes, and returns
 // the handler plus the plaintext token.
 func newScopedHandler(t *testing.T, repo string, scopes map[string]string) (*Handler, string) {
 	t.Helper()
-	store := newTestStore(t)
-	ctx := context.Background()
-
-	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	user := &database.User{GitHubID: 1, GitHubUsername: "testuser", Role: "user"}
-	if err := store.UpsertUser(ctx, user); err != nil {
-		t.Fatal(err)
-	}
-
-	encAccess, err := enc.Encrypt("real-github-pat")
-	if err != nil {
-		t.Fatal(err)
-	}
-	gt := &database.GitHubToken{
-		UserID:                user.ID,
-		AccessToken:           encAccess,
-		RefreshToken:          "enc_refresh",
-		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
-		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
-	}
-	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
-		t.Fatal(err)
-	}
-
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
-	result, err := tokenSvc.Create(ctx, token.CreateRequest{
-		UserID:        user.ID,
-		GitHubTokenID: gt.ID,
-		Repository:    repo,
-		Scopes:        scopes,
-		Duration:      24 * time.Hour,
-		SessionID:     "test-session",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ct := &captureTransport{}
-	h := &Handler{
-		cfg:          &config.Config{},
-		tokenService: tokenSvc,
-		store:        store,
-		encryptor:    enc,
-		logger:       slog.Default(),
-		client:       &http.Client{Transport: ct, Timeout: 5 * time.Second},
-	}
-	return h, result.Token
+	h, tok, _ := newScopedHandlerWithTransport(t, repo, scopes)
+	return h, tok
 }
 
 func TestServeHTTP_GhpToken_WrongRepository(t *testing.T) {
@@ -918,6 +869,69 @@ func TestServeHTTP_OpenScopedToken_RootEndpoint_PassesThroughOAuthScopes(t *test
 	got := rr.Header().Get("X-OAuth-Scopes")
 	if got != "repo, user:email" {
 		t.Errorf("open-scoped token should pass through real X-OAuth-Scopes, got %q", got)
+	}
+}
+
+// mockAppTokenProvider satisfies the AppTokenProvider interface for unit tests.
+type mockAppTokenProvider struct {
+	token string
+	err   error
+}
+
+func (m *mockAppTokenProvider) GetInstallationToken(_ context.Context, _ int64, _ []string, _ map[string]string) (string, error) {
+	return m.token, m.err
+}
+
+func TestServeHTTP_OpenScoped_AgentToken_RootEndpoint_NoOAuthScopes(t *testing.T) {
+	// An open-scoped gha_ agent token on GET / should not have X-OAuth-Scopes
+	// set in the response because GitHub App installation tokens never carry it,
+	// and open-scoped tokens have no permissions to synthesize from.
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	var installID int64 = 99
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		TokenType:      token.TokenTypeAgent,
+		InstallationID: installID,
+		// No repos, no scopes — open-scoped.
+		Duration:  24 * time.Hour,
+		SessionID: "open-agent-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// captureTransport returns no X-OAuth-Scopes, simulating a GitHub App response.
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:              &config.Config{},
+		tokenService:     tokenSvc,
+		store:            store,
+		encryptor:        enc,
+		appTokenProvider: &mockAppTokenProvider{token: "ghs_fake_installation_token"},
+		logger:           slog.Default(),
+		client:           &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/", nil)
+	req.Header.Set("Authorization", "Bearer "+result.Token)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	got := rr.Header().Get("X-OAuth-Scopes")
+	if got != "" {
+		t.Errorf("open-scoped agent token on GET / should not have X-OAuth-Scopes, got %q", got)
 	}
 }
 

@@ -2,7 +2,7 @@
  * <ghp-permission-select> — GitHub-style permissions selector web component.
  *
  * Properties / methods:
- *   .permissions = { contents: "write", pulls: "read", ... }
+ *   .permissions = { contents: "write", pull_requests: "read", ... }
  *       Set the available permissions and their max granted level.
  *   .value
  *       Get the selected permissions as { permission: level } (excludes "No access").
@@ -21,34 +21,34 @@ class GhpPermissionSelect extends HTMLElement {
 
   // Human-readable labels.
   static labels = {
-    contents:           'Contents',
-    pulls:              'Pull requests',
-    issues:             'Issues',
-    statuses:           'Commit statuses',
-    checks:             'Checks',
-    actions:            'Actions',
-    metadata:           'Metadata',
-    administration:     'Administration',
-    members:            'Members',
-    pages:              'Pages',
-    security_events:    'Security events',
+    contents:             'Contents',
+    pull_requests:        'Pull requests',
+    issues:               'Issues',
+    statuses:             'Commit statuses',
+    checks:               'Checks',
+    actions:              'Actions',
+    metadata:             'Metadata',
+    administration:       'Administration',
+    members:              'Members',
+    pages:                'Pages',
+    security_events:      'Security events',
     vulnerability_alerts: 'Vulnerability alerts',
-    workflows:          'Workflows',
-    packages:           'Packages',
-    environments:       'Environments',
-    deployments:        'Deployments',
-    discussions:        'Discussions',
-    projects:           'Projects',
+    workflows:            'Workflows',
+    packages:             'Packages',
+    environments:         'Environments',
+    deployments:          'Deployments',
+    discussions:          'Discussions',
+    projects:             'Projects',
   };
 
   static descriptions = {
-    contents:  'Repository contents, commits, branches, downloads, releases, and merges.',
-    pulls:     'Pull requests and related comments, assignees, labels, milestones, and merges.',
-    issues:    'Issues and related comments, assignees, labels, and milestones.',
-    statuses:  'Commit statuses.',
-    checks:    'Check runs and check suites.',
-    actions:   'GitHub Actions workflows, runs, and artifacts.',
-    metadata:  'Search repositories, list collaborators, and access repository metadata.',
+    contents:      'Repository contents, commits, branches, downloads, releases, and merges.',
+    pull_requests: 'Pull requests and related comments, assignees, labels, milestones, and merges.',
+    issues:        'Issues and related comments, assignees, labels, and milestones.',
+    statuses:      'Commit statuses.',
+    checks:        'Check runs and check suites.',
+    actions:       'GitHub Actions workflows, runs, and artifacts.',
+    metadata:      'Search repositories, list collaborators, and access repository metadata.',
   };
 
   get permissions() { return this._permissions; }

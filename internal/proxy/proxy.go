@@ -511,9 +511,9 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 		}
 	}
 
-	// Copy other response headers.  X-OAuth-Scopes is included so that
-	// open-scoped tokens (backed by a real OAuth credential) pass through the
-	// correct scope information to clients such as "gh auth status".
+	// Copy other response headers. X-OAuth-Scopes is included here so that
+	// open-scoped tokens pass through GitHub's real scope information; for
+	// scoped tokens the override applied below replaces this value.
 	for key, vals := range resp.Header {
 		if strings.HasPrefix(key, "X-GitHub") || key == "Link" || key == "Content-Type" || key == "X-Oauth-Scopes" {
 			for _, v := range vals {

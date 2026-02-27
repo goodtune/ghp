@@ -107,17 +107,20 @@
         const repoSelect = document.getElementById('repo-select');
         const permSelect = document.getElementById('perm-select');
 
-        // All proxy-token scopes available at write level (user OAuth is broad).
-        const proxyPermissions = {
-            contents: 'write',
-            pulls: 'write',
-            issues: 'write',
-            statuses: 'write',
-            checks: 'write',
-            actions: 'write',
-            metadata: 'read',
-        };
-        permSelect.permissions = proxyPermissions;
+        // ── Load available permissions from the API ────────────────
+        // The endpoint derives available permissions from the user's GitHub
+        // OAuth scopes, ensuring the UI only shows what the underlying
+        // credential can actually grant.
+        async function loadPermissions() {
+            try {
+                const data = await api('GET', '/api/github/permissions');
+                if (data && typeof data === 'object' && !data.message) {
+                    permSelect.permissions = data;
+                }
+            } catch (_) {
+                // Leave permissions empty if the endpoint is unreachable.
+            }
+        }
 
         // ── Load user repos ────────────────────────────────────────
         async function loadUserRepos() {
@@ -242,6 +245,7 @@
         }
 
         // ── Init ───────────────────────────────────────────────────
+        loadPermissions();
         loadUserRepos();
         loadTokens();
         loadAudit();
