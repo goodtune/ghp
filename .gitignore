@@ -8,6 +8,11 @@
 *.so
 *.dylib
 
+# Key materials
+*.crt
+*.key
+*.pem
+
 # Test binary, built with `go test -c`
 *.test
 
