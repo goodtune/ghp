@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -174,6 +175,26 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
 
+	// Comma-separated list env vars for slice fields. koanf unmarshals
+	// a single env var string into a one-element slice, so we split on
+	// commas to support e.g. GHP_ADMINS="alice,bob".
+	cfg.Admins = splitCommaSlice(cfg.Admins)
+	cfg.Auth.AllowedRedirects = splitCommaSlice(cfg.Auth.AllowedRedirects)
+
+	// Convenience env vars for the common single-certificate case.
+	// GHP_TLS_CERT_FILE / GHP_TLS_KEY_FILE populate Certificates[0]
+	// when the slice is empty (the koanf env mapper cannot address
+	// array elements).
+	if len(cfg.TLS.Certificates) == 0 {
+		certFile := os.Getenv("GHP_TLS_CERT_FILE")
+		keyFile := os.Getenv("GHP_TLS_KEY_FILE")
+		if certFile != "" && keyFile != "" {
+			cfg.TLS.Certificates = []CertificateConfig{
+				{CertFile: certFile, KeyFile: keyFile},
+			}
+		}
+	}
+
 	return cfg, nil
 }
 
@@ -191,6 +212,21 @@ func (c *Config) ReloadFrom(path string) error {
 	c.Metrics = fresh.Metrics
 	c.Auth = fresh.Auth
 	return nil
+}
+
+// splitCommaSlice re-splits a string slice so that any element containing
+// commas is expanded. This lets env vars like GHP_ADMINS="a,b" work even
+// though koanf treats the value as a single string.
+func splitCommaSlice(ss []string) []string {
+	var out []string
+	for _, s := range ss {
+		for _, part := range strings.Split(s, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
 }
 
 // IsAdmin returns true if the given GitHub username is in the admin list.
