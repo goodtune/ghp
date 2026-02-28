@@ -103,6 +103,10 @@ func (s *Server) Run(ctx context.Context) error {
 		s.logger.Info("admin_roles_synced")
 	}
 
+	// Warn if the operator has set environment variables for token types
+	// that ghp manages internally and cannot be blocked via border policy.
+	s.cfg.WarnInvalidBlockTargets(s.logger)
+
 	// Set up encryption.
 	encKey := s.cfg.EncryptionKey
 	if encKey == "" {
@@ -187,7 +191,7 @@ func (s *Server) Run(ctx context.Context) error {
 	githubInner := proxy.NewPassthroughHandler(
 		"https://github.com", resolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
-		githubInner, tokenSvc, resolver, usernameResolver, s.logger)
+		githubInner, tokenSvc, resolver, usernameResolver, s.logger, s.cfg)
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 

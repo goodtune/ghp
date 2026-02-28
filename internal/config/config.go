@@ -25,12 +25,29 @@ type Config struct {
 	OTEL     OTELConfig     `koanf:"otel"`
 	Admins   []string       `koanf:"admins"`
 	Auth     AuthConfig     `koanf:"auth"`
+	Block    BlockConfig    `koanf:"block"`
 
 	EncryptionKey string `koanf:"encryption_key"`
 
 	// DevMode enables test-only endpoints (e.g. /auth/test-login).
 	// Must never be enabled in production.
 	DevMode bool `koanf:"dev_mode"`
+}
+
+// BlockConfig defines which GitHub token prefixes are blocked from
+// passing through the proxy. Each field corresponds to one of the
+// five token types minted by GitHub. When a field is true, any request
+// bearing a token of that type is rejected with 403.
+//
+// Blocking ghp's own token types (ghx_, gha_) is not valid and will
+// produce a warning at startup — those tokens are managed internally
+// and never reach the passthrough path.
+type BlockConfig struct {
+	GHP bool `koanf:"ghp"` // GitHub personal access tokens (ghp_)
+	GHO bool `koanf:"gho"` // OAuth access tokens (gho_)
+	GHU bool `koanf:"ghu"` // GitHub user-to-server tokens (ghu_)
+	GHS bool `koanf:"ghs"` // GitHub server-to-server tokens (ghs_)
+	GHR bool `koanf:"ghr"` // Refresh tokens (ghr_)
 }
 
 type TLSConfig struct {
@@ -159,7 +176,7 @@ func Load(path string) (*Config, error) {
 		if i := strings.Index(s, "_"); i > 0 {
 			section, field := s[:i], s[i+1:]
 			switch section {
-			case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth":
+			case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block":
 				// Handle 3-level nesting for logging.file.*
 				if section == "logging" && strings.HasPrefix(field, "file_") {
 					return "logging.file." + field[len("file_"):]
@@ -212,6 +229,7 @@ func (c *Config) ReloadFrom(path string) error {
 	c.Logging = fresh.Logging
 	c.Metrics = fresh.Metrics
 	c.Auth = fresh.Auth
+	c.Block = fresh.Block
 	return nil
 }
 
@@ -238,4 +256,41 @@ func (c *Config) IsAdmin(username string) bool {
 		}
 	}
 	return false
+}
+
+// IsTokenBlocked returns true when the token string's type prefix is blocked by
+// the border policy. Only the five standard GitHub token prefixes are evaluated;
+// ghp's own managed token types (ghx_, gha_) are never considered here.
+func (c *Config) IsTokenBlocked(token string) bool {
+	switch {
+	case strings.HasPrefix(token, "ghp_"):
+		return c.Block.GHP
+	case strings.HasPrefix(token, "gho_"):
+		return c.Block.GHO
+	case strings.HasPrefix(token, "ghu_"):
+		return c.Block.GHU
+	case strings.HasPrefix(token, "ghs_"):
+		return c.Block.GHS
+	case strings.HasPrefix(token, "ghr_"):
+		return c.Block.GHR
+	}
+	return false
+}
+
+// WarnInvalidBlockTargets logs a warning for any block configuration targeting
+// token types that are managed internally by ghp (ghx_, gha_, ghpr_). Those
+// tokens are intercepted by the proxy before the passthrough path and cannot be
+// blocked via the border policy. The check covers GHP_BLOCK_GHX, GHP_BLOCK_GHA,
+// and GHP_BLOCK_GHPR environment variables which a configuration mistake might
+// introduce. Note: GHP_BLOCK_GHPR targets ghp's own session token prefix (ghpr_),
+// which is distinct from GitHub's refresh token prefix (ghr_) handled by GHP_BLOCK_GHR.
+func (c *Config) WarnInvalidBlockTargets(logger interface {
+	Warn(msg string, args ...any)
+}) {
+	for _, envKey := range []string{"GHP_BLOCK_GHX", "GHP_BLOCK_GHA", "GHP_BLOCK_GHPR"} {
+		if v := os.Getenv(envKey); v != "" {
+			logger.Warn("unsupported block target: ghp manages this token type internally; blocking has no effect",
+				"env", envKey)
+		}
+	}
 }
