@@ -216,7 +216,14 @@ func (s *Server) Run(ctx context.Context) error {
 				return fmt.Errorf("loading TLS config for metrics server: %w", tlsErr)
 			}
 		}
-		go s.serveMetrics(ctx, metricsTLS)
+		metricsLn, listenErr := net.Listen("tcp", s.cfg.Metrics.Listen)
+		if listenErr != nil {
+			return fmt.Errorf("metrics server listen %s: %w", s.cfg.Metrics.Listen, listenErr)
+		}
+		if metricsTLS != nil {
+			metricsLn = tls.NewListener(metricsLn, metricsTLS)
+		}
+		go s.serveMetrics(ctx, metricsLn, metricsTLS)
 	}
 
 	if hasTLS {
@@ -399,22 +406,12 @@ func (s *Server) createListener() (net.Listener, error) {
 }
 
 // serveMetrics starts a dedicated HTTP (or HTTPS when tlsCfg is non-nil) server
-// on the configured metrics listen address, exposing only the Prometheus
-// /metrics endpoint. It runs until ctx is cancelled or a shutdown signal is
-// received, then drains with a 10-second timeout.
-func (s *Server) serveMetrics(ctx context.Context, tlsCfg *tls.Config) {
+// on the given listener, exposing only the Prometheus /metrics endpoint. It
+// runs until ctx is cancelled or a shutdown signal is received, then drains
+// with a 30-second timeout.
+func (s *Server) serveMetrics(ctx context.Context, ln net.Listener, tlsCfg *tls.Config) {
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
-
-	ln, err := net.Listen("tcp", s.cfg.Metrics.Listen)
-	if err != nil {
-		s.logger.Error("metrics_server_listen_failed", "addr", s.cfg.Metrics.Listen, "error", err)
-		return
-	}
-
-	if tlsCfg != nil {
-		ln = tls.NewListener(ln, tlsCfg)
-	}
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	srv := &http.Server{Handler: mux, TLSConfig: tlsCfg}
 
@@ -422,7 +419,7 @@ func (s *Server) serveMetrics(ctx context.Context, tlsCfg *tls.Config) {
 	defer cancel()
 	go func() {
 		<-shutdownCtx.Done()
-		timeout, tcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		timeout, tcancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer tcancel()
 		_ = srv.Shutdown(timeout)
 	}()
@@ -431,7 +428,7 @@ func (s *Server) serveMetrics(ctx context.Context, tlsCfg *tls.Config) {
 	if tlsCfg != nil {
 		scheme = "https"
 	}
-	s.logger.Info("metrics_server_ready", "listen", s.cfg.Metrics.Listen, "scheme", scheme)
+	s.logger.Info("metrics_server_ready", "listen", ln.Addr().String(), "scheme", scheme)
 
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		s.logger.Error("metrics_server_error", "error", err)
