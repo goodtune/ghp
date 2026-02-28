@@ -150,6 +150,7 @@ func TestObserveDecision_AllStages(t *testing.T) {
 	stages := []string{
 		StageTotal,
 		StageTokenExtraction,
+		StageBorderPolicyCheck,
 		StageTokenResolution,
 		StageUsernameResolution,
 		StageScopeParsing,

@@ -84,6 +84,7 @@ The proxy decision pipeline is broken into individually timed stages so that the
 |---|---|
 | `total` | Full pre-forward overhead: arrival to GitHub forward |
 | `token_extraction` | Unpacking the Authorization header, identifying ghx_/gha_ prefix |
+| `border_policy_check` | Evaluating the token type border policy (block config) |
 | `token_resolution` | SHA-256 hash, database lookup, expiry & revocation validation |
 | `username_resolution` | Database lookup to resolve GitHub username from internal user ID |
 | `scope_parsing` | JSON unmarshalling of repository and permission scope restrictions |

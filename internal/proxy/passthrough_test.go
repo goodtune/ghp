@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/token"
@@ -647,6 +648,52 @@ func TestScopedPassthrough_ScopeOnly_DeniesInsufficientPermission(t *testing.T) 
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for scope-only token with insufficient permission, got %d", rr.Code)
+	}
+}
+
+func TestScopedPassthrough_BorderPolicy_BlocksRawToken(t *testing.T) {
+	// A raw ghs_ token should be rejected by ScopedPassthroughHandler when
+	// the block.ghs border policy is active.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("request should not reach upstream when token is blocked")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{Block: config.BlockConfig{GHS: true}}
+	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, slog.Default(), cfg)
+
+	req := httptest.NewRequest("GET", "http://github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req.Header.Set("Authorization", "Bearer ghs_servertoken")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for blocked ghs_ token on git path, got %d", rr.Code)
+	}
+}
+
+func TestScopedPassthrough_BorderPolicy_AllowsUnblockedRawToken(t *testing.T) {
+	// A raw gho_ token should pass through when ghs_ is blocked but gho_ is not.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{Block: config.BlockConfig{GHS: true}}
+	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, slog.Default(), cfg)
+
+	req := httptest.NewRequest("GET", "http://github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req.Header.Set("Authorization", "Bearer gho_oauthtoken")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for non-blocked gho_ token, got %d", rr.Code)
 	}
 }
 

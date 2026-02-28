@@ -71,3 +71,60 @@ func TestLoadTLSCertFromEnvPartial(t *testing.T) {
 		t.Fatalf("expected 0 certificates when only cert is set, got %d", len(cfg.TLS.Certificates))
 	}
 }
+
+func TestLoadBlockFromEnv(t *testing.T) {
+	t.Setenv("GHP_BLOCK_GHO", "true")
+	t.Setenv("GHP_BLOCK_GHU", "true")
+	t.Setenv("GHP_BLOCK_GHS", "true")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Block.GHO != true {
+		t.Error("expected Block.GHO to be true")
+	}
+	if cfg.Block.GHU != true {
+		t.Error("expected Block.GHU to be true")
+	}
+	if cfg.Block.GHS != true {
+		t.Error("expected Block.GHS to be true")
+	}
+	// These were not set.
+	if cfg.Block.GHP != false {
+		t.Error("expected Block.GHP to be false")
+	}
+	if cfg.Block.GHR != false {
+		t.Error("expected Block.GHR to be false")
+	}
+}
+
+func TestIsTokenBlocked(t *testing.T) {
+	tests := []struct {
+		name    string
+		block   BlockConfig
+		token   string
+		blocked bool
+	}{
+		{name: "ghp blocked", block: BlockConfig{GHP: true}, token: "ghp_abc123", blocked: true},
+		{name: "gho blocked", block: BlockConfig{GHO: true}, token: "gho_abc123", blocked: true},
+		{name: "ghu blocked", block: BlockConfig{GHU: true}, token: "ghu_abc123", blocked: true},
+		{name: "ghs blocked", block: BlockConfig{GHS: true}, token: "ghs_abc123", blocked: true},
+		{name: "ghr blocked", block: BlockConfig{GHR: true}, token: "ghr_abc123", blocked: true},
+		{name: "gho not blocked", block: BlockConfig{}, token: "gho_abc123", blocked: false},
+		{name: "ghp not blocked", block: BlockConfig{}, token: "ghp_abc123", blocked: false},
+		{name: "ghx never blocked", block: BlockConfig{GHP: true, GHO: true}, token: "ghx_abc123", blocked: false},
+		{name: "gha never blocked", block: BlockConfig{GHP: true, GHO: true}, token: "gha_abc123", blocked: false},
+		{name: "unknown prefix", block: BlockConfig{GHP: true}, token: "xyz_abc123", blocked: false},
+		{name: "empty token", block: BlockConfig{GHP: true}, token: "", blocked: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{Block: tt.block}
+			got := cfg.IsTokenBlocked(tt.token)
+			if got != tt.blocked {
+				t.Errorf("IsTokenBlocked(%q) = %v, want %v", tt.token, got, tt.blocked)
+			}
+		})
+	}
+}

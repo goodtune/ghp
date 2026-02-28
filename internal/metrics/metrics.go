@@ -99,6 +99,7 @@ var (
 	//
 	//   total                  – arrival to GitHub forward (full pre-forward overhead)
 	//   token_extraction       – unpacking the Authorization header
+	//   border_policy_check    – evaluating the token type border policy (block config)
 	//   token_resolution       – SHA-256 hash + database lookup + expiry/revocation check
 	//   username_resolution    – resolving GitHub username from user ID
 	//   scope_parsing          – JSON unmarshalling of repository & permission scopes
@@ -116,6 +117,7 @@ var (
 const (
 	StageTotal                 = "total"
 	StageTokenExtraction       = "token_extraction"
+	StageBorderPolicyCheck     = "border_policy_check"
 	StageTokenResolution       = "token_resolution"
 	StageUsernameResolution    = "username_resolution"
 	StageScopeParsing          = "scope_parsing"

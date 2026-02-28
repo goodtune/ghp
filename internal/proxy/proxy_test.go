@@ -744,3 +744,94 @@ func TestServeHTTP_RepoAndScopeToken_GraphQLDenied(t *testing.T) {
 		t.Fatalf("expected 403 for fully-scoped token on GraphQL, got %d; body: %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestServeHTTP_BorderPolicy_BlocksGhoToken(t *testing.T) {
+	// A gho_ token should be blocked with 403 when the block.gho policy is active.
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg: &config.Config{
+			Block: config.BlockConfig{GHO: true},
+		},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo/pulls", nil)
+	req.Header.Set("Authorization", "Bearer gho_realtoken123")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for blocked gho_ token, got %d", rr.Code)
+	}
+	if ct.lastReq != nil {
+		t.Error("request should not have been forwarded to upstream")
+	}
+}
+
+func TestServeHTTP_BorderPolicy_AllowsWhenNotBlocked(t *testing.T) {
+	// A gho_ token should pass through when only ghs_ is blocked.
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg: &config.Config{
+			Block: config.BlockConfig{GHS: true},
+		},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo/pulls", nil)
+	req.Header.Set("Authorization", "Bearer gho_realtoken123")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusForbidden {
+		t.Fatalf("gho_ should not be blocked when only ghs_ is configured, got 403")
+	}
+	if ct.lastReq == nil {
+		t.Fatal("request should have been forwarded to upstream")
+	}
+}
+
+func TestServeHTTP_BorderPolicy_BlocksAllTokenTypes(t *testing.T) {
+	// Each GitHub token type should be blockable independently.
+	tests := []struct {
+		name        string
+		block       config.BlockConfig
+		tokenHeader string
+		wantBlocked bool
+	}{
+		{name: "ghp blocked", block: config.BlockConfig{GHP: true}, tokenHeader: "Bearer ghp_abc", wantBlocked: true},
+		{name: "gho blocked", block: config.BlockConfig{GHO: true}, tokenHeader: "Bearer gho_abc", wantBlocked: true},
+		{name: "ghu blocked", block: config.BlockConfig{GHU: true}, tokenHeader: "Bearer ghu_abc", wantBlocked: true},
+		{name: "ghs blocked", block: config.BlockConfig{GHS: true}, tokenHeader: "Bearer ghs_abc", wantBlocked: true},
+		{name: "ghr blocked", block: config.BlockConfig{GHR: true}, tokenHeader: "Bearer ghr_abc", wantBlocked: true},
+		{name: "ghp not blocked by gho policy", block: config.BlockConfig{GHO: true}, tokenHeader: "Bearer ghp_abc", wantBlocked: false},
+		{name: "no block policy", block: config.BlockConfig{}, tokenHeader: "Bearer gho_abc", wantBlocked: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ct := &captureTransport{}
+			h := &Handler{
+				cfg:    &config.Config{Block: tt.block},
+				logger: slog.Default(),
+				client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+			}
+			req := httptest.NewRequest("GET", "http://api.github.com/user", nil)
+			req.Header.Set("Authorization", tt.tokenHeader)
+			rr := httptest.NewRecorder()
+
+			h.ServeHTTP(rr, req)
+
+			if tt.wantBlocked && rr.Code != http.StatusForbidden {
+				t.Errorf("expected 403 (blocked), got %d", rr.Code)
+			}
+			if !tt.wantBlocked && rr.Code == http.StatusForbidden {
+				t.Errorf("expected token to pass through, but got 403")
+			}
+		})
+	}
+}

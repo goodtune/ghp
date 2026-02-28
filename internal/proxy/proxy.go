@@ -78,12 +78,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract the client token from the Authorization header.
-	// If the token is not a client token (ghx_/gha_), forward the request
-	// transparently to GitHub with the original credentials intact.
+	// If the token is not a client token (ghx_/gha_), check the border
+	// policy and then forward the request transparently to GitHub.
 	extractStart := time.Now()
-	clientToken, rewriteAuth := extractClientToken(r)
+	clientToken, rawCredential, rewriteAuth := extractClientToken(r)
 	metrics.ObserveDecision(metrics.StageTokenExtraction, "", time.Since(extractStart))
 	if clientToken == "" {
+		// Check the token type border policy before forwarding.
+		borderStart := time.Now()
+		if h.cfg.IsTokenBlocked(rawCredential) {
+			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+			writeError(w, http.StatusForbidden, "Token type is not permitted by the border policy")
+			return
+		}
+		metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
 		h.forwardPassthrough(w, r, apiPath)
 		return
 	}
