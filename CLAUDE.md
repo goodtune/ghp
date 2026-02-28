@@ -92,7 +92,7 @@ The proxy decision pipeline is broken into individually timed stages so that the
 | `github_token_resolution` | Loading, decrypting (or OAuth-refreshing) the real GitHub credential |
 | `upstream_roundtrip` | The actual HTTP call to the GitHub API |
 
-Labels: `stage`, `token_type` (ghx, gha, or unknown for pre-resolution stages).
+Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tokens, or `unknown` for pre-resolution stages).
 
 ### Guidelines for new metrics
 

@@ -96,10 +96,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Derive token type from prefix for pre-resolution metrics.
+	resolveTokenType := ""
+	if tt, ok := token.TokenTypeFromPrefix(clientToken); ok {
+		resolveTokenType = string(tt)
+	}
+
 	// Resolve the client token.
 	resolveStart := time.Now()
 	pt, err := h.tokenService.Resolve(r.Context(), clientToken)
-	metrics.ObserveDecision(metrics.StageTokenResolution, "", time.Since(resolveStart))
+	metrics.ObserveDecision(metrics.StageTokenResolution, resolveTokenType, time.Since(resolveStart))
 	if err != nil {
 		h.logger.Warn("token resolution failed", "error", err)
 		writeError(w, http.StatusUnauthorized, err.Error())

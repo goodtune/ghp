@@ -163,10 +163,10 @@ func TestObserveDecision_AllStages(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			labels := prometheus.Labels{
 				"stage":      stage,
-				"token_type": "ghx",
+				"token_type": "proxy",
 			}
 			before := getHistogramCount(t, ProxyDecisionDuration, labels)
-			ObserveDecision(stage, "ghx", 1*time.Millisecond)
+			ObserveDecision(stage, "proxy", 1*time.Millisecond)
 			after := getHistogramCount(t, ProxyDecisionDuration, labels)
 			if after-before != 1 {
 				t.Errorf("expected histogram sample count to increment by 1, got %d", after-before)

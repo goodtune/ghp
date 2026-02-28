@@ -128,10 +128,16 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 
 		start := time.Now()
 
+		// Derive token type from prefix for pre-resolution metrics.
+		resolveTokenType := ""
+		if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
+			resolveTokenType = string(tt)
+		}
+
 		// Resolve the full proxy token for scope checking.
 		resolveStart := time.Now()
 		pt, err := enforcer.Resolve(r.Context(), clientTok)
-		metrics.ObserveDecision(metrics.StageTokenResolution, "", time.Since(resolveStart))
+		metrics.ObserveDecision(metrics.StageTokenResolution, resolveTokenType, time.Since(resolveStart))
 		if err != nil {
 			if logger != nil {
 				logger.Warn("git scope enforcement: token resolution failed", "error", err)
@@ -189,7 +195,9 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			}
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 			r.Header.Set("Authorization", rewriteAuth(realToken))
+			upstreamStart := time.Now()
 			inner.ServeHTTP(rec, r)
+			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 			return
 		}
 
@@ -226,7 +234,9 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		}
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		r.Header.Set("Authorization", rewriteAuth(realToken))
+		upstreamStart := time.Now()
 		inner.ServeHTTP(rec, r)
+		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 	})
 }
 

@@ -127,8 +127,8 @@ const (
 )
 
 // ObserveDecision records the duration of a single stage in the proxy
-// decision pipeline. tokenType should be "ghx", "gha", or "" for stages
-// that run before the token type is known.
+// decision pipeline. tokenType should be "proxy", "agent", or "" for stages
+// that run before the token type is known (normalised to "unknown").
 func ObserveDecision(stage, tokenType string, dur time.Duration) {
 	if tokenType == "" {
 		tokenType = "unknown"
