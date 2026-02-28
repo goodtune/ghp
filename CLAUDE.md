@@ -12,7 +12,7 @@ GHP is a GitHub API reverse proxy that issues scoped, auditable tokens (`ghx_`-p
 - **Config:** koanf (YAML + `GHP_` env vars)
 - **Metrics:** Prometheus
 - **E2E tests:** Playwright (TypeScript, Chromium)
-- **Docs:** MkDocs with shadcn theme, built via `uv`
+- **Docs:** MkDocs with shadcn theme, published to GitHub Pages via `uv`
 
 ## Build & Development Commands
 
@@ -66,7 +66,6 @@ internal/
   metrics/        Prometheus metric registration
   github/         GitHub App JWT/installation handling
   backend/        Database abstraction interface
-  docs/           Embedded MkDocs output
 e2e/              Playwright end-to-end tests
 docs/             MkDocs documentation source
 packaging/        Systemd units, default config, install scripts

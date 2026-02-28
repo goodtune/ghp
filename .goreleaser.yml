@@ -1,9 +1,5 @@
 version: 2
 
-before:
-  hooks:
-    - uvx --with mkdocs-shadcn mkdocs build --site-dir internal/docs/site
-
 builds:
   - main: ./cmd/ghp
     binary: ghp

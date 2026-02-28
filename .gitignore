@@ -46,8 +46,6 @@ doc/man1/
 
 # MkDocs output
 site/
-internal/docs/site/*
-!internal/docs/site/.gitkeep
 
 # Git worktrees
 .worktrees/
