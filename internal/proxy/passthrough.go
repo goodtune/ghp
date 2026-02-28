@@ -45,7 +45,7 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSl
 			}
 
 			if resolver != nil {
-				if clientTok, rewriteAuth := extractClientToken(req); clientTok != "" {
+				if clientTok, _, rewriteAuth := extractClientToken(req); clientTok != "" {
 					realToken, err := resolver.ResolveToGitHubToken(req.Context(), clientTok)
 					if err != nil {
 						if logger != nil {
@@ -92,14 +92,12 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		blockCfg = cfg[0]
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clientTok, rewriteAuth := extractClientToken(r)
+		clientTok, rawCredential, rewriteAuth := extractClientToken(r)
 		if clientTok == "" {
 			// Check the token type border policy before forwarding.
-			if blockCfg != nil {
-				if raw := extractRawTokenForBlocking(r); raw != "" && blockCfg.IsTokenBlocked(raw) {
-					writeError(w, http.StatusForbidden, "Token type is not permitted by the border policy")
-					return
-				}
+			if blockCfg != nil && blockCfg.IsTokenBlocked(rawCredential) {
+				writeError(w, http.StatusForbidden, "Token type is not permitted by the border policy")
+				return
 			}
 			// Not a client token — try to resolve the GitHub username
 			// from the raw token for access-log / metrics visibility.
@@ -282,42 +280,52 @@ func NewCopilotPassthroughHandler(upstream string, enterpriseSlug string, logger
 // Supports "Bearer ghx_xxx", "token ghx_xxx", and Basic auth with
 // username "x-access-token" and a client token password (as used by git credential helpers).
 //
-// Returns the plaintext client token and a rewrite function that builds a new
-// Authorization header value preserving the original scheme.
-func extractClientToken(r *http.Request) (string, func(realToken string) string) {
+// Returns the plaintext client token (or "" if none found), the raw credential
+// extracted from the header (for border-policy evaluation; "" if unparseable),
+// and a rewrite function that builds a new Authorization header value preserving
+// the original scheme.
+func extractClientToken(r *http.Request) (string, string, func(realToken string) string) {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
-		return "", nil
+		return "", "", nil
 	}
 	parts := strings.SplitN(auth, " ", 2)
 	if len(parts) != 2 {
-		return "", nil
+		return "", "", nil
 	}
 	scheme := strings.ToLower(parts[0])
 	originalScheme := parts[0] // preserve original casing
 	credential := parts[1]
 	if scheme == "token" || scheme == "bearer" {
 		if _, ok := token.TokenTypeFromPrefix(credential); ok {
-			return credential, func(realToken string) string {
+			return credential, credential, func(realToken string) string {
 				return originalScheme + " " + realToken
 			}
 		}
+		// Not a managed client token — return raw credential for block-policy check.
+		return "", credential, nil
 	}
 	if scheme == "basic" {
 		decoded, err := base64.StdEncoding.DecodeString(credential)
 		if err != nil {
-			return "", nil
+			return "", "", nil
 		}
 		user, pass, ok := strings.Cut(string(decoded), ":")
 		if ok && strings.EqualFold(user, "x-access-token") {
 			if _, ok := token.TokenTypeFromPrefix(pass); ok {
-				return pass, func(realToken string) string {
+				return pass, pass, func(realToken string) string {
 					return originalScheme + " " + base64.StdEncoding.EncodeToString([]byte(user+":"+realToken))
 				}
 			}
 		}
+		// Basic auth (x-access-token or otherwise) — return the password for
+		// block-policy evaluation. A non-client-token password may still carry
+		// a GitHub token type that should be subject to the border policy.
+		if ok {
+			return "", pass, nil
+		}
 	}
-	return "", nil
+	return "", "", nil
 }
 
 // tokenScopeInfo holds the parsed repository and permission scopes for a proxy
@@ -360,38 +368,4 @@ func parseScopeInfo(pt *database.ProxyToken) (tokenScopeInfo, error) {
 		return tokenScopeInfo{}, fmt.Errorf("parsing token scopes: %w", err)
 	}
 	return tokenScopeInfo{Repos: repos, Scopes: scopes}, nil
-}
-
-// extractRawTokenForBlocking extracts the raw credential from the Authorization
-// header for border-policy evaluation. Unlike extractRawGitHubToken it does not
-// filter by known user-token prefixes — it returns whatever credential is
-// present so that all five GitHub token types (ghp_, gho_, ghu_, ghs_, ghr_)
-// can be checked against the block configuration. Bearer/token scheme and
-// Basic auth with the x-access-token username convention are supported.
-// Returns "" when no credential is present or the header cannot be decoded.
-func extractRawTokenForBlocking(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		return ""
-	}
-	parts := strings.SplitN(auth, " ", 2)
-	if len(parts) != 2 {
-		return ""
-	}
-	scheme := strings.ToLower(parts[0])
-	credential := parts[1]
-	switch scheme {
-	case "bearer", "token":
-		return credential
-	case "basic":
-		decoded, err := base64.StdEncoding.DecodeString(credential)
-		if err != nil {
-			return ""
-		}
-		_, pass, ok := strings.Cut(string(decoded), ":")
-		if ok {
-			return pass
-		}
-	}
-	return ""
 }
