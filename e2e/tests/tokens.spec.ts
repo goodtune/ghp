@@ -250,13 +250,21 @@ test.describe("Token management", () => {
 
     const perms = await getRenderedPermissions(page);
 
-    // Only the three mocked permissions should be rendered.
+    // Only the mocked permissions should be rendered.
+    // Note: metadata is rendered as a disabled <select> without data-perm,
+    // so getRenderedPermissions() won't include it — verify it separately.
     expect(perms).toContain("contents");
     expect(perms).toContain("pull_requests");
-    expect(perms).toContain("metadata");
     expect(perms).not.toContain("issues");
     expect(perms).not.toContain("actions");
     expect(perms).not.toContain("checks");
+
+    // Verify metadata row is present (rendered with a disabled select).
+    const metadataRow = await page.evaluate(() => {
+      const el = document.getElementById("perm-select") as any;
+      return el.shadowRoot.querySelector("select[disabled]") !== null;
+    });
+    expect(metadataRow).toBe(true);
   });
 
   test("can create a scoped token with pull_requests permission", async ({
