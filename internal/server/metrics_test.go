@@ -62,10 +62,11 @@ func TestServeMetrics_GET(t *testing.T) {
 	go srv.serveMetrics(ctx, ln, nil)
 
 	// Retry until the server is ready or timeout.
+	client := &http.Client{Timeout: 5 * time.Second}
 	var resp *http.Response
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err = http.Get("http://" + addr + "/metrics")
+		resp, err = client.Get("http://" + addr + "/metrics")
 		if err == nil {
 			break
 		}

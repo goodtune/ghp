@@ -36,8 +36,8 @@ logging:
 metrics:
   # Prometheus metrics are served on a dedicated port (separate from the proxy
   # port) so they can be network-isolated from agent traffic.
-  # enabled: true     # set to false to disable
-  # listen: ":9136"   # metrics server listen address
+  enabled: true    # set to false to disable
+  listen: ":9136"  # metrics server listen address
 
 # encryption_key: ""  # Or set GHP_ENCRYPTION_KEY env var
 
