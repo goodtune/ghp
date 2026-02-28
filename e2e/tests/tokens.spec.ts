@@ -1,143 +1,155 @@
 import { test, expect } from "@playwright/test";
-import { loginTestUser } from "./helpers";
+import { loginTestUser, waitForDatastar } from "./helpers";
 
-/** Inject a repository into the ghp-repo-select component and select it. */
-async function selectRepo(page: any, repo: string) {
-  await page.evaluate((r: string) => {
-    const el = document.getElementById("repo-select") as any;
-    el.repos = [r];
-    el.value = r;
-  }, repo);
-}
-
-/** Select a permission level inside the ghp-permission-select component. */
-async function selectPermission(
-  page: any,
-  perm: string,
-  level: string
-) {
-  await page.evaluate(
-    ({ p, l }: { p: string; l: string }) => {
-      const el = document.getElementById("perm-select") as any;
-      const sel = el.shadowRoot.querySelector(
-        `[data-perm="${p}"]`
-      ) as HTMLSelectElement;
-      if (sel) {
-        sel.value = l;
-        sel.dispatchEvent(new Event("change"));
-      }
-    },
-    { p: perm, l: level }
-  );
-}
-
-test.describe("Token management", () => {
+test.describe("Token wizard", () => {
   test.beforeEach(async ({ context }) => {
     await loginTestUser(context);
   });
 
-  test("can create a token via the form", async ({ page }, testInfo) => {
-    await page.goto("/");
-    await page.waitForLoadState("networkidle");
+  test("New Token button opens wizard modal with step 1", async ({ page }, testInfo) => {
+    await page.goto("/dashboard/");
+    await waitForDatastar(page);
 
-    // Set repo and permissions via the web components.
-    await selectRepo(page, "goodtune/myproject");
-    await selectPermission(page, "contents", "read");
+    // Click New Token (from empty state).
+    await page.click('button:has-text("New Token")');
 
-    await page.selectOption("#duration", "24h");
-    await page.fill("#session", "playwright-test-session");
+    // Modal should open with step 1.
+    const modal = page.locator("#modal-content");
+    await expect(modal).toContainText("Select Repository");
+    await expect(modal.locator('input[name="repository"]')).toBeVisible();
 
-    await testInfo.attach("token-form-filled", {
+    await testInfo.attach("wizard-step1", {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
+  });
+
+  test("full wizard flow creates a token", async ({ page }, testInfo) => {
+    await page.goto("/dashboard/");
+    await waitForDatastar(page);
+
+    // Step 1: open wizard and enter repository.
+    await page.click('button:has-text("New Token")');
+    const modal = page.locator("#modal-content");
+    await expect(modal).toContainText("Select Repository");
+
+    await page.fill('input[name="repository"]', "goodtune/myproject");
+    await page.click('#modal-content button[type="submit"]', { force: true });
+
+    // Step 2: permissions.
+    await expect(modal).toContainText("Set Permissions", { timeout: 10000 });
+
+    await testInfo.attach("wizard-step2", {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
+
+    // Select a permission and submit (force click since form may be tall).
+    await page.selectOption('#modal-content select[name="perm_contents"]', "read");
+    await page.click('#modal-content button[type="submit"]', { force: true });
+
+    // Step 3: duration.
+    await expect(modal).toContainText("Duration", { timeout: 10000 });
+    await page.click('#modal-content button[type="submit"]', { force: true });
+
+    // Step 4: confirm.
+    await expect(modal).toContainText("Confirm", { timeout: 10000 });
+    await expect(modal).toContainText("goodtune/myproject");
+
+    await testInfo.attach("wizard-step4-confirm", {
       body: await page.screenshot({ fullPage: true }),
       contentType: "image/png",
     });
 
     // Click Create Token.
-    await page.click('button:has-text("Create Token")');
+    await page.click('#modal-content button:has-text("Create Token")', { force: true });
 
-    // The new token display should become visible.
-    const tokenDisplay = page.locator("#new-token");
-    await expect(tokenDisplay).toBeVisible();
-
-    // The token value should start with ghx_.
-    const tokenValue = page.locator("#token-value");
-    await expect(tokenValue).toContainText("ghx_");
-
-    // The warning message should be shown.
-    await expect(tokenDisplay).toContainText(
-      "This token will only be shown once"
-    );
+    // Token display should appear.
+    await expect(modal.locator(".token-display")).toBeVisible({ timeout: 10000 });
+    const tokenInput = modal.locator("input.token-value");
+    const tokenValue = await tokenInput.inputValue();
+    expect(tokenValue).toMatch(/^ghx_/);
+    await expect(modal).toContainText("only be shown once");
 
     await testInfo.attach("token-created", {
       body: await page.screenshot({ fullPage: true }),
       contentType: "image/png",
     });
+
+    // Close the modal and verify token card appears on dashboard.
+    await page.click('#modal-content .modal-close', { force: true });
+    await page.waitForLoadState("networkidle");
+    await expect(page.locator(".token-card")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".token-card")).toContainText("goodtune/myproject");
   });
 
-  test("created token appears in the Active Tokens list", async ({
-    page,
-  }) => {
-    await page.goto("/");
-    await page.waitForLoadState("networkidle");
+  test("wizard back button navigates to previous step", async ({ page }) => {
+    await page.goto("/dashboard/");
+    await waitForDatastar(page);
 
-    // Create a token first.
-    await selectRepo(page, "goodtune/testproject");
-    await selectPermission(page, "contents", "read");
-    await page.fill("#session", "e2e-list-test");
-    await page.click('button:has-text("Create Token")');
+    // Open wizard and go to step 2.
+    await page.click('button:has-text("New Token")');
+    const modal = page.locator("#modal-content");
+    await page.fill('input[name="repository"]', "org/repo");
+    await page.click('#modal-content button[type="submit"]', { force: true });
+    await expect(modal).toContainText("Set Permissions", { timeout: 10000 });
 
-    // Wait for the token display.
-    await expect(page.locator("#new-token")).toBeVisible();
+    // Click Back.
+    await page.click('#modal-content button:has-text("Back")', { force: true });
 
-    // The token list should now contain our token details.
-    const tokenList = page.locator("#token-list");
-    await expect(tokenList).toContainText("goodtune/testproject");
-    await expect(tokenList).toContainText("Active");
+    // Should be back on step 1 with the repository preserved.
+    await expect(modal).toContainText("Select Repository", { timeout: 10000 });
   });
+});
 
-  test("can revoke a token", async ({ context, page }, testInfo) => {
-    // Use a unique user so tokens from other tests don't interfere.
-    await loginTestUser(context, { username: "revoke-test-user" });
-    await page.goto("/");
+test.describe("Token revoke", () => {
+  test("can revoke a token via the card", async ({ context, page }, testInfo) => {
+    await loginTestUser(context, { username: "revoke-e2e-user" });
+    await page.goto("/dashboard/");
+    await waitForDatastar(page);
+
+    // Create a token first via the wizard.
+    await page.click('button:has-text("New Token")');
+    const modal = page.locator("#modal-content");
+    await page.fill('input[name="repository"]', "goodtune/revoke-test");
+    await page.click('#modal-content button[type="submit"]', { force: true });
+    await expect(modal).toContainText("Set Permissions", { timeout: 10000 });
+    await page.click('#modal-content button[type="submit"]', { force: true }); // step 2 → 3
+    await expect(modal).toContainText("Duration", { timeout: 10000 });
+    await page.click('#modal-content button[type="submit"]', { force: true }); // step 3 → 4
+    await expect(modal).toContainText("Confirm", { timeout: 10000 });
+    await page.click('#modal-content button:has-text("Create Token")', { force: true });
+    await expect(page.locator("#modal-content .token-display")).toBeVisible({ timeout: 10000 });
+
+    // Close modal and reload.
+    await page.click('#modal-content .modal-close', { force: true });
     await page.waitForLoadState("networkidle");
 
-    // Create a token.
-    await selectRepo(page, "goodtune/revoke-test");
-    await selectPermission(page, "issues", "write");
-    await page.click('button:has-text("Create Token")');
-    await expect(page.locator("#new-token")).toBeVisible();
+    // Wait for dashboard to show token card.
+    await expect(page.locator(".token-card")).toBeVisible({ timeout: 10000 });
+    await waitForDatastar(page);
 
-    // Accept the confirmation dialog.
-    page.on("dialog", (dialog) => dialog.accept());
+    // Click Revoke on the token card.
+    await page.click('.token-card button:has-text("Revoke")', { force: true });
 
-    // Click Revoke — there should be exactly one since this is a fresh user.
-    const revokeBtn = page.locator(
-      '#token-list button:has-text("Revoke")'
-    );
-    await expect(revokeBtn).toBeVisible();
-    await revokeBtn.click();
+    // Revoke confirmation modal should appear.
+    await expect(modal).toContainText("ghx_", { timeout: 10000 });
 
-    // After revoking, the token should show as Revoked.
-    await expect(page.locator("#token-list")).toContainText("Revoked");
+    await testInfo.attach("revoke-confirm", {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
+
+    // Confirm revoke.
+    await page.click('#modal-content button:has-text("Confirm Revoke")', { force: true });
+
+    // Page should reload showing revoked status.
+    await page.waitForLoadState("networkidle");
+    await expect(page.locator(".token-card .status-revoked")).toBeVisible({ timeout: 10000 });
 
     await testInfo.attach("token-revoked", {
       body: await page.screenshot({ fullPage: true }),
       contentType: "image/png",
     });
-  });
-
-  test("shows validation when required fields are missing", async ({
-    page,
-  }) => {
-    await page.goto("/");
-
-    // Accept the alert dialog.
-    page.on("dialog", async (dialog) => {
-      expect(dialog.message()).toContain("required");
-      await dialog.accept();
-    });
-
-    // Try to create without filling required fields.
-    await page.click('button:has-text("Create Token")');
   });
 });

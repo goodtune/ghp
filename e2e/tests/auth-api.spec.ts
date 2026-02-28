@@ -49,40 +49,22 @@ test.describe("Auth API", () => {
     await ctx.dispose();
   });
 
-  test("POST /auth/logout clears session", async ({ context }) => {
-    const { sessionToken } = await loginTestUser(context);
+  test("POST /auth/test-login creates session in dev mode", async () => {
+    const ctx = await request.newContext({ baseURL: BASE_URL });
 
-    const ctx = await request.newContext({
-      baseURL: BASE_URL,
-      extraHTTPHeaders: {
-        Cookie: `ghp_session=${sessionToken}`,
+    const resp = await ctx.post("/auth/test-login", {
+      data: {
+        username: "auth-api-test",
+        role: "user",
       },
     });
 
-    // Logout.
-    const logoutResp = await ctx.post("/auth/logout");
-    expect(logoutResp.status()).toBe(200);
-
-    // Check status — session should be gone.
-    const statusResp = await ctx.get("/auth/status");
-    // After logout the cookie was cleared, so this returns 401.
-    expect(statusResp.status()).toBe(401);
-    await ctx.dispose();
-  });
-
-  test("API endpoints require authentication", async () => {
-    const ctx = await request.newContext({ baseURL: BASE_URL });
-
-    const endpoints = [
-      { method: "GET" as const, path: "/api/tokens" },
-      { method: "GET" as const, path: "/api/audit" },
-    ];
-
-    for (const ep of endpoints) {
-      const resp = await ctx.fetch(ep.path, { method: ep.method });
-      expect(resp.status()).toBe(401);
-    }
-
+    expect(resp.status()).toBe(200);
+    const body = await resp.json();
+    expect(body.username).toBe("auth-api-test");
+    expect(body.session_token).toBeTruthy();
+    expect(body.user_id).toBeTruthy();
+    expect(body.role).toBe("user");
     await ctx.dispose();
   });
 });

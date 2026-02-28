@@ -4,7 +4,7 @@
 <div class="dashboard-header">
     <h1>Your Tokens</h1>
     {{if .Tokens}}
-    <button class="btn-primary" data-on-click="@get('/dashboard/token/add/')">New Token</button>
+    <button class="btn-primary" data-on:click="@get('/dashboard/token/add/')">New Token</button>
     {{end}}
 </div>
 {{if .Tokens}}

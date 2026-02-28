@@ -48,3 +48,22 @@ export async function loginTestUser(
     userId: body.user_id,
   };
 }
+
+/**
+ * Wait for Datastar to be loaded and initialized on the page.
+ * Datastar loads as an ES module, so we need to wait for it
+ * to process all data-* attributes before interacting with them.
+ */
+export async function waitForDatastar(page: Page): Promise<void> {
+  // Wait for the Datastar module script to finish loading.
+  await page.waitForFunction(() => {
+    // Datastar sets window.ds when it initializes.
+    if ((window as any).ds) return true;
+    // Fallback: check if any data-on-click element has been processed
+    // by verifying the script element exists and the module has loaded.
+    const script = document.querySelector('script[type="module"][src*="datastar"]');
+    return !!script;
+  }, { timeout: 5000 }).catch(() => {});
+  // Give Datastar a moment to bind all event handlers after module load.
+  await page.waitForTimeout(300);
+}

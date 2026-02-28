@@ -5,7 +5,7 @@
     <span class="wizard-dot active"></span>
     <span class="wizard-dot active"></span>
 </div>
-<button class="modal-close" data-on-click="$modalOpen = false; window.location.reload()">&times;</button>
+<button class="modal-close" data-on:click="$modalOpen = false; window.location.reload()">&times;</button>
 <div class="token-display">
     <input type="text" class="token-value monospace" value="{{.Token}}" readonly onclick="this.select(); document.execCommand('copy');">
     <p class="token-warning">This token will only be shown once. Click to copy.</p>

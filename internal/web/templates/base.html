@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{block "title" .}}GitHub Proxy{{end}}</title>
     <link rel="stylesheet" href="/static/style.css">
-    <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0/bundles/datastar.js"></script>
+    <script type="module" src="/static/datastar.js"></script>
 </head>
 <body>
     {{if .DevMode}}
@@ -18,8 +18,8 @@
     <main class="content">
         {{block "content" .}}{{end}}
     </main>
-    <div id="modal-overlay" class="modal-overlay" data-show="$modalOpen">
-        <div id="modal-content" class="modal-card" data-on-click.stop="">
+    <div id="modal-overlay" class="modal-overlay" data-signals:modal-open="false" data-show="$modalOpen" data-on:click="$modalOpen=false">
+        <div id="modal-content" class="modal-card" data-on:click__stop="true">
         </div>
     </div>
 </body>

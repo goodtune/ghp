@@ -398,7 +398,7 @@ img {
 
 /* ----- Modal ----- */
 .modal-overlay {
-    display: none;
+    display: flex;
     position: fixed;
     inset: 0;
     z-index: 1000;
@@ -407,16 +407,14 @@ img {
     align-items: center;
 }
 
-.modal-overlay.visible {
-    display: flex;
-}
-
 .modal-card {
     background-color: var(--bg-card);
     border-radius: 12px;
     padding: 32px;
     max-width: 500px;
     width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
     position: relative;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
 }
