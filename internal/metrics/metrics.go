@@ -111,7 +111,7 @@ var (
 	//   scope_parsing          – JSON unmarshalling of repository & permission scopes
 	//   scope_enforcement      – repository allowlist + permission level checks
 	//   github_token_resolution – loading & decrypting (or refreshing) the real GitHub credential
-	//   upstream_roundtrip     – HTTP call to the GitHub API (network + GitHub processing)
+	//   upstream_roundtrip     – proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer)
 	ProxyDecisionDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ghp_proxy_decision_duration_seconds",
 		Help:    "Duration of each stage in the proxy decision pipeline.",

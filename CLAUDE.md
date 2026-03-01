@@ -90,14 +90,14 @@ The proxy decision pipeline is broken into individually timed stages so that the
 | `scope_parsing` | JSON unmarshalling of repository and permission scope restrictions |
 | `scope_enforcement` | Repository allowlist check + permission level verification |
 | `github_token_resolution` | Loading, decrypting (or OAuth-refreshing) the real GitHub credential |
-| `upstream_roundtrip` | The actual HTTP call to the GitHub API |
+| `upstream_roundtrip` | Proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer) |
 
 Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tokens, or `unknown` for pre-resolution stages).
 
 ### Guidelines for new metrics
 
 - **Instrument every decision point.** If code determines whether a request should proceed, be blocked, or be modified, that decision must be timed.
-- **Use fine-grained histogram buckets** for internal operations (µs–ms range); use default Prometheus buckets for end-to-end request durations.
+- **Use fine-grained histogram buckets** for internal decision stages (50µs–1s range); extend to multi-second buckets (2.5s–10s) for `upstream_roundtrip` which can exceed 1s on slow networks or under GitHub load. Use default Prometheus buckets for end-to-end request durations.
 - **Label cardinality matters.** Avoid unbounded label values (e.g. don't use full paths as labels). Use the existing `ObserveDecision()` and `ObserveProxyRequest()` helpers.
 - **Test every metric.** New metrics must have a corresponding test in `internal/metrics/metrics_test.go` that verifies the metric increments correctly.
 

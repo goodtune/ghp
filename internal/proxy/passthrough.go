@@ -207,8 +207,8 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 				writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 				return
 			}
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			r.Header.Set("Authorization", rewriteAuth(realToken))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			upstreamStart := time.Now()
 			inner.ServeHTTP(rec, r)
 			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
@@ -249,8 +249,8 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 			return
 		}
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 		r.Header.Set("Authorization", rewriteAuth(realToken))
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 		upstreamStart := time.Now()
 		inner.ServeHTTP(rec, r)
 		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
