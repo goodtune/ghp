@@ -95,7 +95,11 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		decisionStart := time.Now()
 		extractStart := time.Now()
 		clientTok, rawCredential, rewriteAuth := extractClientToken(r)
-		metrics.ObserveDecision(metrics.StageTokenExtraction, "", time.Since(extractStart))
+		extractTokenType := ""
+		if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
+			extractTokenType = string(tt)
+		}
+		metrics.ObserveDecision(metrics.StageTokenExtraction, extractTokenType, time.Since(extractStart))
 		if clientTok == "" {
 			// Check the token type border policy before forwarding.
 			borderStart := time.Now()

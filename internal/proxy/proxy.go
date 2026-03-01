@@ -82,7 +82,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// policy and then forward the request transparently to GitHub.
 	extractStart := time.Now()
 	clientToken, rawCredential, rewriteAuth := extractClientToken(r)
-	metrics.ObserveDecision(metrics.StageTokenExtraction, "", time.Since(extractStart))
+	extractTokenType := ""
+	if tt, ok := token.TokenTypeFromPrefix(clientToken); ok {
+		extractTokenType = string(tt)
+	}
+	metrics.ObserveDecision(metrics.StageTokenExtraction, extractTokenType, time.Since(extractStart))
 	if clientToken == "" {
 		// Check the token type border policy before forwarding.
 		borderStart := time.Now()

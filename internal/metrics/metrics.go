@@ -75,9 +75,9 @@ var (
 		Help: "Total number of requests rejected by the auth rate limiter, by endpoint.",
 	}, []string{"endpoint"})
 
-	// decisionBuckets provides fine-grained histogram buckets for internal
-	// decision-making latencies, which are typically sub-millisecond to tens
-	// of milliseconds (much faster than end-to-end request durations).
+	// decisionBuckets covers internal decision-making stages (typically µs–ms)
+	// as well as the upstream_roundtrip stage, which includes the actual GitHub
+	// API call and can easily exceed 1s under load or on slow networks.
 	decisionBuckets = []float64{
 		0.00005, // 50µs
 		0.0001,  // 100µs
@@ -91,13 +91,18 @@ var (
 		0.25,    // 250ms
 		0.5,     // 500ms
 		1.0,     // 1s
+		2.5,     // 2.5s
+		5.0,     // 5s
+		10.0,    // 10s
 	}
 
-	// ProxyDecisionDuration records time spent in each stage of the
-	// proxy decision-making pipeline before a request is forwarded to
-	// GitHub. The "stage" label identifies the pipeline step:
+	// ProxyDecisionDuration records time spent in each stage of the proxy
+	// decision-making pipeline. Internal stages (token_extraction through
+	// github_token_resolution) measure pre-forward overhead; upstream_roundtrip
+	// measures the actual GitHub API call; total covers both together.
+	// The "stage" label identifies the pipeline step:
 	//
-	//   total                  – arrival to GitHub forward (full pre-forward overhead)
+	//   total                  – arrival to completion of forwarded request (pre-forward + upstream)
 	//   token_extraction       – unpacking the Authorization header
 	//   border_policy_check    – evaluating the token type border policy (block config)
 	//   token_resolution       – SHA-256 hash + database lookup + expiry/revocation check
