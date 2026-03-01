@@ -132,3 +132,58 @@ func TestObserveProxyRequest_NilPt(t *testing.T) {
 	// Should not panic.
 	ObserveProxyRequest("api.github.com", nil, "GET", 200, 100*time.Millisecond, "rest", "")
 }
+
+func getHistogramCount(t *testing.T, h *prometheus.HistogramVec, labels prometheus.Labels) uint64 {
+	t.Helper()
+	var m io_prometheus_client.Metric
+	obs, err := h.GetMetricWith(labels)
+	if err != nil {
+		t.Fatalf("GetMetricWith: %v", err)
+	}
+	if err := obs.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return m.GetHistogram().GetSampleCount()
+}
+
+func TestObserveDecision_AllStages(t *testing.T) {
+	stages := []string{
+		StageTotal,
+		StageTokenExtraction,
+		StageBorderPolicyCheck,
+		StageTokenResolution,
+		StageUsernameResolution,
+		StageScopeParsing,
+		StageScopeEnforcement,
+		StageGitHubTokenResolution,
+		StageUpstreamRoundtrip,
+	}
+
+	for _, stage := range stages {
+		t.Run(stage, func(t *testing.T) {
+			labels := prometheus.Labels{
+				"stage":      stage,
+				"token_type": "proxy",
+			}
+			before := getHistogramCount(t, ProxyDecisionDuration, labels)
+			ObserveDecision(stage, "proxy", 1*time.Millisecond)
+			after := getHistogramCount(t, ProxyDecisionDuration, labels)
+			if after-before != 1 {
+				t.Errorf("expected histogram sample count to increment by 1, got %d", after-before)
+			}
+		})
+	}
+}
+
+func TestObserveDecision_EmptyTokenType(t *testing.T) {
+	labels := prometheus.Labels{
+		"stage":      StageTokenExtraction,
+		"token_type": "unknown",
+	}
+	before := getHistogramCount(t, ProxyDecisionDuration, labels)
+	ObserveDecision(StageTokenExtraction, "", 500*time.Microsecond)
+	after := getHistogramCount(t, ProxyDecisionDuration, labels)
+	if after-before != 1 {
+		t.Errorf("expected histogram sample count to increment by 1, got %d", after-before)
+	}
+}

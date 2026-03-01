@@ -92,13 +92,24 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		blockCfg = cfg[0]
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decisionStart := time.Now()
+		extractStart := time.Now()
 		clientTok, rawCredential, rewriteAuth := extractClientToken(r)
+		extractTokenType := ""
+		if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
+			extractTokenType = string(tt)
+		}
+		metrics.ObserveDecision(metrics.StageTokenExtraction, extractTokenType, time.Since(extractStart))
 		if clientTok == "" {
 			// Check the token type border policy before forwarding.
+			borderStart := time.Now()
 			if blockCfg != nil && blockCfg.IsTokenBlocked(rawCredential) {
+				metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+				metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
 				writeError(w, http.StatusForbidden, "Token type is not permitted by the border policy")
 				return
 			}
+			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
 			// Not a client token — try to resolve the GitHub username
 			// from the raw token for access-log / metrics visibility.
 			if ur != nil {
@@ -106,38 +117,70 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 					if username := ur.ResolveFromGitHubToken(r.Context(), raw); username != "" {
 						SetUsername(r, username)
 					}
-					inner.ServeHTTP(w, r)
-					return
 				}
 			}
+			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
+			upstreamStart := time.Now()
 			inner.ServeHTTP(w, r)
+			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 			return
 		}
 
 		repo, permission, level := GitSmartHTTPScope(r.Method, r.URL.Path, r.URL.RawQuery)
 		if permission == "" {
-			// Not a git smart HTTP path — pass through with token resolution only.
+			// Not a git smart HTTP path — resolve the GitHub token here rather
+			// than relying on inner's Director, so that token resolution time is
+			// charged to StageGitHubTokenResolution (pre-forward overhead) rather
+			// than incorrectly to StageUpstreamRoundtrip.
+			ghTokenStart := time.Now()
+			realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
+			metrics.ObserveDecision(metrics.StageGitHubTokenResolution, extractTokenType, time.Since(ghTokenStart))
+			if err != nil {
+				if logger != nil {
+					logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
+				}
+				metrics.ObserveDecision(metrics.StageTotal, extractTokenType, time.Since(decisionStart))
+				writeError(w, http.StatusUnauthorized, "Token resolution failed")
+				return
+			}
+			r.Header.Set("Authorization", rewriteAuth(realToken))
+			metrics.ObserveDecision(metrics.StageTotal, extractTokenType, time.Since(decisionStart))
+			upstreamStart := time.Now()
 			inner.ServeHTTP(w, r)
+			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, extractTokenType, time.Since(upstreamStart))
 			return
 		}
 
 		start := time.Now()
 
+		// Derive token type from prefix for pre-resolution metrics.
+		resolveTokenType := ""
+		if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
+			resolveTokenType = string(tt)
+		}
+
 		// Resolve the full proxy token for scope checking.
+		resolveStart := time.Now()
 		pt, err := enforcer.Resolve(r.Context(), clientTok)
+		metrics.ObserveDecision(metrics.StageTokenResolution, resolveTokenType, time.Since(resolveStart))
 		if err != nil {
 			if logger != nil {
 				logger.Warn("git scope enforcement: token resolution failed", "error", err)
 			}
+			metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(decisionStart))
 			writeError(w, http.StatusUnauthorized, "Invalid token")
 			return
 		}
 		if pt == nil {
+			metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(decisionStart))
 			writeError(w, http.StatusUnauthorized, "Invalid token")
 			return
 		}
 
+		tokenType := pt.TokenType
+
 		// Resolve the GitHub username for metrics and access-log use.
+		usernameStart := time.Now()
 		username := ""
 		if ur != nil && pt.UserID != nil {
 			username = ur.ResolveFromUserID(r.Context(), *pt.UserID)
@@ -145,6 +188,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 				SetUsername(r, username)
 			}
 		}
+		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 		// Wrap response writer to capture status code for metrics.
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -153,33 +197,45 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		}()
 
 		// Parse the token's scope restrictions once; fail-closed on corrupt JSON.
+		scopeParseStart := time.Now()
 		si, err := parseScopeInfo(pt)
+		metrics.ObserveDecision(metrics.StageScopeParsing, tokenType, time.Since(scopeParseStart))
 		if err != nil {
 			if logger != nil {
 				logger.Error("git scope enforcement: failed to parse token scope", "error", err)
 			}
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusInternalServerError, "Internal error")
 			return
 		}
 
 		// Open-scoped tokens (no repos AND no scopes) skip all filtering — forward directly.
 		if si.isOpenScoped() {
+			ghTokenStart := time.Now()
 			realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
+			metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 			if err != nil {
 				if logger != nil {
 					logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
 				}
+				metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 				writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 				return
 			}
 			r.Header.Set("Authorization", rewriteAuth(realToken))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+			upstreamStart := time.Now()
 			inner.ServeHTTP(rec, r)
+			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 			return
 		}
 
 		// Enforce repository scope only when the token has repo restrictions.
 		// A token with repos=null carries no repo restriction (applies to any repo).
+		scopeEnforceStart := time.Now()
 		if len(si.Repos) > 0 && !si.repoAllowed(repo) {
+			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusForbidden,
 				fmt.Sprintf("Token is not scoped to %s", repo))
 			return
@@ -188,22 +244,31 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		// Enforce permission scope only when the token has scope restrictions.
 		// A token with scopes=null carries no permission restriction (any endpoint allowed).
 		if len(si.Scopes) > 0 && !si.Scopes.HasPermission(permission, level) {
+			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
 			return
 		}
+		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 
 		// Scope checks passed (or dimension is unrestricted) — forward with resolved token.
+		ghTokenStart := time.Now()
 		realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
+		metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 		if err != nil {
 			if logger != nil {
 				logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
 			}
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 			return
 		}
 		r.Header.Set("Authorization", rewriteAuth(realToken))
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+		upstreamStart := time.Now()
 		inner.ServeHTTP(rec, r)
+		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 	})
 }
 
