@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/config"
@@ -22,7 +24,6 @@ import (
 	"github.com/goodtune/ghp/internal/docs"
 	"github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/proxy"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/goodtune/ghp/internal/token"
 	"github.com/goodtune/ghp/internal/web"
 )
@@ -177,11 +178,6 @@ func (s *Server) Run(ctx context.Context) error {
 		http.Redirect(w, r, "/docs/", http.StatusMovedPermanently)
 	})
 
-	// Metrics route (on management mux, not on GitHub-facing virtualhosts).
-	if s.cfg.Metrics.Enabled {
-		mux.Handle("/metrics", promhttp.Handler())
-	}
-
 	// Proxy routes — these catch /api/v3/* and /api/graphql.
 	mux.Handle("/api/v3/", proxyHandler)
 	mux.Handle("/api/graphql", proxyHandler)
@@ -213,6 +209,27 @@ func (s *Server) Run(ctx context.Context) error {
 	// TLS mode: https_listen configured, or socket activation with TLS certificates.
 	hasTLS := s.cfg.Server.HTTPSListen != "" ||
 		(s.cfg.Server.SystemdSocketActivation && len(s.cfg.TLS.Certificates) > 0)
+
+	// Start standalone metrics server if enabled.
+	if s.cfg.Metrics.Enabled {
+		var metricsTLS *tls.Config
+		if hasTLS {
+			var tlsErr error
+			metricsTLS, tlsErr = loadTLSConfig(&s.cfg.TLS)
+			if tlsErr != nil {
+				return fmt.Errorf("loading TLS config for metrics server: %w", tlsErr)
+			}
+		}
+		metricsLn, listenErr := net.Listen("tcp", s.cfg.Metrics.Listen)
+		if listenErr != nil {
+			return fmt.Errorf("metrics server listen %s: %w", s.cfg.Metrics.Listen, listenErr)
+		}
+		if metricsTLS != nil {
+			metricsLn = tls.NewListener(metricsLn, metricsTLS)
+		}
+		go s.serveMetrics(ctx, metricsLn, metricsTLS)
+	}
+
 	if hasTLS {
 		return s.serveTLS(ctx, dispatch)
 	}
@@ -390,6 +407,36 @@ func (s *Server) createListener() (net.Listener, error) {
 
 	// TCP.
 	return net.Listen("tcp", addr)
+}
+
+// serveMetrics starts a dedicated HTTP (or HTTPS when tlsCfg is non-nil) server
+// on the given listener, exposing only the Prometheus /metrics endpoint. It
+// runs until ctx is cancelled or a shutdown signal is received, then drains
+// with a 30-second timeout.
+func (s *Server) serveMetrics(ctx context.Context, ln net.Listener, tlsCfg *tls.Config) {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", promhttp.Handler())
+
+	srv := &http.Server{Handler: mux, TLSConfig: tlsCfg}
+
+	shutdownCtx, cancel := signal.NotifyContext(ctx, shutdownSignals()...)
+	defer cancel()
+	go func() {
+		<-shutdownCtx.Done()
+		timeout, tcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer tcancel()
+		_ = srv.Shutdown(timeout)
+	}()
+
+	scheme := "http"
+	if tlsCfg != nil {
+		scheme = "https"
+	}
+	s.logger.Info("metrics_server_ready", "listen", ln.Addr().String(), "scheme", scheme)
+
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		s.logger.Error("metrics_server_error", "error", err)
+	}
 }
 
 // systemdListeners returns net.Listeners for each file descriptor passed
