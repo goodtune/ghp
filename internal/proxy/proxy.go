@@ -92,6 +92,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		borderStart := time.Now()
 		if h.cfg.IsTokenBlocked(rawCredential) {
 			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
 			writeError(w, http.StatusForbidden, "Token type is not permitted by the border policy")
 			return
 		}
@@ -115,10 +116,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	metrics.ObserveDecision(metrics.StageTokenResolution, resolveTokenType, time.Since(resolveStart))
 	if err != nil {
 		h.logger.Warn("token resolution failed", "error", err)
+		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 	if pt == nil {
+		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
 		writeError(w, http.StatusUnauthorized, "Invalid token")
 		return
 	}
@@ -143,6 +146,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	metrics.ObserveDecision(metrics.StageScopeParsing, tokenType, time.Since(scopeParseStart))
 	if err != nil {
 		h.logger.Error("failed to parse token scope", "error", err)
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusInternalServerError, "Internal error")
 		return
 	}
@@ -161,6 +165,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			h.logger.Error("failed to get GitHub token", "error", err)
 			status, msg := installationTokenErrorResponse(err)
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 			writeError(w, status, msg)
 			return
 		}
@@ -186,6 +191,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	scopeEnforceStart := time.Now()
 	if repo != "" && len(si.Repos) > 0 && !si.repoAllowed(repo) {
 		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusForbidden,
 			fmt.Sprintf("Token is not scoped to %s", repo))
 		h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
@@ -199,6 +205,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if permission != "" && permission != "metadata" && len(si.Scopes) > 0 {
 		if !si.Scopes.HasPermission(permission, level) {
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
 			h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
@@ -214,6 +221,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.Error("failed to get GitHub token", "error", err)
 		status, msg := installationTokenErrorResponse(err)
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, status, msg)
 		return
 	}
@@ -247,6 +255,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	scopeEnforceStart := time.Now()
 	if len(si.Repos) > 0 {
 		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusForbidden,
 			"Token is repository-restricted; GraphQL is not supported for repository-scoped tokens")
 		h.logRequest(r.Context(), pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
@@ -263,6 +272,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	if err != nil {
 		h.logger.Error("failed to get GitHub token for GraphQL", "error", err)
 		status, msg := installationTokenErrorResponse(err)
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, status, msg)
 		return
 	}

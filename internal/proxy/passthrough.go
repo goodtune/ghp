@@ -105,6 +105,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			borderStart := time.Now()
 			if blockCfg != nil && blockCfg.IsTokenBlocked(rawCredential) {
 				metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+				metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
 				writeError(w, http.StatusForbidden, "Token type is not permitted by the border policy")
 				return
 			}
@@ -116,18 +117,22 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 					if username := ur.ResolveFromGitHubToken(r.Context(), raw); username != "" {
 						SetUsername(r, username)
 					}
-					inner.ServeHTTP(w, r)
-					return
 				}
 			}
+			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
+			upstreamStart := time.Now()
 			inner.ServeHTTP(w, r)
+			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 			return
 		}
 
 		repo, permission, level := GitSmartHTTPScope(r.Method, r.URL.Path, r.URL.RawQuery)
 		if permission == "" {
 			// Not a git smart HTTP path — pass through with token resolution only.
+			metrics.ObserveDecision(metrics.StageTotal, extractTokenType, time.Since(decisionStart))
+			upstreamStart := time.Now()
 			inner.ServeHTTP(w, r)
+			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, extractTokenType, time.Since(upstreamStart))
 			return
 		}
 
@@ -147,10 +152,12 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			if logger != nil {
 				logger.Warn("git scope enforcement: token resolution failed", "error", err)
 			}
+			metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(decisionStart))
 			writeError(w, http.StatusUnauthorized, "Invalid token")
 			return
 		}
 		if pt == nil {
+			metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(decisionStart))
 			writeError(w, http.StatusUnauthorized, "Invalid token")
 			return
 		}
@@ -182,6 +189,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			if logger != nil {
 				logger.Error("git scope enforcement: failed to parse token scope", "error", err)
 			}
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusInternalServerError, "Internal error")
 			return
 		}
@@ -195,6 +203,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 				if logger != nil {
 					logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
 				}
+				metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 				writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 				return
 			}
@@ -211,6 +220,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		scopeEnforceStart := time.Now()
 		if len(si.Repos) > 0 && !si.repoAllowed(repo) {
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusForbidden,
 				fmt.Sprintf("Token is not scoped to %s", repo))
 			return
@@ -220,6 +230,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		// A token with scopes=null carries no permission restriction (any endpoint allowed).
 		if len(si.Scopes) > 0 && !si.Scopes.HasPermission(permission, level) {
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
 			return
@@ -234,6 +245,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			if logger != nil {
 				logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
 			}
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 			return
 		}
