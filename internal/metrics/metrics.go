@@ -99,10 +99,11 @@ var (
 	// ProxyDecisionDuration records time spent in each stage of the proxy
 	// decision-making pipeline. Internal stages (token_extraction through
 	// github_token_resolution) measure pre-forward overhead; upstream_roundtrip
-	// measures the actual GitHub API call; total covers both together.
+	// measures the actual GitHub API call; total measures only the pre-forward
+	// decision-making overhead (i.e., arrival to just before the upstream call).
 	// The "stage" label identifies the pipeline step:
 	//
-	//   total                  – arrival to completion of forwarded request (pre-forward + upstream)
+	//   total                  – arrival to completion of proxy decision (pre-forward only; upstream not included)
 	//   token_extraction       – unpacking the Authorization header
 	//   border_policy_check    – evaluating the token type border policy (block config)
 	//   token_resolution       – SHA-256 hash + database lookup + expiry/revocation check
