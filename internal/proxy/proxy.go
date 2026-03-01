@@ -92,7 +92,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+		metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
+		upstreamStart := time.Now()
 		h.forwardPassthrough(w, r, apiPath)
+		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 		return
 	}
 
@@ -157,11 +160,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, msg)
 			return
 		}
+		repo := ExtractRepoFromPath(apiPath)
+		authHeader := rewriteAuth(githubToken)
 		// Record total decision time (everything before forwarding to GitHub).
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-		repo := ExtractRepoFromPath(apiPath)
 		upstreamStart := time.Now()
-		status := h.forwardRequest(w, r, apiPath, rewriteAuth(githubToken))
+		status := h.forwardRequest(w, r, apiPath, authHeader)
 		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 		if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 			h.logger.Error("failed to record token usage", "error", err)
@@ -210,12 +214,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Prepare the Authorization header for the upstream request.
+	authHeader := rewriteAuth(githubToken)
+
 	// Record total decision time (everything before forwarding to GitHub).
 	metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 
 	// Forward the request to GitHub.
 	upstreamStart := time.Now()
-	status := h.forwardRequest(w, r, apiPath, rewriteAuth(githubToken))
+	status := h.forwardRequest(w, r, apiPath, authHeader)
 	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 
 	// Record usage.
@@ -256,11 +263,13 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		return
 	}
 
+	authHeader := rewriteAuth(githubToken)
+
 	// Record total decision time (everything before forwarding to GitHub).
 	metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 
 	upstreamStart := time.Now()
-	status := h.forwardRequest(w, r, "/graphql", rewriteAuth(githubToken))
+	status := h.forwardRequest(w, r, "/graphql", authHeader)
 	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
