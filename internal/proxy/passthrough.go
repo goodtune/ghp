@@ -128,7 +128,22 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 
 		repo, permission, level := GitSmartHTTPScope(r.Method, r.URL.Path, r.URL.RawQuery)
 		if permission == "" {
-			// Not a git smart HTTP path — pass through with token resolution only.
+			// Not a git smart HTTP path — resolve the GitHub token here rather
+			// than relying on inner's Director, so that token resolution time is
+			// charged to StageGitHubTokenResolution (pre-forward overhead) rather
+			// than incorrectly to StageUpstreamRoundtrip.
+			ghTokenStart := time.Now()
+			realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
+			metrics.ObserveDecision(metrics.StageGitHubTokenResolution, extractTokenType, time.Since(ghTokenStart))
+			if err != nil {
+				if logger != nil {
+					logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
+				}
+				metrics.ObserveDecision(metrics.StageTotal, extractTokenType, time.Since(decisionStart))
+				writeError(w, http.StatusUnauthorized, "Token resolution failed")
+				return
+			}
+			r.Header.Set("Authorization", rewriteAuth(realToken))
 			metrics.ObserveDecision(metrics.StageTotal, extractTokenType, time.Since(decisionStart))
 			upstreamStart := time.Now()
 			inner.ServeHTTP(w, r)
