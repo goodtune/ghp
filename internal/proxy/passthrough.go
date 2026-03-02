@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/goodtune/ghp/internal/backend"
+	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
@@ -44,7 +45,7 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSl
 			}
 
 			if resolver != nil {
-				if clientTok, rewriteAuth := extractClientToken(req); clientTok != "" {
+				if clientTok, _, rewriteAuth := extractClientToken(req); clientTok != "" {
 					realToken, err := resolver.ResolveToGitHubToken(req.Context(), clientTok)
 					if err != nil {
 						if logger != nil {
@@ -78,13 +79,26 @@ type ScopeEnforcer interface {
 // verified before the request is forwarded. Non-git paths and non-client tokens
 // pass through unchanged.
 //
+// When cfg is non-nil, the token type border policy (cfg.Block) is enforced:
+// requests bearing a raw GitHub token whose type prefix is blocked are rejected
+// with 403 before they reach the upstream.
+//
 // The optional usernameResolver is used to resolve GitHub usernames for both
 // client tokens (via the database) and raw GitHub tokens (via the GitHub API)
 // so that they appear in metrics and access logs.
-func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger) http.Handler {
+func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger, cfg ...*config.Config) http.Handler {
+	var blockCfg *config.Config
+	if len(cfg) > 0 {
+		blockCfg = cfg[0]
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clientTok, rewriteAuth := extractClientToken(r)
+		clientTok, rawCredential, rewriteAuth := extractClientToken(r)
 		if clientTok == "" {
+			// Check the token type border policy before forwarding.
+			if blockCfg != nil && blockCfg.IsTokenBlocked(rawCredential) {
+				writeError(w, http.StatusForbidden, "Token type is not permitted by the border policy")
+				return
+			}
 			// Not a client token — try to resolve the GitHub username
 			// from the raw token for access-log / metrics visibility.
 			if ur != nil {
@@ -266,42 +280,52 @@ func NewCopilotPassthroughHandler(upstream string, enterpriseSlug string, logger
 // Supports "Bearer ghx_xxx", "token ghx_xxx", and Basic auth with
 // username "x-access-token" and a client token password (as used by git credential helpers).
 //
-// Returns the plaintext client token and a rewrite function that builds a new
-// Authorization header value preserving the original scheme.
-func extractClientToken(r *http.Request) (string, func(realToken string) string) {
+// Returns the plaintext client token (or "" if none found), the raw credential
+// extracted from the header (for border-policy evaluation; "" if unparseable),
+// and a rewrite function that builds a new Authorization header value preserving
+// the original scheme.
+func extractClientToken(r *http.Request) (string, string, func(realToken string) string) {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
-		return "", nil
+		return "", "", nil
 	}
 	parts := strings.SplitN(auth, " ", 2)
 	if len(parts) != 2 {
-		return "", nil
+		return "", "", nil
 	}
 	scheme := strings.ToLower(parts[0])
 	originalScheme := parts[0] // preserve original casing
 	credential := parts[1]
 	if scheme == "token" || scheme == "bearer" {
 		if _, ok := token.TokenTypeFromPrefix(credential); ok {
-			return credential, func(realToken string) string {
+			return credential, credential, func(realToken string) string {
 				return originalScheme + " " + realToken
 			}
 		}
+		// Not a managed client token — return raw credential for block-policy check.
+		return "", credential, nil
 	}
 	if scheme == "basic" {
 		decoded, err := base64.StdEncoding.DecodeString(credential)
 		if err != nil {
-			return "", nil
+			return "", "", nil
 		}
 		user, pass, ok := strings.Cut(string(decoded), ":")
 		if ok && strings.EqualFold(user, "x-access-token") {
 			if _, ok := token.TokenTypeFromPrefix(pass); ok {
-				return pass, func(realToken string) string {
+				return pass, pass, func(realToken string) string {
 					return originalScheme + " " + base64.StdEncoding.EncodeToString([]byte(user+":"+realToken))
 				}
 			}
 		}
+		// Basic auth (x-access-token or otherwise) — return the password for
+		// block-policy evaluation. A non-client-token password may still carry
+		// a GitHub token type that should be subject to the border policy.
+		if ok {
+			return "", pass, nil
+		}
 	}
-	return "", nil
+	return "", "", nil
 }
 
 // tokenScopeInfo holds the parsed repository and permission scopes for a proxy

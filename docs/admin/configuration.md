@@ -27,7 +27,8 @@ the `GHP_` prefix.
 | `GHP_TLS_MIN_VERSION` | Minimum TLS version (`1.2` or `1.3`) | `1.2` |
 | `GHP_TOKENS_DEFAULT_DURATION` | Default token lifetime | `24h` |
 | `GHP_TOKENS_MAX_DURATION` | Maximum token lifetime | `168h` |
-| `GHP_METRICS_ENABLED` | Enable Prometheus `/metrics` endpoint on management host | `false` |
+| `GHP_METRICS_ENABLED` | Enable dedicated Prometheus metrics server | `true` |
+| `GHP_METRICS_LISTEN` | Listen address for the metrics server | `:9136` |
 | `GHP_ADMINS` | Comma-separated list of admin GitHub usernames | |
 | `GHP_AUTH_JWT_SECRET` | HMAC secret for OAuth broker JWTs (enables broker endpoints) | |
 | `GHP_AUTH_ALLOWED_REDIRECTS` | Comma-separated list of permitted OAuth redirect URIs | |
@@ -72,7 +73,8 @@ logging:
     path: "/var/log/ghp/ghp.log"
 
 metrics:
-  enabled: false               # serves /metrics on the management host
+  enabled: true                # set to false to disable
+  listen: ":9136"              # dedicated metrics server port (separate from proxy)
 
 auth:
   jwt_secret: ""               # HMAC-SHA256 secret for OAuth broker JWTs
