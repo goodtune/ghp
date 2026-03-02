@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	ghub "github.com/google/go-github/v68/github"
@@ -32,6 +33,7 @@ type API struct {
 	encryptor        *crypto.Encryptor
 	appTokenProvider *ghpgithub.AppTokenProvider // nil if GitHub App not configured
 	logger           *slog.Logger
+	httpClient       *http.Client // used for outbound GitHub API calls
 
 	tokenCreateLimiter *auth.IPRateLimiter // POST /api/tokens
 }
@@ -46,6 +48,7 @@ func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *aut
 		encryptor:          enc,
 		appTokenProvider:   atp,
 		logger:             logger,
+		httpClient:         &http.Client{Timeout: 10 * time.Second},
 		tokenCreateLimiter: auth.NewIPRateLimiter(20, time.Minute, "/api/tokens", logger),
 	}
 }
@@ -62,6 +65,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/users/{id}/tokens", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListUserTokens)))
 
 	mux.Handle("GET /api/github/repositories", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListUserRepos)))
+	mux.Handle("GET /api/github/permissions", a.authHandler.RequireAuth(http.HandlerFunc(a.handleGetPermissions)))
 	mux.Handle("GET /api/github/installations", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallations)))
 	mux.Handle("GET /api/github/installations/{id}/repositories", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallationRepos)))
 
@@ -416,6 +420,144 @@ func (a *API) handleListInstallationRepos(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, repos)
+}
+
+// handleGetPermissions returns the permission levels available for the
+// authenticated user's GitHub OAuth token, derived from X-OAuth-Scopes.
+// When no GitHub token is stored (dev mode, test users) it returns a full
+// default set so the UI remains functional.
+func (a *API) handleGetPermissions(w http.ResponseWriter, r *http.Request) {
+	session := auth.SessionFromContext(r.Context())
+
+	gt, err := a.store.GetGitHubToken(r.Context(), session.UserID)
+	if err != nil {
+		a.logger.Error("failed to get github token", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+
+	// No GitHub token — dev mode or test user. Return the full default set.
+	if gt == nil {
+		writeJSON(w, http.StatusOK, defaultPermissions())
+		return
+	}
+
+	plainToken, err := a.encryptor.Decrypt(gt.AccessToken)
+	if err != nil {
+		a.logger.Error("failed to decrypt github token", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to decrypt credentials"})
+		return
+	}
+
+	// Call GET https://api.github.com/ to retrieve X-OAuth-Scopes.
+	req, err := http.NewRequestWithContext(r.Context(), "GET", "https://api.github.com/", nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+plainToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		a.logger.Error("failed to call github root endpoint", "error", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"message": "Failed to contact GitHub"})
+		return
+	}
+	defer resp.Body.Close()
+
+	scopesHeader := resp.Header.Get("X-OAuth-Scopes")
+	perms := oauthScopesToPermissions(scopesHeader)
+
+	// If no permissions were derived (e.g. GitHub App token with no OAuth scopes),
+	// fall back to the default set so the UI is still usable.
+	if len(perms) == 0 {
+		writeJSON(w, http.StatusOK, defaultPermissions())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, perms)
+}
+
+// defaultPermissions returns the full set of proxy-token permissions at their
+// maximum levels. Used when no GitHub OAuth token is available to constrain
+// the set (dev mode, test users, GitHub App tokens).
+func defaultPermissions() map[string]string {
+	return map[string]string{
+		"contents":      "write",
+		"pull_requests": "write",
+		"issues":        "write",
+		"statuses":      "write",
+		"checks":        "write",
+		"actions":       "write",
+		"metadata":      "read",
+	}
+}
+
+// oauthScopesToPermissions maps a GitHub OAuth X-OAuth-Scopes header value to
+// the permission levels available in the proxy scope system. Permissions not
+// covered by the granted OAuth scopes are omitted from the result, preventing
+// users from creating tokens that claim permissions the underlying credential
+// cannot satisfy.
+func oauthScopesToPermissions(scopesHeader string) map[string]string {
+	scopes := make(map[string]bool)
+	for _, s := range strings.Split(scopesHeader, ",") {
+		scopes[strings.TrimSpace(s)] = true
+	}
+
+	perms := make(map[string]string)
+
+	// repo (or public_repo) grants access to most repository resources.
+	if scopes["repo"] || scopes["public_repo"] {
+		perms["contents"] = "write"
+		perms["pull_requests"] = "write"
+		perms["issues"] = "write"
+		perms["statuses"] = "write"
+		perms["checks"] = "write"
+		perms["metadata"] = "read"
+		// Actions read is implied by repo; write requires the workflow scope.
+		if scopes["workflow"] {
+			perms["actions"] = "write"
+		} else {
+			perms["actions"] = "read"
+		}
+	} else if scopes["repo:status"] {
+		// repo:status alone gives commit-status write without full repo access.
+		perms["statuses"] = "write"
+		perms["metadata"] = "read"
+	}
+
+	// Security alerts and vulnerability scanning.
+	if scopes["security_events"] {
+		perms["security_events"] = "write"
+		perms["vulnerability_alerts"] = "write"
+		if perms["metadata"] == "" {
+			perms["metadata"] = "read"
+		}
+	}
+
+	// Package registry.
+	if scopes["write:packages"] {
+		perms["packages"] = "write"
+	} else if scopes["read:packages"] {
+		perms["packages"] = "read"
+	}
+
+	// Organisation membership management.
+	if scopes["admin:org"] || scopes["write:org"] {
+		perms["members"] = "write"
+	} else if scopes["read:org"] {
+		perms["members"] = "read"
+	}
+
+	// Discussions.
+	if scopes["write:discussion"] || scopes["admin:discussion"] {
+		perms["discussions"] = "write"
+	} else if scopes["read:discussion"] {
+		perms["discussions"] = "read"
+	}
+
+	return perms
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
