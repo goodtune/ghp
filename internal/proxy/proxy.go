@@ -80,43 +80,73 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Extract the client token from the Authorization header.
 	// If the token is not a client token (ghx_/gha_), check the border
 	// policy and then forward the request transparently to GitHub.
+	extractStart := time.Now()
 	clientToken, rawCredential, rewriteAuth := extractClientToken(r)
+	extractTokenType := ""
+	if tt, ok := token.TokenTypeFromPrefix(clientToken); ok {
+		extractTokenType = string(tt)
+	}
+	metrics.ObserveDecision(metrics.StageTokenExtraction, extractTokenType, time.Since(extractStart))
 	if clientToken == "" {
 		// Check the token type border policy before forwarding.
+		borderStart := time.Now()
 		if h.cfg.IsTokenBlocked(rawCredential) {
+			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
 			writeError(w, http.StatusForbidden, "Token type is not permitted by the border policy")
 			return
 		}
+		metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+		metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
+		upstreamStart := time.Now()
 		h.forwardPassthrough(w, r, apiPath)
+		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 		return
 	}
 
+	// Derive token type from prefix for pre-resolution metrics.
+	resolveTokenType := ""
+	if tt, ok := token.TokenTypeFromPrefix(clientToken); ok {
+		resolveTokenType = string(tt)
+	}
+
 	// Resolve the client token.
+	resolveStart := time.Now()
 	pt, err := h.tokenService.Resolve(r.Context(), clientToken)
+	metrics.ObserveDecision(metrics.StageTokenResolution, resolveTokenType, time.Since(resolveStart))
 	if err != nil {
 		h.logger.Warn("token resolution failed", "error", err)
+		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 	if pt == nil {
+		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
 		writeError(w, http.StatusUnauthorized, "Invalid token")
 		return
 	}
 
+	tokenType := pt.TokenType
+
 	// Resolve the GitHub username from the token's user ID and inject it
 	// into the request context so the access-log middleware can read it.
+	usernameStart := time.Now()
 	if h.usernameResolver != nil && pt.UserID != nil {
 		if username := h.usernameResolver.ResolveFromUserID(r.Context(), *pt.UserID); username != "" {
 			SetUsername(r, username)
 		}
 	}
+	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 	// Parse the token's scope restrictions once; fail-closed on corrupt JSON.
 	// Must happen before GraphQL routing so that corrupt JSON is never treated
 	// as open-scoped, even on the GraphQL path.
+	scopeParseStart := time.Now()
 	si, err := parseScopeInfo(pt)
+	metrics.ObserveDecision(metrics.StageScopeParsing, tokenType, time.Since(scopeParseStart))
 	if err != nil {
 		h.logger.Error("failed to parse token scope", "error", err)
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusInternalServerError, "Internal error")
 		return
 	}
@@ -129,15 +159,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Open-scoped tokens (no repos AND no scopes) skip all filtering — forward directly to GitHub.
 	if si.isOpenScoped() {
+		ghTokenStart := time.Now()
 		githubToken, err := h.getGitHubToken(r, pt)
+		metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 		if err != nil {
 			h.logger.Error("failed to get GitHub token", "error", err)
 			status, msg := installationTokenErrorResponse(err)
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 			writeError(w, status, msg)
 			return
 		}
 		repo := ExtractRepoFromPath(apiPath)
-		status := h.forwardRequest(w, r, apiPath, rewriteAuth(githubToken))
+		authHeader := rewriteAuth(githubToken)
+		// Record total decision time (everything before forwarding to GitHub).
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		upstreamStart := time.Now()
+		status := h.forwardRequest(w, r, apiPath, authHeader)
+		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 		if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 			h.logger.Error("failed to record token usage", "error", err)
 		}
@@ -150,7 +188,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Enforce repository scope only when the token has repo restrictions.
 	// A token with repos=null carries no repo restriction (applies to any repo).
+	scopeEnforceStart := time.Now()
 	if repo != "" && len(si.Repos) > 0 && !si.repoAllowed(repo) {
+		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusForbidden,
 			fmt.Sprintf("Token is not scoped to %s", repo))
 		h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
@@ -163,18 +204,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	permission, level := EndpointScope(r.Method, apiPath)
 	if permission != "" && permission != "metadata" && len(si.Scopes) > 0 {
 		if !si.Scopes.HasPermission(permission, level) {
+			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
 			h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
 		}
 	}
+	metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 
 	// Get the real GitHub access token.
+	ghTokenStart := time.Now()
 	githubToken, err := h.getGitHubToken(r, pt)
+	metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 	if err != nil {
 		h.logger.Error("failed to get GitHub token", "error", err)
 		status, msg := installationTokenErrorResponse(err)
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, status, msg)
 		return
 	}
@@ -190,8 +237,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Prepare the Authorization header for the upstream request.
+	authHeader := rewriteAuth(githubToken)
+
+	// Record total decision time (everything before forwarding to GitHub).
+	metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+
 	// Forward the request to GitHub.
-	status := h.forwardRequest(w, r, apiPath, rewriteAuth(githubToken), scopeOverride)
+	upstreamStart := time.Now()
+	status := h.forwardRequest(w, r, apiPath, authHeader, scopeOverride)
+	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 
 	// Record usage.
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
@@ -202,29 +257,45 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, si tokenScopeInfo, rewriteAuth func(string) string, start time.Time) {
+	tokenType := pt.TokenType
+
 	// Repository-restricted tokens cannot have their repo restrictions enforced
 	// on GraphQL requests because GraphQL queries can span arbitrary repositories
 	// without a parseable path structure. Block GraphQL to prevent bypassing
 	// repository scope restrictions.
+	scopeEnforceStart := time.Now()
 	if len(si.Repos) > 0 {
+		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusForbidden,
 			"Token is repository-restricted; GraphQL is not supported for repository-scoped tokens")
 		h.logRequest(r.Context(), pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
+	metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 
 	// For permission-scoped tokens (scopes set, no repo restrictions), we forward
 	// to GitHub. Full GraphQL query parsing to enforce per-operation permission
 	// checks is not implemented; the underlying GitHub token enforces actual access.
+	ghTokenStart := time.Now()
 	githubToken, err := h.getGitHubToken(r, pt)
+	metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 	if err != nil {
 		h.logger.Error("failed to get GitHub token for GraphQL", "error", err)
 		status, msg := installationTokenErrorResponse(err)
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, status, msg)
 		return
 	}
 
-	status := h.forwardRequest(w, r, "/graphql", rewriteAuth(githubToken))
+	authHeader := rewriteAuth(githubToken)
+
+	// Record total decision time (everything before forwarding to GitHub).
+	metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+
+	upstreamStart := time.Now()
+	status := h.forwardRequest(w, r, "/graphql", authHeader)
+	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 		h.logger.Error("failed to record token usage", "error", err)
