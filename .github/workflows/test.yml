@@ -29,7 +29,7 @@ jobs:
         run: ./ghp version
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ghp-binary
           path: ghp
@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Download binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ghp-binary
 
@@ -116,7 +116,7 @@ jobs:
       - name: Upload screenshots and report
         if: always()
         id: artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-results
           path: |
