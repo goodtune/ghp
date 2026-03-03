@@ -23,6 +23,7 @@ import (
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/docs"
 	"github.com/goodtune/ghp/internal/github"
+	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/proxy"
 	"github.com/goodtune/ghp/internal/token"
 	"github.com/goodtune/ghp/internal/web"
@@ -59,6 +60,13 @@ func (s *Server) reloadConfig() {
 		return
 	}
 	s.logger.Info("config_reloaded", "path", s.configPath)
+
+	// Sync the anonymous git blocking gauge to reflect the new config.
+	if s.cfg.Block.AnonymousGit {
+		metrics.BlockAnonymousGitEnabled.Set(1)
+	} else {
+		metrics.BlockAnonymousGitEnabled.Set(0)
+	}
 
 	// Sync admin roles from the updated config.
 	if s.store != nil {
@@ -107,6 +115,13 @@ func (s *Server) Run(ctx context.Context) error {
 	// Warn if the operator has set environment variables for token types
 	// that ghp manages internally and cannot be blocked via border policy.
 	s.cfg.WarnInvalidBlockTargets(s.logger)
+
+	// Initialise the anonymous git blocking gauge to reflect the startup config.
+	if s.cfg.Block.AnonymousGit {
+		metrics.BlockAnonymousGitEnabled.Set(1)
+	} else {
+		metrics.BlockAnonymousGitEnabled.Set(0)
+	}
 
 	// Set up encryption.
 	encKey := s.cfg.EncryptionKey

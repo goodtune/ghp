@@ -103,6 +103,16 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		if clientTok == "" {
 			// Check the token type border policy before forwarding.
 			borderStart := time.Now()
+			// Anonymous git blocking: short-circuit requests that carry a Git-Protocol
+			// header but no Authorization header before they egress to GitHub.
+			if blockCfg != nil && blockCfg.Block.AnonymousGit && rawCredential == "" && r.Header.Get("Git-Protocol") != "" {
+				metrics.BlockAnonymousGitTotal.Inc()
+				metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+				metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
+				w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
+				writeError(w, http.StatusUnauthorized, "Anonymous git access is not permitted")
+				return
+			}
 			if blockCfg != nil && blockCfg.IsTokenBlocked(rawCredential) {
 				metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
 				metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))

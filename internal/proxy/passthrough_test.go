@@ -705,3 +705,100 @@ func tlsTransport(ts *httptest.Server) http.RoundTripper {
 		},
 	}
 }
+
+// newAnonymousGitPassthrough creates an upstream TLS test server and a
+// ScopedPassthroughHandler configured with the supplied BlockConfig.
+func newAnonymousGitPassthrough(t *testing.T, blockCfg *config.Config) (http.Handler, *httptest.Server) {
+	t.Helper()
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, slog.Default(), blockCfg)
+	return handler, upstream
+}
+
+func TestScopedPassthrough_AnonymousGit_Blocked(t *testing.T) {
+	// An anonymous request with a Git-Protocol header must be short-circuited
+	// with 401 and a WWW-Authenticate header when block.anonymous_git is true.
+	cfg := &config.Config{Block: config.BlockConfig{AnonymousGit: true}}
+	handler, _ := newAnonymousGitPassthrough(t, cfg)
+
+	req := httptest.NewRequest("GET", "http://github.com/goodtune/ghp.git/info/refs?service=git-upload-pack", nil)
+	req.Header.Set("Git-Protocol", "version=2")
+	// No Authorization header — anonymous request.
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for anonymous git when blocking is enabled, got %d", rr.Code)
+	}
+	wwwAuth := rr.Header().Get("WWW-Authenticate")
+	if wwwAuth != `Basic realm="GitHub"` {
+		t.Errorf("expected WWW-Authenticate: Basic realm=\"GitHub\", got %q", wwwAuth)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "Anonymous git access is not permitted") {
+		t.Errorf("expected error message in body, got: %s", body)
+	}
+}
+
+func TestScopedPassthrough_AnonymousGit_Disabled(t *testing.T) {
+	// When block.anonymous_git is false (default), anonymous git requests
+	// must pass through to the upstream.
+	cfg := &config.Config{Block: config.BlockConfig{AnonymousGit: false}}
+	handler, _ := newAnonymousGitPassthrough(t, cfg)
+
+	req := httptest.NewRequest("GET", "http://github.com/goodtune/ghp.git/info/refs?service=git-upload-pack", nil)
+	req.Header.Set("Git-Protocol", "version=2")
+	// No Authorization header — anonymous request.
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for anonymous git when blocking is disabled, got %d", rr.Code)
+	}
+}
+
+func TestScopedPassthrough_AnonymousGit_NoGitProtocolHeader_NotBlocked(t *testing.T) {
+	// An anonymous request without a Git-Protocol header is not a git
+	// smart HTTP request and must NOT be short-circuited even when blocking is on.
+	cfg := &config.Config{Block: config.BlockConfig{AnonymousGit: true}}
+	handler, _ := newAnonymousGitPassthrough(t, cfg)
+
+	req := httptest.NewRequest("GET", "http://github.com/goodtune/ghp", nil)
+	// No Authorization header, no Git-Protocol header.
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected non-git anonymous request to pass through, got %d", rr.Code)
+	}
+}
+
+func TestScopedPassthrough_AnonymousGit_AuthenticatedGit_NotBlocked(t *testing.T) {
+	// A request with a Git-Protocol header AND an Authorization header must
+	// not be blocked — only truly anonymous requests are short-circuited.
+	cfg := &config.Config{Block: config.BlockConfig{AnonymousGit: true}}
+	handler, _ := newAnonymousGitPassthrough(t, cfg)
+
+	req := httptest.NewRequest("GET", "http://github.com/goodtune/ghp.git/info/refs?service=git-upload-pack", nil)
+	req.Header.Set("Git-Protocol", "version=2")
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:ghp_sometoken")))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	// Token is not a client token but is authenticated — should pass through (or get a
+	// token-blocked response if GHP is blocked), not an anonymous-git 401.
+	if rr.Code == http.StatusUnauthorized {
+		body := rr.Body.String()
+		if strings.Contains(body, "Anonymous git access is not permitted") {
+			t.Fatalf("authenticated request should not be rejected as anonymous git, got %d: %s", rr.Code, body)
+		}
+	}
+}

@@ -75,6 +75,22 @@ var (
 		Help: "Total number of requests rejected by the auth rate limiter, by endpoint.",
 	}, []string{"endpoint"})
 
+	// BlockAnonymousGitEnabled reflects whether the anonymous git blocking
+	// feature is currently active (1) or inactive (0). Updated on every
+	// request that reaches the border policy check so that config reloads
+	// are reflected promptly.
+	BlockAnonymousGitEnabled = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ghp_block_anonymous_git_enabled",
+		Help: "Set to 1 when anonymous git blocking (block.anonymous_git) is enabled, 0 otherwise.",
+	})
+
+	// BlockAnonymousGitTotal counts the number of anonymous git requests
+	// that were short-circuited before egressing to GitHub.
+	BlockAnonymousGitTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ghp_block_anonymous_git_total",
+		Help: "Total number of anonymous git requests blocked by the anonymous git blocking feature.",
+	})
+
 	// decisionBuckets covers internal decision-making stages (typically µs–ms)
 	// as well as the upstream_roundtrip stage, which includes the actual GitHub
 	// API call and can easily exceed 1s under load or on slow networks.

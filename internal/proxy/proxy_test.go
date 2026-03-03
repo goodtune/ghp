@@ -1062,3 +1062,86 @@ func TestServeHTTP_BorderPolicy_BlocksAllTokenTypes(t *testing.T) {
 		})
 	}
 }
+
+func TestServeHTTP_AnonymousGit_Blocked(t *testing.T) {
+	// An anonymous request with a Git-Protocol header must be rejected with
+	// 401 and a WWW-Authenticate header when block.anonymous_git is true.
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:    &config.Config{Block: config.BlockConfig{AnonymousGit: true}},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/goodtune/ghp.git/info/refs?service=git-upload-pack", nil)
+	req.Header.Set("Git-Protocol", "version=2")
+	// No Authorization header — anonymous.
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for anonymous git when blocking is enabled, got %d", rr.Code)
+	}
+	wwwAuth := rr.Header().Get("WWW-Authenticate")
+	if wwwAuth != `Basic realm="GitHub"` {
+		t.Errorf("expected WWW-Authenticate: Basic realm=\"GitHub\", got %q", wwwAuth)
+	}
+	if ct.lastReq != nil {
+		t.Error("anonymous git request should not have been forwarded upstream")
+	}
+}
+
+func TestServeHTTP_AnonymousGit_Disabled(t *testing.T) {
+	// When block.anonymous_git is false (default), an anonymous git request
+	// must be forwarded to GitHub.
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:    &config.Config{Block: config.BlockConfig{AnonymousGit: false}},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/goodtune/ghp.git/info/refs?service=git-upload-pack", nil)
+	req.Header.Set("Git-Protocol", "version=2")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusUnauthorized {
+		body := rr.Body.String()
+		if strings.Contains(body, "Anonymous git access is not permitted") {
+			t.Fatalf("anonymous git should not be blocked when feature is disabled, got 401: %s", body)
+		}
+	}
+	if ct.lastReq == nil {
+		t.Fatal("anonymous git should have been forwarded upstream when blocking is disabled")
+	}
+}
+
+func TestServeHTTP_AnonymousGit_NoGitProtocolHeader_NotBlocked(t *testing.T) {
+	// Without a Git-Protocol header, an anonymous request is not treated as
+	// anonymous git traffic and must pass through even when the feature is enabled.
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:    &config.Config{Block: config.BlockConfig{AnonymousGit: true}},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/user", nil)
+	// No Git-Protocol header, no Authorization header.
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusUnauthorized {
+		body := rr.Body.String()
+		if strings.Contains(body, "Anonymous git access is not permitted") {
+			t.Fatalf("non-git anonymous request should not be blocked, got 401: %s", body)
+		}
+	}
+	if ct.lastReq == nil {
+		t.Fatal("non-git anonymous request should have been forwarded upstream")
+	}
+}
