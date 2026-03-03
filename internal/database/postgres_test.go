@@ -3,18 +3,37 @@ package database
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
+
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-// newTestPostgresStore creates a PostgresStore connected to a test database.
-// Tests are skipped when GHP_TEST_POSTGRES_DSN is not set.
+// newTestPostgresStore spins up a PostgreSQL container via testcontainers and
+// returns a PostgresStore connected to it. The container is terminated on
+// test cleanup.
 func newTestPostgresStore(t *testing.T) *PostgresStore {
 	t.Helper()
-	dsn := os.Getenv("GHP_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("GHP_TEST_POSTGRES_DSN not set; skipping PostgreSQL tests")
+	ctx := context.Background()
+
+	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine",
+		tcpostgres.WithDatabase("ghp_test"),
+		tcpostgres.WithUsername("test"),
+		tcpostgres.WithPassword("test"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		t.Fatalf("start postgres container: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := pgContainer.Terminate(ctx); err != nil {
+			t.Logf("terminate postgres container: %v", err)
+		}
+	})
+
+	dsn, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("postgres connection string: %v", err)
 	}
 
 	store, err := NewPostgresStore(dsn)
@@ -24,7 +43,6 @@ func newTestPostgresStore(t *testing.T) *PostgresStore {
 	t.Cleanup(func() { store.Close() })
 
 	// Drop and recreate tables for a clean slate.
-	ctx := context.Background()
 	for _, stmt := range []string{
 		"DROP TABLE IF EXISTS audit_log",
 		"DROP TABLE IF EXISTS proxy_tokens",
