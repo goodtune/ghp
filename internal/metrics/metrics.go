@@ -76,9 +76,8 @@ var (
 	}, []string{"endpoint"})
 
 	// BlockAnonymousGitEnabled reflects whether the anonymous git blocking
-	// feature is currently active (1) or inactive (0). Updated on every
-	// request that reaches the border policy check so that config reloads
-	// are reflected promptly.
+	// feature is currently active (1) or inactive (0). Set at server startup
+	// and on config reload (SIGUSR1); not updated per-request.
 	BlockAnonymousGitEnabled = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "ghp_block_anonymous_git_enabled",
 		Help: "Set to 1 when anonymous git blocking (block.anonymous_git) is enabled, 0 otherwise.",

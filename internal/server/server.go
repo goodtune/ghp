@@ -47,6 +47,16 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger, logWriter i
 	return &Server{cfg: cfg, configPath: configPath, logger: logger, logWriter: logWriter, migrate: migrate}
 }
 
+// syncBlockMetrics updates Prometheus gauges for all block.* feature flags
+// to reflect the current config. Called at startup and on config reload.
+func (s *Server) syncBlockMetrics() {
+	if s.cfg.Block.AnonymousGit {
+		metrics.BlockAnonymousGitEnabled.Set(1)
+	} else {
+		metrics.BlockAnonymousGitEnabled.Set(0)
+	}
+}
+
 // reloadConfig re-reads the configuration file and updates hot-reloadable
 // fields in-place. All components holding a pointer to the Config struct
 // will see the updated values.
@@ -61,12 +71,7 @@ func (s *Server) reloadConfig() {
 	}
 	s.logger.Info("config_reloaded", "path", s.configPath)
 
-	// Sync the anonymous git blocking gauge to reflect the new config.
-	if s.cfg.Block.AnonymousGit {
-		metrics.BlockAnonymousGitEnabled.Set(1)
-	} else {
-		metrics.BlockAnonymousGitEnabled.Set(0)
-	}
+	s.syncBlockMetrics()
 
 	// Sync admin roles from the updated config.
 	if s.store != nil {
@@ -117,11 +122,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.cfg.WarnInvalidBlockTargets(s.logger)
 
 	// Initialise the anonymous git blocking gauge to reflect the startup config.
-	if s.cfg.Block.AnonymousGit {
-		metrics.BlockAnonymousGitEnabled.Set(1)
-	} else {
-		metrics.BlockAnonymousGitEnabled.Set(0)
-	}
+	s.syncBlockMetrics()
 
 	// Set up encryption.
 	encKey := s.cfg.EncryptionKey

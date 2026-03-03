@@ -53,6 +53,40 @@ a reverse proxy), the `Host` header alone drives routing.
 - **Expiration** — tokens have a configurable lifetime (default 24h, max 7 days)
 - **Revocation** — tokens can be revoked immediately via CLI or web UI
 
+### Blocking Anonymous Git Traffic
+
+When `block.anonymous_git` is enabled, ghp short-circuits anonymous git smart
+HTTP requests — returning `401 Unauthorized` immediately instead of forwarding
+them to GitHub. This prevents unauthenticated `git clone`, `git fetch`, and
+`git ls-remote` operations from consuming upstream bandwidth or leaking
+repository metadata through the proxy.
+
+A request is classified as anonymous git traffic when **both** conditions are
+true:
+
+1. No `Authorization` header is present (or it is empty/unparseable)
+2. A `Git-Protocol` header is present (e.g. `Git-Protocol: version=2`)
+
+```yaml
+block:
+  anonymous_git: true
+```
+
+Blocked requests are counted by the `ghp_block_anonymous_git_total` Prometheus
+counter, and the feature's on/off state is exported as the
+`ghp_block_anonymous_git_enabled` gauge. The setting is hot-reloadable via
+`SIGUSR1` without restarting the server.
+
+!!! note "Detection relies on Git protocol version 2"
+    Git ≥ 2.26 (released March 2020) defaults to protocol v2 and sends a
+    `Git-Protocol: version=2` header on the initial smart HTTP request. Older
+    clients using protocol v0 or v1 do **not** send this header, so their
+    anonymous requests will pass through to GitHub unblocked. This is the right
+    trade-off for an opt-in feature — it avoids false positives from non-git
+    HTTP traffic that also lacks an `Authorization` header. If broader coverage
+    is needed in future, a path-pattern heuristic (e.g. matching
+    `/info/refs?service=git-upload-pack`) could supplement the header check.
+
 ### Copilot Passthrough
 
 Traffic to `*.githubcopilot.com` is forwarded transparently without token interception or
