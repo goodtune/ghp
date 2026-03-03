@@ -47,8 +47,9 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger, logWriter i
 	return &Server{cfg: cfg, configPath: configPath, logger: logger, logWriter: logWriter, migrate: migrate}
 }
 
-// syncBlockMetrics updates Prometheus gauges for all block.* feature flags
+// syncBlockMetrics updates Prometheus gauges for block.* feature flags
 // to reflect the current config. Called at startup and on config reload.
+// Currently covers: block.anonymous_git.
 func (s *Server) syncBlockMetrics() {
 	if s.cfg.Block.AnonymousGit {
 		metrics.BlockAnonymousGitEnabled.Set(1)
