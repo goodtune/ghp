@@ -1,0 +1,43 @@
+services:
+  vault:
+    image: hashicorp/vault:1.21
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_LOCAL_CONFIG: >-
+        {
+          "storage": {"file": {"path": "/vault/file"}},
+          "listener": [{"tcp": {"address": "0.0.0.0:8200", "tls_disable": true}}],
+          "default_lease_ttl": "168h",
+          "max_lease_ttl": "720h",
+          "ui": true
+        }
+    ports:
+      - "8200:8200"
+    command: server
+    healthcheck:
+      test: ["CMD", "sh", "-c", "vault status -address=http://127.0.0.1:8200 2>&1 | grep -q 'Initialized'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    volumes:
+      - vault-file:/vault/file
+      - vault-data:/vault/data
+
+  vault-init:
+    image: hashicorp/vault:1.21
+    environment:
+      VAULT_ADDR: http://vault:8200
+    volumes:
+      - vault-data:/vault/data
+      - ./vault:/vault/config:ro
+    depends_on:
+      vault:
+        condition: service_healthy
+    entrypoint: ["sh", "/vault/config/init.sh"]
+    restart: "no"
+
+volumes:
+  vault-file:
+  vault-data:
