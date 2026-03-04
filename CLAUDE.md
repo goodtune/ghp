@@ -119,6 +119,16 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `CGO_ENABLED=0` for all builds (pure Go, no C dependencies)
 - Configuration via YAML files or environment variables with `GHP_` prefix
 
+## Documentation
+
+User-facing documentation lives in `docs/` and is built with MkDocs. When adding or modifying a feature, always update the relevant docs:
+
+- **`docs/admin/configuration.md`** — environment variable table and full YAML reference must include any new config fields
+- **`docs/how-it-works.md`** — feature behaviour, detection logic, and security model changes
+- **`docs/getting-started.md`** — if the feature affects initial setup or onboarding
+
+Document any known limitations or detection gaps (e.g. protocol version requirements, header dependencies) and explain the trade-off. If a future approach could extend coverage, note it briefly so operators and contributors have context.
+
 ## Database Migrations
 
 SQL migrations live in `internal/database/migrations/` with separate `postgres/` and `sqlite/` subdirectories. Each migration has `*.up.sql` and `*.down.sql` files. Run with `./ghp migrate`.

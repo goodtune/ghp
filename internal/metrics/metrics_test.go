@@ -187,3 +187,41 @@ func TestObserveDecision_EmptyTokenType(t *testing.T) {
 		t.Errorf("expected histogram sample count to increment by 1, got %d", after-before)
 	}
 }
+
+func getGaugeValue(t *testing.T, g prometheus.Gauge) float64 {
+	t.Helper()
+	var m io_prometheus_client.Metric
+	if err := g.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return m.GetGauge().GetValue()
+}
+
+func getCounterValueSimple(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	var m io_prometheus_client.Metric
+	if err := c.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+func TestBlockAnonymousGitEnabled_Gauge(t *testing.T) {
+	BlockAnonymousGitEnabled.Set(1)
+	if got := getGaugeValue(t, BlockAnonymousGitEnabled); got != 1 {
+		t.Errorf("expected gauge value 1, got %f", got)
+	}
+	BlockAnonymousGitEnabled.Set(0)
+	if got := getGaugeValue(t, BlockAnonymousGitEnabled); got != 0 {
+		t.Errorf("expected gauge value 0, got %f", got)
+	}
+}
+
+func TestBlockAnonymousGitTotal_Counter(t *testing.T) {
+	before := getCounterValueSimple(t, BlockAnonymousGitTotal)
+	BlockAnonymousGitTotal.Inc()
+	after := getCounterValueSimple(t, BlockAnonymousGitTotal)
+	if after-before != 1 {
+		t.Errorf("expected counter to increment by 1, got %f", after-before)
+	}
+}

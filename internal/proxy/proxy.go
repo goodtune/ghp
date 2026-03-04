@@ -90,6 +90,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if clientToken == "" {
 		// Check the token type border policy before forwarding.
 		borderStart := time.Now()
+		// Anonymous git blocking: short-circuit requests that carry a Git-Protocol
+		// header but no Authorization header before they egress to GitHub.
+		if h.cfg.Block.AnonymousGit && rawCredential == "" && r.Header.Get("Git-Protocol") != "" {
+			metrics.BlockAnonymousGitTotal.Inc()
+			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
+			w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
+			writeError(w, http.StatusUnauthorized, "Anonymous git access is not permitted")
+			return
+		}
 		if h.cfg.IsTokenBlocked(rawCredential) {
 			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
 			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))

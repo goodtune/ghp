@@ -32,6 +32,7 @@ the `GHP_` prefix.
 | `GHP_ADMINS` | Comma-separated list of admin GitHub usernames | |
 | `GHP_AUTH_JWT_SECRET` | HMAC secret for OAuth broker JWTs (enables broker endpoints) | |
 | `GHP_AUTH_ALLOWED_REDIRECTS` | Comma-separated list of permitted OAuth redirect URIs | |
+| `GHP_BLOCK_ANONYMOUS_GIT` | Block anonymous git smart HTTP requests before they reach GitHub | `false` |
 | `GHP_DEV_MODE` | Enable test endpoints (never use in production) | `false` |
 
 ## Full YAML Reference
@@ -81,6 +82,9 @@ auth:
   allowed_redirects:            # permitted redirect_uri values for broker flow
     - "https://app.example.com/auth/callback"
     - "*.internal.example.com"  # wildcard domain patterns supported
+
+block:
+  anonymous_git: false           # short-circuit anonymous git smart HTTP traffic
 
 admins:
   - "alice"
