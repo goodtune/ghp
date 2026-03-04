@@ -32,6 +32,7 @@ import (
 type Server struct {
 	cfg        *config.Config
 	configPath string
+	version    string
 	logger     *slog.Logger
 	logWriter  io.Writer
 	store      database.Store
@@ -39,11 +40,11 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, configPath string, logger *slog.Logger, logWriter io.Writer, migrate bool) *Server {
+func New(cfg *config.Config, configPath string, version string, logger *slog.Logger, logWriter io.Writer, migrate bool) *Server {
 	if logWriter == nil {
 		logWriter = io.Discard
 	}
-	return &Server{cfg: cfg, configPath: configPath, logger: logger, logWriter: logWriter, migrate: migrate}
+	return &Server{cfg: cfg, configPath: configPath, version: version, logger: logger, logWriter: logWriter, migrate: migrate}
 }
 
 // reloadConfig re-reads the configuration file and updates hot-reloadable
@@ -203,6 +204,11 @@ func (s *Server) Run(ctx context.Context) error {
 		managementHost: s.cfg.Server.ManagementHost,
 	})
 
+	// Wrap dispatch with the Server response header middleware so that every
+	// response across all backends carries the "Server: GitHub Proxy <version>"
+	// header.
+	handler := web.ServerHeaderMiddleware(s.version)(dispatch)
+
 	// Platform-specific signal handling (e.g. SIGUSR1 on Unix for config reload).
 	setupPlatformSignals(s.logger, s.reloadConfig)
 
@@ -231,11 +237,11 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	if hasTLS {
-		return s.serveTLS(ctx, dispatch)
+		return s.serveTLS(ctx, handler)
 	}
 
 	// Plain HTTP mode (single port, no TLS).
-	return s.servePlain(ctx, dispatch)
+	return s.servePlain(ctx, handler)
 }
 
 // serveTLS starts an HTTPS server with TLS termination and an optional

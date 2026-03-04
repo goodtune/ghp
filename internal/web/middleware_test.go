@@ -65,6 +65,45 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 	}
 }
 
+func TestServerHeaderMiddleware(t *testing.T) {
+	tests := []struct {
+		name       string
+		version    string
+		wantHeader string
+	}{
+		{
+			name:       "dev version",
+			version:    "dev",
+			wantHeader: "GitHub Proxy dev",
+		},
+		{
+			name:       "release version",
+			version:    "1.2.3",
+			wantHeader: "GitHub Proxy 1.2.3",
+		},
+		{
+			name:       "empty version",
+			version:    "",
+			wantHeader: "GitHub Proxy ",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+
+			rr := httptest.NewRecorder()
+			ServerHeaderMiddleware(tc.version)(inner).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+			if got := rr.Header().Get("Server"); got != tc.wantHeader {
+				t.Errorf("Server header: got %q, want %q", got, tc.wantHeader)
+			}
+		})
+	}
+}
+
 // TestSecurityHeadersAllRoutes verifies that when SecurityHeadersMiddleware
 // wraps the top-level mux, all routes (web UI, API, auth, docs) receive
 // security headers alongside their own handler-specific headers.

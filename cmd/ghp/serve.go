@@ -41,7 +41,7 @@ be upgraded between restarts.`,
 
 			logger.Info("server_start", "msg", "starting ghp server")
 
-			srv := server.New(cfg, cfgPath, logger, logWriter, migrate)
+			srv := server.New(cfg, cfgPath, version, logger, logWriter, migrate)
 			return srv.Run(context.Background())
 		},
 	}

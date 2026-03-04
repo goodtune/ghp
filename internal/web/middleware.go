@@ -1,6 +1,9 @@
 package web
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+)
 
 // SecurityHeadersMiddleware sets standard security headers on all responses.
 func SecurityHeadersMiddleware(next http.Handler) http.Handler {
@@ -11,4 +14,16 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ServerHeaderMiddleware sets the Server response header on all responses,
+// identifying the software and version to clients.
+func ServerHeaderMiddleware(version string) func(http.Handler) http.Handler {
+	value := fmt.Sprintf("GitHub Proxy %s", version)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Server", value)
+			next.ServeHTTP(w, r)
+		})
+	}
 }
