@@ -707,15 +707,15 @@ func tlsTransport(ts *httptest.Server) http.RoundTripper {
 }
 
 // newAnonymousGitPassthrough creates an upstream TLS test server and a
-// ScopedPassthroughHandler configured with the supplied BlockConfig.
-func newAnonymousGitPassthrough(t *testing.T, blockCfg *config.Config) (http.Handler, *httptest.Server) {
+// ScopedPassthroughHandler configured with the supplied config.
+func newAnonymousGitPassthrough(t *testing.T, cfg *config.Config) (http.Handler, *httptest.Server) {
 	t.Helper()
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(upstream.Close)
 	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
-	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, slog.Default(), blockCfg)
+	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, slog.Default(), cfg)
 	return handler, upstream
 }
 
