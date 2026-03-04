@@ -67,9 +67,10 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 
 func TestServerHeaderMiddleware(t *testing.T) {
 	tests := []struct {
-		name       string
-		version    string
-		wantHeader string
+		name            string
+		version         string
+		wantHeader      string
+		upstreamHeaders map[string]string // headers set by inner handler (simulates upstream response)
 	}{
 		{
 			name:       "dev version",
@@ -86,11 +87,24 @@ func TestServerHeaderMiddleware(t *testing.T) {
 			version:    "",
 			wantHeader: "GitHub Proxy ",
 		},
+		{
+			// The reverse proxy copies GitHub's "server: github.com" via
+			// Header().Add(). The middleware must win: only one Server value.
+			name:            "overwrites upstream server header",
+			version:         "1.0.0",
+			wantHeader:      "GitHub Proxy 1.0.0",
+			upstreamHeaders: map[string]string{"Server": "github.com"},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				for k, v := range tc.upstreamHeaders {
+					// Simulate httputil.ReverseProxy which uses Add when copying
+					// upstream response headers, potentially producing duplicates.
+					w.Header().Add(k, v)
+				}
 				w.WriteHeader(http.StatusOK)
 			})
 
@@ -99,6 +113,10 @@ func TestServerHeaderMiddleware(t *testing.T) {
 
 			if got := rr.Header().Get("Server"); got != tc.wantHeader {
 				t.Errorf("Server header: got %q, want %q", got, tc.wantHeader)
+			}
+			// Ensure there is exactly one Server header value (no duplicates).
+			if vals := rr.Header().Values("Server"); len(vals) != 1 {
+				t.Errorf("Server header count: got %d values %v, want exactly 1", len(vals), vals)
 			}
 		})
 	}
