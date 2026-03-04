@@ -99,6 +99,128 @@ func TestLoadBlockFromEnv(t *testing.T) {
 	}
 }
 
+func TestLoadReleasesFromEnv(t *testing.T) {
+	t.Setenv("GHP_RELEASES_MODE", "block")
+	t.Setenv("GHP_RELEASES_REDIRECT", "https://releases.example.com/")
+	t.Setenv("GHP_RELEASES_ALLOW", "org/repo,goodtune")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Releases.Mode != "block" {
+		t.Errorf("Mode = %q, want %q", cfg.Releases.Mode, "block")
+	}
+	if cfg.Releases.RedirectTo != "https://releases.example.com/" {
+		t.Errorf("RedirectTo = %q, want %q", cfg.Releases.RedirectTo, "https://releases.example.com/")
+	}
+	want := []string{"org/repo", "goodtune"}
+	if len(cfg.Releases.Allow) != len(want) {
+		t.Fatalf("Allow = %v, want %v", cfg.Releases.Allow, want)
+	}
+	for i, w := range want {
+		if cfg.Releases.Allow[i] != w {
+			t.Errorf("Allow[%d] = %q, want %q", i, cfg.Releases.Allow[i], w)
+		}
+	}
+}
+
+func TestLoadReleasesRedirectToEnv(t *testing.T) {
+	t.Setenv("GHP_RELEASES_REDIRECT_TO", "https://alt.example.com/")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Releases.RedirectTo != "https://alt.example.com/" {
+		t.Errorf("RedirectTo = %q, want %q", cfg.Releases.RedirectTo, "https://alt.example.com/")
+	}
+}
+
+func TestLoadReleasesAllowIndexed(t *testing.T) {
+	t.Setenv("GHP_RELEASES_MODE", "block")
+	t.Setenv("GHP_RELEASES_ALLOW_COUNT", "2")
+	t.Setenv("GHP_RELEASES_ALLOW_0", "org/repo")
+	t.Setenv("GHP_RELEASES_ALLOW_1", "goodtune")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"org/repo", "goodtune"}
+	if len(cfg.Releases.Allow) != len(want) {
+		t.Fatalf("Allow = %v, want %v", cfg.Releases.Allow, want)
+	}
+	for i, w := range want {
+		if cfg.Releases.Allow[i] != w {
+			t.Errorf("Allow[%d] = %q, want %q", i, cfg.Releases.Allow[i], w)
+		}
+	}
+}
+
+func TestLoadReleasesAllowIndexedMissingEntry(t *testing.T) {
+	t.Setenv("GHP_RELEASES_ALLOW_COUNT", "2")
+	t.Setenv("GHP_RELEASES_ALLOW_0", "org/repo")
+	// GHP_RELEASES_ALLOW_1 is intentionally not set.
+
+	_, err := Load("")
+	if err == nil {
+		t.Fatal("expected error for missing indexed allow entry, got nil")
+	}
+}
+
+func TestLoadReleasesAllowIndexedBadCount(t *testing.T) {
+	t.Setenv("GHP_RELEASES_ALLOW_COUNT", "notanumber")
+
+	_, err := Load("")
+	if err == nil {
+		t.Fatal("expected error for invalid GHP_RELEASES_ALLOW_COUNT, got nil")
+	}
+}
+
+func TestLoadReleasesAllowIndexedOverridesYAML(t *testing.T) {
+	// Indexed entries should take precedence over the comma-separated env var.
+	t.Setenv("GHP_RELEASES_ALLOW", "yaml-org")
+	t.Setenv("GHP_RELEASES_ALLOW_COUNT", "1")
+	t.Setenv("GHP_RELEASES_ALLOW_0", "indexed-org")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Releases.Allow) != 1 || cfg.Releases.Allow[0] != "indexed-org" {
+		t.Errorf("Allow = %v, want [indexed-org]", cfg.Releases.Allow)
+	}
+}
+
+func TestIsReleaseAllowed(t *testing.T) {
+	tests := []struct {
+		name    string
+		allow   []string
+		org     string
+		repo    string
+		allowed bool
+	}{
+		{name: "org match", allow: []string{"goodtune"}, org: "goodtune", repo: "ghp", allowed: true},
+		{name: "org/repo match", allow: []string{"goodtune/ghp"}, org: "goodtune", repo: "ghp", allowed: true},
+		{name: "org no match", allow: []string{"other"}, org: "goodtune", repo: "ghp", allowed: false},
+		{name: "org/repo no match different repo", allow: []string{"goodtune/other"}, org: "goodtune", repo: "ghp", allowed: false},
+		{name: "case insensitive org", allow: []string{"GoodTune"}, org: "goodtune", repo: "ghp", allowed: true},
+		{name: "case insensitive org/repo", allow: []string{"GoodTune/GHP"}, org: "goodtune", repo: "ghp", allowed: true},
+		{name: "empty allow list", allow: nil, org: "goodtune", repo: "ghp", allowed: false},
+		{name: "multiple entries second matches", allow: []string{"other", "goodtune"}, org: "goodtune", repo: "ghp", allowed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{Releases: ReleasesConfig{Allow: tt.allow}}
+			got := cfg.IsReleaseAllowed(tt.org, tt.repo)
+			if got != tt.allowed {
+				t.Errorf("IsReleaseAllowed(%q, %q) = %v, want %v", tt.org, tt.repo, got, tt.allowed)
+			}
+		})
+	}
+}
+
 func TestIsTokenBlocked(t *testing.T) {
 	tests := []struct {
 		name    string

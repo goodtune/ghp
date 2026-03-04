@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ type Config struct {
 	Admins   []string       `koanf:"admins"`
 	Auth     AuthConfig     `koanf:"auth"`
 	Block    BlockConfig    `koanf:"block"`
+	Releases ReleasesConfig `koanf:"releases"`
 
 	EncryptionKey string `koanf:"encryption_key"`
 
@@ -48,6 +50,24 @@ type BlockConfig struct {
 	GHU bool `koanf:"ghu"` // GitHub user-to-server tokens (ghu_)
 	GHS bool `koanf:"ghs"` // GitHub server-to-server tokens (ghs_)
 	GHR bool `koanf:"ghr"` // Refresh tokens (ghr_)
+}
+
+// ReleasesConfig controls how github.com release download requests are handled.
+// When Mode is "block", requests to /{org}/{repo}/releases/download/** are
+// rejected with 403 unless the org or org/repo appears in Allow.
+// When Mode is "redirect", matched requests are redirected to RedirectTo + the
+// original path. Mode "" (the default) disables the feature entirely.
+type ReleasesConfig struct {
+	// Mode is the enforcement policy: "block" or "redirect".
+	// Empty string means the feature is disabled (default).
+	Mode string `koanf:"mode"`
+	// RedirectTo is the base URL prepended to the original path in redirect mode.
+	// Example: "https://releases.example.com/"
+	RedirectTo string `koanf:"redirect_to"`
+	// Allow is a list of org or org/repo entries that are exempt from the policy.
+	// Entries may be bare org names (e.g. "goodtune") or org/repo pairs
+	// (e.g. "goodtune/ghp"). Matching is case-insensitive.
+	Allow []string `koanf:"allow"`
 }
 
 type TLSConfig struct {
@@ -178,7 +198,7 @@ func Load(path string) (*Config, error) {
 		if i := strings.Index(s, "_"); i > 0 {
 			section, field := s[:i], s[i+1:]
 			switch section {
-			case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block":
+			case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases":
 				// Handle 3-level nesting for logging.file.*
 				if section == "logging" && strings.HasPrefix(field, "file_") {
 					return "logging.file." + field[len("file_"):]
@@ -200,6 +220,35 @@ func Load(path string) (*Config, error) {
 	// commas to support e.g. GHP_ADMINS="alice,bob".
 	cfg.Admins = splitCommaSlice(cfg.Admins)
 	cfg.Auth.AllowedRedirects = splitCommaSlice(cfg.Auth.AllowedRedirects)
+	cfg.Releases.Allow = splitCommaSlice(cfg.Releases.Allow)
+
+	// GHP_RELEASES_REDIRECT is a short alias for GHP_RELEASES_REDIRECT_TO.
+	// The natural env var GHP_RELEASES_REDIRECT_TO is also supported via koanf.
+	if cfg.Releases.RedirectTo == "" {
+		if v := os.Getenv("GHP_RELEASES_REDIRECT"); v != "" {
+			cfg.Releases.RedirectTo = v
+		}
+	}
+
+	// GHP_RELEASES_ALLOW_COUNT + GHP_RELEASES_ALLOW_N support indexed allow
+	// lists that cannot be expressed as comma-separated values. When set, the
+	// indexed entries replace any allow list loaded from YAML or other env vars.
+	if countStr := os.Getenv("GHP_RELEASES_ALLOW_COUNT"); countStr != "" {
+		count, err := strconv.Atoi(countStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid GHP_RELEASES_ALLOW_COUNT %q: %w", countStr, err)
+		}
+		entries := make([]string, 0, count)
+		for i := 0; i < count; i++ {
+			key := fmt.Sprintf("GHP_RELEASES_ALLOW_%d", i)
+			v := os.Getenv(key)
+			if v == "" {
+				return nil, fmt.Errorf("%s not set (GHP_RELEASES_ALLOW_COUNT=%d)", key, count)
+			}
+			entries = append(entries, v)
+		}
+		cfg.Releases.Allow = entries
+	}
 
 	// Convenience env vars for the common single-certificate case.
 	// GHP_TLS_CERT_FILE / GHP_TLS_KEY_FILE populate Certificates[0]
@@ -232,6 +281,7 @@ func (c *Config) ReloadFrom(path string) error {
 	c.Metrics = fresh.Metrics
 	c.Auth = fresh.Auth
 	c.Block = fresh.Block
+	c.Releases = fresh.Releases
 	return nil
 }
 
@@ -275,6 +325,20 @@ func (c *Config) IsTokenBlocked(token string) bool {
 		return c.Block.GHS
 	case strings.HasPrefix(token, "ghr_"):
 		return c.Block.GHR
+	}
+	return false
+}
+
+// IsReleaseAllowed returns true when the given org or org/repo combination
+// appears in the releases allow list, meaning it is exempt from the releases
+// policy (block or redirect). Matching is case-insensitive. An org-only entry
+// (e.g. "goodtune") permits any repository under that org.
+func (c *Config) IsReleaseAllowed(org, repo string) bool {
+	orgRepo := org + "/" + repo
+	for _, entry := range c.Releases.Allow {
+		if strings.EqualFold(entry, org) || strings.EqualFold(entry, orgRepo) {
+			return true
+		}
 	}
 	return false
 }
