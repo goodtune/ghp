@@ -106,6 +106,12 @@ func TestReleasesHandler(t *testing.T) {
 			wantStatus: http.StatusInternalServerError,
 		},
 		{
+			name:       "block mode - double slash does not bypass policy",
+			mode:       "block",
+			path:       "//goodtune/ghp/releases/download/0.7.0/ghp_linux.tar.gz",
+			wantStatus: http.StatusForbidden,
+		},
+		{
 			name:       "unknown mode - passes through with warning",
 			mode:       "unknown",
 			path:       "/goodtune/ghp/releases/download/0.7.0/ghp_linux.tar.gz",

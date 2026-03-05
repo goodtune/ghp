@@ -11,7 +11,7 @@ import (
 
 // releasesDownloadRe matches github.com release download paths of the form
 // /{org}/{repo}/releases/download/{...} and captures org and repo.
-var releasesDownloadRe = regexp.MustCompile(`^/([^/]+)/([^/]+)/releases/download/`)
+var releasesDownloadRe = regexp.MustCompile(`^/+([^/]+)/([^/]+)/releases/download/`)
 
 // NewReleasesHandler wraps inner with a policy handler for github.com release
 // download requests. Paths matching /{org}/{repo}/releases/download/** are
