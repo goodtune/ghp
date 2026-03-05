@@ -12,7 +12,10 @@ allowedTools:
   - Bash(git commit *)
   - Bash(git push *)
   - Bash(git rev-parse *)
+  - Bash(git status *)
   - Bash(cat *)
+  - Bash(echo *)
+  - Bash(printf *)
 ---
 
 # Responding to PR Reviews
@@ -83,14 +86,22 @@ digraph pr_review {
 
 ### 1. Fetch Unresolved Review Comments
 
-Use GraphQL to get only unresolved threads from the triggering reviewer:
+**Login normalization:** The reviewer login passed to you (e.g. from `github.event.review.user.login`) may include a `[bot]` suffix (e.g. `copilot-pull-request-reviewer[bot]`). GitHub's GraphQL API drops the `[bot]` suffix in `author.login`, so strip it before filtering:
+- GraphQL login: strip `[bot]` suffix → `copilot-pull-request-reviewer`
+- REST re-review login: use the original login with `[bot]` suffix
+
+**When reviewer is `all`:** Fetch all unresolved threads regardless of author — omit the `select(.comments.nodes[0].author.login == ...)` filter.
+
+Use GraphQL to get only unresolved threads from the triggering reviewer. Paginate using `pageInfo` to ensure all threads are fetched:
 
 ```bash
+# First page
 gh api graphql -f query='
 query {
   repository(owner: "OWNER", name: "REPO") {
     pullRequest(number: PR_NUMBER) {
-      reviewThreads(first: 50) {
+      reviewThreads(first: 100) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           id
           isResolved
@@ -112,12 +123,12 @@ query {
   }
 }' --jq '.data.repository.pullRequest.reviewThreads.nodes[]
   | select(.isResolved == false)
-  | select(.comments.nodes[0].author.login == "REVIEWER_LOGIN")'
+  | select(.comments.nodes[0].author.login == "REVIEWER_GRAPHQL_LOGIN")'
+
+# If pageInfo.hasNextPage is true, repeat with after: "END_CURSOR" until exhausted
 ```
 
 If the result is empty, this is a clean review -- skip to step 8 (status check).
-
-**Note:** Copilot's comment author login is `copilot-pull-request-reviewer` (no `[bot]` suffix in GraphQL).
 
 ### 2. Set Commit Status to Pending
 
@@ -190,25 +201,27 @@ mutation {
 
 ### 7. Request Re-review
 
-After all threads are resolved, request a fresh review:
+After all threads are resolved, request a fresh review **only if a specific reviewer login was provided** (not `all`):
 
 ```bash
 gh api repos/OWNER/REPO/pulls/PR_NUMBER/requested_reviewers \
-  -X POST -f "reviewers[]=REVIEWER_LOGIN"
+  -X POST -f "reviewers[]=REVIEWER_REST_LOGIN"
 ```
 
-**Note:** For Copilot, the re-review request login is `copilot-pull-request-reviewer[bot]` (with `[bot]` suffix -- different from the GraphQL comment author).
+**Note:** Use the original login (with `[bot]` suffix if present) for REST re-review requests — e.g. `copilot-pull-request-reviewer[bot]`. When reviewer is `all`, skip re-review (no single reviewer to target).
 
 ### 8. Check All Reviewers and Set Commit Status
 
-Check for unresolved threads from ANY reviewer (not just the triggering one):
+Check for unresolved threads from ANY reviewer (not just the triggering one). Paginate to ensure an accurate count:
 
 ```bash
+# Repeat with after: "END_CURSOR" if hasNextPage is true, accumulating the total
 gh api graphql -f query='
 query {
   repository(owner: "OWNER", name: "REPO") {
     pullRequest(number: PR_NUMBER) {
       reviewThreads(first: 100) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           isResolved
         }
@@ -226,7 +239,13 @@ gh api repos/OWNER/REPO/statuses/NEW_HEAD_SHA \
   -f description="All review feedback addressed"
 ```
 
-If count > 0, the status remains pending (other reviewers still have unresolved threads).
+If count > 0, explicitly set status to pending (other reviewers still have unresolved threads):
+```bash
+gh api repos/OWNER/REPO/statuses/NEW_HEAD_SHA \
+  -f state=pending \
+  -f context=review-response \
+  -f description="Unresolved review threads remain"
+```
 
 ### 9. Write Job Summary
 
