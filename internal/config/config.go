@@ -242,6 +242,9 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid GHP_RELEASES_ALLOW_COUNT %q: %w", countStr, err)
 		}
+		if count < 0 {
+			return nil, fmt.Errorf("invalid GHP_RELEASES_ALLOW_COUNT %q: must be non-negative", countStr)
+		}
 		entries := make([]string, 0, count)
 		for i := 0; i < count; i++ {
 			key := fmt.Sprintf("GHP_RELEASES_ALLOW_%d", i)

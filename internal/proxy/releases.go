@@ -58,10 +58,7 @@ func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Log
 				writeError(w, http.StatusInternalServerError, "Release redirect is misconfigured")
 				return
 			}
-			target := redirectTo + r.URL.Path
-			if r.URL.RawQuery != "" {
-				target += "?" + r.URL.RawQuery
-			}
+			target := redirectTo + r.URL.RequestURI()
 			http.Redirect(w, r, target, http.StatusFound)
 		default:
 			if logger != nil {

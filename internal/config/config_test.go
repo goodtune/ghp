@@ -179,6 +179,15 @@ func TestLoadReleasesAllowIndexedBadCount(t *testing.T) {
 	}
 }
 
+func TestLoadReleasesAllowIndexedNegativeCount(t *testing.T) {
+	t.Setenv("GHP_RELEASES_ALLOW_COUNT", "-1")
+
+	_, err := Load("")
+	if err == nil {
+		t.Fatal("expected error for negative GHP_RELEASES_ALLOW_COUNT, got nil")
+	}
+}
+
 func TestLoadReleasesAllowIndexedOverridesEnv(t *testing.T) {
 	// Indexed entries should take precedence over the comma-separated env var.
 	t.Setenv("GHP_RELEASES_ALLOW", "yaml-org")
