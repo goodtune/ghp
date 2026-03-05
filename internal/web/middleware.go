@@ -22,10 +22,17 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 // exactly one Server value even when GitHub's own "server: github.com" header
 // is copied from the upstream response via Add.
 func ServerHeaderMiddleware(version string) func(http.Handler) http.Handler {
-	value := fmt.Sprintf("GitHub Proxy %s", version)
+	value := "GitHub Proxy"
+	if version != "" {
+		value = fmt.Sprintf("GitHub Proxy %s", version)
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(&serverHeaderWriter{ResponseWriter: w, value: value}, r)
+			shw := &serverHeaderWriter{ResponseWriter: w, value: value}
+			next.ServeHTTP(shw, r)
+			if !shw.done {
+				shw.setOnce()
+			}
 		})
 	}
 }
@@ -54,6 +61,15 @@ func (w *serverHeaderWriter) setOnce() {
 	if !w.done {
 		w.Header().Set("Server", w.value)
 		w.done = true
+	}
+}
+
+// Flush implements http.Flusher so that streaming/reverse-proxy flush
+// behaviour is preserved through the wrapper.
+func (w *serverHeaderWriter) Flush() {
+	w.setOnce()
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
 	}
 }
 

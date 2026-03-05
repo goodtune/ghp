@@ -85,7 +85,7 @@ func TestServerHeaderMiddleware(t *testing.T) {
 		{
 			name:       "empty version",
 			version:    "",
-			wantHeader: "GitHub Proxy ",
+			wantHeader: "GitHub Proxy",
 		},
 		{
 			// The reverse proxy copies GitHub's "server: github.com" via
@@ -119,6 +119,35 @@ func TestServerHeaderMiddleware(t *testing.T) {
 				t.Errorf("Server header count: got %d values %v, want exactly 1", len(vals), vals)
 			}
 		})
+	}
+}
+
+func TestServerHeaderMiddlewareEmptyResponse(t *testing.T) {
+	// A handler that returns without calling Write or WriteHeader should
+	// still have the Server header set (implicit 200).
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// intentionally empty — no Write, no WriteHeader
+	})
+	rr := httptest.NewRecorder()
+	ServerHeaderMiddleware("1.0.0")(inner).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+	if got := rr.Header().Get("Server"); got != "GitHub Proxy 1.0.0" {
+		t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy 1.0.0")
+	}
+}
+
+func TestServerHeaderMiddlewareFlusher(t *testing.T) {
+	// Verify that Flush() is delegated through the wrapper and sets the header.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	})
+	rr := httptest.NewRecorder()
+	ServerHeaderMiddleware("1.0.0")(inner).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+	if got := rr.Header().Get("Server"); got != "GitHub Proxy 1.0.0" {
+		t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy 1.0.0")
 	}
 }
 
