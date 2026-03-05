@@ -37,6 +37,15 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Resolve PR head SHA
+        id: pr
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha=$(gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }} --jq '.head.sha')
+          echo "head_sha=$sha" >> "$GITHUB_OUTPUT"
+
       - name: Respond to review
         uses: anthropics/claude-code-action@v1
         with:
@@ -51,5 +60,5 @@ jobs:
             - Repository: ${{ github.repository }}
             - PR number: ${{ github.event.pull_request.number || inputs.pr_number }}
             - Reviewer: ${{ github.event.review.user.login || inputs.reviewer || 'all' }}
-            - HEAD SHA: ${{ github.event.pull_request.head.sha || '' }}
+            - HEAD SHA: ${{ github.event.pull_request.head.sha || steps.pr.outputs.head_sha }}
             - Review state: ${{ github.event.review.state || 'unknown' }}

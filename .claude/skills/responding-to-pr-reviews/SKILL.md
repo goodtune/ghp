@@ -32,7 +32,7 @@ When invoked from CI, these are provided in the prompt:
 - **Repository**: `OWNER/REPO`
 - **PR number**: integer
 - **Reviewer**: GitHub login of the reviewer who submitted
-- **HEAD SHA**: current HEAD of the PR branch
+- **HEAD SHA**: current HEAD of the PR branch (if empty, resolve it via `gh api repos/OWNER/REPO/pulls/PR_NUMBER --jq '.head.sha'`)
 - **Review state**: `approved`, `changes_requested`, or `commented`
 
 ## Workflow
@@ -76,7 +76,7 @@ digraph pr_review {
 | Step | Command |
 |------|---------|
 | Fetch unresolved threads | `gh api graphql` with `reviewThreads` query filtered by `isResolved: false` and reviewer login |
-| Reply to comment | `gh api repos/OWNER/REPO/pulls/NUM/comments/ID/replies -f body="..."` |
+| Reply to comment | `gh api repos/OWNER/REPO/pulls/NUM/comments/DATABASE_ID/replies -F body=@file` (use `databaseId`, not GraphQL `id`) |
 | Resolve thread | `gh api graphql` with `resolveReviewThread` mutation |
 | Request re-review | `gh api repos/OWNER/REPO/pulls/NUM/requested_reviewers -X POST -f "reviewers[]=REVIEWER"` |
 | Set commit status | `gh api repos/OWNER/REPO/statuses/SHA -f state=STATE -f context=review-response -f description="..."` |
@@ -172,16 +172,23 @@ git rev-parse HEAD  # Get full SHA for linking in replies
 
 ### 6. Reply to Comments and Resolve Threads
 
+**Important ID distinction:** The REST reply endpoint requires the numeric `databaseId` from the GraphQL response, NOT the GraphQL node `id`. Use `databaseId` for replies, `id` (thread ID) for resolving.
+
+**Shell safety:** Never embed untrusted text (review comments, descriptions) directly in shell double-quoted strings — use `-F` with a file or heredoc to avoid shell injection:
+
 **For implemented fixes:**
 ```bash
-gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_ID/replies \
-  -f body="Fixed in COMMIT_SHA. <description of fix>"
+# Write reply body to a temp file to avoid shell interpolation
+echo "Fixed in COMMIT_SHA. Description of what was fixed." > /tmp/reply.txt
+gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/DATABASE_ID/replies \
+  -F body=@/tmp/reply.txt
 ```
 
 **For disagreements:**
 ```bash
-gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_ID/replies \
-  -f body="I considered this but prefer the current approach because <reason>."
+echo "I considered this but prefer the current approach because ..." > /tmp/reply.txt
+gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/DATABASE_ID/replies \
+  -F body=@/tmp/reply.txt
 ```
 
 **Then resolve each thread** using thread IDs from step 1:
@@ -286,3 +293,5 @@ echo "Clean review -- no unresolved comments. Status: **success**" >> "$GITHUB_S
 | Vague disagreement responses | Explain specifically why the current approach is preferred |
 | Using `git add -A` | Be precise -- `git add <specific files>` only |
 | Setting status on old SHA after pushing | Use the NEW HEAD SHA from `git rev-parse HEAD` after push |
+| Using GraphQL `id` for REST reply API | REST comment replies need `databaseId` (numeric); GraphQL `id` is for mutations only |
+| Embedding untrusted text in shell strings | Write reply bodies to temp files and use `-F body=@file` to avoid shell injection |
