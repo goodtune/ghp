@@ -87,6 +87,29 @@ counter, and the feature's on/off state is exported as the
     is needed in future, a path-pattern heuristic (e.g. matching
     `/info/refs?service=git-upload-pack`) could supplement the header check.
 
+### Release Download Controls
+
+GitHub release assets (pre-built binaries, installers, archives) are fetched
+via simple HTTPS GETs against `github.com` — outside the API scope model that
+ghp enforces on other traffic. The release controls feature intercepts
+requests matching `/{owner}/{repo}/releases/download/**` and applies a
+configurable policy before they reach GitHub.
+
+Two modes are available: **block** returns `403 Forbidden` immediately, and
+**redirect** issues a `302` to an alternative download server (e.g. an
+internal mirror of approved assets). Both modes support an allow list of
+organisations or specific repositories that are exempt from the policy.
+
+```yaml
+releases:
+  mode: block
+  allow:
+    - "myorg"
+```
+
+See [Release Download Controls](release-controls.md) for a detailed write-up
+of the feature, configuration options, and trade-offs.
+
 ### Copilot Passthrough
 
 Traffic to `*.githubcopilot.com` is forwarded transparently without token interception or
