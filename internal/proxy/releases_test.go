@@ -99,6 +99,13 @@ func TestReleasesHandler(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
+			name:       "redirect mode - relative redirect_to returns 500",
+			mode:       "redirect",
+			redirectTo: "/mirror",
+			path:       "/goodtune/ghp/releases/download/0.7.0/ghp_linux.tar.gz",
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
 			name:       "redirect mode - empty redirect_to returns 500",
 			mode:       "redirect",
 			redirectTo: "",

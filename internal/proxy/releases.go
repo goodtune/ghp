@@ -3,6 +3,7 @@ package proxy
 import (
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -51,9 +52,10 @@ func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Log
 			writeError(w, http.StatusForbidden, "Release downloads are not permitted")
 		case "redirect":
 			redirectTo := strings.TrimRight(cfg.Releases.RedirectTo, "/")
-			if redirectTo == "" {
+			u, err := url.Parse(redirectTo)
+			if redirectTo == "" || err != nil || !u.IsAbs() {
 				if logger != nil {
-					logger.Error("releases redirect mode enabled but redirect_to is empty")
+					logger.Error("releases redirect_to must be an absolute URL", "redirect_to", cfg.Releases.RedirectTo)
 				}
 				writeError(w, http.StatusInternalServerError, "Release redirect is misconfigured")
 				return
