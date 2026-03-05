@@ -245,9 +245,9 @@ func Load(path string) (*Config, error) {
 		entries := make([]string, 0, count)
 		for i := 0; i < count; i++ {
 			key := fmt.Sprintf("GHP_RELEASES_ALLOW_%d", i)
-			v := os.Getenv(key)
+			v := strings.TrimSpace(os.Getenv(key))
 			if v == "" {
-				return nil, fmt.Errorf("%s not set (GHP_RELEASES_ALLOW_COUNT=%d)", key, count)
+				return nil, fmt.Errorf("%s not set or empty (GHP_RELEASES_ALLOW_COUNT=%d)", key, count)
 			}
 			entries = append(entries, v)
 		}

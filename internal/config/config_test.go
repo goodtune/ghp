@@ -179,7 +179,7 @@ func TestLoadReleasesAllowIndexedBadCount(t *testing.T) {
 	}
 }
 
-func TestLoadReleasesAllowIndexedOverridesYAML(t *testing.T) {
+func TestLoadReleasesAllowIndexedOverridesEnv(t *testing.T) {
 	// Indexed entries should take precedence over the comma-separated env var.
 	t.Setenv("GHP_RELEASES_ALLOW", "yaml-org")
 	t.Setenv("GHP_RELEASES_ALLOW_COUNT", "1")

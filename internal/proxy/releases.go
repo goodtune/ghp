@@ -51,6 +51,13 @@ func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Log
 			writeError(w, http.StatusForbidden, "Release downloads are not permitted")
 		case "redirect":
 			redirectTo := strings.TrimRight(cfg.Releases.RedirectTo, "/")
+			if redirectTo == "" {
+				if logger != nil {
+					logger.Error("releases redirect mode enabled but redirect_to is empty")
+				}
+				writeError(w, http.StatusInternalServerError, "Release redirect is misconfigured")
+				return
+			}
 			target := redirectTo + r.URL.Path
 			if r.URL.RawQuery != "" {
 				target += "?" + r.URL.RawQuery

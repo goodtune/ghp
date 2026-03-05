@@ -20,7 +20,7 @@ func TestReleasesHandler(t *testing.T) {
 		allow      []string
 		path       string
 		wantStatus int
-		wantLoc    string // expected Location header prefix (for redirects)
+		wantLoc    string // expected Location header (for redirects)
 	}{
 		{
 			name:       "disabled - no mode set",
@@ -76,7 +76,7 @@ func TestReleasesHandler(t *testing.T) {
 			wantLoc:    "https://releases.example.com/goodtune/ghp/releases/download/0.7.0/ghp_linux.tar.gz",
 		},
 		{
-			name:       "redirect mode - trailing slash stripped from redirect base",
+			name:       "redirect mode - no trailing slash on redirect base",
 			mode:       "redirect",
 			redirectTo: "https://releases.example.com",
 			path:       "/goodtune/ghp/releases/download/0.7.0/ghp_linux.tar.gz",
@@ -97,6 +97,13 @@ func TestReleasesHandler(t *testing.T) {
 			redirectTo: "https://releases.example.com/",
 			path:       "/goodtune/ghp/archive/main.zip",
 			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "redirect mode - empty redirect_to returns 500",
+			mode:       "redirect",
+			redirectTo: "",
+			path:       "/goodtune/ghp/releases/download/0.7.0/ghp_linux.tar.gz",
+			wantStatus: http.StatusInternalServerError,
 		},
 		{
 			name:       "unknown mode - passes through with warning",
