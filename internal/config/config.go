@@ -37,19 +37,23 @@ type Config struct {
 }
 
 // BlockConfig defines which GitHub token prefixes are blocked from
-// passing through the proxy. Each field corresponds to one of the
-// five token types minted by GitHub. When a field is true, any request
-// bearing a token of that type is rejected with 403.
+// passing through the proxy, and enables other opt-in blocking features.
+// Each GH* field corresponds to one of the five token types minted by
+// GitHub. When a field is true, any request bearing a token of that type
+// is rejected with 403. AnonymousGit enables short-circuiting of anonymous
+// git smart HTTP requests (requests bearing a Git-Protocol header and no
+// Authorization header) before they egress to GitHub.
 //
 // Blocking ghp's own token types (ghx_, gha_) is not valid and will
 // produce a warning at startup — those tokens are managed internally
 // and never reach the passthrough path.
 type BlockConfig struct {
-	GHP bool `koanf:"ghp"` // GitHub personal access tokens (ghp_)
-	GHO bool `koanf:"gho"` // OAuth access tokens (gho_)
-	GHU bool `koanf:"ghu"` // GitHub user-to-server tokens (ghu_)
-	GHS bool `koanf:"ghs"` // GitHub server-to-server tokens (ghs_)
-	GHR bool `koanf:"ghr"` // Refresh tokens (ghr_)
+	GHP          bool `koanf:"ghp"`           // GitHub personal access tokens (ghp_)
+	GHO          bool `koanf:"gho"`           // OAuth access tokens (gho_)
+	GHU          bool `koanf:"ghu"`           // GitHub user-to-server tokens (ghu_)
+	GHS          bool `koanf:"ghs"`           // GitHub server-to-server tokens (ghs_)
+	GHR          bool `koanf:"ghr"`           // Refresh tokens (ghr_)
+	AnonymousGit bool `koanf:"anonymous_git"` // Block anonymous git smart HTTP requests (identified by Git-Protocol header + no auth)
 }
 
 // ReleasesConfig controls how github.com release download requests are handled.

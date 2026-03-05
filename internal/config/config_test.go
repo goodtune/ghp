@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 )
 
@@ -248,5 +249,37 @@ func TestIsTokenBlocked(t *testing.T) {
 				t.Errorf("IsTokenBlocked(%q) = %v, want %v", tt.token, got, tt.blocked)
 			}
 		})
+	}
+}
+
+func TestLoadBlockAnonymousGitFromEnv(t *testing.T) {
+	t.Setenv("GHP_BLOCK_ANONYMOUS_GIT", "true")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Block.AnonymousGit {
+		t.Error("expected Block.AnonymousGit to be true")
+	}
+}
+
+func TestLoadBlockAnonymousGitFromYAML(t *testing.T) {
+	f, err := os.CreateTemp("", "ghp-config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString("block:\n  anonymous_git: true\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Block.AnonymousGit {
+		t.Error("expected Block.AnonymousGit to be true when set in YAML")
 	}
 }

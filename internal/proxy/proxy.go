@@ -53,6 +53,15 @@ func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc
 		logger:           logger,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
+			// Do not follow redirects. GitHub endpoints (e.g. Actions
+			// job logs) return 302 redirects to external blob storage.
+			// Following these at the proxy level causes 502 errors when
+			// the redirect target is unreachable from the proxy's
+			// network. Instead, pass the redirect through so the client
+			// can follow it directly.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 }
@@ -90,6 +99,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if clientToken == "" {
 		// Check the token type border policy before forwarding.
 		borderStart := time.Now()
+		// Anonymous git blocking: short-circuit requests that carry a Git-Protocol
+		// header but no Authorization header before they egress to GitHub.
+		if h.cfg.Block.AnonymousGit && rawCredential == "" && r.Header.Get("Git-Protocol") != "" {
+			metrics.BlockAnonymousGitTotal.Inc()
+			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
+			w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
+			writeError(w, http.StatusUnauthorized, "Anonymous git access is not permitted")
+			return
+		}
 		if h.cfg.IsTokenBlocked(rawCredential) {
 			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
 			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
@@ -589,11 +608,14 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 
 	// Copy other response headers. X-OAuth-Scopes is included here so that
 	// open-scoped tokens pass through GitHub's real scope information; for
-	// scoped tokens the override applied below replaces this value.
+	// scoped tokens the override applied below replaces this value. Location
+	// is included so that upstream redirects (e.g. Actions job log downloads)
+	// are passed through to the client.
 	for key, vals := range resp.Header {
-		if strings.HasPrefix(key, "X-GitHub") || key == "Link" || key == "Content-Type" || key == "X-Oauth-Scopes" {
+		canonicalKey := http.CanonicalHeaderKey(key)
+		if strings.HasPrefix(canonicalKey, "X-Github") || canonicalKey == "Link" || canonicalKey == "Content-Type" || canonicalKey == "X-Oauth-Scopes" || canonicalKey == "Location" {
 			for _, v := range vals {
-				w.Header().Add(key, v)
+				w.Header().Add(canonicalKey, v)
 			}
 		}
 	}
