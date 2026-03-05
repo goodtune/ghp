@@ -17,10 +17,12 @@ import (
 	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
-// captureTransport records the last request sent through it and responds with 200.
+// captureTransport records the last request sent through it and responds with
+// the configured statusCode (defaulting to 200 when unset).
 type captureTransport struct {
 	lastReq         *http.Request
 	responseHeaders http.Header // optional headers to include in the response
+	statusCode      int         // 0 defaults to 200
 }
 
 func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -31,7 +33,11 @@ func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			rec.Header().Add(k, v)
 		}
 	}
-	rec.WriteHeader(http.StatusOK)
+	code := t.statusCode
+	if code == 0 {
+		code = http.StatusOK
+	}
+	rec.WriteHeader(code)
 	return rec.Result(), nil
 }
 
@@ -1143,5 +1149,88 @@ func TestServeHTTP_AnonymousGit_NoGitProtocolHeader_NotBlocked(t *testing.T) {
 	}
 	if ct.lastReq == nil {
 		t.Fatal("non-git anonymous request should have been forwarded upstream")
+	}
+}
+
+func TestForwardRequest_UpstreamRedirect_PassedThrough(t *testing.T) {
+	// GitHub's Actions job logs endpoint (and others) return a 302 redirect
+	// to external blob storage. The proxy must pass this redirect through to
+	// the client rather than following it, which would cause a 502 when the
+	// redirect target is unreachable from the proxy's network.
+	ct := &captureTransport{
+		statusCode: http.StatusFound,
+		responseHeaders: http.Header{
+			"Location": []string{"https://productionresultssa1.blob.core.windows.net/actions-results/fake-log-url?sig=abc123"},
+		},
+	}
+	h := &Handler{
+		cfg:    &config.Config{},
+		logger: slog.Default(),
+		client: &http.Client{
+			Transport: ct,
+			Timeout:   5 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://localhost/repos/org/repo/actions/jobs/65822562466/logs", nil)
+
+	status := h.forwardRequest(rr, req, "/repos/org/repo/actions/jobs/65822562466/logs", "token ghp_faketoken")
+
+	if status != http.StatusFound {
+		t.Fatalf("expected 302, got %d", status)
+	}
+	if rr.Code != http.StatusFound {
+		t.Fatalf("expected response status 302, got %d", rr.Code)
+	}
+
+	loc := rr.Header().Get("Location")
+	if loc == "" {
+		t.Fatal("expected Location header to be passed through in redirect response")
+	}
+	if !strings.Contains(loc, "productionresultssa1.blob.core.windows.net") {
+		t.Errorf("expected Location to point to blob storage, got %q", loc)
+	}
+}
+
+func TestServeHTTP_Passthrough_UpstreamRedirect_PassedThrough(t *testing.T) {
+	// Non-ghp_ tokens also must not follow upstream redirects. Verify the
+	// passthrough path returns the 302 to the client untouched.
+	ct := &captureTransport{
+		statusCode: http.StatusFound,
+		responseHeaders: http.Header{
+			"Location": []string{"https://productionresultssa1.blob.core.windows.net/actions-results/fake-log-url?sig=abc123"},
+		},
+	}
+	h := &Handler{
+		cfg:    &config.Config{},
+		logger: slog.Default(),
+		client: &http.Client{
+			Transport: ct,
+			Timeout:   5 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo/actions/jobs/65822562466/logs", nil)
+	req.Header.Set("Authorization", "Bearer gho_realtoken123")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+	loc := rr.Header().Get("Location")
+	if loc == "" {
+		t.Fatal("expected Location header to be passed through in redirect response")
+	}
+	if !strings.Contains(loc, "productionresultssa1.blob.core.windows.net") {
+		t.Errorf("expected Location to point to blob storage, got %q", loc)
 	}
 }
