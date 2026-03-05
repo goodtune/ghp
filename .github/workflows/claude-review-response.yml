@@ -43,6 +43,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: '--dangerously-skip-permissions'
+          allowed_bots: '*'
           prompt: |
             Use the /responding-to-pr-reviews skill to address review feedback.
 
