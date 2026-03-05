@@ -1165,7 +1165,13 @@ func TestForwardRequest_UpstreamRedirect_PassedThrough(t *testing.T) {
 	h := &Handler{
 		cfg:    &config.Config{},
 		logger: slog.Default(),
-		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+		client: &http.Client{
+			Transport: ct,
+			Timeout:   5 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 
 	rr := httptest.NewRecorder()
@@ -1201,7 +1207,13 @@ func TestServeHTTP_Passthrough_UpstreamRedirect_PassedThrough(t *testing.T) {
 	h := &Handler{
 		cfg:    &config.Config{},
 		logger: slog.Default(),
-		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+		client: &http.Client{
+			Transport: ct,
+			Timeout:   5 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 
 	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo/actions/jobs/65822562466/logs", nil)
