@@ -1,0 +1,63 @@
+name: Review Response
+
+on:
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to respond to'
+        required: true
+        type: number
+      reviewer:
+        description: 'Reviewer login (blank = all reviewers)'
+        required: false
+        type: string
+
+concurrency:
+  group: review-response-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  respond:
+    # Don't respond to our own reviews (only relevant for pull_request_review trigger)
+    if: github.event_name == 'workflow_dispatch' || github.event.review.user.login != 'claude[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      statuses: write
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve PR head SHA
+        id: pr
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha=$(gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }} --jq '.head.sha')
+          echo "head_sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Respond to review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--dangerously-skip-permissions'
+          allowed_bots: '*'
+          prompt: |
+            Use the /responding-to-pr-reviews skill to address review feedback.
+
+            Context:
+            - Repository: ${{ github.repository }}
+            - PR number: ${{ github.event.pull_request.number || inputs.pr_number }}
+            - Reviewer: ${{ github.event.review.user.login || inputs.reviewer || 'all' }}
+            - HEAD SHA: ${{ github.event.pull_request.head.sha || steps.pr.outputs.head_sha }}
+            - Review state: ${{ github.event.review.state || 'unknown' }}
