@@ -612,9 +612,10 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 	// is included so that upstream redirects (e.g. Actions job log downloads)
 	// are passed through to the client.
 	for key, vals := range resp.Header {
-		if strings.HasPrefix(key, "X-GitHub") || key == "Link" || key == "Content-Type" || key == "X-Oauth-Scopes" || key == "Location" {
+		canonicalKey := http.CanonicalHeaderKey(key)
+		if strings.HasPrefix(canonicalKey, "X-Github") || canonicalKey == "Link" || canonicalKey == "Content-Type" || canonicalKey == "X-Oauth-Scopes" || canonicalKey == "Location" {
 			for _, v := range vals {
-				w.Header().Add(key, v)
+				w.Header().Add(canonicalKey, v)
 			}
 		}
 	}

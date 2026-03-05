@@ -17,7 +17,8 @@ import (
 	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
-// captureTransport records the last request sent through it and responds with 200.
+// captureTransport records the last request sent through it and responds with
+// the configured statusCode (defaulting to 200 when unset).
 type captureTransport struct {
 	lastReq         *http.Request
 	responseHeaders http.Header // optional headers to include in the response
