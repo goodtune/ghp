@@ -96,7 +96,7 @@ query {
           isResolved
           path
           line
-          comments(first: 1) {
+          comments(first: 10) {
             nodes {
               id
               databaseId
