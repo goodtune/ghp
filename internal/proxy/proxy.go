@@ -53,6 +53,15 @@ func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc
 		logger:           logger,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
+			// Do not follow redirects. GitHub endpoints (e.g. Actions
+			// job logs) return 302 redirects to external blob storage.
+			// Following these at the proxy level causes 502 errors when
+			// the redirect target is unreachable from the proxy's
+			// network. Instead, pass the redirect through so the client
+			// can follow it directly.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 }
@@ -599,9 +608,11 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 
 	// Copy other response headers. X-OAuth-Scopes is included here so that
 	// open-scoped tokens pass through GitHub's real scope information; for
-	// scoped tokens the override applied below replaces this value.
+	// scoped tokens the override applied below replaces this value. Location
+	// is included so that upstream redirects (e.g. Actions job log downloads)
+	// are passed through to the client.
 	for key, vals := range resp.Header {
-		if strings.HasPrefix(key, "X-GitHub") || key == "Link" || key == "Content-Type" || key == "X-Oauth-Scopes" {
+		if strings.HasPrefix(key, "X-GitHub") || key == "Link" || key == "Content-Type" || key == "X-Oauth-Scopes" || key == "Location" {
 			for _, v := range vals {
 				w.Header().Add(key, v)
 			}
