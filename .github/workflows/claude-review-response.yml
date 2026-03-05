@@ -43,7 +43,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           show_full_output: true
-          allowed_tools: 'Bash(gh api:*),Bash(gh pr comment:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git rev-parse:*),Bash(cat:*),Read,Edit,Write,Glob,Grep'
+          claude_args: '--allowedTools "Bash(gh api:*)" "Bash(gh pr comment:*)" "Bash(git add:*)" "Bash(git commit:*)" "Bash(git push:*)" "Bash(git rev-parse:*)" "Bash(cat:*)" "Read" "Edit" "Write" "Glob" "Grep"'
           prompt: |
             Use the /responding-to-pr-reviews skill to address review feedback.
 
