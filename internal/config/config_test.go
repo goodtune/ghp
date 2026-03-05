@@ -102,7 +102,7 @@ func TestLoadBlockFromEnv(t *testing.T) {
 
 func TestLoadReleasesFromEnv(t *testing.T) {
 	t.Setenv("GHP_RELEASES_MODE", "block")
-	t.Setenv("GHP_RELEASES_REDIRECT", "https://releases.example.com/")
+	t.Setenv("GHP_RELEASES_REDIRECT_TO", "https://releases.example.com/")
 	t.Setenv("GHP_RELEASES_ALLOW", "org/repo,goodtune")
 
 	cfg, err := Load("")

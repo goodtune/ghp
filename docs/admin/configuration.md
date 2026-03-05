@@ -35,7 +35,6 @@ the `GHP_` prefix.
 | `GHP_BLOCK_ANONYMOUS_GIT` | Block anonymous git smart HTTP requests before they reach GitHub | `false` |
 | `GHP_RELEASES_MODE` | Release download policy: `block`, `redirect`, or empty (disabled) | |
 | `GHP_RELEASES_REDIRECT_TO` | Base URL for redirect mode (must be absolute) | |
-| `GHP_RELEASES_REDIRECT` | Short alias for `GHP_RELEASES_REDIRECT_TO` | |
 | `GHP_RELEASES_ALLOW` | Comma-separated org or org/repo entries exempt from the policy | |
 | `GHP_RELEASES_ALLOW_COUNT` | Number of indexed allow entries (use with `GHP_RELEASES_ALLOW_N`) | |
 | `GHP_DEV_MODE` | Enable test endpoints (never use in production) | `false` |

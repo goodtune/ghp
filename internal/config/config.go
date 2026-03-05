@@ -226,14 +226,6 @@ func Load(path string) (*Config, error) {
 	cfg.Auth.AllowedRedirects = splitCommaSlice(cfg.Auth.AllowedRedirects)
 	cfg.Releases.Allow = splitCommaSlice(cfg.Releases.Allow)
 
-	// GHP_RELEASES_REDIRECT is a short alias for GHP_RELEASES_REDIRECT_TO.
-	// The natural env var GHP_RELEASES_REDIRECT_TO is also supported via koanf.
-	if cfg.Releases.RedirectTo == "" {
-		if v := os.Getenv("GHP_RELEASES_REDIRECT"); v != "" {
-			cfg.Releases.RedirectTo = v
-		}
-	}
-
 	// GHP_RELEASES_ALLOW_COUNT + GHP_RELEASES_ALLOW_N support indexed allow
 	// lists that cannot be expressed as comma-separated values. When set, the
 	// indexed entries replace any allow list loaded from YAML or other env vars.
