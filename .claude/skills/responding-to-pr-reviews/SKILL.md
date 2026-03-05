@@ -115,7 +115,7 @@ query {
   | select(.comments.nodes[0].author.login == "REVIEWER_LOGIN")'
 ```
 
-If the result is empty, this is a clean review -- skip to step 7 (status check).
+If the result is empty, this is a clean review -- skip to step 8 (status check).
 
 **Note:** Copilot's comment author login is `copilot-pull-request-reviewer` (no `[bot]` suffix in GraphQL).
 
