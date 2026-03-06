@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
-	"github.com/knadh/koanf/providers/env"
+	"github.com/knadh/koanf/providers/env/v2"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 )
@@ -196,21 +196,24 @@ func Load(path string) (*Config, error) {
 	// Only the first underscore separates the section from the field name;
 	// subsequent underscores are preserved as literal characters in field names
 	// (e.g. GHP_GITHUB_CLIENT_ID -> github.client_id, GHP_DEV_MODE -> dev_mode).
-	if err := k.Load(env.Provider("GHP_", ".", func(s string) string {
-		s = strings.TrimPrefix(s, "GHP_")
-		s = strings.ToLower(s)
-		if i := strings.Index(s, "_"); i > 0 {
-			section, field := s[:i], s[i+1:]
-			switch section {
-			case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases":
-				// Handle 3-level nesting for logging.file.*
-				if section == "logging" && strings.HasPrefix(field, "file_") {
-					return "logging.file." + field[len("file_"):]
+	if err := k.Load(env.Provider(".", env.Opt{
+		Prefix: "GHP_",
+		TransformFunc: func(s string, v string) (string, any) {
+			s = strings.TrimPrefix(s, "GHP_")
+			s = strings.ToLower(s)
+			if i := strings.Index(s, "_"); i > 0 {
+				section, field := s[:i], s[i+1:]
+				switch section {
+				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases":
+					// Handle 3-level nesting for logging.file.*
+					if section == "logging" && strings.HasPrefix(field, "file_") {
+						return "logging.file." + field[len("file_"):], v
+					}
+					return section + "." + field, v
 				}
-				return section + "." + field
 			}
-		}
-		return s
+			return s, v
+		},
 	}), nil); err != nil {
 		return nil, fmt.Errorf("loading env vars: %w", err)
 	}
