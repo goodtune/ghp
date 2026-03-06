@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	ghub "github.com/google/go-github/v68/github"
+	ghub "github.com/google/go-github/v84/github"
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"

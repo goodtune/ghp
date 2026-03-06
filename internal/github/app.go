@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
-	ghub "github.com/google/go-github/v68/github"
+	ghub "github.com/google/go-github/v84/github"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/goodtune/ghp/internal/crypto"
 )
