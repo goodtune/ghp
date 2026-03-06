@@ -19,6 +19,7 @@ func TestReleasesHandler(t *testing.T) {
 		redirectTo string
 		allow      []string
 		path       string
+		rawPath    string // if set, overrides req.URL.Path after request creation (use for paths that url.Parse would mangle, e.g. "//...")
 		wantStatus int
 		wantLoc    string // expected Location header (for redirects)
 	}{
@@ -113,9 +114,12 @@ func TestReleasesHandler(t *testing.T) {
 			wantStatus: http.StatusInternalServerError,
 		},
 		{
+			// httptest.NewRequest parses "//..." as authority-relative (host=goodtune),
+			// so we use rawPath to set req.URL.Path directly to a true double-slash path.
 			name:       "block mode - double slash does not bypass policy",
 			mode:       "block",
-			path:       "//goodtune/ghp/releases/download/0.7.0/ghp_linux.tar.gz",
+			path:       "/",
+			rawPath:    "//goodtune/ghp/releases/download/0.7.0/ghp_linux.tar.gz",
 			wantStatus: http.StatusForbidden,
 		},
 		{
@@ -138,6 +142,9 @@ func TestReleasesHandler(t *testing.T) {
 			handler := NewReleasesHandler(passthrough, cfg, nil)
 
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.rawPath != "" {
+				req.URL.Path = tt.rawPath
+			}
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 
