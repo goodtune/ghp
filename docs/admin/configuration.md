@@ -33,6 +33,10 @@ the `GHP_` prefix.
 | `GHP_AUTH_JWT_SECRET` | HMAC secret for OAuth broker JWTs (enables broker endpoints) | |
 | `GHP_AUTH_ALLOWED_REDIRECTS` | Comma-separated list of permitted OAuth redirect URIs | |
 | `GHP_BLOCK_ANONYMOUS_GIT` | Block anonymous git smart HTTP requests before they reach GitHub | `false` |
+| `GHP_RELEASES_MODE` | Release download policy: `block`, `redirect`, or empty (disabled) | |
+| `GHP_RELEASES_REDIRECT_TO` | Base URL for redirect mode (must be absolute) | |
+| `GHP_RELEASES_ALLOW` | Comma-separated org or org/repo entries exempt from the policy | |
+| `GHP_RELEASES_ALLOW_COUNT` | Number of indexed allow entries (use with `GHP_RELEASES_ALLOW_N`) | |
 | `GHP_DEV_MODE` | Enable test endpoints (never use in production) | `false` |
 
 ## Full YAML Reference
@@ -85,6 +89,13 @@ auth:
 
 block:
   anonymous_git: false           # short-circuit anonymous git smart HTTP traffic
+
+releases:
+  mode: ""                         # "block", "redirect", or "" (disabled)
+  redirect_to: ""                  # absolute URL base for redirect mode
+  allow:                           # org or org/repo entries exempt from policy
+    - "myorg"
+    - "trusted/tool"
 
 admins:
   - "alice"

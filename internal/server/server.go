@@ -206,6 +206,7 @@ func (s *Server) Run(ctx context.Context) error {
 		"https://github.com", resolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
 		githubInner, tokenSvc, resolver, usernameResolver, s.logger, s.cfg)
+	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger)
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 

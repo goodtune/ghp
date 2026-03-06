@@ -30,6 +30,7 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - How It Works: how-it-works.md
+  - Release Download Controls: release-controls.md
   - OAuth Broker: oauth-broker.md
   - Administration:
     - Installation: admin/installation.md
