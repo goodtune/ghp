@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	ghub "github.com/google/go-github/v68/github"
+	ghub "github.com/google/go-github/v84/github"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 )
