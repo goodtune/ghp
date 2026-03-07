@@ -3,7 +3,23 @@ package web
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/goodtune/ghp/internal/auth"
+	"github.com/goodtune/ghp/internal/proxy"
 )
+
+// SessionUsernameMiddleware injects the session username into the access log
+// username slot so that management requests are attributed to the logged-in user.
+func SessionUsernameMiddleware(ah *auth.Handler) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if session := ah.GetSession(r); session != nil {
+				proxy.SetUsername(r, session.Username)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 // SecurityHeadersMiddleware sets standard security headers on all responses.
 func SecurityHeadersMiddleware(next http.Handler) http.Handler {

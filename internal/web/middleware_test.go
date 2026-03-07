@@ -1,9 +1,18 @@
 package web
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/goodtune/ghp/internal/auth"
+	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/crypto"
+	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/proxy"
 )
 
 // wantSecurityHeaders lists the security headers that SecurityHeadersMiddleware
@@ -148,6 +157,142 @@ func TestServerHeaderMiddlewareFlusher(t *testing.T) {
 
 	if got := rr.Header().Get("Server"); got != "GitHub Proxy 1.0.0" {
 		t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy 1.0.0")
+	}
+}
+
+// noopStore implements database.Store with all methods returning zero values.
+type noopStore struct{}
+
+func (noopStore) UpsertUser(_ context.Context, _ *database.User) error                          { return nil }
+func (noopStore) GetUserByGitHubID(_ context.Context, _ int64) (*database.User, error)         { return nil, nil }
+func (noopStore) GetUserByID(_ context.Context, _ string) (*database.User, error)               { return nil, nil }
+func (noopStore) ListUsers(_ context.Context) ([]*database.User, error)                         { return nil, nil }
+func (noopStore) SyncAdminRoles(_ context.Context, _ []string) error                            { return nil }
+func (noopStore) UpsertGitHubToken(_ context.Context, _ *database.GitHubToken) error           { return nil }
+func (noopStore) GetGitHubToken(_ context.Context, _ string) (*database.GitHubToken, error)    { return nil, nil }
+func (noopStore) GetGitHubTokenByID(_ context.Context, _ string) (*database.GitHubToken, error) { return nil, nil }
+func (noopStore) CreateProxyToken(_ context.Context, _ *database.ProxyToken) error              { return nil }
+func (noopStore) GetProxyTokenByHash(_ context.Context, _ string) (*database.ProxyToken, error) { return nil, nil }
+func (noopStore) GetProxyTokenByID(_ context.Context, _ string) (*database.ProxyToken, error)   { return nil, nil }
+func (noopStore) ListProxyTokens(_ context.Context, _ string) ([]*database.ProxyToken, error)   { return nil, nil }
+func (noopStore) ListAllProxyTokens(_ context.Context) ([]*database.ProxyToken, error)          { return nil, nil }
+func (noopStore) RevokeProxyToken(_ context.Context, _ string) error                            { return nil }
+func (noopStore) UpdateProxyTokenUsage(_ context.Context, _ string) error                       { return nil }
+func (noopStore) CreateAuditEntry(_ context.Context, _ *database.AuditEntry) error              { return nil }
+func (noopStore) ListAuditEntries(_ context.Context, _ database.AuditFilter) ([]*database.AuditEntry, error) {
+	return nil, nil
+}
+func (noopStore) Close() error { return nil }
+
+// stubStore is a minimal database.Store that overrides UpsertUser and
+// UpsertGitHubToken for the auth test-login flow. All other methods
+// are provided by the embedded noopStore and return zero values.
+type stubStore struct{ noopStore }
+
+func (s *stubStore) UpsertUser(_ context.Context, u *database.User) error {
+	if u.ID == "" {
+		u.ID = "test-user-id"
+	}
+	return nil
+}
+func (s *stubStore) UpsertGitHubToken(_ context.Context, _ *database.GitHubToken) error {
+	return nil
+}
+func (s *stubStore) Close() error { return nil }
+
+func TestSessionUsernameMiddleware_WithSession(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := crypto.NewEncryptor(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{DevMode: true}
+	ah := auth.NewHandler(cfg, &stubStore{}, enc, slog.Default())
+
+	// Use test-login to create a session.
+	mux := http.NewServeMux()
+	ah.RegisterRoutes(mux)
+	loginReq := httptest.NewRequest("POST", "/auth/test-login",
+		bytes.NewReader([]byte(`{"username":"alice","role":"admin"}`)))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRR := httptest.NewRecorder()
+	mux.ServeHTTP(loginRR, loginReq)
+
+	if loginRR.Code != http.StatusOK {
+		t.Fatalf("test-login: got %d, want 200; body: %s", loginRR.Code, loginRR.Body.String())
+	}
+
+	// Extract session cookie.
+	cookies := loginRR.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == auth.SessionCookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("no session cookie returned by test-login")
+	}
+
+	// Verify the middleware injects the username.
+	var gotUsername string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUsername = proxy.GetUsername(r)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := SessionUsernameMiddleware(ah)(inner)
+
+	req := httptest.NewRequest("GET", "/admin", nil)
+	req.AddCookie(sessionCookie)
+	// Prepare the username slot (normally done by accessLogHandler).
+	req, usernameSlot := proxy.PrepareUsernameSlot(req)
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if gotUsername != "alice" {
+		t.Errorf("GetUsername inside handler: got %q, want %q", gotUsername, "alice")
+	}
+	if *usernameSlot != "alice" {
+		t.Errorf("username slot: got %q, want %q", *usernameSlot, "alice")
+	}
+}
+
+func TestSessionUsernameMiddleware_NoSession(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := crypto.NewEncryptor(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{DevMode: true}
+	ah := auth.NewHandler(cfg, &stubStore{}, enc, slog.Default())
+
+	var gotUsername string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUsername = proxy.GetUsername(r)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := SessionUsernameMiddleware(ah)(inner)
+
+	req := httptest.NewRequest("GET", "/login", nil)
+	req, usernameSlot := proxy.PrepareUsernameSlot(req)
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if gotUsername != "" {
+		t.Errorf("GetUsername: got %q, want empty string", gotUsername)
+	}
+	if *usernameSlot != "" {
+		t.Errorf("username slot: got %q, want empty string", *usernameSlot)
 	}
 }
 
