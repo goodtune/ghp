@@ -160,10 +160,34 @@ func TestServerHeaderMiddlewareFlusher(t *testing.T) {
 	}
 }
 
-// stubStore is a minimal database.Store that supports only UpsertUser and
-// UpsertGitHubToken (enough for the auth test-login flow). All other methods
-// return zero values.
-type stubStore struct{ database.Store }
+// noopStore implements database.Store with all methods returning zero values.
+type noopStore struct{}
+
+func (noopStore) UpsertUser(_ context.Context, _ *database.User) error                          { return nil }
+func (noopStore) GetUserByGitHubID(_ context.Context, _ int64) (*database.User, error)         { return nil, nil }
+func (noopStore) GetUserByID(_ context.Context, _ string) (*database.User, error)               { return nil, nil }
+func (noopStore) ListUsers(_ context.Context) ([]*database.User, error)                         { return nil, nil }
+func (noopStore) SyncAdminRoles(_ context.Context, _ []string) error                            { return nil }
+func (noopStore) UpsertGitHubToken(_ context.Context, _ *database.GitHubToken) error           { return nil }
+func (noopStore) GetGitHubToken(_ context.Context, _ string) (*database.GitHubToken, error)    { return nil, nil }
+func (noopStore) GetGitHubTokenByID(_ context.Context, _ string) (*database.GitHubToken, error) { return nil, nil }
+func (noopStore) CreateProxyToken(_ context.Context, _ *database.ProxyToken) error              { return nil }
+func (noopStore) GetProxyTokenByHash(_ context.Context, _ string) (*database.ProxyToken, error) { return nil, nil }
+func (noopStore) GetProxyTokenByID(_ context.Context, _ string) (*database.ProxyToken, error)   { return nil, nil }
+func (noopStore) ListProxyTokens(_ context.Context, _ string) ([]*database.ProxyToken, error)   { return nil, nil }
+func (noopStore) ListAllProxyTokens(_ context.Context) ([]*database.ProxyToken, error)          { return nil, nil }
+func (noopStore) RevokeProxyToken(_ context.Context, _ string) error                            { return nil }
+func (noopStore) UpdateProxyTokenUsage(_ context.Context, _ string) error                       { return nil }
+func (noopStore) CreateAuditEntry(_ context.Context, _ *database.AuditEntry) error              { return nil }
+func (noopStore) ListAuditEntries(_ context.Context, _ database.AuditFilter) ([]*database.AuditEntry, error) {
+	return nil, nil
+}
+func (noopStore) Close() error { return nil }
+
+// stubStore is a minimal database.Store that overrides UpsertUser and
+// UpsertGitHubToken for the auth test-login flow. All other methods
+// are provided by the embedded noopStore and return zero values.
+type stubStore struct{ noopStore }
 
 func (s *stubStore) UpsertUser(_ context.Context, u *database.User) error {
 	if u.ID == "" {
@@ -270,7 +294,6 @@ func TestSessionUsernameMiddleware_NoSession(t *testing.T) {
 	if *usernameSlot != "" {
 		t.Errorf("username slot: got %q, want empty string", *usernameSlot)
 	}
-	_ = rr
 }
 
 // TestSecurityHeadersAllRoutes verifies that when SecurityHeadersMiddleware
