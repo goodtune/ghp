@@ -1,9 +1,9 @@
 # How It Works
 
-ghp acts as a transparent virtualhost for GitHub's API and web endpoints.
-DNS (or `/etc/hosts`) on your agent network points `api.github.com` and
-`github.com` at the ghp server. Agents set `GH_TOKEN` to a `ghx_`-prefixed
-token and make standard GitHub API calls.
+ghp acts as a transparent proxy for GitHub's API and web endpoints. Your
+administrator configures DNS so that `api.github.com` and `github.com` resolve
+to the ghp server on your network. Agents set `GH_TOKEN` to a ghp-issued token
+and make standard GitHub API calls — no code changes or special SDKs required.
 
 ## Request Flow
 
@@ -24,96 +24,86 @@ sequenceDiagram
 
 For each request, the proxy:
 
-1. Validates the `ghx_` token and checks it hasn't expired or been revoked
-2. Verifies the request targets the allowed repository and permission scope
-3. Injects the real GitHub credentials (stored server-side, encrypted at rest)
-4. Forwards the request to the real GitHub endpoint and returns the response
+1. Validates the token and checks it hasn't expired or been revoked
+2. Verifies the request targets an allowed repository and permitted operation
+3. Swaps in the real GitHub credentials (stored server-side, encrypted at rest)
+4. Forwards the request to GitHub and returns the response unchanged
 
 ## Virtualhost Routing
 
-ghp routes traffic by `Host` header across four virtualhosts:
+ghp serves four distinct roles depending on which hostname the request arrives on:
 
-| Host | Handler |
-|------|---------|
-| `api.github.com` | API proxy — scope enforcement, credential injection, audit logging |
-| `github.com` | Transparent passthrough — git clone/push with `ghx_`/`gha_` token interception |
-| `*.githubcopilot.com` | Transparent passthrough for Copilot traffic — audit logging and metrics captured, no scope enforcement |
-| Configured management host | Web UI, OAuth, token management API |
+| Hostname | Role |
+|----------|------|
+| `api.github.com` | **API proxy** — validates tokens, enforces scopes, injects credentials, logs every request |
+| `github.com` | **Git passthrough** — transparent proxy for `git clone`, `git push`, etc. with token interception |
+| `*.githubcopilot.com` | **Copilot passthrough** — forwards Copilot traffic transparently; all requests are logged |
+| Your management host | **Dashboard** — web UI, GitHub OAuth login, token management API |
 
-When the server terminates TLS directly (production mode), SNI selects the
-correct certificate for each virtualhost. In legacy plain-HTTP mode (behind
-a reverse proxy), the `Host` header alone drives routing.
+In TLS mode (recommended for production), ghp terminates TLS directly and uses
+SNI to select the correct certificate for each hostname. In plain HTTP mode
+(for development or behind a reverse proxy), routing is based on the `Host`
+header alone.
 
 ## Security Model
 
-- **Token isolation** — agents never see real GitHub credentials
-- **Scope enforcement** — each token is locked to a single repository and specific permission scopes
-- **Encryption at rest** — GitHub tokens are encrypted with AES-256-GCM before storage
-- **Audit trail** — every proxied request is logged with token, repository, method, path, and status
-- **Expiration** — tokens have a configurable lifetime (default 24h, max 7 days)
-- **Revocation** — tokens can be revoked immediately via CLI or web UI
+- **Token isolation** — agents never see real GitHub credentials; they only hold short-lived ghp tokens
+- **Scope enforcement** — tokens can be restricted to specific repositories and permission levels
+- **Encryption at rest** — all stored GitHub credentials are encrypted with AES-256-GCM
+- **Audit trail** — every proxied request is logged with the token, user, repository, method, path, and status
+- **Expiration** — tokens have a configurable lifetime (default 24 hours, maximum 7 days)
+- **Revocation** — tokens can be revoked immediately from the CLI or web dashboard
+- **Border policy** — administrators can block specific GitHub token types from passing through the proxy (see [Token Type Border Policy](features/border-policy.md))
+
+## Feature Summary
+
+### Token Scoping
+
+Tokens can be scoped to specific repositories and permission levels, ensuring
+agents only access what they need. Open-scoped tokens (no restrictions) are
+also supported when full access is appropriate.
+
+See [Token Scoping](features/token-scoping.md) for details.
 
 ### Blocking Anonymous Git Traffic
 
-When `block.anonymous_git` is enabled, ghp short-circuits anonymous git smart
-HTTP requests — returning `401 Unauthorized` immediately instead of forwarding
-them to GitHub. This prevents unauthenticated `git clone`, `git fetch`, and
-`git ls-remote` operations from consuming upstream bandwidth or leaking
-repository metadata through the proxy.
-
-A request is classified as anonymous git traffic when **both** conditions are
-true:
-
-1. No `Authorization` header is present (or it is empty/unparseable)
-2. A `Git-Protocol` header is present (e.g. `Git-Protocol: version=2`)
+Administrators can block unauthenticated git operations (clone, fetch,
+ls-remote) from passing through the proxy. When enabled, requests without
+credentials are rejected immediately rather than being forwarded to GitHub.
 
 ```yaml
 block:
   anonymous_git: true
 ```
 
-Blocked requests are counted by the `ghp_block_anonymous_git_total` Prometheus
-counter, and the feature's on/off state is exported as the
-`ghp_block_anonymous_git_enabled` gauge. The setting is hot-reloadable via
-`SIGUSR1` without restarting the server.
+This setting can be changed without restarting the server (see
+[Configuration](admin/configuration.md#hot-reloading)).
 
-!!! note "Detection relies on Git protocol version 2"
-    Git ≥ 2.26 (released March 2020) defaults to protocol v2 and sends a
-    `Git-Protocol: version=2` header on the initial smart HTTP request. Older
-    clients using protocol v0 or v1 do **not** send this header, so their
-    anonymous requests will pass through to GitHub unblocked. This is the right
-    trade-off for an opt-in feature — it avoids false positives from non-git
-    HTTP traffic that also lacks an `Authorization` header. If broader coverage
-    is needed in future, a path-pattern heuristic (e.g. matching
-    `/info/refs?service=git-upload-pack`) could supplement the header check.
+!!! note "Requires Git protocol version 2"
+    Anonymous git blocking relies on the `Git-Protocol` header that Git 2.26+
+    sends by default. Older Git clients that use protocol v0 or v1 are not
+    detected and will pass through unblocked.
 
 ### Release Download Controls
 
-GitHub release assets (pre-built binaries, installers, archives) are fetched
-via simple HTTPS GETs against `github.com` — outside the API scope model that
-ghp enforces on other traffic. The release controls feature intercepts
-requests matching `/{owner}/{repo}/releases/download/**` and applies a
-configurable policy before they reach GitHub.
+GitHub release assets (binaries, installers, archives) are fetched via direct
+HTTPS downloads, outside the scope model that ghp applies to API traffic. The
+release controls feature lets administrators block or redirect these downloads.
 
-Two modes are available: **block** returns `403 Forbidden` immediately, and
-**redirect** issues a `302` to an alternative download server (e.g. an
-internal mirror of approved assets). Both modes support an allow list of
-organisations or specific repositories that are exempt from the policy.
-
-```yaml
-releases:
-  mode: block
-  allow:
-    - "myorg"
-```
-
-See [Release Download Controls](release-controls.md) for a detailed write-up
-of the feature, configuration options, and trade-offs.
+See [Release Download Controls](features/release-controls.md) for configuration
+and details.
 
 ### Copilot Passthrough
 
-Traffic to `*.githubcopilot.com` is forwarded transparently without token interception or
-scope enforcement. This is by design — Copilot clients manage their own credentials. However,
-every Copilot request is **audit-logged** (method, host, path, status, duration) and
-**counted in Prometheus metrics** (`ghp_http_request_total{backend="copilot"}`) so that
-Copilot activity remains observable alongside all other ghp traffic.
+Traffic to `*.githubcopilot.com` is forwarded transparently. Copilot clients
+manage their own credentials, so ghp does not intercept tokens or enforce
+scopes on this traffic. All Copilot requests are still logged and counted
+in metrics for full visibility.
+
+### OAuth Broker
+
+ghp can act as an OAuth broker for other services on your network, allowing
+them to authenticate users via GitHub without needing their own OAuth
+credentials.
+
+See [OAuth Broker](features/oauth-broker.md) for integration details.

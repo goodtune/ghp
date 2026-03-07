@@ -1,4 +1,12 @@
-// Package token handles ghx_ and gha_ token generation and validation.
+// Package token manages the lifecycle of ghp proxy tokens (ghx_ and gha_
+// prefixed). It provides creation, hash-based resolution, revocation, and usage
+// tracking. Tokens are never stored in plaintext — only their SHA-256 hash is
+// persisted. The plaintext is returned once at creation time and cannot be
+// recovered from the database.
+//
+// Two token types are supported:
+//   - Proxy tokens (ghx_): backed by a user's GitHub OAuth credential.
+//   - Agent tokens (gha_): backed by a GitHub App installation, for automated workflows.
 package token
 
 import (

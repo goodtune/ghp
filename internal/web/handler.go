@@ -1,4 +1,8 @@
-// Package web provides the embedded web UI for ghp.
+// Package web provides the management web UI and HTTP middleware for ghp.
+// It serves the dashboard (token management, admin panel, audit logs) and
+// applies cross-cutting concerns: security headers (CSP, X-Frame-Options),
+// the Server response header identifying the ghp version, and session
+// username injection for access log attribution.
 package web
 
 import (

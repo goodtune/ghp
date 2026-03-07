@@ -1,4 +1,9 @@
-// Package database provides the data access layer for ghp.
+// Package database provides the data access layer for ghp, abstracting over
+// PostgreSQL (production) and SQLite (development) backends. It defines the
+// Store interface for all database operations, the data models (User,
+// GitHubToken, ProxyToken, AuditEntry), and the migration system. Both
+// drivers are pure Go (no CGO) — SQLite via modernc.org/sqlite and PostgreSQL
+// via pgx.
 package database
 
 import (

@@ -1,4 +1,9 @@
-// Package config handles server configuration from YAML files and environment variables.
+// Package config handles loading and managing the ghp server configuration.
+// Configuration is loaded from a YAML file and/or environment variables with
+// the GHP_ prefix. The package supports hot-reloading of a subset of fields
+// via SIGUSR1 (admins, tokens, logging, metrics, auth, block, releases) while
+// fields that require infrastructure changes (database, TLS, listen addresses)
+// are only applied at startup.
 package config
 
 import (
