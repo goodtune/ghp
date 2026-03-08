@@ -12,7 +12,7 @@ assumes your administrator has already deployed ghp and configured DNS so that
 2. Sign in with GitHub
 3. Click **Create Token**
 4. Select the target repository (or leave blank for an open-scoped token)
-5. Choose permission scopes (e.g. `contents:read`, `pulls:write`)
+5. Choose permission scopes (e.g. `contents:read`, `pull_requests:write`)
 6. Set a duration (default: 24 hours)
 7. Click **Create** and copy the `ghx_`-prefixed token
 
@@ -26,7 +26,7 @@ Then create a scoped proxy token:
 
     ghp token create \
       --repo owner/repo \
-      --scope contents:read,pulls:write \
+      --scope contents:read,pull_requests:write \
       --duration 48h \
       --session "my-coding-session"
 
@@ -37,7 +37,7 @@ Administrators can also create agent tokens backed by a GitHub App installation
       --type agent \
       --installation-id 12345678 \
       --repos owner/repo1,owner/repo2 \
-      --scope contents:read,pulls:write
+      --scope contents:read,pull_requests:write
 
 See [Token Scoping](features/token-scoping.md) for a full explanation of
 repository restrictions, permission scopes, and open-scoped tokens.
@@ -71,8 +71,8 @@ Scopes follow the GitHub API permission model:
 |-------|-------------|
 | `contents:read` | Read repository contents (files, commits) |
 | `contents:write` | Push commits, create/update files |
-| `pulls:read` | Read pull requests |
-| `pulls:write` | Create and update pull requests |
+| `pull_requests:read` | Read pull requests |
+| `pull_requests:write` | Create and update pull requests |
 | `issues:read` | Read issues |
 | `issues:write` | Create and update issues |
 | `metadata:read` | Read repository metadata (always permitted) |

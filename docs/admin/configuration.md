@@ -42,7 +42,7 @@ values from the config file.
 | `GHP_GITHUB_PRIVATE_KEY` | PEM-encoded GitHub App private key content | |
 | `GHP_GITHUB_PRIVATE_KEY_FILE` | Path to GitHub App private key PEM file | |
 | `GHP_GITHUB_ENTERPRISE_SLUG` | Enterprise slug for access restriction header | |
-| `GHP_GITHUB_BASE_URL` | GitHub API base URL for GitHub Enterprise Server | `https://api.github.com` |
+| `GHP_GITHUB_BASE_URL` | Reserved for future GitHub Enterprise Server support; currently ignored (server always uses `https://api.github.com`) | `https://api.github.com` |
 
 ### TLS
 

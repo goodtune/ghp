@@ -13,7 +13,7 @@ metrics:
   listen: ":9136"
 ```
 
-Scrape the metrics endpoint at `http://<ghp-server>:9136/metrics`.
+Scrape the metrics endpoint at `http(s)://<ghp-server>:9136/metrics` (HTTPS when ghp runs with TLS enabled, HTTP otherwise).
 
 ### Available Metrics
 
@@ -24,8 +24,8 @@ Scrape the metrics endpoint at `http://<ghp-server>:9136/metrics`.
 | `ghp_http_request_duration_seconds` | Histogram | Duration of all HTTP requests, labelled by backend |
 | `ghp_http_request_total` | Counter | Total HTTP requests, labelled by backend, method, and status |
 
-The `backend` label distinguishes traffic by virtualhost: `api`, `github`,
-`copilot`, or `mgmt`.
+The `backend` label distinguishes traffic by virtualhost: `api.github.com`,
+`github.com`, `copilot`, or `management`.
 
 #### Proxy Metrics
 
@@ -43,9 +43,9 @@ resolution, etc.), so you can identify where latency originates.
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ghp_token_active` | Gauge | Number of active (non-expired, non-revoked) tokens |
-| `ghp_token_created_total` | Counter | Total tokens created |
-| `ghp_token_revoked_total` | Counter | Total tokens revoked |
+| `ghp_token_active` | Gauge | Number of active (non-expired, non-revoked) tokens per user (label: `user`) |
+| `ghp_token_created_total` | Counter | Total tokens created per user (label: `user`) |
+| `ghp_token_revoked_total` | Counter | Total tokens revoked per user (label: `user`) |
 
 #### GitHub Rate Limit Metrics
 
@@ -66,13 +66,13 @@ resolution, etc.), so you can identify where latency originates.
 ## Access Logs
 
 ghp writes structured JSON access logs for every request across all four
-virtualhosts. Each log entry includes:
+virtualhosts. Each log entry typically includes:
 
-- HTTP method, path, and status code
+- HTTP method, host, URI/path, and status code
 - Request duration
-- Backend (api, github, copilot, mgmt)
-- GitHub username (when available)
-- Token ID and session ID (for proxied requests)
+- Backend identifier (same values as the `backend` label used in metrics)
+- User identifier (GitHub username when available)
+- Selected request and response headers (sensitive values such as `Authorization` and `Set-Cookie` are redacted)
 
 Configure logging output and level:
 

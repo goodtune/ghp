@@ -16,7 +16,7 @@ Create a proxy token from the [web dashboard](../web-ui.md) or the CLI:
 
     ghp token create \
       --repo owner/repo \
-      --scope contents:read,pulls:write \
+      --scope contents:read,pull_requests:write \
       --duration 48h
 
 ### Agent Tokens (`gha_`)
@@ -33,7 +33,7 @@ create agent tokens:
       --type agent \
       --installation-id 12345678 \
       --repos owner/repo1,owner/repo2 \
-      --scope contents:read,pulls:write
+      --scope contents:read,pull_requests:write
 
 ## Repository Restrictions
 
@@ -57,8 +57,8 @@ These follow the GitHub API permission model:
 |-------|-------------|
 | `contents:read` | Read repository contents (files, commits) |
 | `contents:write` | Push commits, create/update files |
-| `pulls:read` | Read pull requests |
-| `pulls:write` | Create and update pull requests |
+| `pull_requests:read` | Read pull requests |
+| `pull_requests:write` | Create and update pull requests |
 | `issues:read` | Read issues |
 | `issues:write` | Create and update issues |
 | `metadata:read` | Read repository metadata (always permitted) |
