@@ -1,4 +1,13 @@
-// Package auth handles GitHub OAuth user-to-server authentication and session management.
+// Package auth handles GitHub OAuth authentication, browser session management,
+// and the optional OAuth broker feature. It provides:
+//
+//   - GitHub OAuth login flow for the web UI and CLI (code exchange, user info)
+//   - In-memory session store with LRU eviction and TTL expiry
+//   - OAuth broker endpoints that allow downstream services to authenticate
+//     users via ghp without needing their own GitHub OAuth credentials
+//   - RS256 JWT signing for broker tokens, with JWKS endpoint for key discovery
+//   - Per-endpoint IP rate limiting on sensitive auth endpoints
+//   - Dev-mode test login endpoint (bypasses OAuth for development/testing)
 package auth
 
 import (

@@ -1,3 +1,18 @@
+// Package server wires together all ghp components and runs the HTTP server(s).
+// It is responsible for:
+//
+//   - Opening the database and running/checking migrations
+//   - Initializing encryption, token services, and the GitHub App provider
+//   - Building the host-dispatch handler that routes requests by Host header
+//     to the appropriate backend (API proxy, github.com passthrough, Copilot
+//     passthrough, or management UI)
+//   - Starting TLS and/or plain HTTP listeners (including systemd socket
+//     activation support)
+//   - Running the dedicated Prometheus metrics server on a separate port
+//   - Handling graceful shutdown (SIGINT/SIGTERM) and configuration hot-reload
+//     (SIGUSR1)
+//   - Applying cross-cutting middleware: access logging, security headers, and
+//     the Server response header
 package server
 
 import (

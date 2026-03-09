@@ -1,3 +1,9 @@
+// Package github implements GitHub App authentication for agent tokens (gha_).
+// It handles JWT signing with the App's private key, installation token
+// generation via the GitHub API, and token caching with automatic renewal.
+// This is the credential backend for agent tokens — when an agent uses a gha_
+// token, the proxy resolves it to a GitHub App installation token obtained
+// through this package.
 package github
 
 import (

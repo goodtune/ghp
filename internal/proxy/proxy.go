@@ -1,3 +1,23 @@
+// Package proxy implements the core reverse proxy that sits between coding
+// agents and GitHub. It is responsible for:
+//
+//   - Extracting ghx_/gha_ tokens from the Authorization header
+//   - Resolving tokens to their database records and checking expiry/revocation
+//   - Enforcing repository and permission scopes against the requested API path
+//   - Swapping the ghp token for the real GitHub credential (decrypted or
+//     obtained from the GitHub App installation token provider)
+//   - Forwarding the request to the real GitHub API and streaming the response
+//   - Recording audit log entries for API proxy requests and Prometheus metrics for all requests
+//
+// The proxy handles three distinct traffic patterns through separate handlers:
+//
+//   - Handler: the API proxy for api.github.com traffic (REST and GraphQL)
+//   - ScopedPassthroughHandler: the github.com passthrough for git operations
+//   - CopilotPassthroughHandler: transparent forwarding for *.githubcopilot.com
+//
+// Each stage of the request pipeline is individually timed and recorded in the
+// ghp_proxy_decision_duration_seconds histogram, enabling operators to identify
+// exactly where overhead is introduced.
 package proxy
 
 import (

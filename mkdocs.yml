@@ -30,18 +30,24 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - How It Works: how-it-works.md
-  - Release Download Controls: release-controls.md
-  - OAuth Broker: oauth-broker.md
+  - Features:
+    - Token Scoping: features/token-scoping.md
+    - Token Type Border Policy: features/border-policy.md
+    - Release Download Controls: features/release-controls.md
+    - OAuth Broker: features/oauth-broker.md
   - Administration:
     - Installation: admin/installation.md
     - Configuration: admin/configuration.md
-    - Deployment: admin/deployment.md
     - GitHub App Setup: admin/github-app.md
+    - Deployment: admin/deployment.md
+    - Monitoring: admin/monitoring.md
+    - Local TLS: admin/local-tls.md
   - CLI Reference:
     - Overview: cli/index.md
     - ghp serve: cli/serve.md
     - ghp migrate: cli/migrate.md
     - ghp auth: cli/auth.md
     - ghp token: cli/token.md
+    - ghp apptoken: cli/apptoken.md
   - Web UI: web-ui.md
   - Development: development.md

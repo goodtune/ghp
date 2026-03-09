@@ -86,7 +86,7 @@ policy.
 
 ## Configuration
 
-See the [Configuration Reference](admin/configuration.md) for the full list
+See the [Configuration Reference](../admin/configuration.md) for the full list
 of environment variables and YAML fields.
 
 === "YAML"

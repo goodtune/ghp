@@ -1,4 +1,10 @@
-// Package crypto provides AES-256-GCM encryption for storing GitHub tokens at rest.
+// Package crypto provides AES-256-GCM encryption for storing GitHub OAuth
+// credentials at rest. Every real GitHub token (access and refresh) is encrypted
+// before being written to the database, and decrypted on-demand when the proxy
+// needs to inject credentials into an upstream request. The encryption key is
+// configured via GHP_ENCRYPTION_KEY and must be a 32-byte hex-encoded secret.
+//
+// This package also provides RSA key parsing for the OAuth broker's JWT signing.
 package crypto
 
 import (

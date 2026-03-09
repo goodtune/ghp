@@ -1,4 +1,13 @@
-// Package metrics registers Prometheus metrics for ghp.
+// Package metrics registers all Prometheus metrics for ghp and provides helper
+// functions for recording observations. Metrics are registered via promauto
+// (auto-registering with the default registry) and exposed at /metrics on the
+// dedicated metrics server (default port 9136).
+//
+// The package covers four metric categories:
+//   - HTTP-level: request count and duration for all traffic by backend
+//   - Proxy-level: detailed metrics for ghx_/gha_ authenticated traffic (API and git smart-HTTP)
+//   - Token lifecycle: creation, revocation, and active token counts
+//   - Decision pipeline: per-stage latency breakdown of the proxy overhead
 package metrics
 
 import (
