@@ -420,11 +420,26 @@ func TestUsernameResolver_GraphQL_HandlesErrorGracefully(t *testing.T) {
 	// First call: cache miss → triggers async lookup that will fail.
 	resolver.ResolveFromGitHubToken(context.Background(), "gho_badtoken")
 
-	// Wait for the async goroutine to finish (no sleep — use the done channel).
+	// Wait for the async goroutine's HTTP handler to finish.
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for first async lookup to complete")
+	}
+
+	// Wait until the resolver goroutine has cleared the inflight entry. Without
+	// this there is a race: the handler signals done before defer inflight.Delete
+	// runs, so the next call may hit the in-flight guard and skip the retry.
+	inflightKey := hashToken("gho_badtoken")
+	inflightDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := resolver.inflight.Load(inflightKey); !ok {
+			break
+		}
+		if time.Now().After(inflightDeadline) {
+			t.Fatal("timeout waiting for inflight entry to clear after first lookup")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	// Should still return empty (error response is not cached).
@@ -432,7 +447,7 @@ func TestUsernameResolver_GraphQL_HandlesErrorGracefully(t *testing.T) {
 		t.Errorf("expected empty string after failed lookup, got %q", got)
 	}
 
-	// Wait for the retry goroutine to finish.
+	// Wait for the retry goroutine's HTTP handler to finish.
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -466,11 +481,26 @@ func TestUsernameResolver_GraphQL_HandlesGraphQLErrors(t *testing.T) {
 	// First call: cache miss → triggers async lookup that returns a GraphQL error.
 	resolver.ResolveFromGitHubToken(context.Background(), "gho_scopetoken")
 
-	// Wait for the async goroutine to finish.
+	// Wait for the async goroutine's HTTP handler to finish.
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for first async lookup to complete")
+	}
+
+	// Wait until the resolver goroutine has cleared the inflight entry. Without
+	// this there is a race: the handler signals done before defer inflight.Delete
+	// runs, so the next call may hit the in-flight guard and skip the retry.
+	inflightKey := hashToken("gho_scopetoken")
+	inflightDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := resolver.inflight.Load(inflightKey); !ok {
+			break
+		}
+		if time.Now().After(inflightDeadline) {
+			t.Fatal("timeout waiting for inflight entry to clear after first lookup")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	// Nothing should be cached — the error response must not populate the cache.
@@ -478,7 +508,7 @@ func TestUsernameResolver_GraphQL_HandlesGraphQLErrors(t *testing.T) {
 		t.Errorf("expected empty string after GraphQL error response, got %q", got)
 	}
 
-	// Wait for the retry goroutine to finish.
+	// Wait for the retry goroutine's HTTP handler to finish.
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

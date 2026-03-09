@@ -170,7 +170,7 @@ func (u *UsernameResolver) resolveAndCacheGitHubUsername(key, rawToken string) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // cap at 1 MB
 	if err != nil {
 		if u.logger != nil {
 			u.logger.Debug("github username lookup: failed to read response", "error", err)
