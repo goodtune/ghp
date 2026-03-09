@@ -1,7 +1,6 @@
 package web
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/goodtune/ghp/internal/auth"
@@ -35,19 +34,15 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// ServerHeaderMiddleware sets the Server response header on all responses.
-// It wraps the ResponseWriter so that the header is forced at WriteHeader time,
-// after any upstream proxy handler has populated the header map — ensuring
-// exactly one Server value even when GitHub's own "server: github.com" header
-// is copied from the upstream response via Add.
+// ServerHeaderMiddleware sets the Server and X-GitHub-Proxy-Version response
+// headers on all responses. It wraps the ResponseWriter so that the headers are
+// forced at WriteHeader time, after any upstream proxy handler has populated
+// the header map — ensuring exactly one Server value even when GitHub's own
+// "server: github.com" header is copied from the upstream response via Add.
 func ServerHeaderMiddleware(version string) func(http.Handler) http.Handler {
-	value := "GitHub Proxy"
-	if version != "" {
-		value = fmt.Sprintf("GitHub Proxy %s", version)
-	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			shw := &serverHeaderWriter{ResponseWriter: w, value: value}
+			shw := &serverHeaderWriter{ResponseWriter: w, version: version}
 			next.ServeHTTP(shw, r)
 			if !shw.done {
 				shw.setOnce()
@@ -62,8 +57,8 @@ func ServerHeaderMiddleware(version string) func(http.Handler) http.Handler {
 // "server: github.com" copied by the reverse proxy).
 type serverHeaderWriter struct {
 	http.ResponseWriter
-	value string
-	done  bool
+	version string
+	done    bool
 }
 
 func (w *serverHeaderWriter) WriteHeader(code int) {
@@ -78,7 +73,10 @@ func (w *serverHeaderWriter) Write(b []byte) (int, error) {
 
 func (w *serverHeaderWriter) setOnce() {
 	if !w.done {
-		w.Header().Set("Server", w.value)
+		w.Header().Set("Server", "GitHub Proxy")
+		if w.version != "" {
+			w.Header().Set("X-GitHub-Proxy-Version", w.version)
+		}
 		w.done = true
 	}
 }

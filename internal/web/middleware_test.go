@@ -78,30 +78,30 @@ func TestServerHeaderMiddleware(t *testing.T) {
 	tests := []struct {
 		name            string
 		version         string
-		wantHeader      string
+		wantVersion     string // expected X-GitHub-Proxy-Version value ("" means absent)
 		upstreamHeaders map[string]string // headers set by inner handler (simulates upstream response)
 	}{
 		{
-			name:       "dev version",
-			version:    "dev",
-			wantHeader: "GitHub Proxy dev",
+			name:        "dev version",
+			version:     "dev",
+			wantVersion: "dev",
 		},
 		{
-			name:       "release version",
-			version:    "1.2.3",
-			wantHeader: "GitHub Proxy 1.2.3",
+			name:        "release version",
+			version:     "1.2.3",
+			wantVersion: "1.2.3",
 		},
 		{
-			name:       "empty version",
-			version:    "",
-			wantHeader: "GitHub Proxy",
+			name:        "empty version",
+			version:     "",
+			wantVersion: "",
 		},
 		{
 			// The reverse proxy copies GitHub's "server: github.com" via
 			// Header().Add(). The middleware must win: only one Server value.
 			name:            "overwrites upstream server header",
 			version:         "1.0.0",
-			wantHeader:      "GitHub Proxy 1.0.0",
+			wantVersion:     "1.0.0",
 			upstreamHeaders: map[string]string{"Server": "github.com"},
 		},
 	}
@@ -120,12 +120,21 @@ func TestServerHeaderMiddleware(t *testing.T) {
 			rr := httptest.NewRecorder()
 			ServerHeaderMiddleware(tc.version)(inner).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 
-			if got := rr.Header().Get("Server"); got != tc.wantHeader {
-				t.Errorf("Server header: got %q, want %q", got, tc.wantHeader)
+			if got := rr.Header().Get("Server"); got != "GitHub Proxy" {
+				t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy")
 			}
 			// Ensure there is exactly one Server header value (no duplicates).
 			if vals := rr.Header().Values("Server"); len(vals) != 1 {
 				t.Errorf("Server header count: got %d values %v, want exactly 1", len(vals), vals)
+			}
+			if tc.wantVersion != "" {
+				if got := rr.Header().Get("X-GitHub-Proxy-Version"); got != tc.wantVersion {
+					t.Errorf("X-GitHub-Proxy-Version header: got %q, want %q", got, tc.wantVersion)
+				}
+			} else {
+				if got := rr.Header().Get("X-GitHub-Proxy-Version"); got != "" {
+					t.Errorf("X-GitHub-Proxy-Version header: got %q, want empty", got)
+				}
 			}
 		})
 	}
@@ -140,8 +149,11 @@ func TestServerHeaderMiddlewareEmptyResponse(t *testing.T) {
 	rr := httptest.NewRecorder()
 	ServerHeaderMiddleware("1.0.0")(inner).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 
-	if got := rr.Header().Get("Server"); got != "GitHub Proxy 1.0.0" {
-		t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy 1.0.0")
+	if got := rr.Header().Get("Server"); got != "GitHub Proxy" {
+		t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy")
+	}
+	if got := rr.Header().Get("X-GitHub-Proxy-Version"); got != "1.0.0" {
+		t.Errorf("X-GitHub-Proxy-Version header: got %q, want %q", got, "1.0.0")
 	}
 }
 
@@ -155,8 +167,11 @@ func TestServerHeaderMiddlewareFlusher(t *testing.T) {
 	rr := httptest.NewRecorder()
 	ServerHeaderMiddleware("1.0.0")(inner).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 
-	if got := rr.Header().Get("Server"); got != "GitHub Proxy 1.0.0" {
-		t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy 1.0.0")
+	if got := rr.Header().Get("Server"); got != "GitHub Proxy" {
+		t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy")
+	}
+	if got := rr.Header().Get("X-GitHub-Proxy-Version"); got != "1.0.0" {
+		t.Errorf("X-GitHub-Proxy-Version header: got %q, want %q", got, "1.0.0")
 	}
 }
 
