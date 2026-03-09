@@ -1,17 +1,19 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	ghub "github.com/google/go-github/v84/github"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 )
@@ -25,26 +27,38 @@ const (
 	maxCachedUsernames = 10_000
 )
 
+const (
+	// defaultGraphQLURL is the GitHub GraphQL API endpoint.
+	defaultGraphQLURL = "https://api.github.com/graphql"
+
+	// viewerQuery is the GraphQL query used to resolve the authenticated
+	// user's login. It works for both human users and bot accounts.
+	viewerQuery = `{"query":"query UserCurrent{viewer{login}}"}`
+)
+
 // UsernameResolver resolves GitHub usernames from proxy token user IDs (via
-// the database) and from raw GitHub tokens (via the GitHub API). Results from
-// the API are kept in a long-lived in-memory cache keyed by a one-way SHA-256
+// the database) and from raw GitHub tokens (via the GitHub GraphQL API).
+// Results are kept in a long-lived in-memory cache keyed by a one-way SHA-256
 // hash of the token so the actual credential is never stored.
 type UsernameResolver struct {
-	store     database.Store
-	cache     *expirable.LRU[string, string]
-	logger    *slog.Logger
-	inflight  sync.Map // tracks in-progress lookups to prevent duplicate goroutines
-	newClient func(token string) *ghub.Client // injectable GitHub client factory
+	store      database.Store
+	cache      *expirable.LRU[string, string]
+	logger     *slog.Logger
+	inflight   sync.Map   // tracks in-progress lookups to prevent duplicate goroutines
+	graphqlURL string     // GraphQL endpoint URL (overridable for tests)
+	httpClient *http.Client // HTTP client for GraphQL requests
 }
 
 // NewUsernameResolver creates a resolver backed by store for database lookups
-// and an LRU cache for GitHub API lookups. Optional functional options (e.g.
-// WithGitHubClientFactory) may be applied for customisation.
+// and an LRU cache for GitHub GraphQL API lookups. Optional functional options
+// (e.g. WithGraphQLURL) may be applied for customisation.
 func NewUsernameResolver(store database.Store, logger *slog.Logger, opts ...func(*UsernameResolver)) *UsernameResolver {
 	r := &UsernameResolver{
-		store:  store,
-		cache:  expirable.NewLRU[string, string](maxCachedUsernames, nil, usernameCacheTTL),
-		logger: logger,
+		store:      store,
+		cache:      expirable.NewLRU[string, string](maxCachedUsernames, nil, usernameCacheTTL),
+		logger:     logger,
+		graphqlURL: defaultGraphQLURL,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -52,11 +66,11 @@ func NewUsernameResolver(store database.Store, logger *slog.Logger, opts ...func
 	return r
 }
 
-// WithGitHubClientFactory returns an option that replaces the default GitHub
-// client constructor. This is primarily intended for testing with mock servers.
-func WithGitHubClientFactory(fn func(token string) *ghub.Client) func(*UsernameResolver) {
+// WithGraphQLURL returns an option that overrides the GitHub GraphQL endpoint
+// URL. This is primarily intended for testing with mock servers.
+func WithGraphQLURL(url string) func(*UsernameResolver) {
 	return func(u *UsernameResolver) {
-		u.newClient = fn
+		u.graphqlURL = url
 	}
 }
 
@@ -74,7 +88,7 @@ func (u *UsernameResolver) ResolveFromUserID(ctx context.Context, userID string)
 }
 
 // ResolveFromGitHubToken determines the GitHub username that owns the given
-// raw GitHub token (e.g. gho_, ghp_, ghu_ prefixed). The result is cached
+// raw GitHub token (e.g. gho_, ghp_, ghu_, ghs_ prefixed). The result is cached
 // with a SHA-256 hash of the token as key. On a cache miss the lookup is
 // performed asynchronously so GitHub API latency does not block the caller;
 // empty string is returned for that first request. Only one in-flight lookup
@@ -82,7 +96,7 @@ func (u *UsernameResolver) ResolveFromUserID(ctx context.Context, userID string)
 // the empty string is returned silently so callers can treat this as
 // best-effort.
 func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken string) string {
-	if rawToken == "" || !isGitHubUserToken(rawToken) {
+	if rawToken == "" || !isResolvableGitHubToken(rawToken) {
 		return ""
 	}
 
@@ -109,35 +123,95 @@ func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken 
 	return ""
 }
 
-// resolveAndCacheGitHubUsername performs the GitHub API call to resolve the
-// username for the given token hash and stores it in the cache. It is intended
-// to be called from a goroutine so that GitHub API latency does not impact
-// the request that triggered the lookup.
+// graphQLError represents a single error entry in a GraphQL error response.
+type graphQLError struct {
+	Message string `json:"message"`
+}
+
+// graphQLResponse is the minimal structure for parsing the viewer login from
+// a GraphQL response. GitHub GraphQL returns HTTP 200 even for auth/rate-limit
+// failures, signalling them via a top-level "errors" array instead of a
+// non-200 status code.
+type graphQLResponse struct {
+	Data struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
+	} `json:"data"`
+	Errors []graphQLError `json:"errors"`
+}
+
+// resolveAndCacheGitHubUsername queries the GitHub GraphQL API to resolve the
+// authenticated identity (user or bot) for the given token and stores the
+// result in the cache. It is intended to be called from a goroutine so that
+// GitHub API latency does not impact the request that triggered the lookup.
 func (u *UsernameResolver) resolveAndCacheGitHubUsername(key, rawToken string) {
 	// Use a bounded background context so the lookup is not tied to the
 	// request lifetime, but also cannot hang indefinitely.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var client *ghub.Client
-	if u.newClient != nil {
-		client = u.newClient(rawToken)
-	} else {
-		client = ghub.NewClient(nil).WithAuthToken(rawToken)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.graphqlURL, bytes.NewBufferString(viewerQuery))
+	if err != nil {
+		if u.logger != nil {
+			u.logger.Debug("github username lookup: failed to create request", "error", err)
+		}
+		return
 	}
+	req.Header.Set("Authorization", "Bearer "+rawToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/vnd.github+json")
 
-	user, _, err := client.Users.Get(ctx, "")
+	resp, err := u.httpClient.Do(req)
 	if err != nil {
 		if u.logger != nil {
 			u.logger.Debug("github username lookup failed", "error", err)
 		}
 		return
 	}
+	defer resp.Body.Close()
 
-	username := user.GetLogin()
-	if username != "" {
-		u.cache.Add(key, username)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // cap at 1 MB
+	if err != nil {
+		if u.logger != nil {
+			u.logger.Debug("github username lookup: failed to read response", "error", err)
+		}
+		return
 	}
+
+	if resp.StatusCode != http.StatusOK {
+		if u.logger != nil {
+			u.logger.Debug("github username lookup: non-200 response", "status", resp.StatusCode)
+		}
+		return
+	}
+
+	var result graphQLResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		if u.logger != nil {
+			u.logger.Debug("github username lookup: failed to parse response", "error", err)
+		}
+		return
+	}
+
+	// GitHub GraphQL returns HTTP 200 even for auth/rate-limit/abuse failures,
+	// signalling them via a top-level "errors" array. Treat any errors entry as
+	// a failed lookup so we don't cache an empty username and retry on every call.
+	if len(result.Errors) > 0 {
+		if u.logger != nil {
+			u.logger.Debug("github username lookup: graphql error", "message", result.Errors[0].Message)
+		}
+		return
+	}
+
+	username := result.Data.Viewer.Login
+	if username == "" {
+		if u.logger != nil {
+			u.logger.Debug("github username lookup: empty login in response")
+		}
+		return
+	}
+	u.cache.Add(key, username)
 }
 
 // hashToken returns a hex-encoded SHA-256 digest of the token. This is used
@@ -149,8 +223,8 @@ func hashToken(token string) string {
 
 // extractRawGitHubToken pulls a raw GitHub token from the Authorization header
 // of a request. It recognises Bearer/token schemes and Basic auth with the
-// x-access-token username convention. Only tokens with a known GitHub prefix
-// (gho_, ghp_, ghu_) are returned; all other values yield "".
+// x-access-token username convention. Only tokens with a resolvable GitHub
+// prefix (gho_, ghp_, ghu_, ghs_) are returned; all other values yield "".
 func extractRawGitHubToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
@@ -165,7 +239,7 @@ func extractRawGitHubToken(r *http.Request) string {
 
 	switch scheme {
 	case "bearer", "token":
-		if isGitHubUserToken(credential) {
+		if isResolvableGitHubToken(credential) {
 			return credential
 		}
 	case "basic":
@@ -174,17 +248,20 @@ func extractRawGitHubToken(r *http.Request) string {
 			return ""
 		}
 		user, pass, ok := strings.Cut(string(decoded), ":")
-		if ok && strings.EqualFold(user, "x-access-token") && isGitHubUserToken(pass) {
+		if ok && strings.EqualFold(user, "x-access-token") && isResolvableGitHubToken(pass) {
 			return pass
 		}
 	}
 	return ""
 }
 
-// isGitHubUserToken returns true for tokens with prefixes that identify a
-// GitHub user (OAuth, personal access token, or user-to-server).
-func isGitHubUserToken(t string) bool {
+// isResolvableGitHubToken returns true for tokens with prefixes whose
+// identity can be resolved via the GitHub GraphQL viewer query. This
+// includes human user tokens (gho_, ghp_, ghu_) and GitHub App
+// installation tokens (ghs_) which identify bot accounts.
+func isResolvableGitHubToken(t string) bool {
 	return strings.HasPrefix(t, "gho_") ||
 		strings.HasPrefix(t, "ghp_") ||
-		strings.HasPrefix(t, "ghu_")
+		strings.HasPrefix(t, "ghu_") ||
+		strings.HasPrefix(t, "ghs_")
 }
