@@ -150,9 +150,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Resolve the GitHub username from the token's user ID and inject it
 	// into the request context so the access-log middleware can read it.
 	usernameStart := time.Now()
-	if h.usernameResolver != nil && pt.UserID != nil {
-		if username := h.usernameResolver.ResolveFromUserID(r.Context(), *pt.UserID); username != "" {
-			SetUsername(r, username)
+	if pt.UserID != nil {
+		SetUserID(r, *pt.UserID)
+		if h.usernameResolver != nil {
+			if username := h.usernameResolver.ResolveFromUserID(r.Context(), *pt.UserID); username != "" {
+				SetUsername(r, username)
+			}
 		}
 	}
 	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
