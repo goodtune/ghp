@@ -66,9 +66,10 @@ expiration controls.
 
 ## Hot Reloading
 
-Border policy settings can be changed without restarting the server. Send
-`SIGUSR1` to the ghp process or update the configuration file — the new
-settings take effect immediately on the next request.
+Border policy settings can be reloaded without restarting the server. After
+updating the configuration file, send `SIGUSR1` to the ghp process to reload
+it — the new settings take effect on the next request after the signal is
+received.
 
 See [Configuration — Hot Reloading](../admin/configuration.md#hot-reloading) for
 details.

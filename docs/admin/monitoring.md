@@ -21,8 +21,8 @@ Scrape the metrics endpoint at `http(s)://<ghp-server>:9136/metrics` (HTTPS when
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ghp_http_request_duration_seconds` | Histogram | Duration of all HTTP requests, labelled by backend |
-| `ghp_http_request_total` | Counter | Total HTTP requests, labelled by backend, method, and status |
+| `ghp_http_request_duration_seconds` | Histogram | Duration of all HTTP requests (labels: `backend`, `method`, `status`) |
+| `ghp_http_request_total` | Counter | Total HTTP requests (labels: `backend`, `method`, `status`) |
 
 The `backend` label distinguishes traffic by virtualhost: `api.github.com`,
 `github.com`, `copilot`, or `management`.
@@ -31,9 +31,9 @@ The `backend` label distinguishes traffic by virtualhost: `api.github.com`,
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ghp_proxy_request_duration_seconds` | Histogram | Duration of proxied GitHub API requests |
-| `ghp_proxy_request_total` | Counter | Total proxied requests with token, user, method, and status labels |
-| `ghp_proxy_decision_duration_seconds` | Histogram | Time spent in each stage of the proxy decision pipeline |
+| `ghp_proxy_request_duration_seconds` | Histogram | Duration of proxied GitHub API requests (labels: `backend`, `method`, `status`, `token_type`, `type`, `user`, `app`) |
+| `ghp_proxy_request_total` | Counter | Total proxied requests (labels: `backend`, `method`, `status`, `token_type`, `type`, `user`, `app`) |
+| `ghp_proxy_decision_duration_seconds` | Histogram | Time spent in each stage of the proxy decision pipeline (labels: `stage`, `token_type`) |
 
 The decision pipeline metric breaks down the overhead ghp adds to each request
 into individually timed stages (token extraction, scope enforcement, credential

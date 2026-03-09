@@ -74,6 +74,16 @@ values from the config file.
 | `GHP_METRICS_ENABLED` | Enable the dedicated Prometheus metrics server | `true` |
 | `GHP_METRICS_LISTEN` | Listen address for the metrics server | `:9136` |
 
+### OpenTelemetry
+
+OpenTelemetry tracing is experimental and subject to change.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GHP_OTEL_ENABLED` | Enable OpenTelemetry tracing | `false` |
+| `GHP_OTEL_ENDPOINT` | OTLP exporter endpoint (e.g. `http://localhost:4317`) | |
+| `GHP_OTEL_PROTOCOL` | OTLP transport protocol: `grpc` or `http` | `grpc` |
+
 ### OAuth Broker
 
 | Variable | Description | Default |
@@ -152,6 +162,11 @@ metrics:
   enabled: true                # set to false to disable
   listen: ":9136"              # dedicated metrics server port
 
+# otel:                        # OpenTelemetry tracing (experimental)
+#   enabled: false
+#   endpoint: ""               # OTLP exporter endpoint (e.g. http://localhost:4317)
+#   protocol: "grpc"           # "grpc" or "http"
+
 auth:
   jwt_private_key_file: ""     # RSA private key for OAuth broker JWT signing (RS256)
   # jwt_private_key: ""        # or inline PEM content
@@ -199,15 +214,14 @@ The following settings can be changed without restarting the server by sending
 `SIGUSR1` to the ghp process:
 
 - `admins` — admin user list (roles are re-synced immediately)
-- `tokens` — default and maximum token durations
-- `logging` — log level and output settings
-- `metrics` — metrics enable/disable
+- `tokens.default_duration` — default token lifetime applied to new tokens
 - `auth` — OAuth broker allowed redirects
 - `block` — border policy settings (anonymous git, token type blocking)
 - `releases` — release download policy and allow list
 
 Settings that require a restart: database driver/DSN, server listen addresses,
-TLS certificates, and the encryption key.
+TLS certificates, the encryption key, logging configuration, metrics
+enable/disable, and `tokens.max_duration` (captured at server startup).
 
 ```bash
 # Reload configuration
