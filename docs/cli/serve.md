@@ -41,8 +41,9 @@ HTTPS (fd 4).
 
 ## Systemd Integration
 
-The server supports systemd readiness notification (`Type=notify`) and watchdog.
-See [Deployment](../admin/deployment.md) for a complete systemd unit file.
+The server supports systemd readiness notification (`Type=notify`): it sends
+`READY=1` once all listeners are active. See
+[Deployment](../admin/deployment.md) for a complete systemd unit file.
 
 ## Examples
 

@@ -121,6 +121,8 @@ See [Release Download Controls](../features/release-controls.md) for details.
 ## Full YAML Reference
 
 ```yaml
+# encryption_key: ""            # WARNING: prefer GHP_ENCRYPTION_KEY env var; never commit this to version control
+
 github:
   client_id: ""
   client_secret: ""

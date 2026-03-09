@@ -95,6 +95,17 @@ directly to GitHub, and to identify which version of ghp is running.
 ## Health Check
 
 The `/auth/status` endpoint on the management host returns the current
-authentication status and can be used as a basic health check:
+authentication status. It requires authentication and returns HTTP 401
+when no valid session cookie is present, and HTTP 200 only when the user
+is authenticated. This makes it unsuitable for unauthenticated liveness
+checks that expect a 2xx response.
+
+For basic unauthenticated liveness checks, use the documentation endpoint
+which is always accessible without authentication:
+
+    curl -s https://ghp.example.com/docs/
+
+To verify both service health and authentication, use `/auth/status` with
+an authenticated session and expect HTTP 200 on success:
 
     curl -s https://ghp.example.com/auth/status

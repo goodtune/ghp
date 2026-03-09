@@ -85,7 +85,9 @@ every query. Repository-restricted tokens that attempt a GraphQL request will
 receive a `403 Forbidden` response.
 
 Open-scoped and permission-only tokens (no repository restriction) can use
-GraphQL without limitation.
+GraphQL, but ghp does not currently enforce permission scopes on GraphQL
+requests; the effective permissions are those of the underlying GitHub
+credential.
 
 ## Expiration and Revocation
 

@@ -51,7 +51,7 @@ header alone.
 - **Scope enforcement** — tokens can be restricted to specific repositories and permission levels
 - **Encryption at rest** — all stored GitHub credentials are encrypted with AES-256-GCM
 - **Audit trail** — every proxied request is logged with the token, user, repository, method, path, and status
-- **Expiration** — tokens have a configurable lifetime (default 24 hours, maximum 7 days)
+- **Expiration** — tokens have a configurable lifetime (default 24 hours, up to a server-configured maximum; default maximum 7 days)
 - **Revocation** — tokens can be revoked immediately from the CLI or web dashboard
 - **Border policy** — administrators can block specific GitHub token types from passing through the proxy (see [Token Type Border Policy](features/border-policy.md))
 
