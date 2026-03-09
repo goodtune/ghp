@@ -215,13 +215,15 @@ The following settings can be changed without restarting the server by sending
 
 - `admins` — admin user list (roles are re-synced immediately)
 - `tokens.default_duration` — default token lifetime applied to new tokens
-- `auth` — OAuth broker allowed redirects
+- `auth.allowed_redirects` — OAuth broker allowed redirects
 - `block` — border policy settings (anonymous git, token type blocking)
 - `releases` — release download policy and allow list
 
 Settings that require a restart: database driver/DSN, server listen addresses,
 TLS certificates, the encryption key, logging configuration, metrics
-enable/disable, and `tokens.max_duration` (captured at server startup).
+enable/disable, OAuth broker enable/disable and signing key
+(`auth.jwt_private_key` / `auth.jwt_private_key_file`), and `tokens.max_duration`
+(captured at server startup).
 
 ```bash
 # Reload configuration

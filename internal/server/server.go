@@ -2,7 +2,7 @@
 // It is responsible for:
 //
 //   - Opening the database and running/checking migrations
-//   - Initialising encryption, token services, and the GitHub App provider
+//   - Initializing encryption, token services, and the GitHub App provider
 //   - Building the host-dispatch handler that routes requests by Host header
 //     to the appropriate backend (API proxy, github.com passthrough, Copilot
 //     passthrough, or management UI)
