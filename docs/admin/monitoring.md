@@ -55,13 +55,13 @@ resolution, etc.), so you can identify where latency originates.
 |--------|------|-------------|
 | `ghp_github_ratelimit_remaining` | Gauge | Remaining GitHub API rate limit, per user |
 | `ghp_github_ratelimit_limit` | Gauge | GitHub API rate limit ceiling, per user |
-| `ghp_github_token_refresh_total` | Counter | OAuth token refresh attempts (success/failure) |
+| `ghp_github_token_refresh_total` | Counter | OAuth token refresh attempts per user (labels: `user`, `status`; `status` is `success` or `failure`) |
 
 #### Security Metrics
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ghp_auth_rate_limit_total` | Counter | Rate limiter rejections on auth endpoints |
+| `ghp_auth_rate_limit_total` | Counter | Rate limiter rejections on auth endpoints (label: `endpoint`) |
 | `ghp_block_anonymous_git_total` | Counter | Anonymous git requests blocked |
 | `ghp_block_anonymous_git_enabled` | Gauge | Whether anonymous git blocking is active (1 or 0) |
 
