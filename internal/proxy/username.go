@@ -88,7 +88,7 @@ func (u *UsernameResolver) ResolveFromUserID(ctx context.Context, userID string)
 }
 
 // ResolveFromGitHubToken determines the GitHub username that owns the given
-// raw GitHub token (e.g. gho_, ghp_, ghu_ prefixed). The result is cached
+// raw GitHub token (e.g. gho_, ghp_, ghu_, ghs_ prefixed). The result is cached
 // with a SHA-256 hash of the token as key. On a cache miss the lookup is
 // performed asynchronously so GitHub API latency does not block the caller;
 // empty string is returned for that first request. Only one in-flight lookup
@@ -160,6 +160,7 @@ func (u *UsernameResolver) resolveAndCacheGitHubUsername(key, rawToken string) {
 	}
 	req.Header.Set("Authorization", "Bearer "+rawToken)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := u.httpClient.Do(req)
 	if err != nil {
