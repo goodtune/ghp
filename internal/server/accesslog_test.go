@@ -213,7 +213,7 @@ func TestAccessLog_UserIDFromSlot(t *testing.T) {
 	}
 }
 
-func TestAccessLog_UserIDFallsBackToUserID(t *testing.T) {
+func TestAccessLog_UserIDFallsBackToUUIDWhenUsernameEmpty(t *testing.T) {
 	var buf bytes.Buffer
 	aw := newAccessLogWriter(&buf)
 
