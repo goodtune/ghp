@@ -192,10 +192,13 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		// Resolve the GitHub username for metrics and access-log use.
 		usernameStart := time.Now()
 		username := ""
-		if ur != nil && pt.UserID != nil {
-			username = ur.ResolveFromUserID(r.Context(), *pt.UserID)
-			if username != "" {
-				SetUsername(r, username)
+		if pt.UserID != nil {
+			SetUserID(r, *pt.UserID)
+			if ur != nil {
+				username = ur.ResolveFromUserID(r.Context(), *pt.UserID)
+				if username != "" {
+					SetUsername(r, username)
+				}
 			}
 		}
 		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))

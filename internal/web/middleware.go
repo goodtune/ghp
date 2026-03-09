@@ -8,13 +8,16 @@ import (
 	"github.com/goodtune/ghp/internal/proxy"
 )
 
-// SessionUsernameMiddleware injects the session username into the access log
-// username slot so that management requests are attributed to the logged-in user.
+// SessionUsernameMiddleware injects the session username and user ID into the
+// access log context slots so that management requests are attributed to the
+// logged-in user. The username slot receives the GitHub login; the user ID
+// slot receives the internal database identifier.
 func SessionUsernameMiddleware(ah *auth.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if session := ah.GetSession(r); session != nil {
 				proxy.SetUsername(r, session.Username)
+				proxy.SetUserID(r, session.UserID)
 			}
 			next.ServeHTTP(w, r)
 		})
