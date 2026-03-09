@@ -523,12 +523,14 @@ func TestUsernameResolver_GraphQL_HandlesGraphQLErrors(t *testing.T) {
 
 func TestUsernameResolver_GraphQL_SendsCorrectQuery(t *testing.T) {
 	// Verify the exact GraphQL query sent matches the expected viewer query.
-	var receivedQuery string
+	// Use a buffered channel to safely pass the query from the handler goroutine
+	// to the test goroutine without a data race.
+	queryCh := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var reqBody map[string]string
 		json.Unmarshal(body, &reqBody)
-		receivedQuery = reqBody["query"]
+		queryCh <- reqBody["query"]
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -553,6 +555,13 @@ func TestUsernameResolver_GraphQL_SendsCorrectQuery(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
+	var receivedQuery string
+	select {
+	case receivedQuery = <-queryCh:
+	default:
+		t.Fatal("handler goroutine did not send query to channel")
+	}
+
 	if receivedQuery != "query UserCurrent{viewer{login}}" {
 		t.Errorf("expected query 'query UserCurrent{viewer{login}}', got %q", receivedQuery)
 	}
@@ -560,9 +569,11 @@ func TestUsernameResolver_GraphQL_SendsCorrectQuery(t *testing.T) {
 
 func TestUsernameResolver_GraphQL_ForwardsBearerToken(t *testing.T) {
 	// Verify the resolver forwards the raw token as a Bearer credential.
-	var receivedAuth string
+	// Use a buffered channel to safely pass the Authorization header from the
+	// handler goroutine to the test goroutine without a data race.
+	authCh := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedAuth = r.Header.Get("Authorization")
+		authCh <- r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": map[string]interface{}{
@@ -583,6 +594,13 @@ func TestUsernameResolver_GraphQL_ForwardsBearerToken(t *testing.T) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+
+	var receivedAuth string
+	select {
+	case receivedAuth = <-authCh:
+	default:
+		t.Fatal("handler goroutine did not send Authorization header to channel")
 	}
 
 	if receivedAuth != "Bearer gho_authtest123" {
