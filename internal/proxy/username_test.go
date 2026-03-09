@@ -55,7 +55,8 @@ func TestExtractRawGitHubToken_BasicAuth(t *testing.T) {
 		{"gho basic", "x-access-token", "gho_mytoken", "gho_mytoken"},
 		{"ghs basic", "x-access-token", "ghs_bottoken", "ghs_bottoken"},
 		{"ghp basic", "x-access-token", "ghp_pattoken", "ghp_pattoken"},
-		{"wrong user", "username", "gho_mytoken", ""},
+		{"arbitrary user", "username", "gho_mytoken", "gho_mytoken"},
+		{"empty user", "", "gho_mytoken", "gho_mytoken"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

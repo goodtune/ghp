@@ -247,8 +247,8 @@ func extractRawGitHubToken(r *http.Request) string {
 		if err != nil {
 			return ""
 		}
-		user, pass, ok := strings.Cut(string(decoded), ":")
-		if ok && strings.EqualFold(user, "x-access-token") && isResolvableGitHubToken(pass) {
+		_, pass, ok := strings.Cut(string(decoded), ":")
+		if ok && isResolvableGitHubToken(pass) {
 			return pass
 		}
 	}
