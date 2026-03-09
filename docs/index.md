@@ -8,7 +8,7 @@ token and everything works. No custom clients, SDKs, or agent modifications
 required.
 
 - **Scoped tokens** — each agent gets only the repository and permission access it needs
-- **Audit trail** — every proxied request is logged with user, token, and repository
+- **Audit trail** — all requests produce access logs; API proxy requests are also recorded in a detailed audit log with token, user, and repository
 - **Border policy** — block specific GitHub token types from passing through
 - **Release controls** — block or redirect binary downloads from GitHub Releases
 - **OAuth broker** — centralise GitHub authentication for other services on your network

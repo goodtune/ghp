@@ -1,8 +1,9 @@
 // Package backend defines the four upstream backend identifiers that ghp routes
 // traffic to. These constants are used as the canonical labels for host-based
 // request dispatch, Prometheus metric labelling, and structured access logs.
-// Every HTTP request that enters ghp is attributed to exactly one backend based
-// on the Host header of the incoming request.
+// Every HTTP request with a recognized/handled Host header is attributed to
+// exactly one backend; requests for unknown or unconfigured hosts are rejected
+// and not attributed to any backend.
 package backend
 
 const (
