@@ -114,7 +114,7 @@ See [Token Type Border Policy](../features/border-policy.md) for details.
 | `GHP_RELEASES_MODE` | Release download policy: `block`, `redirect`, or empty (disabled) | |
 | `GHP_RELEASES_REDIRECT_TO` | Base URL for redirect mode (must be absolute) | |
 | `GHP_RELEASES_ALLOW` | Comma-separated org or org/repo entries exempt from the policy | |
-| `GHP_RELEASES_ALLOW_COUNT` | Number of indexed allow entries (use with `GHP_RELEASES_ALLOW_N`) | |
+| `GHP_RELEASES_ALLOW_COUNT` | Number of indexed allow entries (use with `GHP_RELEASES_ALLOW_0`, `GHP_RELEASES_ALLOW_1`, ...) | |
 
 See [Release Download Controls](../features/release-controls.md) for details.
 
@@ -128,7 +128,7 @@ github:
   private_key_file: ""         # path to PEM file for GitHub App authentication
   # private_key: ""            # or inline PEM content (useful in containers)
   enterprise_slug: ""
-  # base_url: ""               # GitHub API base URL for GHES (default: https://api.github.com)
+  # base_url: ""               # (reserved) intended GHES API base URL override; currently ignored
 
 database:
   driver: "sqlite"             # "sqlite" or "postgres"

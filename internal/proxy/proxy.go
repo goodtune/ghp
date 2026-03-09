@@ -7,7 +7,7 @@
 //   - Swapping the ghp token for the real GitHub credential (decrypted or
 //     obtained from the GitHub App installation token provider)
 //   - Forwarding the request to the real GitHub API and streaming the response
-//   - Recording audit log entries and Prometheus metrics for every request
+//   - Recording audit log entries for API proxy requests and Prometheus metrics for all requests
 //
 // The proxy handles three distinct traffic patterns through separate handlers:
 //
