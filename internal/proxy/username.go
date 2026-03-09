@@ -123,14 +123,22 @@ func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken 
 	return ""
 }
 
+// graphQLError represents a single error entry in a GraphQL error response.
+type graphQLError struct {
+	Message string `json:"message"`
+}
+
 // graphQLResponse is the minimal structure for parsing the viewer login from
-// a GraphQL response.
+// a GraphQL response. GitHub GraphQL returns HTTP 200 even for auth/rate-limit
+// failures, signalling them via a top-level "errors" array instead of a
+// non-200 status code.
 type graphQLResponse struct {
 	Data struct {
 		Viewer struct {
 			Login string `json:"login"`
 		} `json:"viewer"`
 	} `json:"data"`
+	Errors []graphQLError `json:"errors"`
 }
 
 // resolveAndCacheGitHubUsername queries the GitHub GraphQL API to resolve the
@@ -185,10 +193,24 @@ func (u *UsernameResolver) resolveAndCacheGitHubUsername(key, rawToken string) {
 		return
 	}
 
-	username := result.Data.Viewer.Login
-	if username != "" {
-		u.cache.Add(key, username)
+	// GitHub GraphQL returns HTTP 200 even for auth/rate-limit/abuse failures,
+	// signalling them via a top-level "errors" array. Treat any errors entry as
+	// a failed lookup so we don't cache an empty username and retry on every call.
+	if len(result.Errors) > 0 {
+		if u.logger != nil {
+			u.logger.Debug("github username lookup: graphql error", "message", result.Errors[0].Message)
+		}
+		return
 	}
+
+	username := result.Data.Viewer.Login
+	if username == "" {
+		if u.logger != nil {
+			u.logger.Debug("github username lookup: empty login in response")
+		}
+		return
+	}
+	u.cache.Add(key, username)
 }
 
 // hashToken returns a hex-encoded SHA-256 digest of the token. This is used

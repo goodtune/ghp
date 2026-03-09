@@ -405,10 +405,13 @@ func TestUsernameResolver_GraphQL_HandlesErrorGracefully(t *testing.T) {
 	// A failing GraphQL endpoint should not cache anything, and subsequent
 	// calls should retry.
 	var callCount atomic.Int32
+	// Buffered channel signals each time a handler invocation completes.
+	done := make(chan struct{}, 10)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount.Add(1)
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"message":"Bad credentials"}`))
+		done <- struct{}{}
 	}))
 	defer srv.Close()
 
@@ -417,8 +420,12 @@ func TestUsernameResolver_GraphQL_HandlesErrorGracefully(t *testing.T) {
 	// First call: cache miss → triggers async lookup that will fail.
 	resolver.ResolveFromGitHubToken(context.Background(), "gho_badtoken")
 
-	// Wait for the async goroutine to finish.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the async goroutine to finish (no sleep — use the done channel).
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for first async lookup to complete")
+	}
 
 	// Should still return empty (error response is not cached).
 	if got := resolver.ResolveFromGitHubToken(context.Background(), "gho_badtoken"); got != "" {
@@ -426,9 +433,59 @@ func TestUsernameResolver_GraphQL_HandlesErrorGracefully(t *testing.T) {
 	}
 
 	// Wait for the retry goroutine to finish.
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for retry async lookup to complete")
+	}
 
 	// Should have made at least 2 API calls (initial + retry).
+	if n := callCount.Load(); n < 2 {
+		t.Errorf("expected at least 2 GraphQL API calls after error + retry, got %d", n)
+	}
+}
+
+func TestUsernameResolver_GraphQL_HandlesGraphQLErrors(t *testing.T) {
+	// GitHub GraphQL returns HTTP 200 with a top-level "errors" array for
+	// auth/rate-limit/abuse failures. The resolver must treat this as a failed
+	// lookup and not cache the empty login.
+	var callCount atomic.Int32
+	done := make(chan struct{}, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		// HTTP 200 with a GraphQL-level error (e.g. insufficient scopes).
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"errors":[{"message":"Your token has not been granted the required scopes."}]}`))
+		done <- struct{}{}
+	}))
+	defer srv.Close()
+
+	resolver := NewUsernameResolver(newTestStore(t), nil, WithGraphQLURL(srv.URL))
+
+	// First call: cache miss → triggers async lookup that returns a GraphQL error.
+	resolver.ResolveFromGitHubToken(context.Background(), "gho_scopetoken")
+
+	// Wait for the async goroutine to finish.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for first async lookup to complete")
+	}
+
+	// Nothing should be cached — the error response must not populate the cache.
+	if got := resolver.ResolveFromGitHubToken(context.Background(), "gho_scopetoken"); got != "" {
+		t.Errorf("expected empty string after GraphQL error response, got %q", got)
+	}
+
+	// Wait for the retry goroutine to finish.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for retry async lookup to complete")
+	}
+
+	// The retry confirms the error was not cached and another lookup was attempted.
 	if n := callCount.Load(); n < 2 {
 		t.Errorf("expected at least 2 GraphQL API calls after error + retry, got %d", n)
 	}
