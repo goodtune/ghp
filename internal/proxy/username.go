@@ -222,9 +222,11 @@ func hashToken(token string) string {
 }
 
 // extractRawGitHubToken pulls a raw GitHub token from the Authorization header
-// of a request. It recognises Bearer/token schemes and Basic auth with the
-// x-access-token username convention. Only tokens with a resolvable GitHub
-// prefix (gho_, ghp_, ghu_, ghs_) are returned; all other values yield "".
+// of a request. It recognises Bearer/token schemes and Basic auth with any
+// username (e.g. the actual GitHub login or "x-access-token"), extracting the
+// password field when it is a resolvable GitHub token. Only tokens with a
+// resolvable GitHub prefix (gho_, ghp_, ghu_, ghs_) are returned; all other
+// values yield "".
 func extractRawGitHubToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
@@ -247,8 +249,8 @@ func extractRawGitHubToken(r *http.Request) string {
 		if err != nil {
 			return ""
 		}
-		user, pass, ok := strings.Cut(string(decoded), ":")
-		if ok && strings.EqualFold(user, "x-access-token") && isResolvableGitHubToken(pass) {
+		_, pass, ok := strings.Cut(string(decoded), ":")
+		if ok && isResolvableGitHubToken(pass) {
 			return pass
 		}
 	}

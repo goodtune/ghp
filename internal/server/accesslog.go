@@ -150,13 +150,13 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) ht
 			level = "error"
 		}
 
-		// Prefer the internal user ID for the user_id field (set by
-		// SessionUsernameMiddleware for management requests, or by the
-		// proxy handler for API requests via proxy.SetUserID). Fall back
-		// to the GitHub username slot when the ID slot is empty.
-		userID := *slots.UserID
+		// Prefer the GitHub username for the user_id field so that
+		// operators see a recognisable login rather than an opaque
+		// internal UUID. Fall back to the internal user ID slot when
+		// the username slot is empty (e.g. unauthenticated requests).
+		userID := *slots.Username
 		if userID == "" {
-			userID = *slots.Username
+			userID = *slots.UserID
 		}
 
 		entry := &accessLogEntry{
