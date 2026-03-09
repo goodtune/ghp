@@ -31,11 +31,13 @@ The `backend` label distinguishes traffic by virtualhost: `api.github.com`,
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ghp_proxy_request_duration_seconds` | Histogram | Duration of proxied GitHub API requests (labels: `backend`, `method`, `status`, `token_type`, `type`, `user`, `app`) |
-| `ghp_proxy_request_total` | Counter | Total proxied requests (labels: `backend`, `method`, `status`, `token_type`, `type`, `user`, `app`) |
+| `ghp_proxy_request_duration_seconds` | Histogram | Duration of authenticated requests processed by the proxy (API and git smart-HTTP) (labels: `backend`, `method`, `status`, `token_type`, `type`, `user`, `app`) |
+| `ghp_proxy_request_total` | Counter | Total authenticated requests processed by the proxy (API and git smart-HTTP) (labels: `backend`, `method`, `status`, `token_type`, `type`, `user`, `app`) |
 | `ghp_proxy_decision_duration_seconds` | Histogram | Time spent in each stage of the proxy decision pipeline (labels: `stage`, `token_type`) |
 
-The decision pipeline metric breaks down the overhead ghp adds to each request
+The `type` label distinguishes API traffic from git smart-HTTP traffic (e.g.
+`type="git"` for git operations proxied via the `github.com` backend). The
+decision pipeline metric breaks down the overhead ghp adds to each request
 into individually timed stages (token extraction, scope enforcement, credential
 resolution, etc.), so you can identify where latency originates.
 

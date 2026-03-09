@@ -12,7 +12,9 @@ const (
 
 	// GitHub handles requests to github.com — git smart HTTP (clone/push) and
 	// web traffic such as release downloads. Token interception is performed for
-	// ghx_/gha_ tokens; other traffic passes through transparently.
+	// ghx_/gha_ tokens. Other traffic is generally forwarded transparently,
+	// although release downloads may be intercepted or redirected when release
+	// controls (releases.mode) are configured.
 	GitHub = "github.com"
 
 	// Copilot handles requests to *.githubcopilot.com. Traffic is forwarded
