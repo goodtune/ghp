@@ -193,6 +193,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		usernameStart := time.Now()
 		username := ""
 		if ur != nil && pt.UserID != nil {
+			SetUserID(r, *pt.UserID)
 			username = ur.ResolveFromUserID(r.Context(), *pt.UserID)
 			if username != "" {
 				SetUsername(r, username)

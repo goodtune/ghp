@@ -111,9 +111,9 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) ht
 		start := time.Now()
 		rec := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
 
-		// Prepare a mutable slot in the request context so downstream
-		// handlers can inject the resolved GitHub username.
-		r, usernameSlot := proxy.PrepareUsernameSlot(r)
+		// Prepare mutable slots in the request context so downstream
+		// handlers can inject the resolved GitHub username and user ID.
+		r, slots := proxy.PrepareAccessLogSlots(r)
 
 		next.ServeHTTP(rec, r)
 
@@ -150,6 +150,15 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) ht
 			level = "error"
 		}
 
+		// Prefer the internal user ID for the user_id field (set by
+		// SessionUsernameMiddleware for management requests). Fall back
+		// to the GitHub username (set by the proxy handler for API
+		// requests via UsernameResolver).
+		userID := *slots.UserID
+		if userID == "" {
+			userID = *slots.Username
+		}
+
 		entry := &accessLogEntry{
 			Level:  level,
 			TS:     float64(start.UnixNano()) / 1e9,
@@ -166,7 +175,7 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) ht
 				Headers:    headers,
 			},
 			BytesRead:   0,
-			UserID:      *usernameSlot,
+			UserID:      userID,
 			Duration:    dur.Seconds(),
 			Size:        rec.size,
 			Status:      rec.status,

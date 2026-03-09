@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/goodtune/ghp/internal/backend"
+	"github.com/goodtune/ghp/internal/proxy"
 )
 
 func TestAccessLog(t *testing.T) {
@@ -181,6 +182,63 @@ func TestAccessLog_SetCookieResponseHeaderRedacted(t *testing.T) {
 	// Non-sensitive response headers should pass through.
 	if ct := entry.RespHeaders["Content-Type"]; len(ct) == 0 || ct[0] != "text/plain" {
 		t.Errorf("Content-Type should not be redacted, got %v", ct)
+	}
+}
+
+func TestAccessLog_UserIDFromSlot(t *testing.T) {
+	var buf bytes.Buffer
+	aw := newAccessLogWriter(&buf)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxy.SetUserID(r, "user-uuid-123")
+		proxy.SetUsername(r, "alice")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := accessLogHandler(backend.Mgmt, inner, aw)
+
+	req := httptest.NewRequest("GET", "http://ghp.example.com/admin", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	var entry accessLogEntry
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("failed to unmarshal: %v\nraw: %s", err, buf.String())
+	}
+
+	// user_id should prefer the user ID slot over the username slot.
+	if entry.UserID != "user-uuid-123" {
+		t.Errorf("user_id: got %q, want %q", entry.UserID, "user-uuid-123")
+	}
+}
+
+func TestAccessLog_UserIDFallsBackToUsername(t *testing.T) {
+	var buf bytes.Buffer
+	aw := newAccessLogWriter(&buf)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only set username (no user ID) — simulates proxy requests
+		// where only the GitHub username is resolved.
+		proxy.SetUsername(r, "alice")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := accessLogHandler(backend.API, inner, aw)
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	var entry accessLogEntry
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("failed to unmarshal: %v\nraw: %s", err, buf.String())
+	}
+
+	// user_id should fall back to the username when no user ID is set.
+	if entry.UserID != "alice" {
+		t.Errorf("user_id: got %q, want %q", entry.UserID, "alice")
 	}
 }
 

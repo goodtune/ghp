@@ -237,10 +237,11 @@ func TestSessionUsernameMiddleware_WithSession(t *testing.T) {
 		t.Fatal("no session cookie returned by test-login")
 	}
 
-	// Verify the middleware injects the username.
-	var gotUsername string
+	// Verify the middleware injects both username and user ID.
+	var gotUsername, gotUserID string
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUsername = proxy.GetUsername(r)
+		gotUserID = proxy.GetUserID(r)
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -248,8 +249,8 @@ func TestSessionUsernameMiddleware_WithSession(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/admin", nil)
 	req.AddCookie(sessionCookie)
-	// Prepare the username slot (normally done by accessLogHandler).
-	req, usernameSlot := proxy.PrepareUsernameSlot(req)
+	// Prepare the access log slots (normally done by accessLogHandler).
+	req, slots := proxy.PrepareAccessLogSlots(req)
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -257,8 +258,14 @@ func TestSessionUsernameMiddleware_WithSession(t *testing.T) {
 	if gotUsername != "alice" {
 		t.Errorf("GetUsername inside handler: got %q, want %q", gotUsername, "alice")
 	}
-	if *usernameSlot != "alice" {
-		t.Errorf("username slot: got %q, want %q", *usernameSlot, "alice")
+	if *slots.Username != "alice" {
+		t.Errorf("username slot: got %q, want %q", *slots.Username, "alice")
+	}
+	if gotUserID == "" {
+		t.Error("GetUserID inside handler: got empty string, want non-empty user ID")
+	}
+	if *slots.UserID == "" {
+		t.Error("user ID slot: got empty string, want non-empty user ID")
 	}
 }
 
@@ -274,16 +281,17 @@ func TestSessionUsernameMiddleware_NoSession(t *testing.T) {
 	cfg := &config.Config{DevMode: true}
 	ah := auth.NewHandler(cfg, &stubStore{}, enc, slog.Default())
 
-	var gotUsername string
+	var gotUsername, gotUserID string
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUsername = proxy.GetUsername(r)
+		gotUserID = proxy.GetUserID(r)
 		w.WriteHeader(http.StatusOK)
 	})
 
 	handler := SessionUsernameMiddleware(ah)(inner)
 
 	req := httptest.NewRequest("GET", "/login", nil)
-	req, usernameSlot := proxy.PrepareUsernameSlot(req)
+	req, slots := proxy.PrepareAccessLogSlots(req)
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -291,8 +299,14 @@ func TestSessionUsernameMiddleware_NoSession(t *testing.T) {
 	if gotUsername != "" {
 		t.Errorf("GetUsername: got %q, want empty string", gotUsername)
 	}
-	if *usernameSlot != "" {
-		t.Errorf("username slot: got %q, want empty string", *usernameSlot)
+	if *slots.Username != "" {
+		t.Errorf("username slot: got %q, want empty string", *slots.Username)
+	}
+	if gotUserID != "" {
+		t.Errorf("GetUserID: got %q, want empty string", gotUserID)
+	}
+	if *slots.UserID != "" {
+		t.Errorf("user ID slot: got %q, want empty string", *slots.UserID)
 	}
 }
 

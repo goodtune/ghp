@@ -138,6 +138,42 @@ func TestContextUsernameSlot(t *testing.T) {
 	}
 }
 
+func TestContextAccessLogSlots(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+
+	// Before preparing slots, GetUserID returns "".
+	if got := GetUserID(r); got != "" {
+		t.Errorf("expected empty user ID before slot, got %q", got)
+	}
+
+	// SetUserID is a no-op without a slot.
+	SetUserID(r, "should-not-stick")
+	if got := GetUserID(r); got != "" {
+		t.Errorf("expected empty user ID without slot, got %q", got)
+	}
+
+	// Prepare access log slots (both username and user ID).
+	r, slots := PrepareAccessLogSlots(r)
+
+	// Set and read user ID via context.
+	SetUserID(r, "uuid-123")
+	if got := GetUserID(r); got != "uuid-123" {
+		t.Errorf("expected 'uuid-123', got %q", got)
+	}
+	if *slots.UserID != "uuid-123" {
+		t.Errorf("expected slot to be 'uuid-123', got %q", *slots.UserID)
+	}
+
+	// Username slot should also work via PrepareAccessLogSlots.
+	SetUsername(r, "octocat")
+	if got := GetUsername(r); got != "octocat" {
+		t.Errorf("expected 'octocat', got %q", got)
+	}
+	if *slots.Username != "octocat" {
+		t.Errorf("expected slot to be 'octocat', got %q", *slots.Username)
+	}
+}
+
 func TestUsernameResolver_ResolveFromUserID(t *testing.T) {
 	store := newTestStore(t)
 

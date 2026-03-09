@@ -151,6 +151,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// into the request context so the access-log middleware can read it.
 	usernameStart := time.Now()
 	if h.usernameResolver != nil && pt.UserID != nil {
+		SetUserID(r, *pt.UserID)
 		if username := h.usernameResolver.ResolveFromUserID(r.Context(), *pt.UserID); username != "" {
 			SetUsername(r, username)
 		}
