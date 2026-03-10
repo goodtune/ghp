@@ -51,10 +51,11 @@ func ServerHeaderMiddleware(version string) func(http.Handler) http.Handler {
 	}
 }
 
-// serverHeaderWriter wraps http.ResponseWriter and forces the Server header to
-// a fixed value immediately before the response headers are written, discarding
-// any conflicting value set by downstream handlers (e.g. the GitHub upstream
-// "server: github.com" copied by the reverse proxy).
+// serverHeaderWriter wraps http.ResponseWriter and forces the Server and
+// X-GitHub-Proxy-Version headers to fixed values immediately before the
+// response headers are written, discarding any conflicting values set by
+// downstream handlers (e.g. the GitHub upstream "server: github.com" copied
+// by the reverse proxy).
 type serverHeaderWriter struct {
 	http.ResponseWriter
 	version string
@@ -76,6 +77,8 @@ func (w *serverHeaderWriter) setOnce() {
 		w.Header().Set("Server", "GitHub Proxy")
 		if w.version != "" {
 			w.Header().Set("X-GitHub-Proxy-Version", w.version)
+		} else {
+			w.Header().Del("X-GitHub-Proxy-Version")
 		}
 		w.done = true
 	}

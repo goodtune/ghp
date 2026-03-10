@@ -132,8 +132,8 @@ func TestServerHeaderMiddleware(t *testing.T) {
 					t.Errorf("X-GitHub-Proxy-Version header: got %q, want %q", got, tc.wantVersion)
 				}
 			} else {
-				if got := rr.Header().Get("X-GitHub-Proxy-Version"); got != "" {
-					t.Errorf("X-GitHub-Proxy-Version header: got %q, want empty", got)
+				if vals := rr.Header().Values("X-GitHub-Proxy-Version"); len(vals) != 0 {
+					t.Errorf("X-GitHub-Proxy-Version header: got %v, want header to be absent", vals)
 				}
 			}
 		})
