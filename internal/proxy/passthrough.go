@@ -189,17 +189,14 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 
 		tokenType := pt.TokenType
 
-		// Resolve the GitHub username for metrics and access-log use.
+		// Inject the token creator's user ID for auditing. Username resolution
+		// happens later, after the real GitHub token is obtained, by querying
+		// the GraphQL viewer endpoint — this gives the actual authenticated
+		// identity (bot account for gha_ tokens, human for ghx_ tokens).
 		usernameStart := time.Now()
 		username := ""
 		if pt.UserID != nil {
 			SetUserID(r, *pt.UserID)
-			if ur != nil {
-				username = ur.ResolveFromUserID(r.Context(), *pt.UserID)
-				if username != "" {
-					SetUsername(r, username)
-				}
-			}
 		}
 		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
@@ -234,6 +231,12 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 				metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 				writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 				return
+			}
+			if ur != nil {
+				if u := ur.ResolveFromGitHubToken(r.Context(), realToken); u != "" {
+					username = u
+					SetUsername(r, username)
+				}
 			}
 			r.Header.Set("Authorization", rewriteAuth(realToken))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
@@ -276,6 +279,12 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 			return
+		}
+		if ur != nil {
+			if u := ur.ResolveFromGitHubToken(r.Context(), realToken); u != "" {
+				username = u
+				SetUsername(r, username)
+			}
 		}
 		r.Header.Set("Authorization", rewriteAuth(realToken))
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))

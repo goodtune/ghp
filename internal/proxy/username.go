@@ -89,6 +89,11 @@ func (u *UsernameResolver) WarmCache(resolver GitHubTokenResolver) {
 	go u.warmCacheSync(resolver)
 }
 
+// warmCacheMaxConcurrent is the maximum number of simultaneous GraphQL viewer
+// requests issued during a cache warm. This prevents a startup burst of
+// goroutines/HTTP connections on instances with many active tokens.
+const warmCacheMaxConcurrent = 5
+
 func (u *UsernameResolver) warmCacheSync(resolver GitHubTokenResolver) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -101,8 +106,11 @@ func (u *UsernameResolver) warmCacheSync(resolver GitHubTokenResolver) {
 		return
 	}
 
+	sem := make(chan struct{}, warmCacheMaxConcurrent)
+	var wg sync.WaitGroup
+
 	now := time.Now()
-	var warmed int
+	var queued int
 	for _, pt := range tokens {
 		if pt.RevokedAt != nil || pt.ExpiresAt.Before(now) {
 			continue
@@ -115,12 +123,24 @@ func (u *UsernameResolver) warmCacheSync(resolver GitHubTokenResolver) {
 			}
 			continue
 		}
-		u.ResolveFromGitHubToken(ctx, ghToken)
-		warmed++
+		key := hashToken(ghToken)
+		if _, ok := u.cache.Get(key); ok {
+			// Already cached from a previous warm or request — skip.
+			continue
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		queued++
+		go func(tok, k string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			u.resolveAndCacheGitHubUsername(k, tok)
+		}(ghToken, key)
 	}
+	wg.Wait()
 
 	if u.logger != nil {
-		u.logger.Info("username cache warmed", "tokens", warmed)
+		u.logger.Info("username cache warmed", "tokens", queued)
 	}
 }
 

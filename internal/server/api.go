@@ -571,8 +571,9 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 }
 
 // warmTokenUsername resolves the GitHub credential behind a newly created
-// proxy token and triggers the async GraphQL viewer lookup so the username
-// is cached before the first proxied request arrives.
+// proxy token and triggers a best-effort async GraphQL viewer lookup to
+// pre-populate the username cache. The lookup runs in the background and
+// may not complete before the first proxied request arrives.
 func (a *API) warmTokenUsername(tokenID string) {
 	if a.proxyTokenResolver == nil || a.usernameResolver == nil {
 		return
