@@ -153,7 +153,7 @@ func (u *UsernameResolver) warmCacheSync(resolver GitHubTokenResolver) {
 				return
 			}
 			defer u.inflight.Delete(k)
-			u.resolveAndCacheGitHubUsername(k, tok)
+			u.resolveAndCacheGitHubUsername(ctx, k, tok)
 		}(ghToken, key)
 	}
 	wg.Wait()
@@ -202,10 +202,11 @@ func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken 
 
 	// Cache miss: resolve the username asynchronously so that GitHub API
 	// latency does not impact the current request. The eventual result will be
-	// stored in the cache for future calls.
+	// stored in the cache for future calls. Use a fresh background context so
+	// the lookup is not cancelled when the triggering request context ends.
 	go func() {
 		defer u.inflight.Delete(key)
-		u.resolveAndCacheGitHubUsername(key, rawToken)
+		u.resolveAndCacheGitHubUsername(context.Background(), key, rawToken)
 	}()
 
 	// Best-effort: if the username is not yet cached, return empty string.
@@ -249,10 +250,16 @@ type graphQLResponse struct {
 // authenticated identity (user or bot) for the given token and stores the
 // result in the cache. It is intended to be called from a goroutine so that
 // GitHub API latency does not impact the request that triggered the lookup.
-func (u *UsernameResolver) resolveAndCacheGitHubUsername(key, rawToken string) {
-	// Use a bounded background context so the lookup is not tied to the
-	// request lifetime, but also cannot hang indefinitely.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// parentCtx provides a deadline ceiling (e.g. the warm-cache 60s budget);
+// a 5s per-lookup timeout is derived from it so the lookup is bounded both
+// individually and within the overall warm-pass budget.
+func (u *UsernameResolver) resolveAndCacheGitHubUsername(parentCtx context.Context, key, rawToken string) {
+	// Derive a per-lookup timeout from the parent context. Using the parent
+	// as the base means the warm-cache 60s deadline is inherited: if the
+	// overall budget expires the child context (and in-flight HTTP request)
+	// is cancelled automatically, while each individual lookup is still
+	// bounded to at most 5s even when the parent has a longer deadline.
+	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.graphqlURL, bytes.NewBufferString(viewerQuery))
