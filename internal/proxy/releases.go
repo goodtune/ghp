@@ -101,6 +101,21 @@ func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Log
 // NewReleasesHandlerWithClient is like NewReleasesHandler but accepts a custom
 // HTTP client for HEAD requests, enabling testing without real network calls.
 func NewReleasesHandlerWithClient(inner http.Handler, cfg *config.Config, logger *slog.Logger, client HTTPHeadDoer) http.Handler {
+	// Pre-load the not-found template once at construction time so it is not
+	// re-read and re-parsed on every 404 response.
+	notFoundTmpl := defaultNotFoundTmpl
+	if cfg.Releases.RedirectNotFoundTemplate != "" {
+		customTmpl, err := loadCustomTemplate(cfg.Releases.RedirectNotFoundTemplate)
+		if err != nil {
+			if logger != nil {
+				logger.Error("failed to load custom not-found template, using default",
+					"path", cfg.Releases.RedirectNotFoundTemplate, "error", err)
+			}
+		} else {
+			notFoundTmpl = customTmpl
+		}
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mode := cfg.Releases.Mode
 		if mode == "" {
@@ -137,7 +152,7 @@ func NewReleasesHandlerWithClient(inner http.Handler, cfg *config.Config, logger
 			target := redirectTo + r.URL.RequestURI()
 
 			if cfg.Releases.RedirectHeadCheck {
-				if servedNotFound := headCheckAndServe404(w, r, target, client, cfg, logger); servedNotFound {
+				if servedNotFound := headCheckAndServe404(w, r, target, client, notFoundTmpl, logger); servedNotFound {
 					return
 				}
 			}
@@ -153,10 +168,10 @@ func NewReleasesHandlerWithClient(inner http.Handler, cfg *config.Config, logger
 }
 
 // headCheckAndServe404 issues a HEAD request to target. If the response is 404,
-// it renders the not-found template and returns true. For any other outcome
-// (non-404 response, network error) it returns false and the caller should
-// proceed with the normal redirect.
-func headCheckAndServe404(w http.ResponseWriter, r *http.Request, target string, client HTTPHeadDoer, cfg *config.Config, logger *slog.Logger) bool {
+// it renders tmpl and returns true. For any other outcome (non-404 response,
+// network error) it returns false and the caller should proceed with the normal
+// redirect.
+func headCheckAndServe404(w http.ResponseWriter, r *http.Request, target string, client HTTPHeadDoer, tmpl *template.Template, logger *slog.Logger) bool {
 	headReq, err := http.NewRequestWithContext(r.Context(), http.MethodHead, target, nil)
 	if err != nil {
 		if logger != nil {
@@ -203,19 +218,6 @@ func headCheckAndServe404(w http.ResponseWriter, r *http.Request, target string,
 			data.Repo = pm[2]
 		}
 		data.Asset = path.Base(r.URL.Path)
-	}
-
-	tmpl := defaultNotFoundTmpl
-	if cfg.Releases.RedirectNotFoundTemplate != "" {
-		customTmpl, err := loadCustomTemplate(cfg.Releases.RedirectNotFoundTemplate)
-		if err != nil {
-			if logger != nil {
-				logger.Error("failed to load custom not-found template, using default",
-					"path", cfg.Releases.RedirectNotFoundTemplate, "error", err)
-			}
-		} else {
-			tmpl = customTmpl
-		}
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
