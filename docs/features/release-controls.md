@@ -174,6 +174,21 @@ of environment variables and YAML fields.
     Indexed entries replace the comma-separated `GHP_RELEASES_ALLOW` value
     entirely when `GHP_RELEASES_ALLOW_COUNT` is set.
 
+## Monitoring
+
+When `redirect_head_check` is enabled, ghp records two metrics:
+
+- **`ghp_releases_redirect_head_check_total`** — a counter labeled by `result`
+  (`found`, `not_found`, `error`) that tracks how often the mirror has the
+  requested asset, is missing it, or is unreachable.
+- **`ghp_proxy_decision_duration_seconds`** with `stage="redirect_head_check"` —
+  a histogram recording the latency of each HEAD probe, so you can monitor the
+  overhead the availability check adds.
+
+Use these to tune your mirror coverage and set alerts for elevated `not_found`
+or `error` rates. See [Monitoring](../admin/monitoring.md) for the full metrics
+reference.
+
 ## Limitations
 
 - **Release pages and metadata are not blocked.** Only the binary download
