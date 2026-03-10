@@ -183,6 +183,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 	authHandler := auth.NewHandler(s.cfg, store, enc, s.logger)
 	usernameResolver := proxy.NewUsernameResolver(store, s.logger)
+	proxyTokenResolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc, appTokenProvider)
+	usernameResolver.WarmCache(proxyTokenResolver)
 	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, usernameResolver, s.logger)
 
 	// Recover the concrete *github.AppTokenProvider for admin API endpoints.
@@ -190,7 +192,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if atp, ok := appTokenProvider.(*github.AppTokenProvider); ok {
 		concreteATP = atp
 	}
-	api := NewAPI(s.cfg, store, tokenSvc, authHandler, enc, concreteATP, s.logger)
+	api := NewAPI(s.cfg, store, tokenSvc, authHandler, enc, concreteATP, proxyTokenResolver, usernameResolver, s.logger)
 	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
 
 	// Build HTTP mux.

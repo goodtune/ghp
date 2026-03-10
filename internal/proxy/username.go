@@ -74,6 +74,56 @@ func WithGraphQLURL(url string) func(*UsernameResolver) {
 	}
 }
 
+// GitHubTokenResolver resolves a proxy token database record to the underlying
+// plaintext GitHub credential. This interface is satisfied by ProxyTokenResolver
+// and enables cache warming without depending on the full proxy handler.
+type GitHubTokenResolver interface {
+	ResolveProxyTokenToGitHub(ctx context.Context, pt *database.ProxyToken) (string, error)
+}
+
+// WarmCache loads all unexpired, non-revoked proxy tokens from the database,
+// resolves each to its underlying GitHub credential, and triggers an async
+// GraphQL viewer lookup to populate the username cache. This runs in a
+// background goroutine so server startup is not blocked.
+func (u *UsernameResolver) WarmCache(resolver GitHubTokenResolver) {
+	go u.warmCacheSync(resolver)
+}
+
+func (u *UsernameResolver) warmCacheSync(resolver GitHubTokenResolver) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	tokens, err := u.store.ListAllProxyTokens(ctx)
+	if err != nil {
+		if u.logger != nil {
+			u.logger.Error("username cache warm: failed to list tokens", "error", err)
+		}
+		return
+	}
+
+	now := time.Now()
+	var warmed int
+	for _, pt := range tokens {
+		if pt.RevokedAt != nil || pt.ExpiresAt.Before(now) {
+			continue
+		}
+		ghToken, err := resolver.ResolveProxyTokenToGitHub(ctx, pt)
+		if err != nil {
+			if u.logger != nil {
+				u.logger.Debug("username cache warm: skipping token",
+					"token_id", pt.ID, "error", err)
+			}
+			continue
+		}
+		u.ResolveFromGitHubToken(ctx, ghToken)
+		warmed++
+	}
+
+	if u.logger != nil {
+		u.logger.Info("username cache warmed", "tokens", warmed)
+	}
+}
+
 // ResolveFromUserID looks up the GitHub username for an internal user ID via
 // the database. Returns "" if the user cannot be found.
 func (u *UsernameResolver) ResolveFromUserID(ctx context.Context, userID string) string {

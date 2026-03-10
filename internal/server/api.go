@@ -2,6 +2,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"github.com/goodtune/ghp/internal/database"
 	ghpgithub "github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/metrics"
+	"github.com/goodtune/ghp/internal/proxy"
 	"github.com/goodtune/ghp/internal/token"
 )
 
@@ -26,20 +28,22 @@ const maxRequestBodySize = 1 << 20 // 1 MB
 
 // API handles the service API endpoints (token management, users, audit).
 type API struct {
-	cfg              *config.Config
-	store            database.Store
-	tokenService     *token.Service
-	authHandler      *auth.Handler
-	encryptor        *crypto.Encryptor
-	appTokenProvider *ghpgithub.AppTokenProvider // nil if GitHub App not configured
-	logger           *slog.Logger
-	httpClient       *http.Client // used for outbound GitHub API calls
+	cfg                *config.Config
+	store              database.Store
+	tokenService       *token.Service
+	authHandler        *auth.Handler
+	encryptor          *crypto.Encryptor
+	appTokenProvider   *ghpgithub.AppTokenProvider // nil if GitHub App not configured
+	proxyTokenResolver *proxy.ProxyTokenResolver   // resolves proxy tokens to GitHub credentials
+	usernameResolver   *proxy.UsernameResolver     // caches GitHub username lookups
+	logger             *slog.Logger
+	httpClient         *http.Client // used for outbound GitHub API calls
 
 	tokenCreateLimiter *auth.IPRateLimiter // POST /api/tokens
 }
 
 // NewAPI creates a new API handler.
-func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, logger *slog.Logger) *API {
+func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, ptr *proxy.ProxyTokenResolver, ur *proxy.UsernameResolver, logger *slog.Logger) *API {
 	return &API{
 		cfg:                cfg,
 		store:              store,
@@ -47,6 +51,8 @@ func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *aut
 		authHandler:        ah,
 		encryptor:          enc,
 		appTokenProvider:   atp,
+		proxyTokenResolver: ptr,
+		usernameResolver:   ur,
 		logger:             logger,
 		httpClient:         &http.Client{Timeout: 10 * time.Second},
 		tokenCreateLimiter: auth.NewIPRateLimiter(20, time.Minute, "/api/tokens", logger),
@@ -162,6 +168,10 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 
 	metrics.TokenCreatedTotal.WithLabelValues(session.UserID).Inc()
 	metrics.TokenActive.WithLabelValues(session.UserID).Inc()
+
+	// Warm the username cache for the newly created token so the first
+	// proxied request has the identity available immediately.
+	a.warmTokenUsername(result.ID)
 
 	// Audit log.
 	a.store.CreateAuditEntry(r.Context(), &database.AuditEntry{
@@ -558,6 +568,29 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 	}
 
 	return perms
+}
+
+// warmTokenUsername resolves the GitHub credential behind a newly created
+// proxy token and triggers the async GraphQL viewer lookup so the username
+// is cached before the first proxied request arrives.
+func (a *API) warmTokenUsername(tokenID string) {
+	if a.proxyTokenResolver == nil || a.usernameResolver == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		pt, err := a.store.GetProxyTokenByID(ctx, tokenID)
+		if err != nil || pt == nil {
+			return
+		}
+		ghToken, err := a.proxyTokenResolver.ResolveProxyTokenToGitHub(ctx, pt)
+		if err != nil {
+			return
+		}
+		a.usernameResolver.ResolveFromGitHubToken(ctx, ghToken)
+	}()
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
