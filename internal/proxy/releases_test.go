@@ -350,21 +350,17 @@ func TestReleasesHandlerHeadCheck404Content(t *testing.T) {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+
 	body := w.Body.String()
 	// Check the default template populates the expected fields.
 	for _, want := range []string{
 		"goodtune/ghp",
 		"ghp_linux.tar.gz",
 		"v1.0.0",
-		"text/html",
 	} {
-		if want == "text/html" {
-			ct := w.Header().Get("Content-Type")
-			if !strings.HasPrefix(ct, "text/html") {
-				t.Errorf("Content-Type = %q, want text/html", ct)
-			}
-			continue
-		}
 		if !strings.Contains(body, want) {
 			t.Errorf("body does not contain %q:\n%s", want, body)
 		}

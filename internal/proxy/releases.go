@@ -80,6 +80,11 @@ type HTTPHeadDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// headCheckClient is a dedicated HTTP client used for HEAD availability probes.
+// A 10-second timeout ensures that an unresponsive mirror degrades gracefully
+// to a normal redirect rather than blocking the client request indefinitely.
+var headCheckClient = &http.Client{Timeout: 10 * time.Second}
+
 // NewReleasesHandler wraps inner with a policy handler for github.com release
 // download requests. Paths matching /{org}/{repo}/releases/download/** are
 // intercepted when cfg.Releases.Mode is non-empty:
@@ -95,7 +100,7 @@ type HTTPHeadDoer interface {
 // unchanged. The allow list check is always performed before applying the
 // policy, so explicitly listed orgs and repos are never affected.
 func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger) http.Handler {
-	return NewReleasesHandlerWithClient(inner, cfg, logger, http.DefaultClient)
+	return NewReleasesHandlerWithClient(inner, cfg, logger, headCheckClient)
 }
 
 // NewReleasesHandlerWithClient is like NewReleasesHandler but accepts a custom
