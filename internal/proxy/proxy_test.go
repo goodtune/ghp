@@ -941,6 +941,120 @@ func TestServeHTTP_OpenScoped_AgentToken_RootEndpoint_NoOAuthScopes(t *testing.T
 	}
 }
 
+func TestServeHTTP_AgentToken_ResolvesBot_NotTokenCreator(t *testing.T) {
+	// When a gha_ agent token is used, the access log username must reflect
+	// the bot identity from the GitHub App installation token (e.g. "my-app[bot]"),
+	// NOT the human user who created the proxy token.
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a human user who will be the token creator.
+	user := &database.User{GitHubID: 200, GitHubUsername: "human-creator", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	var installID int64 = 42
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		TokenType:      token.TokenTypeAgent,
+		UserID:         user.ID,
+		InstallationID: installID,
+		Duration:       24 * time.Hour,
+		SessionID:      "agent-identity-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mock GraphQL server returns the bot identity for the installation token.
+	gqlSrv := newMockGraphQLServer(t, "my-app[bot]", nil)
+	defer gqlSrv.Close()
+
+	usernameResolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
+
+	// Pre-warm the cache so the username is available synchronously.
+	usernameResolver.ResolveFromGitHubToken(ctx, "ghs_fake_install_token")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if usernameResolver.ResolveFromGitHubToken(ctx, "ghs_fake_install_token") != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:              &config.Config{},
+		tokenService:     tokenSvc,
+		store:            store,
+		encryptor:        enc,
+		appTokenProvider: &mockAppTokenProvider{token: "ghs_fake_install_token"},
+		usernameResolver: usernameResolver,
+		logger:           slog.Default(),
+		client:           &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo/pulls", nil)
+	req.Header.Set("Authorization", "Bearer "+result.Token)
+	// Prepare access log slots so SetUsername/GetUsername work in tests.
+	req, slots := PrepareAccessLogSlots(req)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	// The username set in the request context must be the bot identity,
+	// not the human who created the token.
+	got := *slots.Username
+	if got == "human-creator" {
+		t.Errorf("username should be the bot identity, not the token creator 'human-creator'")
+	}
+	if got != "my-app[bot]" {
+		t.Errorf("expected username 'my-app[bot]', got %q", got)
+	}
+}
+
+func TestServeHTTP_ProxyToken_ResolvesTokenCreator(t *testing.T) {
+	// Verify that ghx_ (proxy) tokens still resolve the human token creator's
+	// username, not the bot identity. This is the control case for the agent
+	// token test above.
+	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
+		"contents":      "read",
+		"pull_requests": "read",
+	})
+
+	// Add a username resolver to the handler.
+	usernameResolver := NewUsernameResolver(h.store, nil)
+	h.usernameResolver = usernameResolver
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/goodtune/ghp/pulls", nil)
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	// Prepare access log slots so SetUsername/GetUsername work in tests.
+	req, slots := PrepareAccessLogSlots(req)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	// The username should be the token creator (from the database lookup).
+	got := *slots.Username
+	if got != "scopeduser" {
+		t.Errorf("expected username 'scopeduser' for proxy token, got %q", got)
+	}
+}
+
 func TestSyntheticOAuthScopes(t *testing.T) {
 	tests := []struct {
 		name   string

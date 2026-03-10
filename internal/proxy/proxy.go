@@ -169,10 +169,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the GitHub username from the token's user ID and inject it
 	// into the request context so the access-log middleware can read it.
+	// For agent tokens, the identity is resolved later from the GitHub App
+	// installation token via the GraphQL viewer query (e.g. "myapp[bot]"),
+	// rather than using the token creator's username.
 	usernameStart := time.Now()
 	if pt.UserID != nil {
 		SetUserID(r, *pt.UserID)
-		if h.usernameResolver != nil {
+		if h.usernameResolver != nil && token.TokenType(pt.TokenType) != token.TokenTypeAgent {
 			if username := h.usernameResolver.ResolveFromUserID(r.Context(), *pt.UserID); username != "" {
 				SetUsername(r, username)
 			}
@@ -210,6 +213,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 			writeError(w, status, msg)
 			return
+		}
+		// For agent tokens, resolve the bot identity from the installation token.
+		if token.TokenType(pt.TokenType) == token.TokenTypeAgent {
+			h.resolveAgentUsername(r, githubToken)
 		}
 		repo := ExtractRepoFromPath(apiPath)
 		authHeader := rewriteAuth(githubToken)
@@ -266,6 +273,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, status, msg)
 		return
+	}
+
+	// For agent tokens, resolve the bot identity from the installation token.
+	if token.TokenType(pt.TokenType) == token.TokenTypeAgent {
+		h.resolveAgentUsername(r, githubToken)
 	}
 
 	// For the root endpoint, synthesize X-OAuth-Scopes from the token's
@@ -330,6 +342,11 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		return
 	}
 
+	// For agent tokens, resolve the bot identity from the installation token.
+	if token.TokenType(pt.TokenType) == token.TokenTypeAgent {
+		h.resolveAgentUsername(r, githubToken)
+	}
+
 	authHeader := rewriteAuth(githubToken)
 
 	// Record total decision time (everything before forwarding to GitHub).
@@ -344,6 +361,18 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	}
 
 	h.logRequest(r.Context(), pt, r, "/graphql", "", status, time.Since(start), "proxy_request")
+}
+
+// resolveAgentUsername resolves the identity behind a GitHub App installation
+// token (ghs_ prefix) and sets it as the username on the request context.
+// For agent tokens, the authenticated identity is the bot account
+// (e.g. "myapp[bot]"), not the human who created the ghp proxy token.
+func (h *Handler) resolveAgentUsername(r *http.Request, githubToken string) {
+	if h.usernameResolver != nil {
+		if username := h.usernameResolver.ResolveFromGitHubToken(r.Context(), githubToken); username != "" {
+			SetUsername(r, username)
+		}
+	}
 }
 
 func (h *Handler) getGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {
