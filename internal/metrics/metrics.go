@@ -86,6 +86,16 @@ var (
 		Help: "Total number of requests rejected by the auth rate limiter, by endpoint.",
 	}, []string{"endpoint"})
 
+	// ReleasesRedirectHeadCheckTotal counts the outcomes of HEAD requests
+	// made to the redirect target when releases.redirect_head_check is enabled.
+	// The "result" label is one of "found" (non-404 response, redirect proceeds),
+	// "not_found" (404 returned, friendly error page served), or "error" (network
+	// failure, redirect proceeds).
+	ReleasesRedirectHeadCheckTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_releases_redirect_head_check_total",
+		Help: "Total number of HEAD checks against the release redirect target, by result.",
+	}, []string{"result"})
+
 	// BlockAnonymousGitEnabled reflects whether the anonymous git blocking
 	// feature is currently active (1) or inactive (0). Set at server startup
 	// and on config reload (SIGUSR1); not updated per-request.
@@ -138,6 +148,7 @@ var (
 	//   scope_enforcement      – repository allowlist + permission level checks
 	//   github_token_resolution – loading & decrypting (or refreshing) the real GitHub credential
 	//   upstream_roundtrip     – proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer)
+	//   redirect_head_check   – HEAD request to the release redirect target to verify asset availability (releases handler only)
 	ProxyDecisionDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ghp_proxy_decision_duration_seconds",
 		Help:    "Duration of each stage in the proxy decision pipeline.",
@@ -163,6 +174,7 @@ const (
 	StageScopeEnforcement      = "scope_enforcement"
 	StageGitHubTokenResolution = "github_token_resolution"
 	StageUpstreamRoundtrip     = "upstream_roundtrip"
+	StageRedirectHeadCheck     = "redirect_head_check"
 )
 
 // ObserveDecision records the duration of a single stage in the proxy

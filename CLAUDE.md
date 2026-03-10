@@ -91,6 +91,7 @@ The proxy decision pipeline is broken into individually timed stages so that the
 | `scope_enforcement` | Repository allowlist check + permission level verification |
 | `github_token_resolution` | Loading, decrypting (or OAuth-refreshing) the real GitHub credential |
 | `upstream_roundtrip` | Proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer) |
+| `redirect_head_check` | HEAD request to the release redirect target to verify asset availability before issuing a 302 (releases handler only) |
 
 Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tokens, or `unknown` for pre-resolution stages).
 
@@ -109,6 +110,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_github_ratelimit_remaining` / `ghp_github_ratelimit_limit` — GitHub rate limit gauges
 - `ghp_github_token_refresh_total` — OAuth token refresh attempts
 - `ghp_auth_rate_limit_total` — rate limiter rejections
+- `ghp_releases_redirect_head_check_total` — HEAD check outcomes (`found`, `not_found`, `error`) for release redirect targets
 
 ## Coding Conventions
 

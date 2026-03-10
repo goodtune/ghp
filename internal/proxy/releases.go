@@ -9,8 +9,10 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/metrics"
 )
 
 // releasesDownloadRe matches github.com release download paths of the form
@@ -160,21 +162,30 @@ func headCheckAndServe404(w http.ResponseWriter, r *http.Request, target string,
 		if logger != nil {
 			logger.Warn("failed to create HEAD request for redirect target", "target", target, "error", err)
 		}
+		metrics.ReleasesRedirectHeadCheckTotal.WithLabelValues("error").Inc()
 		return false
 	}
 
+	start := time.Now()
 	resp, err := client.Do(headReq)
+	dur := time.Since(start)
+	metrics.ObserveDecision(metrics.StageRedirectHeadCheck, "unknown", dur)
+
 	if err != nil {
 		if logger != nil {
 			logger.Warn("HEAD request to redirect target failed", "target", target, "error", err)
 		}
+		metrics.ReleasesRedirectHeadCheckTotal.WithLabelValues("error").Inc()
 		return false
 	}
 	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNotFound {
+		metrics.ReleasesRedirectHeadCheckTotal.WithLabelValues("found").Inc()
 		return false
 	}
+
+	metrics.ReleasesRedirectHeadCheckTotal.WithLabelValues("not_found").Inc()
 
 	// Extract tag/asset from the original path for the template.
 	var data releaseNotFoundData
