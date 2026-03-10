@@ -187,12 +187,16 @@ func (s *Server) Run(ctx context.Context) error {
 	usernameResolver := proxy.NewUsernameResolver(store, s.logger)
 	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, usernameResolver, s.logger)
 
+	// Build audit log writer for structured JSON audit events.
+	auditWriter := newAuditLogWriter(s.logWriter)
+	proxyHandler.SetAuditLogWriter(auditWriter)
+
 	// Recover the concrete *github.AppTokenProvider for admin API endpoints.
 	var concreteATP *github.AppTokenProvider
 	if atp, ok := appTokenProvider.(*github.AppTokenProvider); ok {
 		concreteATP = atp
 	}
-	api := NewAPI(s.cfg, store, tokenSvc, authHandler, enc, concreteATP, s.logger)
+	api := NewAPI(s.cfg, store, tokenSvc, authHandler, enc, concreteATP, s.logger, auditWriter)
 	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
 
 	// Build HTTP mux.

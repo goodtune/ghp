@@ -24,7 +24,7 @@ import (
 // maxRequestBodySize is the maximum allowed request body size for API endpoints.
 const maxRequestBodySize = 1 << 20 // 1 MB
 
-// API handles the service API endpoints (token management, users, audit).
+// API handles the service API endpoints (token management, users).
 type API struct {
 	cfg              *config.Config
 	store            database.Store
@@ -34,12 +34,13 @@ type API struct {
 	appTokenProvider *ghpgithub.AppTokenProvider // nil if GitHub App not configured
 	logger           *slog.Logger
 	httpClient       *http.Client // used for outbound GitHub API calls
+	auditLog         *auditLogWriter
 
 	tokenCreateLimiter *auth.IPRateLimiter // POST /api/tokens
 }
 
 // NewAPI creates a new API handler.
-func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, logger *slog.Logger) *API {
+func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, logger *slog.Logger, aw *auditLogWriter) *API {
 	return &API{
 		cfg:                cfg,
 		store:              store,
@@ -49,6 +50,7 @@ func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *aut
 		appTokenProvider:   atp,
 		logger:             logger,
 		httpClient:         &http.Client{Timeout: 10 * time.Second},
+		auditLog:           aw,
 		tokenCreateLimiter: auth.NewIPRateLimiter(20, time.Minute, "/api/tokens", logger),
 	}
 }
@@ -69,7 +71,6 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/github/installations", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallations)))
 	mux.Handle("GET /api/github/installations/{id}/repositories", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallationRepos)))
 
-	mux.Handle("GET /api/audit", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListAudit)))
 }
 
 type createTokenRequest struct {
@@ -163,10 +164,13 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	metrics.TokenCreatedTotal.WithLabelValues(session.UserID).Inc()
 	metrics.TokenActive.WithLabelValues(session.UserID).Inc()
 
-	// Audit log.
-	a.store.CreateAuditEntry(r.Context(), &database.AuditEntry{
-		UserID:    session.UserID,
+	a.auditLog.writeEntry(&auditLogEntry{
+		Msg:       "audit event",
 		Action:    "token_created",
+		UserID:    session.UserID,
+		Username:  session.Username,
+		TokenID:   result.ID,
+		TokenType: string(tt),
 		SessionID: req.SessionID,
 	})
 
@@ -267,10 +271,13 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	metrics.TokenRevokedTotal.WithLabelValues(ownerID).Inc()
 	metrics.TokenActive.WithLabelValues(ownerID).Dec()
 
-	// Audit log.
-	a.store.CreateAuditEntry(r.Context(), &database.AuditEntry{
-		UserID: session.UserID,
-		Action: "token_revoked",
+	a.auditLog.writeEntry(&auditLogEntry{
+		Msg:       "audit event",
+		Action:    "token_revoked",
+		UserID:    session.UserID,
+		Username:  session.Username,
+		TokenID:   id,
+		TokenType: pt.TokenType,
 	})
 
 	a.logger.Info("token_revoked", "user", session.Username, "token_id", id)
@@ -300,35 +307,6 @@ func (a *API) handleListUserTokens(w http.ResponseWriter, r *http.Request) {
 		tokens = []*database.ProxyToken{}
 	}
 	writeJSON(w, http.StatusOK, tokens)
-}
-
-func (a *API) handleListAudit(w http.ResponseWriter, r *http.Request) {
-	session := auth.SessionFromContext(r.Context())
-
-	filter := database.AuditFilter{
-		Repository: r.URL.Query().Get("repository"),
-		TokenID:    r.URL.Query().Get("token_id"),
-		Action:     r.URL.Query().Get("action"),
-		Limit:      100,
-	}
-
-	// Non-admins can only see their own audit entries.
-	if session.Role != "admin" {
-		filter.UserID = session.UserID
-	} else if uid := r.URL.Query().Get("user_id"); uid != "" {
-		filter.UserID = uid
-	}
-
-	entries, err := a.store.ListAuditEntries(r.Context(), filter)
-	if err != nil {
-		a.logger.Error("failed to list audit entries", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
-		return
-	}
-	if entries == nil {
-		entries = []*database.AuditEntry{}
-	}
-	writeJSON(w, http.StatusOK, entries)
 }
 
 func (a *API) handleListUserRepos(w http.ResponseWriter, r *http.Request) {
