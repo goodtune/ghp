@@ -145,6 +145,14 @@ func (u *UsernameResolver) warmCacheSync(resolver GitHubTokenResolver) {
 		go func(tok, k string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// Use the same inflight guard as ResolveFromGitHubToken so that
+			// warm-up and request-driven resolution for the same token hash
+			// deduplicate consistently and avoid redundant GraphQL calls when
+			// real traffic overlaps with the warm-up pass.
+			if _, loaded := u.inflight.LoadOrStore(k, struct{}{}); loaded {
+				return
+			}
+			defer u.inflight.Delete(k)
 			u.resolveAndCacheGitHubUsername(k, tok)
 		}(ghToken, key)
 	}
