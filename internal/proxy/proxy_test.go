@@ -1023,21 +1023,79 @@ func TestServeHTTP_AgentToken_ResolvesBot_NotTokenCreator(t *testing.T) {
 	}
 }
 
-func TestServeHTTP_ProxyToken_ResolvesTokenCreator(t *testing.T) {
-	// Verify that ghx_ (proxy) tokens still resolve the human token creator's
-	// username, not the bot identity. This is the control case for the agent
-	// token test above.
-	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
-		"contents":      "read",
-		"pull_requests": "read",
-	})
+func TestServeHTTP_ProxyToken_ResolvesViaGraphQL(t *testing.T) {
+	// Verify that ghx_ (proxy) tokens resolve the identity via the GraphQL
+	// viewer query on the underlying GitHub credential, just like agent tokens.
+	store := newTestStore(t)
+	ctx := context.Background()
 
-	// Add a username resolver to the handler.
-	usernameResolver := NewUsernameResolver(h.store, nil)
-	h.usernameResolver = usernameResolver
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 300, GitHubUsername: "scopeduser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use a gho_-prefixed token so isResolvableGitHubToken accepts it.
+	encAccess, err := enc.Encrypt("gho_real_user_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Repository:    "goodtune/ghp",
+		Scopes:        map[string]string{"contents": "read", "pull_requests": "read"},
+		Duration:      24 * time.Hour,
+		SessionID:     "proxy-identity-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gqlSrv := newMockGraphQLServer(t, "scopeduser", nil)
+	defer gqlSrv.Close()
+
+	usernameResolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
+
+	// Pre-warm the cache for the decrypted GitHub token.
+	usernameResolver.ResolveFromGitHubToken(ctx, "gho_real_user_token")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if usernameResolver.ResolveFromGitHubToken(ctx, "gho_real_user_token") != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:              &config.Config{},
+		tokenService:     tokenSvc,
+		store:            store,
+		encryptor:        enc,
+		usernameResolver: usernameResolver,
+		logger:           slog.Default(),
+		client:           &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
 
 	req := httptest.NewRequest("GET", "http://api.github.com/repos/goodtune/ghp/pulls", nil)
-	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Authorization", "Bearer "+result.Token)
 	// Prepare access log slots so SetUsername/GetUsername work in tests.
 	req, slots := PrepareAccessLogSlots(req)
 	rr := httptest.NewRecorder()
@@ -1048,7 +1106,7 @@ func TestServeHTTP_ProxyToken_ResolvesTokenCreator(t *testing.T) {
 		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
 	}
 
-	// The username should be the token creator (from the database lookup).
+	// The username should come from the GraphQL viewer query.
 	got := *slots.Username
 	if got != "scopeduser" {
 		t.Errorf("expected username 'scopeduser' for proxy token, got %q", got)

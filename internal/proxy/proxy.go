@@ -167,19 +167,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	tokenType := pt.TokenType
 
-	// Resolve the GitHub username from the token's user ID and inject it
-	// into the request context so the access-log middleware can read it.
-	// For agent tokens, the identity is resolved later from the GitHub App
-	// installation token via the GraphQL viewer query (e.g. "myapp[bot]"),
-	// rather than using the token creator's username.
+	// Inject the token creator's user ID into the request context for auditing.
+	// Username resolution happens later, after the real GitHub token is obtained,
+	// by querying the GraphQL viewer endpoint — this gives the actual identity
+	// behind the credential (bot account for gha_ tokens, human for ghx_ tokens).
 	usernameStart := time.Now()
 	if pt.UserID != nil {
 		SetUserID(r, *pt.UserID)
-		if h.usernameResolver != nil && token.TokenType(pt.TokenType) != token.TokenTypeAgent {
-			if username := h.usernameResolver.ResolveFromUserID(r.Context(), *pt.UserID); username != "" {
-				SetUsername(r, username)
-			}
-		}
 	}
 	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
@@ -214,10 +208,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, msg)
 			return
 		}
-		// For agent tokens, resolve the bot identity from the installation token.
-		if token.TokenType(pt.TokenType) == token.TokenTypeAgent {
-			h.resolveAgentUsername(r, githubToken)
-		}
+		h.resolveTokenUsername(r, githubToken)
 		repo := ExtractRepoFromPath(apiPath)
 		authHeader := rewriteAuth(githubToken)
 		// Record total decision time (everything before forwarding to GitHub).
@@ -275,10 +266,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For agent tokens, resolve the bot identity from the installation token.
-	if token.TokenType(pt.TokenType) == token.TokenTypeAgent {
-		h.resolveAgentUsername(r, githubToken)
-	}
+	h.resolveTokenUsername(r, githubToken)
 
 	// For the root endpoint, synthesize X-OAuth-Scopes from the token's
 	// permission scopes so that tools like "gh auth status" see the token's
@@ -342,10 +330,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		return
 	}
 
-	// For agent tokens, resolve the bot identity from the installation token.
-	if token.TokenType(pt.TokenType) == token.TokenTypeAgent {
-		h.resolveAgentUsername(r, githubToken)
-	}
+	h.resolveTokenUsername(r, githubToken)
 
 	authHeader := rewriteAuth(githubToken)
 
@@ -363,11 +348,11 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	h.logRequest(r.Context(), pt, r, "/graphql", "", status, time.Since(start), "proxy_request")
 }
 
-// resolveAgentUsername resolves the identity behind a GitHub App installation
-// token (ghs_ prefix) and sets it as the username on the request context.
-// For agent tokens, the authenticated identity is the bot account
-// (e.g. "myapp[bot]"), not the human who created the ghp proxy token.
-func (h *Handler) resolveAgentUsername(r *http.Request, githubToken string) {
+// resolveTokenUsername resolves the identity behind a GitHub token by querying
+// the GraphQL viewer endpoint and sets it as the username on the request
+// context. The resolved login is cached by token hash so subsequent requests
+// with the same credential are served from memory.
+func (h *Handler) resolveTokenUsername(r *http.Request, githubToken string) {
 	if h.usernameResolver != nil {
 		if username := h.usernameResolver.ResolveFromGitHubToken(r.Context(), githubToken); username != "" {
 			SetUsername(r, username)
