@@ -113,6 +113,8 @@ See [Token Type Border Policy](../features/border-policy.md) for details.
 |----------|-------------|---------|
 | `GHP_RELEASES_MODE` | Release download policy: `block`, `redirect`, or empty (disabled) | |
 | `GHP_RELEASES_REDIRECT_TO` | Base URL for redirect mode (must be absolute) | |
+| `GHP_RELEASES_REDIRECT_HEAD_CHECK` | Issue a HEAD request to the redirect target before redirecting; if the target returns 404, serve a friendly error page instead | `false` |
+| `GHP_RELEASES_REDIRECT_NOT_FOUND_TEMPLATE` | Path to a custom HTML template for the 404 page (see [HEAD Check](#head-check)) | |
 | `GHP_RELEASES_ALLOW` | Comma-separated org or org/repo entries exempt from the policy | |
 | `GHP_RELEASES_ALLOW_COUNT` | Number of indexed allow entries (use with `GHP_RELEASES_ALLOW_0`, `GHP_RELEASES_ALLOW_1`, ...) | |
 
@@ -187,6 +189,8 @@ block:
 releases:
   mode: ""                     # "block", "redirect", or "" (disabled)
   redirect_to: ""              # absolute URL base for redirect mode
+  redirect_head_check: false   # HEAD-check redirect target; serve 404 page if target returns 404
+  redirect_not_found_template: ""  # path to custom 404 HTML template (optional)
   allow:                       # org or org/repo entries exempt from policy
     - "myorg"
     - "trusted/tool"

@@ -1,8 +1,13 @@
 package proxy
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goodtune/ghp/internal/config"
@@ -184,5 +189,266 @@ func TestReleasesHandlerQueryString(t *testing.T) {
 	want := "https://releases.example.com/goodtune/ghp/releases/download/0.7.0/ghp.tar.gz?foo=bar"
 	if got := w.Header().Get("Location"); got != want {
 		t.Errorf("Location = %q, want %q", got, want)
+	}
+}
+
+// roundTripFunc adapts a function into an http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestReleasesHandlerHeadCheck(t *testing.T) {
+	passthrough := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	tests := []struct {
+		name           string
+		headStatus     int
+		headErr        bool
+		wantStatus     int
+		wantLoc        string
+		wantBodySubstr string
+	}{
+		{
+			name:       "HEAD returns 200 - redirect proceeds",
+			headStatus: http.StatusOK,
+			wantStatus: http.StatusFound,
+			wantLoc:    "https://mirror.example.com/goodtune/ghp/releases/download/v1.0.0/ghp_linux.tar.gz",
+		},
+		{
+			name:           "HEAD returns 404 - returns friendly 404 page",
+			headStatus:     http.StatusNotFound,
+			wantStatus:     http.StatusNotFound,
+			wantBodySubstr: "Release Not Found",
+		},
+		{
+			name:       "HEAD returns 403 - redirect proceeds",
+			headStatus: http.StatusForbidden,
+			wantStatus: http.StatusFound,
+			wantLoc:    "https://mirror.example.com/goodtune/ghp/releases/download/v1.0.0/ghp_linux.tar.gz",
+		},
+		{
+			name:       "HEAD request fails - redirect proceeds",
+			headErr:    true,
+			wantStatus: http.StatusFound,
+			wantLoc:    "https://mirror.example.com/goodtune/ghp/releases/download/v1.0.0/ghp_linux.tar.gz",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if req.Method != http.MethodHead {
+						t.Errorf("expected HEAD request, got %s", req.Method)
+					}
+					if tt.headErr {
+						return nil, errors.New("connection refused")
+					}
+					return &http.Response{
+						StatusCode: tt.headStatus,
+						Body:       io.NopCloser(strings.NewReader("")),
+					}, nil
+				}),
+			}
+
+			cfg := &config.Config{
+				Releases: config.ReleasesConfig{
+					Mode:              "redirect",
+					RedirectTo:        "https://mirror.example.com",
+					RedirectHeadCheck: true,
+				},
+			}
+			handler := NewReleasesHandlerWithClient(passthrough, cfg, nil, client)
+
+			req := httptest.NewRequest(http.MethodGet, "/goodtune/ghp/releases/download/v1.0.0/ghp_linux.tar.gz", nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if tt.wantLoc != "" {
+				got := w.Header().Get("Location")
+				if got != tt.wantLoc {
+					t.Errorf("Location = %q, want %q", got, tt.wantLoc)
+				}
+			}
+			if tt.wantBodySubstr != "" {
+				body := w.Body.String()
+				if !strings.Contains(body, tt.wantBodySubstr) {
+					t.Errorf("body does not contain %q:\n%s", tt.wantBodySubstr, body)
+				}
+			}
+		})
+	}
+}
+
+func TestReleasesHandlerHeadCheckDisabled(t *testing.T) {
+	passthrough := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Client that would return 404, but head check is disabled so it should
+	// never be called.
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			t.Fatal("HEAD request should not be made when redirect_head_check is false")
+			return nil, nil
+		}),
+	}
+
+	cfg := &config.Config{
+		Releases: config.ReleasesConfig{
+			Mode:              "redirect",
+			RedirectTo:        "https://mirror.example.com",
+			RedirectHeadCheck: false,
+		},
+	}
+	handler := NewReleasesHandlerWithClient(passthrough, cfg, nil, client)
+
+	req := httptest.NewRequest(http.MethodGet, "/goodtune/ghp/releases/download/v1.0.0/ghp_linux.tar.gz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusFound)
+	}
+}
+
+func TestReleasesHandlerHeadCheck404Content(t *testing.T) {
+	passthrough := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}),
+	}
+
+	cfg := &config.Config{
+		Releases: config.ReleasesConfig{
+			Mode:              "redirect",
+			RedirectTo:        "https://mirror.example.com",
+			RedirectHeadCheck: true,
+		},
+	}
+	handler := NewReleasesHandlerWithClient(passthrough, cfg, nil, client)
+
+	req := httptest.NewRequest(http.MethodGet, "/goodtune/ghp/releases/download/v1.0.0/ghp_linux.tar.gz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+
+	body := w.Body.String()
+	// Check the default template populates the expected fields.
+	for _, want := range []string{
+		"goodtune/ghp",
+		"ghp_linux.tar.gz",
+		"v1.0.0",
+		"text/html",
+	} {
+		if want == "text/html" {
+			ct := w.Header().Get("Content-Type")
+			if !strings.HasPrefix(ct, "text/html") {
+				t.Errorf("Content-Type = %q, want text/html", ct)
+			}
+			continue
+		}
+		if !strings.Contains(body, want) {
+			t.Errorf("body does not contain %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestReleasesHandlerHeadCheckCustomTemplate(t *testing.T) {
+	passthrough := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}),
+	}
+
+	// Write a custom template to a temp file.
+	dir := t.TempDir()
+	tmplPath := filepath.Join(dir, "custom-404.html")
+	if err := os.WriteFile(tmplPath, []byte(`<h1>Custom: {{.Owner}}/{{.Repo}} {{.Tag}} {{.Asset}}</h1>`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Releases: config.ReleasesConfig{
+			Mode:                     "redirect",
+			RedirectTo:               "https://mirror.example.com",
+			RedirectHeadCheck:        true,
+			RedirectNotFoundTemplate: tmplPath,
+		},
+	}
+	handler := NewReleasesHandlerWithClient(passthrough, cfg, nil, client)
+
+	req := httptest.NewRequest(http.MethodGet, "/cli/cli/releases/download/v2.50.0/gh_linux_amd64.tar.gz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+
+	want := "<h1>Custom: cli/cli v2.50.0 gh_linux_amd64.tar.gz</h1>"
+	if got := w.Body.String(); got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestReleasesHandlerHeadCheckBadCustomTemplate(t *testing.T) {
+	passthrough := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}),
+	}
+
+	cfg := &config.Config{
+		Releases: config.ReleasesConfig{
+			Mode:                     "redirect",
+			RedirectTo:               "https://mirror.example.com",
+			RedirectHeadCheck:        true,
+			RedirectNotFoundTemplate: "/nonexistent/template.html",
+		},
+	}
+	handler := NewReleasesHandlerWithClient(passthrough, cfg, nil, client)
+
+	req := httptest.NewRequest(http.MethodGet, "/goodtune/ghp/releases/download/v1.0.0/ghp_linux.tar.gz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// Should fall back to default template when custom template fails to load.
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+	if !strings.Contains(w.Body.String(), "Release Not Found") {
+		t.Error("expected default template fallback when custom template path is invalid")
 	}
 }

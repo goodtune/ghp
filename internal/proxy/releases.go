@@ -1,9 +1,12 @@
 package proxy
 
 import (
+	"html/template"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path"
 	"regexp"
 	"strings"
 
@@ -11,8 +14,69 @@ import (
 )
 
 // releasesDownloadRe matches github.com release download paths of the form
-// /{org}/{repo}/releases/download/{...} and captures org and repo.
-var releasesDownloadRe = regexp.MustCompile(`^/+([^/]+)/([^/]+)/releases/download/`)
+// /{org}/{repo}/releases/download/{tag}/{asset} and captures org, repo, tag,
+// and asset.
+var releasesDownloadRe = regexp.MustCompile(`^/+([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)$`)
+
+// releasesDownloadPrefixRe is a looser match used for the policy check — it
+// matches any path that starts with /{org}/{repo}/releases/download/ regardless
+// of whether tag/asset segments are present (e.g. directory listings).
+var releasesDownloadPrefixRe = regexp.MustCompile(`^/+([^/]+)/([^/]+)/releases/download/`)
+
+// releaseNotFoundData is the template data passed to the 404 page template
+// when a HEAD check against the redirect target returns 404.
+type releaseNotFoundData struct {
+	Owner string
+	Repo  string
+	Tag   string
+	Asset string
+	URL   string
+}
+
+// defaultNotFoundTemplate is the built-in HTML template rendered when
+// redirect_head_check detects a 404 and no custom template is configured.
+const defaultNotFoundTemplate = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Release Not Found</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f6f8fa; color: #1f2328; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; }
+  .card { background: #fff; border: 1px solid #d1d9e0; border-radius: 12px; max-width: 520px; width: 100%; padding: 2rem; text-align: center; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+  .code { font-size: 4rem; font-weight: 700; color: #d1242f; margin-bottom: 0.25rem; }
+  .details { color: #656d76; font-size: 0.9rem; margin-top: 1rem; line-height: 1.5; }
+  .asset { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; background: #f6f8fa; border: 1px solid #d1d9e0; border-radius: 6px; padding: 0.15rem 0.4rem; font-size: 0.85rem; word-break: break-all; }
+  .repo { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="code">404</div>
+  <h1>Release Not Found</h1>
+  <p class="details">
+    The release asset <span class="asset">{{.Asset}}</span>
+    from <span class="repo">{{.Owner}}/{{.Repo}}</span>
+    {{- if .Tag}} ({{.Tag}}){{end}}
+    is not available on the configured mirror.
+  </p>
+  <p class="details">
+    Contact your administrator if you believe this asset should be mirrored.
+  </p>
+</div>
+</body>
+</html>
+`
+
+var defaultNotFoundTmpl = template.Must(template.New("not-found").Parse(defaultNotFoundTemplate))
+
+// HTTPHeadDoer is the interface used by the releases handler to perform HEAD
+// requests. This allows injecting a test client.
+type HTTPHeadDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
 
 // NewReleasesHandler wraps inner with a policy handler for github.com release
 // download requests. Paths matching /{org}/{repo}/releases/download/** are
@@ -21,12 +85,20 @@ var releasesDownloadRe = regexp.MustCompile(`^/+([^/]+)/([^/]+)/releases/downloa
 //   - "block":    Returns 403 unless the org or org/repo is in the allow list.
 //   - "redirect": Returns a 302 redirect to cfg.Releases.RedirectTo + the
 //     original path (and query string) unless the org or org/repo is in the
-//     allow list.
+//     allow list. When cfg.Releases.RedirectHeadCheck is true, a HEAD request
+//     is made to the target URL first; if the upstream returns 404, a friendly
+//     HTML page is returned instead of a redirect.
 //
 // Any other mode value or an empty mode passes all requests through to inner
 // unchanged. The allow list check is always performed before applying the
 // policy, so explicitly listed orgs and repos are never affected.
 func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger) http.Handler {
+	return NewReleasesHandlerWithClient(inner, cfg, logger, http.DefaultClient)
+}
+
+// NewReleasesHandlerWithClient is like NewReleasesHandler but accepts a custom
+// HTTP client for HEAD requests, enabling testing without real network calls.
+func NewReleasesHandlerWithClient(inner http.Handler, cfg *config.Config, logger *slog.Logger, client HTTPHeadDoer) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mode := cfg.Releases.Mode
 		if mode == "" {
@@ -34,13 +106,13 @@ func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Log
 			return
 		}
 
-		m := releasesDownloadRe.FindStringSubmatch(r.URL.Path)
-		if m == nil {
+		pm := releasesDownloadPrefixRe.FindStringSubmatch(r.URL.Path)
+		if pm == nil {
 			inner.ServeHTTP(w, r)
 			return
 		}
 
-		org, repo := m[1], m[2]
+		org, repo := pm[1], pm[2]
 
 		if cfg.IsReleaseAllowed(org, repo) {
 			inner.ServeHTTP(w, r)
@@ -61,6 +133,13 @@ func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Log
 				return
 			}
 			target := redirectTo + r.URL.RequestURI()
+
+			if cfg.Releases.RedirectHeadCheck {
+				if servedNotFound := headCheckAndServe404(w, r, target, client, cfg, logger); servedNotFound {
+					return
+				}
+			}
+
 			http.Redirect(w, r, target, http.StatusFound)
 		default:
 			if logger != nil {
@@ -69,4 +148,78 @@ func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Log
 			inner.ServeHTTP(w, r)
 		}
 	})
+}
+
+// headCheckAndServe404 issues a HEAD request to target. If the response is 404,
+// it renders the not-found template and returns true. For any other outcome
+// (non-404 response, network error) it returns false and the caller should
+// proceed with the normal redirect.
+func headCheckAndServe404(w http.ResponseWriter, r *http.Request, target string, client HTTPHeadDoer, cfg *config.Config, logger *slog.Logger) bool {
+	headReq, err := http.NewRequestWithContext(r.Context(), http.MethodHead, target, nil)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("failed to create HEAD request for redirect target", "target", target, "error", err)
+		}
+		return false
+	}
+
+	resp, err := client.Do(headReq)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("HEAD request to redirect target failed", "target", target, "error", err)
+		}
+		return false
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		return false
+	}
+
+	// Extract tag/asset from the original path for the template.
+	var data releaseNotFoundData
+	data.URL = target
+	if m := releasesDownloadRe.FindStringSubmatch(r.URL.Path); m != nil {
+		data.Owner = m[1]
+		data.Repo = m[2]
+		data.Tag = m[3]
+		data.Asset = m[4]
+	} else {
+		// Fallback: use the prefix match for owner/repo.
+		pm := releasesDownloadPrefixRe.FindStringSubmatch(r.URL.Path)
+		if pm != nil {
+			data.Owner = pm[1]
+			data.Repo = pm[2]
+		}
+		data.Asset = path.Base(r.URL.Path)
+	}
+
+	tmpl := defaultNotFoundTmpl
+	if cfg.Releases.RedirectNotFoundTemplate != "" {
+		customTmpl, err := loadCustomTemplate(cfg.Releases.RedirectNotFoundTemplate)
+		if err != nil {
+			if logger != nil {
+				logger.Error("failed to load custom not-found template, using default",
+					"path", cfg.Releases.RedirectNotFoundTemplate, "error", err)
+			}
+		} else {
+			tmpl = customTmpl
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	if err := tmpl.Execute(w, data); err != nil && logger != nil {
+		logger.Error("failed to render not-found template", "error", err)
+	}
+	return true
+}
+
+// loadCustomTemplate reads and parses an HTML template from disk.
+func loadCustomTemplate(path string) (*template.Template, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return template.New("custom-not-found").Parse(string(b))
 }
