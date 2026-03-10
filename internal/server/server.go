@@ -186,7 +186,7 @@ func (s *Server) Run(ctx context.Context) error {
 	authHandler := auth.NewHandler(s.cfg, store, enc, s.logger)
 	usernameResolver := proxy.NewUsernameResolver(store, s.logger)
 	proxyTokenResolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc, appTokenProvider)
-	usernameResolver.WarmCache(proxyTokenResolver)
+	usernameResolver.WarmCache(ctx, proxyTokenResolver)
 	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, usernameResolver, s.logger)
 
 	// Recover the concrete *github.AppTokenProvider for admin API endpoints.

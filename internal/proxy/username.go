@@ -87,11 +87,13 @@ type GitHubTokenResolver interface {
 // background goroutine so server startup is not blocked.
 // It is safe to call with a nil resolver or on a resolver with no store —
 // in those cases the warm is silently skipped.
-func (u *UsernameResolver) WarmCache(resolver GitHubTokenResolver) {
+// ctx is threaded into the warm goroutine so it is cancelled when the caller
+// (e.g. Server.Run) shuts down or returns early due to a startup failure.
+func (u *UsernameResolver) WarmCache(ctx context.Context, resolver GitHubTokenResolver) {
 	if u == nil || resolver == nil || u.store == nil {
 		return
 	}
-	go u.warmCacheSync(resolver)
+	go u.warmCacheSync(ctx, resolver)
 }
 
 // warmCacheMaxConcurrent is the maximum number of simultaneous GraphQL viewer
@@ -99,8 +101,8 @@ func (u *UsernameResolver) WarmCache(resolver GitHubTokenResolver) {
 // goroutines/HTTP connections on instances with many active tokens.
 const warmCacheMaxConcurrent = 5
 
-func (u *UsernameResolver) warmCacheSync(resolver GitHubTokenResolver) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+func (u *UsernameResolver) warmCacheSync(parentCtx context.Context, resolver GitHubTokenResolver) {
+	ctx, cancel := context.WithTimeout(parentCtx, 60*time.Second)
 	defer cancel()
 
 	tokens, err := u.store.ListAllProxyTokens(ctx)

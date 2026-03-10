@@ -733,19 +733,11 @@ func TestUsernameResolver_WarmCache_ProxyTokens(t *testing.T) {
 	resolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
 	ptr := NewProxyTokenResolver(tokenSvc, store, enc, nil)
 
-	// Call warmCacheSync directly (synchronous) to avoid test flakiness.
-	resolver.warmCacheSync(ptr)
+	// warmCacheSync blocks until all GraphQL lookups complete; read directly from cache.
+	resolver.warmCacheSync(ctx, ptr)
 
-	// Poll until the async GraphQL lookup populates the cache.
-	var cached string
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if u := resolver.ResolveFromGitHubToken(ctx, "gho_warm_test_token"); u != "" {
-			cached = u
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// warmCacheSync blocks until all workers finish so the cache is populated now.
+	cached := resolver.CheckCache("gho_warm_test_token")
 
 	if cached != "warm-resolved-user" {
 		t.Errorf("expected 'warm-resolved-user' after cache warm, got %q", cached)
@@ -818,10 +810,7 @@ func TestUsernameResolver_WarmCache_SkipsExpiredAndRevoked(t *testing.T) {
 
 	resolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
 	ptr := NewProxyTokenResolver(tokenSvc, store, enc, nil)
-	resolver.warmCacheSync(ptr)
-
-	// Give async goroutines time to fire (they shouldn't).
-	time.Sleep(100 * time.Millisecond)
+	resolver.warmCacheSync(ctx, ptr)
 
 	if n := callCount.Load(); n != 0 {
 		t.Errorf("expected 0 GraphQL API calls for expired/revoked tokens, got %d", n)
@@ -856,18 +845,11 @@ func TestUsernameResolver_WarmCache_AgentTokens(t *testing.T) {
 	resolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
 	atp := &mockAppTokenProvider{token: "ghs_warm_agent_token"}
 	ptr := NewProxyTokenResolver(tokenSvc, store, enc, atp)
-	resolver.warmCacheSync(ptr)
 
-	// Poll until the async GraphQL lookup populates the cache.
-	var cached string
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if u := resolver.ResolveFromGitHubToken(ctx, "ghs_warm_agent_token"); u != "" {
-			cached = u
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// warmCacheSync blocks until all workers finish so the cache is populated now.
+	resolver.warmCacheSync(ctx, ptr)
+
+	cached := resolver.CheckCache("ghs_warm_agent_token")
 
 	if cached != "warm-bot[bot]" {
 		t.Errorf("expected 'warm-bot[bot]' after cache warm, got %q", cached)

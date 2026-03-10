@@ -218,11 +218,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 		// Re-check the cache after the roundtrip; the async lookup triggered
 		// by resolveTokenUsername may have completed during the upstream wait.
-		if GetUsername(r) == "" && h.usernameResolver != nil {
-			if username := h.usernameResolver.CheckCache(githubToken); username != "" {
-				SetUsername(r, username)
-			}
-		}
+		h.checkCacheAfterRoundtrip(r, githubToken)
 		if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 			h.logger.Error("failed to record token usage", "error", err)
 		}
@@ -301,11 +297,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Re-check the cache after the roundtrip; the async lookup triggered
 	// by resolveTokenUsername may have completed during the upstream wait.
-	if GetUsername(r) == "" && h.usernameResolver != nil {
-		if username := h.usernameResolver.CheckCache(githubToken); username != "" {
-			SetUsername(r, username)
-		}
-	}
+	h.checkCacheAfterRoundtrip(r, githubToken)
 
 	// Record usage.
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
@@ -362,11 +354,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 
 	// Re-check the cache after the roundtrip; the async lookup triggered
 	// by resolveTokenUsername may have completed during the upstream wait.
-	if GetUsername(r) == "" && h.usernameResolver != nil {
-		if username := h.usernameResolver.CheckCache(githubToken); username != "" {
-			SetUsername(r, username)
-		}
-	}
+	h.checkCacheAfterRoundtrip(r, githubToken)
 
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 		h.logger.Error("failed to record token usage", "error", err)
@@ -382,6 +370,19 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 func (h *Handler) resolveTokenUsername(r *http.Request, githubToken string) {
 	if h.usernameResolver != nil {
 		if username := h.usernameResolver.ResolveFromGitHubToken(r.Context(), githubToken); username != "" {
+			SetUsername(r, username)
+		}
+	}
+}
+
+// checkCacheAfterRoundtrip re-checks the username LRU cache after an upstream
+// roundtrip and sets the username on the request if it was resolved during the
+// wait. The async lookup triggered by resolveTokenUsername often completes
+// while the upstream network I/O is in-flight, so this eliminates
+// misattribution on most cold-cache first requests without adding latency.
+func (h *Handler) checkCacheAfterRoundtrip(r *http.Request, githubToken string) {
+	if GetUsername(r) == "" && h.usernameResolver != nil {
+		if username := h.usernameResolver.CheckCache(githubToken); username != "" {
 			SetUsername(r, username)
 		}
 	}
