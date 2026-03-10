@@ -104,6 +104,22 @@ func TestServerHeaderMiddleware(t *testing.T) {
 			wantVersion:     "1.0.0",
 			upstreamHeaders: map[string]string{"Server": "github.com"},
 		},
+		{
+			// When version is set, any upstream X-GitHub-Proxy-Version must
+			// be overwritten with exactly one value matching version.
+			name:            "overwrites upstream version header",
+			version:         "2.0.0",
+			wantVersion:     "2.0.0",
+			upstreamHeaders: map[string]string{"X-GitHub-Proxy-Version": "upstream-leaked"},
+		},
+		{
+			// When version is empty, any upstream X-GitHub-Proxy-Version
+			// must be deleted entirely.
+			name:            "deletes upstream version header when version empty",
+			version:         "",
+			wantVersion:     "",
+			upstreamHeaders: map[string]string{"X-GitHub-Proxy-Version": "upstream-leaked"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -130,6 +146,9 @@ func TestServerHeaderMiddleware(t *testing.T) {
 			if tc.wantVersion != "" {
 				if got := rr.Header().Get("X-GitHub-Proxy-Version"); got != tc.wantVersion {
 					t.Errorf("X-GitHub-Proxy-Version header: got %q, want %q", got, tc.wantVersion)
+				}
+				if vals := rr.Header().Values("X-GitHub-Proxy-Version"); len(vals) != 1 {
+					t.Errorf("X-GitHub-Proxy-Version header count: got %d values %v, want exactly 1", len(vals), vals)
 				}
 			} else {
 				if vals := rr.Header().Values("X-GitHub-Proxy-Version"); len(vals) != 0 {
