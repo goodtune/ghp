@@ -189,16 +189,14 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 
 		tokenType := pt.TokenType
 
-		// Inject the token creator's user ID for auditing. Username resolution
-		// happens later, after the real GitHub token is obtained, by querying
-		// the GraphQL viewer endpoint — this gives the actual authenticated
-		// identity (bot account for gha_ tokens, human for ghx_ tokens).
-		usernameStart := time.Now()
+		// Inject the token creator's user ID for auditing. The actual GitHub
+		// username is resolved later via the GraphQL viewer endpoint, after the
+		// real GitHub token is obtained — giving the authenticated identity
+		// (bot account for gha_ tokens, human for ghx_ tokens).
 		username := ""
 		if pt.UserID != nil {
 			SetUserID(r, *pt.UserID)
 		}
-		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 		// Wrap response writer to capture status code for metrics.
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -232,17 +230,26 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 				writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 				return
 			}
+			usernameStart := time.Now()
 			if ur != nil {
 				if u := ur.ResolveFromGitHubToken(r.Context(), realToken); u != "" {
 					username = u
 					SetUsername(r, username)
 				}
 			}
+			metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 			r.Header.Set("Authorization", rewriteAuth(realToken))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			upstreamStart := time.Now()
 			inner.ServeHTTP(rec, r)
 			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+			// Re-check cache after the roundtrip; the async lookup may have completed.
+			if username == "" && ur != nil {
+				if u := ur.CheckCache(realToken); u != "" {
+					username = u
+					SetUsername(r, username)
+				}
+			}
 			return
 		}
 
@@ -280,17 +287,26 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 			return
 		}
+		usernameStart := time.Now()
 		if ur != nil {
 			if u := ur.ResolveFromGitHubToken(r.Context(), realToken); u != "" {
 				username = u
 				SetUsername(r, username)
 			}
 		}
+		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 		r.Header.Set("Authorization", rewriteAuth(realToken))
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 		upstreamStart := time.Now()
 		inner.ServeHTTP(rec, r)
 		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+		// Re-check cache after the roundtrip; the async lookup may have completed.
+		if username == "" && ur != nil {
+			if u := ur.CheckCache(realToken); u != "" {
+				username = u
+				SetUsername(r, username)
+			}
+		}
 	})
 }
 

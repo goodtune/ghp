@@ -109,6 +109,11 @@ func (u *UsernameResolver) warmCacheSync(resolver GitHubTokenResolver) {
 	sem := make(chan struct{}, warmCacheMaxConcurrent)
 	var wg sync.WaitGroup
 
+	// seen tracks token hashes already queued in this warm pass so that
+	// multiple proxy tokens backed by the same GitHub credential don't
+	// trigger redundant concurrent GraphQL lookups.
+	seen := make(map[string]struct{})
+
 	now := time.Now()
 	var queued int
 	for _, pt := range tokens {
@@ -128,6 +133,12 @@ func (u *UsernameResolver) warmCacheSync(resolver GitHubTokenResolver) {
 			// Already cached from a previous warm or request — skip.
 			continue
 		}
+		if _, ok := seen[key]; ok {
+			// Another proxy token with the same underlying GitHub credential
+			// is already queued in this pass — skip to avoid duplicate requests.
+			continue
+		}
+		seen[key] = struct{}{}
 		sem <- struct{}{}
 		wg.Add(1)
 		queued++
@@ -190,6 +201,21 @@ func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken 
 	}()
 
 	// Best-effort: if the username is not yet cached, return empty string.
+	return ""
+}
+
+// CheckCache returns the cached GitHub username for the given raw token without
+// triggering a background lookup. Returns "" if the token is not yet cached.
+// Use this after an upstream roundtrip to pick up usernames that an in-flight
+// async lookup (started earlier in the same request) may have resolved by then.
+func (u *UsernameResolver) CheckCache(rawToken string) string {
+	if rawToken == "" {
+		return ""
+	}
+	key := hashToken(rawToken)
+	if username, ok := u.cache.Get(key); ok {
+		return username
+	}
 	return ""
 }
 

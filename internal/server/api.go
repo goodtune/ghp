@@ -169,8 +169,10 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	metrics.TokenCreatedTotal.WithLabelValues(session.UserID).Inc()
 	metrics.TokenActive.WithLabelValues(session.UserID).Inc()
 
-	// Warm the username cache for the newly created token so the first
-	// proxied request has the identity available immediately.
+	// Best-effort warm of the username cache for the newly created token so
+	// the first proxied requests are more likely to have the identity
+	// available without an extra lookup. Identity may still be resolved
+	// lazily on first use.
 	a.warmTokenUsername(result.ID)
 
 	// Audit log.

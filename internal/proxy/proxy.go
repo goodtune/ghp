@@ -216,6 +216,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upstreamStart := time.Now()
 		status := h.forwardRequest(w, r, apiPath, authHeader)
 		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+		// Re-check the cache after the roundtrip; the async lookup triggered
+		// by resolveTokenUsername may have completed during the upstream wait.
+		if GetUsername(r) == "" && h.usernameResolver != nil {
+			if username := h.usernameResolver.CheckCache(githubToken); username != "" {
+				SetUsername(r, username)
+			}
+		}
 		if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 			h.logger.Error("failed to record token usage", "error", err)
 		}
@@ -290,6 +297,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	status := h.forwardRequest(w, r, apiPath, authHeader, scopeOverride)
 	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 
+	// Re-check the cache after the roundtrip; the async lookup triggered
+	// by resolveTokenUsername may have completed during the upstream wait.
+	if GetUsername(r) == "" && h.usernameResolver != nil {
+		if username := h.usernameResolver.CheckCache(githubToken); username != "" {
+			SetUsername(r, username)
+		}
+	}
+
 	// Record usage.
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 		h.logger.Error("failed to record token usage", "error", err)
@@ -340,6 +355,14 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	upstreamStart := time.Now()
 	status := h.forwardRequest(w, r, "/graphql", authHeader)
 	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+
+	// Re-check the cache after the roundtrip; the async lookup triggered
+	// by resolveTokenUsername may have completed during the upstream wait.
+	if GetUsername(r) == "" && h.usernameResolver != nil {
+		if username := h.usernameResolver.CheckCache(githubToken); username != "" {
+			SetUsername(r, username)
+		}
+	}
 
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 		h.logger.Error("failed to record token usage", "error", err)
