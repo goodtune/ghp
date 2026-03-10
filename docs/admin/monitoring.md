@@ -38,8 +38,21 @@ The `backend` label distinguishes traffic by virtualhost: `api.github.com`,
 The `type` label distinguishes API traffic from git smart-HTTP traffic (e.g.
 `type="git"` for git operations proxied via the `github.com` backend). The
 decision pipeline metric breaks down the overhead ghp adds to each request
-into individually timed stages (token extraction, scope enforcement, credential
-resolution, etc.), so you can identify where latency originates.
+into individually timed stages so you can identify where latency originates.
+The stages are:
+
+| Stage | What it measures |
+|-------|------------------|
+| `total` | Full pre-forward overhead: arrival to GitHub forward |
+| `token_extraction` | Unpacking the Authorization header, identifying token prefix |
+| `border_policy_check` | Evaluating the token type border policy |
+| `token_resolution` | SHA-256 hash, database lookup, expiry & revocation check |
+| `username_resolution` | Resolving GitHub username from internal user ID |
+| `scope_parsing` | JSON unmarshalling of repository & permission scopes |
+| `scope_enforcement` | Repository allowlist + permission level checks |
+| `github_token_resolution` | Loading, decrypting (or refreshing) the real GitHub credential |
+| `upstream_roundtrip` | Proxying the request to GitHub and streaming the response |
+| `redirect_head_check` | HEAD request to the release redirect target to verify asset availability (releases handler only) |
 
 #### Token Metrics
 
@@ -64,6 +77,28 @@ resolution, etc.), so you can identify where latency originates.
 | `ghp_auth_rate_limit_total` | Counter | Rate limiter rejections on auth endpoints (label: `endpoint`) |
 | `ghp_block_anonymous_git_total` | Counter | Anonymous git requests blocked |
 | `ghp_block_anonymous_git_enabled` | Gauge | Whether anonymous git blocking is active (1 or 0) |
+
+#### Release Controls Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `ghp_releases_redirect_head_check_total` | Counter | Outcomes of HEAD requests to the release redirect target (label: `result`) |
+
+The `result` label on the HEAD check counter has three values:
+
+| Value | Meaning |
+|-------|---------|
+| `found` | Mirror returned a non-404 response; redirect proceeds normally |
+| `not_found` | Mirror returned 404; ghp served a friendly error page instead of redirecting |
+| `error` | HEAD request failed (network error, timeout); redirect proceeds normally |
+
+When `redirect_head_check` is enabled, each HEAD request is also timed in the
+decision pipeline histogram (`ghp_proxy_decision_duration_seconds`) under the
+`redirect_head_check` stage. This lets you monitor how much latency the
+availability probe adds to redirected release downloads.
+
+See [Release Download Controls](../features/release-controls.md) for
+configuration details.
 
 ## Access Logs
 

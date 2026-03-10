@@ -102,6 +102,8 @@ func (s *Server) reloadConfig() {
 
 // Run starts the server and blocks until shutdown.
 func (s *Server) Run(ctx context.Context) error {
+	metrics.SetBuildInfo(s.version)
+
 	// Open database.
 	store, err := database.Open(s.cfg.Database.Driver, s.cfg.Database.DSN)
 	if err != nil {

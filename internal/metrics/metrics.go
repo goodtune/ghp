@@ -11,6 +11,8 @@
 package metrics
 
 import (
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -84,6 +86,16 @@ var (
 		Help: "Total number of requests rejected by the auth rate limiter, by endpoint.",
 	}, []string{"endpoint"})
 
+	// ReleasesRedirectHeadCheckTotal counts the outcomes of HEAD requests
+	// made to the redirect target when releases.redirect_head_check is enabled.
+	// The "result" label is one of "found" (non-404 response, redirect proceeds),
+	// "not_found" (404 returned, friendly error page served), or "error" (network
+	// failure, redirect proceeds).
+	ReleasesRedirectHeadCheckTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_releases_redirect_head_check_total",
+		Help: "Total number of HEAD checks against the release redirect target, by result.",
+	}, []string{"result"})
+
 	// BlockAnonymousGitEnabled reflects whether the anonymous git blocking
 	// feature is currently active (1) or inactive (0). Set at server startup
 	// and on config reload (SIGUSR1); not updated per-request.
@@ -136,11 +148,19 @@ var (
 	//   scope_enforcement      – repository allowlist + permission level checks
 	//   github_token_resolution – loading & decrypting (or refreshing) the real GitHub credential
 	//   upstream_roundtrip     – proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer)
+	//   redirect_head_check   – HEAD request to the release redirect target to verify asset availability (releases handler only)
 	ProxyDecisionDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ghp_proxy_decision_duration_seconds",
 		Help:    "Duration of each stage in the proxy decision pipeline.",
 		Buckets: decisionBuckets,
 	}, []string{"stage", "token_type"})
+
+	// BuildInfo is a gauge with a constant value of 1 labeled by build
+	// metadata. It follows the node_exporter_build_info convention.
+	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ghp_build_info",
+		Help: "A metric with a constant '1' value labeled by version, revision, goversion, goos, and goarch from which ghp was built.",
+	}, []string{"version", "revision", "goversion", "goos", "goarch"})
 )
 
 // Decision pipeline stage constants.
@@ -154,6 +174,7 @@ const (
 	StageScopeEnforcement      = "scope_enforcement"
 	StageGitHubTokenResolution = "github_token_resolution"
 	StageUpstreamRoundtrip     = "upstream_roundtrip"
+	StageRedirectHeadCheck     = "redirect_head_check"
 )
 
 // ObserveDecision records the duration of a single stage in the proxy
@@ -186,4 +207,28 @@ func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string,
 
 	ProxyRequestDuration.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, username, app).Observe(dur.Seconds())
 	ProxyRequestTotal.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, username, app).Inc()
+}
+
+// SetBuildInfo records build metadata as a gauge with a constant value of 1.
+// It should be called once at server startup. The revision is extracted from
+// Go's debug.ReadBuildInfo VCS metadata; if unavailable it defaults to "unknown".
+func SetBuildInfo(version string) {
+	revision := "unknown"
+	if info, ok := runtimeDebugReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" {
+				revision = s.Value
+				break
+			}
+		}
+	}
+	BuildInfo.WithLabelValues(version, revision, runtime.Version(), runtime.GOOS, runtime.GOARCH).Set(1)
+}
+
+// runtimeDebugReadBuildInfo is an indirection over debug.ReadBuildInfo so that
+// tests can inject a fake. It is package-level so tests can swap it.
+var runtimeDebugReadBuildInfo = defaultReadBuildInfo
+
+func defaultReadBuildInfo() (*debug.BuildInfo, bool) {
+	return debug.ReadBuildInfo()
 }
