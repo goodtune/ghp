@@ -220,11 +220,11 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.Handle("/api/graphql", proxyHandler)
 
 	// Create passthrough handlers for github.com and *.githubcopilot.com.
-	resolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc, appTokenProvider)
+	// Reuse proxyTokenResolver created above for cache warming to avoid duplication.
 	githubInner := proxy.NewPassthroughHandler(
-		"https://github.com", resolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
+		"https://github.com", proxyTokenResolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
-		githubInner, tokenSvc, resolver, usernameResolver, s.logger, s.cfg)
+		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, s.logger, s.cfg)
 	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger)
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)

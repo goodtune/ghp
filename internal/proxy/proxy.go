@@ -171,11 +171,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Username resolution happens later, after the real GitHub token is obtained,
 	// by querying the GraphQL viewer endpoint — this gives the actual identity
 	// behind the credential (bot account for gha_ tokens, human for ghx_ tokens).
-	usernameStart := time.Now()
 	if pt.UserID != nil {
 		SetUserID(r, *pt.UserID)
 	}
-	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 	// Parse the token's scope restrictions once; fail-closed on corrupt JSON.
 	// Must happen before GraphQL routing so that corrupt JSON is never treated
@@ -208,7 +206,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, msg)
 			return
 		}
+		usernameStart := time.Now()
 		h.resolveTokenUsername(r, githubToken)
+		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 		repo := ExtractRepoFromPath(apiPath)
 		authHeader := rewriteAuth(githubToken)
 		// Record total decision time (everything before forwarding to GitHub).
@@ -273,7 +273,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	usernameStart := time.Now()
 	h.resolveTokenUsername(r, githubToken)
+	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 	// For the root endpoint, synthesize X-OAuth-Scopes from the token's
 	// permission scopes so that tools like "gh auth status" see the token's
@@ -345,7 +347,9 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		return
 	}
 
+	usernameStart := time.Now()
 	h.resolveTokenUsername(r, githubToken)
+	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 	authHeader := rewriteAuth(githubToken)
 

@@ -85,7 +85,12 @@ type GitHubTokenResolver interface {
 // resolves each to its underlying GitHub credential, and triggers an async
 // GraphQL viewer lookup to populate the username cache. This runs in a
 // background goroutine so server startup is not blocked.
+// It is safe to call with a nil resolver or on a resolver with no store —
+// in those cases the warm is silently skipped.
 func (u *UsernameResolver) WarmCache(resolver GitHubTokenResolver) {
+	if u == nil || resolver == nil || u.store == nil {
+		return
+	}
 	go u.warmCacheSync(resolver)
 }
 
