@@ -159,6 +159,7 @@ func TestObserveDecision_AllStages(t *testing.T) {
 		StageScopeEnforcement,
 		StageGitHubTokenResolution,
 		StageUpstreamRoundtrip,
+		StageRedirectHeadCheck,
 	}
 
 	for _, stage := range stages {
@@ -225,6 +226,34 @@ func TestBlockAnonymousGitTotal_Counter(t *testing.T) {
 	after := getCounterValueSimple(t, BlockAnonymousGitTotal)
 	if after-before != 1 {
 		t.Errorf("expected counter to increment by 1, got %f", after-before)
+	}
+}
+
+func TestReleasesRedirectHeadCheckTotal(t *testing.T) {
+	results := []string{"found", "not_found", "error"}
+	for _, result := range results {
+		t.Run(result, func(t *testing.T) {
+			labels := prometheus.Labels{"result": result}
+			before := getCounterValue(t, ReleasesRedirectHeadCheckTotal, labels)
+			ReleasesRedirectHeadCheckTotal.WithLabelValues(result).Inc()
+			after := getCounterValue(t, ReleasesRedirectHeadCheckTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
+	}
+}
+
+func TestObserveDecision_RedirectHeadCheck(t *testing.T) {
+	labels := prometheus.Labels{
+		"stage":      StageRedirectHeadCheck,
+		"token_type": "unknown",
+	}
+	before := getHistogramCount(t, ProxyDecisionDuration, labels)
+	ObserveDecision(StageRedirectHeadCheck, "", 10*time.Millisecond)
+	after := getHistogramCount(t, ProxyDecisionDuration, labels)
+	if after-before != 1 {
+		t.Errorf("expected histogram sample count to increment by 1, got %d", after-before)
 	}
 }
 

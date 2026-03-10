@@ -76,6 +76,17 @@ type ReleasesConfig struct {
 	// RedirectTo is the base URL prepended to the original path in redirect mode.
 	// Example: "https://releases.example.com/"
 	RedirectTo string `koanf:"redirect_to"`
+	// RedirectHeadCheck, when true, causes the proxy to issue a HEAD request to
+	// the redirect target URL before responding with a 302. If the HEAD response
+	// is 404, the proxy returns a friendly 404 page instead of redirecting the
+	// client to a URL that would itself 404. This is useful when the redirect
+	// target is a selective mirror that only hosts a subset of releases.
+	RedirectHeadCheck bool `koanf:"redirect_head_check"`
+	// RedirectNotFoundTemplate is the path to a custom HTML template file rendered
+	// when RedirectHeadCheck detects a 404 from the redirect target. The template
+	// is executed with html/template and receives a struct with fields Owner, Repo,
+	// Tag, Asset, and URL. If empty, a built-in default template is used.
+	RedirectNotFoundTemplate string `koanf:"redirect_not_found_template"`
 	// Allow is a list of org or org/repo entries that are exempt from the policy.
 	// Entries may be bare org names (e.g. "goodtune") or org/repo pairs
 	// (e.g. "goodtune/ghp"). Matching is case-insensitive.
