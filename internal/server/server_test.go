@@ -66,12 +66,11 @@ func TestHostDispatch(t *testing.T) {
 
 }
 
-// TestServerHeaderAllBackends verifies that the Server response header is set
-// on all backends (api, github, copilot, mgmt) when ServerHeaderMiddleware
-// wraps the host dispatch handler.
+// TestServerHeaderAllBackends verifies that the Server and X-GitHub-Proxy-Version
+// response headers are set on all backends (api, github, copilot, mgmt) when
+// ServerHeaderMiddleware wraps the host dispatch handler.
 func TestServerHeaderAllBackends(t *testing.T) {
 	const version = "1.2.3"
-	const wantHeader = "GitHub Proxy 1.2.3"
 
 	apiHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("api"))
@@ -116,8 +115,11 @@ func TestServerHeaderAllBackends(t *testing.T) {
 			if got := rr.Body.String(); got != tt.body {
 				t.Errorf("body: got %q, want %q", got, tt.body)
 			}
-			if got := rr.Header().Get("Server"); got != wantHeader {
-				t.Errorf("Server header: got %q, want %q", got, wantHeader)
+			if got := rr.Header().Get("Server"); got != "GitHub Proxy" {
+				t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy")
+			}
+			if got := rr.Header().Get("X-GitHub-Proxy-Version"); got != version {
+				t.Errorf("X-GitHub-Proxy-Version header: got %q, want %q", got, version)
 			}
 		})
 	}

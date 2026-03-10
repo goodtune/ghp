@@ -11,6 +11,8 @@
 package metrics
 
 import (
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -141,6 +143,13 @@ var (
 		Help:    "Duration of each stage in the proxy decision pipeline.",
 		Buckets: decisionBuckets,
 	}, []string{"stage", "token_type"})
+
+	// BuildInfo is a gauge with a constant value of 1 labeled by build
+	// metadata. It follows the node_exporter_build_info convention.
+	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ghp_build_info",
+		Help: "A metric with a constant '1' value labeled by version, revision, goversion, goos, and goarch from which ghp was built.",
+	}, []string{"version", "revision", "goversion", "goos", "goarch"})
 )
 
 // Decision pipeline stage constants.
@@ -186,4 +195,28 @@ func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string,
 
 	ProxyRequestDuration.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, username, app).Observe(dur.Seconds())
 	ProxyRequestTotal.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, username, app).Inc()
+}
+
+// SetBuildInfo records build metadata as a gauge with a constant value of 1.
+// It should be called once at server startup. The revision is extracted from
+// Go's debug.ReadBuildInfo VCS metadata; if unavailable it defaults to "unknown".
+func SetBuildInfo(version string) {
+	revision := "unknown"
+	if info, ok := runtimeDebugReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" {
+				revision = s.Value
+				break
+			}
+		}
+	}
+	BuildInfo.WithLabelValues(version, revision, runtime.Version(), runtime.GOOS, runtime.GOARCH).Set(1)
+}
+
+// runtimeDebugReadBuildInfo is an indirection over debug.ReadBuildInfo so that
+// tests can inject a fake. It is package-level so tests can swap it.
+var runtimeDebugReadBuildInfo = defaultReadBuildInfo
+
+func defaultReadBuildInfo() (*debug.BuildInfo, bool) {
+	return debug.ReadBuildInfo()
 }
