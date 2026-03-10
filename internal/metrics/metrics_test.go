@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"runtime"
+	"runtime/debug"
 	"testing"
 	"time"
 
@@ -223,5 +225,64 @@ func TestBlockAnonymousGitTotal_Counter(t *testing.T) {
 	after := getCounterValueSimple(t, BlockAnonymousGitTotal)
 	if after-before != 1 {
 		t.Errorf("expected counter to increment by 1, got %f", after-before)
+	}
+}
+
+func TestSetBuildInfo(t *testing.T) {
+	// Inject a fake debug.ReadBuildInfo that returns a known revision.
+	orig := runtimeDebugReadBuildInfo
+	t.Cleanup(func() { runtimeDebugReadBuildInfo = orig })
+
+	runtimeDebugReadBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{
+			Settings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "abc123"},
+			},
+		}, true
+	}
+
+	SetBuildInfo("1.2.3")
+
+	labels := prometheus.Labels{
+		"version":   "1.2.3",
+		"revision":  "abc123",
+		"goversion": runtime.Version(),
+		"goos":      runtime.GOOS,
+		"goarch":    runtime.GOARCH,
+	}
+
+	gauge, err := BuildInfo.GetMetricWith(labels)
+	if err != nil {
+		t.Fatalf("GetMetricWith: %v", err)
+	}
+	if got := getGaugeValue(t, gauge); got != 1 {
+		t.Errorf("expected build_info gauge value 1, got %f", got)
+	}
+}
+
+func TestSetBuildInfo_NoVCSRevision(t *testing.T) {
+	orig := runtimeDebugReadBuildInfo
+	t.Cleanup(func() { runtimeDebugReadBuildInfo = orig })
+
+	runtimeDebugReadBuildInfo = func() (*debug.BuildInfo, bool) {
+		return nil, false
+	}
+
+	SetBuildInfo("dev")
+
+	labels := prometheus.Labels{
+		"version":   "dev",
+		"revision":  "unknown",
+		"goversion": runtime.Version(),
+		"goos":      runtime.GOOS,
+		"goarch":    runtime.GOARCH,
+	}
+
+	gauge, err := BuildInfo.GetMetricWith(labels)
+	if err != nil {
+		t.Fatalf("GetMetricWith: %v", err)
+	}
+	if got := getGaugeValue(t, gauge); got != 1 {
+		t.Errorf("expected build_info gauge value 1, got %f", got)
 	}
 }
