@@ -218,7 +218,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 		// Re-check the cache after the roundtrip; the async lookup triggered
 		// by resolveTokenUsername may have completed during the upstream wait.
-		h.checkCacheAfterRoundtrip(r, githubToken)
+		h.checkCacheAfterRoundtrip(r, githubToken, pt)
 		if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 			h.logger.Error("failed to record token usage", "error", err)
 		}
@@ -297,7 +297,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Re-check the cache after the roundtrip; the async lookup triggered
 	// by resolveTokenUsername may have completed during the upstream wait.
-	h.checkCacheAfterRoundtrip(r, githubToken)
+	h.checkCacheAfterRoundtrip(r, githubToken, pt)
 
 	// Record usage.
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
@@ -354,7 +354,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 
 	// Re-check the cache after the roundtrip; the async lookup triggered
 	// by resolveTokenUsername may have completed during the upstream wait.
-	h.checkCacheAfterRoundtrip(r, githubToken)
+	h.checkCacheAfterRoundtrip(r, githubToken, pt)
 
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 		h.logger.Error("failed to record token usage", "error", err)
@@ -380,9 +380,27 @@ func (h *Handler) resolveTokenUsername(r *http.Request, githubToken string) {
 // wait. The async lookup triggered by resolveTokenUsername often completes
 // while the upstream network I/O is in-flight, so this eliminates
 // misattribution on most cold-cache first requests without adding latency.
-func (h *Handler) checkCacheAfterRoundtrip(r *http.Request, githubToken string) {
-	if GetUsername(r) == "" && h.usernameResolver != nil {
-		if username := h.usernameResolver.CheckCache(githubToken); username != "" {
+//
+// If the cache still yields no result and pt is a ghx_ proxy token with a
+// known creator (pt.UserID), the method falls back to a database lookup for
+// the creator's username. This keeps access logs and metrics populated during
+// GitHub GraphQL outages or rate-limit bursts. The fallback is intentionally
+// skipped for gha_ agent tokens to avoid misattributing the bot request to
+// the human who created the token.
+func (h *Handler) checkCacheAfterRoundtrip(r *http.Request, githubToken string, pt *database.ProxyToken) {
+	if GetUsername(r) != "" {
+		return
+	}
+	if h.usernameResolver == nil {
+		return
+	}
+	if username := h.usernameResolver.CheckCache(githubToken); username != "" {
+		SetUsername(r, username)
+		return
+	}
+	// Fallback for ghx_ proxy tokens only.
+	if pt != nil && pt.UserID != nil && token.TokenType(pt.TokenType) != token.TokenTypeAgent {
+		if username := h.usernameResolver.ResolveFromUserID(r.Context(), *pt.UserID); username != "" {
 			SetUsername(r, username)
 		}
 	}
