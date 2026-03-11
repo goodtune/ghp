@@ -152,6 +152,9 @@ func (u *UsernameResolver) warmCacheSync(parentCtx context.Context, resolver Git
 				}
 				return
 			}
+			if !isResolvableGitHubToken(ghToken) {
+				return
+			}
 			key := hashToken(ghToken)
 
 			if _, ok := u.cache.Get(key); ok {
