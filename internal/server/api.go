@@ -41,6 +41,9 @@ type API struct {
 
 // NewAPI creates a new API handler.
 func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, logger *slog.Logger, aw *auditLogWriter) *API {
+	if aw == nil {
+		aw = newAuditLogWriter(nil)
+	}
 	return &API{
 		cfg:                cfg,
 		store:              store,
