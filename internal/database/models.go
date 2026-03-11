@@ -116,6 +116,7 @@ type Store interface {
 	GetProxyTokenByID(ctx context.Context, id string) (*ProxyToken, error)
 	ListProxyTokens(ctx context.Context, userID string) ([]*ProxyToken, error)
 	ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, error)
+	ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error)
 	RevokeProxyToken(ctx context.Context, id string) error
 	UpdateProxyTokenUsage(ctx context.Context, id string) error
 

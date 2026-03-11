@@ -105,7 +105,7 @@ func (u *UsernameResolver) warmCacheSync(parentCtx context.Context, resolver Git
 	ctx, cancel := context.WithTimeout(parentCtx, 60*time.Second)
 	defer cancel()
 
-	tokens, err := u.store.ListAllProxyTokens(ctx)
+	tokens, err := u.store.ListActiveProxyTokens(ctx)
 	if err != nil {
 		if u.logger != nil {
 			u.logger.Error("username cache warm: failed to list tokens", "error", err)
@@ -122,7 +122,6 @@ func (u *UsernameResolver) warmCacheSync(parentCtx context.Context, resolver Git
 	seen := make(map[string]struct{})
 	var seenMu sync.Mutex
 
-	now := time.Now()
 	var queued int
 	for _, pt := range tokens {
 		// Stop queuing work if the warm-cache context has expired (e.g.
@@ -133,9 +132,6 @@ func (u *UsernameResolver) warmCacheSync(parentCtx context.Context, resolver Git
 					"queued", queued, "error", err)
 			}
 			break
-		}
-		if pt.RevokedAt != nil || pt.ExpiresAt.Before(now) {
-			continue
 		}
 		// Acquire the semaphore before resolving the GitHub token so that
 		// installation-token minting (required for gha_ agent tokens) is also

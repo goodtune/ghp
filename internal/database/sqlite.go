@@ -412,6 +412,18 @@ func (s *SQLiteStore) ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, er
 	return scanProxyTokenRows(rows)
 }
 
+func (s *SQLiteStore) ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
+		FROM proxy_tokens WHERE revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC`,
+		time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanProxyTokenRows(rows)
+}
+
 func scanProxyTokenRows(rows *sql.Rows) ([]*ProxyToken, error) {
 	var tokens []*ProxyToken
 	for rows.Next() {
