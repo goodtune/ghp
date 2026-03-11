@@ -65,6 +65,21 @@ func (r *ProxyTokenResolver) resolveProxyToken(ctx context.Context, pt *database
 	return plaintext, nil
 }
 
+// ResolveProxyTokenToGitHub resolves a ProxyToken database record to the
+// underlying plaintext GitHub credential. This is used for cache warming
+// where the caller already has the database record and does not need the
+// full Resolve-from-plaintext-token flow.
+func (r *ProxyTokenResolver) ResolveProxyTokenToGitHub(ctx context.Context, pt *database.ProxyToken) (string, error) {
+	switch token.TokenType(pt.TokenType) {
+	case token.TokenTypeProxy:
+		return r.resolveProxyToken(ctx, pt)
+	case token.TokenTypeAgent:
+		return r.resolveAgentToken(ctx, pt)
+	default:
+		return "", fmt.Errorf("unknown token type %q", pt.TokenType)
+	}
+}
+
 func (r *ProxyTokenResolver) resolveAgentToken(ctx context.Context, pt *database.ProxyToken) (string, error) {
 	if r.appTokenProvider == nil {
 		return "", fmt.Errorf("agent tokens require GitHub App configuration")

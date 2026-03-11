@@ -335,6 +335,16 @@ func (s *PostgresStore) ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, 
 	return scanPostgresProxyTokenRows(rows)
 }
 
+func (s *PostgresStore) ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+pgProxyTokenCols+` FROM proxy_tokens WHERE revoked_at IS NULL AND expires_at > NOW() ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPostgresProxyTokenRows(rows)
+}
+
 func scanPostgresProxyTokenRows(rows *sql.Rows) ([]*ProxyToken, error) {
 	var tokens []*ProxyToken
 	for rows.Next() {

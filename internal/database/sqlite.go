@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,15 @@ type SQLiteStore struct {
 
 // NewSQLiteStore opens a SQLite database at the given path.
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
+	// Check for in-memory databases before modifying the DSN.
+	inMemory := dsn == ":memory:" || dsn == "file::memory:"
+
+	// Append _pragma DSN parameters so that every connection created by the
+	// pool inherits these settings. Setting PRAGMAs via db.Exec() only
+	// affects the single connection that runs the statement; under concurrent
+	// load the pool creates additional connections that would miss them.
+	dsn = appendSQLitePragmas(dsn)
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening sqlite: %w", err)
@@ -25,23 +35,31 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 
 	// In-memory databases are per-connection, so restrict the pool to a
 	// single connection to ensure all operations share the same database.
-	if dsn == ":memory:" || dsn == "file::memory:" {
+	if inMemory {
 		db.SetMaxOpenConns(1)
 	}
 
-	// Enable WAL mode and foreign keys.
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("setting pragma %s: %w", pragma, err)
-		}
-	}
-
 	return &SQLiteStore{db: db}, nil
+}
+
+// appendSQLitePragmas adds _pragma query parameters to the DSN so that
+// modernc.org/sqlite applies them on every new connection. If the DSN
+// already contains a query string the parameters are appended; otherwise
+// a new query string is started.
+//
+// The bare ":memory:" shorthand is normalised to "file::memory:" (URI form)
+// before appending parameters, because ":memory:?key=val" is not recognised
+// as an in-memory database by SQLite — it would be treated as a literal
+// filename.
+func appendSQLitePragmas(dsn string) string {
+	if dsn == ":memory:" {
+		dsn = "file::memory:"
+	}
+	pragmas := "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	if strings.Contains(dsn, "?") {
+		return dsn + "&" + pragmas
+	}
+	return dsn + "?" + pragmas
 }
 
 func (s *SQLiteStore) Close() error {
@@ -395,6 +413,18 @@ func (s *SQLiteStore) ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, er
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
 		FROM proxy_tokens ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanProxyTokenRows(rows)
+}
+
+func (s *SQLiteStore) ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
+		FROM proxy_tokens WHERE revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC`,
+		time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
 	}

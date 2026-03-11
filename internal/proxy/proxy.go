@@ -167,18 +167,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	tokenType := pt.TokenType
 
-	// Resolve the GitHub username from the token's user ID and inject it
-	// into the request context so the access-log middleware can read it.
-	usernameStart := time.Now()
+	// Inject the token creator's user ID into the request context for auditing.
+	// Username resolution happens later, after the real GitHub token is obtained,
+	// by querying the GraphQL viewer endpoint — this gives the actual identity
+	// behind the credential (bot account for gha_ tokens, human for ghx_ tokens).
 	if pt.UserID != nil {
 		SetUserID(r, *pt.UserID)
-		if h.usernameResolver != nil {
-			if username := h.usernameResolver.ResolveFromUserID(r.Context(), *pt.UserID); username != "" {
-				SetUsername(r, username)
-			}
-		}
 	}
-	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 	// Parse the token's scope restrictions once; fail-closed on corrupt JSON.
 	// Must happen before GraphQL routing so that corrupt JSON is never treated
@@ -211,6 +206,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, msg)
 			return
 		}
+		usernameStart := time.Now()
+		h.resolveTokenUsername(r, githubToken)
+		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 		repo := ExtractRepoFromPath(apiPath)
 		authHeader := rewriteAuth(githubToken)
 		// Record total decision time (everything before forwarding to GitHub).
@@ -218,6 +216,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upstreamStart := time.Now()
 		status := h.forwardRequest(w, r, apiPath, authHeader)
 		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+		// Re-check the cache after the roundtrip; the async lookup triggered
+		// by resolveTokenUsername may have completed during the upstream wait.
+		h.checkCacheAfterRoundtrip(r, githubToken, pt)
 		if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 			h.logger.Error("failed to record token usage", "error", err)
 		}
@@ -268,6 +269,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	usernameStart := time.Now()
+	h.resolveTokenUsername(r, githubToken)
+	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
+
 	// For the root endpoint, synthesize X-OAuth-Scopes from the token's
 	// permission scopes so that tools like "gh auth status" see the token's
 	// actual capabilities rather than the underlying credential's OAuth scopes.
@@ -289,6 +294,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	upstreamStart := time.Now()
 	status := h.forwardRequest(w, r, apiPath, authHeader, scopeOverride)
 	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+
+	// Re-check the cache after the roundtrip; the async lookup triggered
+	// by resolveTokenUsername may have completed during the upstream wait.
+	h.checkCacheAfterRoundtrip(r, githubToken, pt)
 
 	// Record usage.
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
@@ -330,6 +339,10 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		return
 	}
 
+	usernameStart := time.Now()
+	h.resolveTokenUsername(r, githubToken)
+	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
+
 	authHeader := rewriteAuth(githubToken)
 
 	// Record total decision time (everything before forwarding to GitHub).
@@ -339,11 +352,58 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	status := h.forwardRequest(w, r, "/graphql", authHeader)
 	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 
+	// Re-check the cache after the roundtrip; the async lookup triggered
+	// by resolveTokenUsername may have completed during the upstream wait.
+	h.checkCacheAfterRoundtrip(r, githubToken, pt)
+
 	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 		h.logger.Error("failed to record token usage", "error", err)
 	}
 
 	h.logRequest(r.Context(), pt, r, "/graphql", "", status, time.Since(start), "proxy_request")
+}
+
+// resolveTokenUsername resolves the identity behind a GitHub token by querying
+// the GraphQL viewer endpoint and sets it as the username on the request
+// context. The resolved login is cached by token hash so subsequent requests
+// with the same credential are served from memory.
+func (h *Handler) resolveTokenUsername(r *http.Request, githubToken string) {
+	if h.usernameResolver != nil {
+		if username := h.usernameResolver.ResolveFromGitHubToken(r.Context(), githubToken); username != "" {
+			SetUsername(r, username)
+		}
+	}
+}
+
+// checkCacheAfterRoundtrip re-checks the username LRU cache after an upstream
+// roundtrip and sets the username on the request if it was resolved during the
+// wait. The async lookup triggered by resolveTokenUsername often completes
+// while the upstream network I/O is in-flight, so this eliminates
+// misattribution on most cold-cache first requests without adding latency.
+//
+// If the cache still yields no result and pt is a ghx_ proxy token with a
+// known creator (pt.UserID), the method falls back to a database lookup for
+// the creator's username. This keeps access logs and metrics populated during
+// GitHub GraphQL outages or rate-limit bursts. The fallback is intentionally
+// skipped for gha_ agent tokens to avoid misattributing the bot request to
+// the human who created the token.
+func (h *Handler) checkCacheAfterRoundtrip(r *http.Request, githubToken string, pt *database.ProxyToken) {
+	if GetUsername(r) != "" {
+		return
+	}
+	if h.usernameResolver == nil {
+		return
+	}
+	if username := h.usernameResolver.CheckCache(githubToken); username != "" {
+		SetUsername(r, username)
+		return
+	}
+	// Fallback for ghx_ proxy tokens only.
+	if pt != nil && pt.UserID != nil && token.TokenType(pt.TokenType) != token.TokenTypeAgent {
+		if username := h.usernameResolver.ResolveFromUserID(r.Context(), *pt.UserID); username != "" {
+			SetUsername(r, username)
+		}
+	}
 }
 
 func (h *Handler) getGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {
