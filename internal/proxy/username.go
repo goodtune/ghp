@@ -405,3 +405,15 @@ func isResolvableGitHubToken(t string) bool {
 		strings.HasPrefix(t, "ghu_") ||
 		strings.HasPrefix(t, "ghs_")
 }
+
+// passthroughTokenType returns the token type prefix (without the trailing
+// underscore) for native GitHub tokens. For example, "gho_abc" returns "gho".
+// Returns "unknown" if the token does not match any known prefix.
+func passthroughTokenType(rawToken string) string {
+	for _, prefix := range []string{"gho_", "ghp_", "ghu_", "ghs_"} {
+		if strings.HasPrefix(rawToken, prefix) {
+			return strings.TrimSuffix(prefix, "_")
+		}
+	}
+	return "unknown"
+}

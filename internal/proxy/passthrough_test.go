@@ -14,7 +14,10 @@ import (
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
+	"github.com/prometheus/client_golang/prometheus"
+	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
 type mockTokenResolver struct {
@@ -801,4 +804,57 @@ func TestScopedPassthrough_AnonymousGit_AuthenticatedGit_NotBlocked(t *testing.T
 			t.Fatalf("authenticated request should not be rejected as anonymous git, got %d: %s", rr.Code, body)
 		}
 	}
+}
+
+func TestScopedPassthrough_NativeToken_RecordsMetrics(t *testing.T) {
+	// A native GitHub token (gho_) forwarded through ScopedPassthroughHandler
+	// must emit ProxyRequestTotal with backend=github.com, token_type=gho,
+	// type=git, user=unknown.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, slog.Default())
+
+	labels := prometheus.Labels{
+		"backend":    "github.com",
+		"method":     "GET",
+		"status":     "200",
+		"token_type": "gho",
+		"type":       "git",
+		"user":       "unknown",
+		"app":        "",
+	}
+
+	before := getPassthroughCounterValue(t, metrics.ProxyRequestTotal, labels)
+
+	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
+	req.Header.Set("Authorization", "Bearer gho_nativetoken")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	after := getPassthroughCounterValue(t, metrics.ProxyRequestTotal, labels)
+	if after-before != 1 {
+		t.Errorf("expected ProxyRequestTotal to increment by 1, got %f", after-before)
+	}
+}
+
+func getPassthroughCounterValue(t *testing.T, counter *prometheus.CounterVec, labels prometheus.Labels) float64 {
+	t.Helper()
+	var m io_prometheus_client.Metric
+	c, err := counter.GetMetricWith(labels)
+	if err != nil {
+		t.Fatalf("GetMetricWith: %v", err)
+	}
+	if err := c.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return m.GetCounter().GetValue()
 }

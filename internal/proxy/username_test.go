@@ -817,6 +817,30 @@ func TestUsernameResolver_WarmCache_SkipsExpiredAndRevoked(t *testing.T) {
 	}
 }
 
+func TestPassthroughTokenType(t *testing.T) {
+	tests := []struct {
+		token string
+		want  string
+	}{
+		{"gho_abc123", "gho"},
+		{"ghp_def456", "ghp"},
+		{"ghu_xyz789", "ghu"},
+		{"ghs_bot123", "ghs"},
+		{"ghx_abc123", "unknown"},
+		{"gha_abc123", "unknown"},
+		{"randomtoken", "unknown"},
+		{"", "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.token, func(t *testing.T) {
+			got := passthroughTokenType(tt.token)
+			if got != tt.want {
+				t.Errorf("passthroughTokenType(%q) = %q, want %q", tt.token, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUsernameResolver_WarmCache_AgentTokens(t *testing.T) {
 	// WarmCache should also resolve agent tokens via the AppTokenProvider.
 	store := newTestStore(t)

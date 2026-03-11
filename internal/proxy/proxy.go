@@ -165,7 +165,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
 		metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
 		upstreamStart := time.Now()
-		h.forwardPassthrough(w, r, apiPath)
+		h.forwardPassthrough(w, r, apiPath, start)
 		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 		return
 	}
@@ -581,10 +581,17 @@ func (h *Handler) refreshGitHubToken(ctx context.Context, gt *database.GitHubTok
 // the original Authorization header. Used for non-ghp_ tokens (e.g. gho_*,
 // ghp_* from other systems, or personal access tokens) so they reach GitHub
 // without interference.
-func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, path string) {
+func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, path string, start time.Time) {
 	// Grab the raw GitHub token before forwarding so we can resolve the
 	// username for metrics/access-log purposes without storing the token.
 	rawToken := extractRawGitHubToken(r)
+
+	// Trigger async username lookup early so it can run concurrently with
+	// the upstream roundtrip. On a cache hit this returns immediately; on a
+	// cache miss a background goroutine is spawned.
+	if rawToken != "" && h.usernameResolver != nil {
+		h.usernameResolver.ResolveFromGitHubToken(r.Context(), rawToken)
+	}
 
 	targetURL := githubAPIBase + path
 	if r.URL.RawQuery != "" {
@@ -641,17 +648,23 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 		}
 	}
 
-	// Resolve the GitHub username from the raw token and inject it into the
-	// request context before writing the response so the access-log
-	// middleware can capture it.
-	if rawToken != "" && h.usernameResolver != nil {
-		if username := h.usernameResolver.ResolveFromGitHubToken(r.Context(), rawToken); username != "" {
+	// Check the username cache after the roundtrip; the async lookup
+	// triggered before the upstream request may have completed by now.
+	if rawToken != "" && h.usernameResolver != nil && GetUsername(r) == "" {
+		if username := h.usernameResolver.CheckCache(rawToken); username != "" {
 			SetUsername(r, username)
 		}
 	}
 
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+
+	// Emit proxy-level metrics for native-token passthrough traffic.
+	apiType := "rest"
+	if path == "/graphql" {
+		apiType = "graphql"
+	}
+	metrics.ObservePassthroughRequest(backend.API, r.Method, resp.StatusCode, time.Since(start), apiType, passthroughTokenType(rawToken), GetUsername(r))
 }
 
 // forwardRequest forwards a proxied request to GitHub, substituting authHeader
