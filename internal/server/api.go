@@ -591,13 +591,22 @@ func (a *API) warmTokenUsername(tokenID string) {
 	}()
 }
 
-// truncateSessionID caps s to maxSessionIDLength to prevent oversized audit
-// log lines from user-provided session identifiers.
+// truncateSessionID caps s to maxSessionIDLength bytes to prevent oversized
+// audit log lines from user-provided session identifiers. The truncation
+// respects UTF-8 rune boundaries so the result is always valid UTF-8.
 func truncateSessionID(s string) string {
-	if len(s) > maxSessionIDLength {
-		return s[:maxSessionIDLength]
+	if len(s) <= maxSessionIDLength {
+		return s
 	}
-	return s
+	// Walk rune boundaries and find the last one at or before the limit.
+	cut := maxSessionIDLength
+	for i := range s {
+		if i > maxSessionIDLength {
+			break
+		}
+		cut = i
+	}
+	return s[:cut]
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
