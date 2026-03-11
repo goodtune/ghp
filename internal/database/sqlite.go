@@ -46,7 +46,15 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 // modernc.org/sqlite applies them on every new connection. If the DSN
 // already contains a query string the parameters are appended; otherwise
 // a new query string is started.
+//
+// The bare ":memory:" shorthand is normalised to "file::memory:" (URI form)
+// before appending parameters, because ":memory:?key=val" is not recognised
+// as an in-memory database by SQLite — it would be treated as a literal
+// filename.
 func appendSQLitePragmas(dsn string) string {
+	if dsn == ":memory:" {
+		dsn = "file::memory:"
+	}
 	pragmas := "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
 	if strings.Contains(dsn, "?") {
 		return dsn + "&" + pragmas
