@@ -120,6 +120,7 @@ func (u *UsernameResolver) warmCacheSync(parentCtx context.Context, resolver Git
 	// multiple proxy tokens backed by the same GitHub credential don't
 	// trigger redundant concurrent GraphQL lookups.
 	seen := make(map[string]struct{})
+	var seenMu sync.Mutex
 
 	now := time.Now()
 	var queued int
@@ -127,41 +128,52 @@ func (u *UsernameResolver) warmCacheSync(parentCtx context.Context, resolver Git
 		if pt.RevokedAt != nil || pt.ExpiresAt.Before(now) {
 			continue
 		}
-		ghToken, err := resolver.ResolveProxyTokenToGitHub(ctx, pt)
-		if err != nil {
-			if u.logger != nil {
-				u.logger.Debug("username cache warm: skipping token",
-					"token_id", pt.ID, "error", err)
-			}
-			continue
-		}
-		key := hashToken(ghToken)
-		if _, ok := u.cache.Get(key); ok {
-			// Already cached from a previous warm or request — skip.
-			continue
-		}
-		if _, ok := seen[key]; ok {
-			// Another proxy token with the same underlying GitHub credential
-			// is already queued in this pass — skip to avoid duplicate requests.
-			continue
-		}
-		seen[key] = struct{}{}
+		// Acquire the semaphore before resolving the GitHub token so that
+		// installation-token minting (required for gha_ agent tokens) is also
+		// bounded by the same concurrency limit as the GraphQL viewer lookups.
 		sem <- struct{}{}
 		wg.Add(1)
 		queued++
-		go func(tok, k string) {
+		pt := pt
+		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+
+			ghToken, err := resolver.ResolveProxyTokenToGitHub(ctx, pt)
+			if err != nil {
+				if u.logger != nil {
+					u.logger.Debug("username cache warm: skipping token",
+						"token_id", pt.ID, "error", err)
+				}
+				return
+			}
+			key := hashToken(ghToken)
+
+			if _, ok := u.cache.Get(key); ok {
+				// Already cached from a previous warm or request — skip.
+				return
+			}
+
+			// Avoid duplicate GraphQL lookups for the same underlying GitHub
+			// credential within this warm pass.
+			seenMu.Lock()
+			if _, ok := seen[key]; ok {
+				seenMu.Unlock()
+				return
+			}
+			seen[key] = struct{}{}
+			seenMu.Unlock()
+
 			// Use the same inflight guard as ResolveFromGitHubToken so that
 			// warm-up and request-driven resolution for the same token hash
 			// deduplicate consistently and avoid redundant GraphQL calls when
 			// real traffic overlaps with the warm-up pass.
-			if _, loaded := u.inflight.LoadOrStore(k, struct{}{}); loaded {
+			if _, loaded := u.inflight.LoadOrStore(key, struct{}{}); loaded {
 				return
 			}
-			defer u.inflight.Delete(k)
-			u.resolveAndCacheGitHubUsername(ctx, k, tok)
-		}(ghToken, key)
+			defer u.inflight.Delete(key)
+			u.resolveAndCacheGitHubUsername(ctx, key, ghToken)
+		}()
 	}
 	wg.Wait()
 

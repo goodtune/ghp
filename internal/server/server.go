@@ -194,7 +194,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if atp, ok := appTokenProvider.(*github.AppTokenProvider); ok {
 		concreteATP = atp
 	}
-	api := NewAPI(s.cfg, store, tokenSvc, authHandler, enc, concreteATP, proxyTokenResolver, usernameResolver, s.logger)
+	api := NewAPI(ctx, s.cfg, store, tokenSvc, authHandler, enc, concreteATP, proxyTokenResolver, usernameResolver, s.logger)
 	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
 
 	// Build HTTP mux.

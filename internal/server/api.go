@@ -29,6 +29,7 @@ const maxRequestBodySize = 1 << 20 // 1 MB
 // API handles the service API endpoints (token management, users, audit).
 type API struct {
 	cfg                *config.Config
+	ctx                context.Context     // server lifecycle context; cancelled on shutdown
 	store              database.Store
 	tokenService       *token.Service
 	authHandler        *auth.Handler
@@ -43,9 +44,10 @@ type API struct {
 }
 
 // NewAPI creates a new API handler.
-func NewAPI(cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, ptr *proxy.ProxyTokenResolver, ur *proxy.UsernameResolver, logger *slog.Logger) *API {
+func NewAPI(ctx context.Context, cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, ptr *proxy.ProxyTokenResolver, ur *proxy.UsernameResolver, logger *slog.Logger) *API {
 	return &API{
 		cfg:                cfg,
+		ctx:                ctx,
 		store:              store,
 		tokenService:       ts,
 		authHandler:        ah,
@@ -576,12 +578,14 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 // proxy token and triggers a best-effort async GraphQL viewer lookup to
 // pre-populate the username cache. The lookup runs in the background and
 // may not complete before the first proxied request arrives.
+// The server-lifecycle context (a.ctx) is used as the parent so that
+// in-flight DB and GitHub API calls are cancelled if the server shuts down.
 func (a *API) warmTokenUsername(tokenID string) {
 	if a.proxyTokenResolver == nil || a.usernameResolver == nil {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
 		defer cancel()
 
 		pt, err := a.store.GetProxyTokenByID(ctx, tokenID)
