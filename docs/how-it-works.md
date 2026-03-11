@@ -50,7 +50,7 @@ header alone.
 - **Token isolation** — agents never see real GitHub credentials; they only hold short-lived ghp tokens
 - **Scope enforcement** — tokens can be restricted to specific repositories and permission levels
 - **Encryption at rest** — all stored GitHub credentials are encrypted with AES-256-GCM
-- **Audit trail** — all requests produce structured JSON access logs (method, path, status, duration); API proxy requests and token lifecycle events (creation, revocation) additionally produce structured JSON audit log entries (`"logger":"audit"`) containing token, user, session, and repository details. Audit logs are written to the same output stream as access logs. Capturing and indexing these logs is the responsibility of the deployment environment (e.g. Splunk, Elastic, Datadog)
+- **Audit trail** — all requests produce structured JSON access logs (method, path, status, duration). API proxy requests additionally produce structured JSON audit log entries (`"logger":"audit"`) that include token, user, session, repository details, and request context. Token lifecycle events (creation, revocation) also emit audit log entries but may omit repository and request-related fields. Audit logs are written to the same output stream as access logs. Capturing and indexing these logs is the responsibility of the deployment environment (e.g. Splunk, Elastic, Datadog)
 - **Expiration** — tokens have a configurable lifetime (default 24 hours, up to a server-configured maximum; default maximum 7 days)
 - **Revocation** — tokens can be revoked immediately from the CLI or web dashboard
 - **Border policy** — administrators can block specific GitHub token types from passing through the proxy (see [Token Type Border Policy](features/border-policy.md))
