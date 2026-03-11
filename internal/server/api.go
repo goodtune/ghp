@@ -143,10 +143,7 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		duration = d
 	}
 
-	sessionID := req.SessionID
-	if len(sessionID) > maxSessionIDLength {
-		sessionID = sessionID[:maxSessionIDLength]
-	}
+	sessionID := truncateSessionID(req.SessionID)
 
 	createReq := token.CreateRequest{
 		TokenType: tt,
@@ -592,6 +589,15 @@ func (a *API) warmTokenUsername(tokenID string) {
 		}
 		a.usernameResolver.ResolveFromGitHubToken(ctx, ghToken)
 	}()
+}
+
+// truncateSessionID caps s to maxSessionIDLength to prevent oversized audit
+// log lines from user-provided session identifiers.
+func truncateSessionID(s string) string {
+	if len(s) > maxSessionIDLength {
+		return s[:maxSessionIDLength]
+	}
+	return s
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

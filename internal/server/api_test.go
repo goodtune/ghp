@@ -35,13 +35,31 @@ func TestHandleCreateToken_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestMaxSessionIDLength(t *testing.T) {
-	if maxSessionIDLength <= 0 {
-		t.Fatal("maxSessionIDLength must be positive")
-	}
-	if maxSessionIDLength > 1024 {
-		t.Error("maxSessionIDLength seems unreasonably large")
-	}
+func TestTruncateSessionID(t *testing.T) {
+	t.Run("short input unchanged", func(t *testing.T) {
+		in := "abc-123"
+		if got := truncateSessionID(in); got != in {
+			t.Errorf("expected %q, got %q", in, got)
+		}
+	})
+	t.Run("exact limit unchanged", func(t *testing.T) {
+		in := strings.Repeat("x", maxSessionIDLength)
+		if got := truncateSessionID(in); got != in {
+			t.Errorf("expected len %d, got len %d", len(in), len(got))
+		}
+	})
+	t.Run("over limit truncated", func(t *testing.T) {
+		in := strings.Repeat("x", maxSessionIDLength+50)
+		got := truncateSessionID(in)
+		if len(got) != maxSessionIDLength {
+			t.Errorf("expected len %d, got len %d", maxSessionIDLength, len(got))
+		}
+	})
+	t.Run("empty input unchanged", func(t *testing.T) {
+		if got := truncateSessionID(""); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
 }
 
 func TestOAuthScopesToPermissions(t *testing.T) {
