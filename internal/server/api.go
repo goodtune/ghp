@@ -579,7 +579,11 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 // pre-populate the username cache. The lookup runs in the background and
 // may not complete before the first proxied request arrives.
 // The server-lifecycle context (a.ctx) is used as the parent so that
-// in-flight DB and GitHub API calls are cancelled if the server shuts down.
+// in-flight DB and token-resolution calls are cancelled if the server
+// shuts down. The GraphQL viewer lookup spawned by ResolveFromGitHubToken
+// runs on a separate background context (bounded by a 5s HTTP timeout) so
+// it is not cancelled by the parent — this is by design, matching the
+// request-driven path where lookups must outlive the triggering request.
 func (a *API) warmTokenUsername(tokenID string) {
 	if a.proxyTokenResolver == nil || a.usernameResolver == nil {
 		return

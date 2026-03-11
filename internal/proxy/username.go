@@ -125,6 +125,15 @@ func (u *UsernameResolver) warmCacheSync(parentCtx context.Context, resolver Git
 	now := time.Now()
 	var queued int
 	for _, pt := range tokens {
+		// Stop queuing work if the warm-cache context has expired (e.g.
+		// server shutdown or the 60s budget elapsed).
+		if err := ctx.Err(); err != nil {
+			if u.logger != nil {
+				u.logger.Debug("username cache warm: context cancelled, stopping early",
+					"queued", queued, "error", err)
+			}
+			break
+		}
 		if pt.RevokedAt != nil || pt.ExpiresAt.Before(now) {
 			continue
 		}
