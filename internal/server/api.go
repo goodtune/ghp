@@ -26,6 +26,10 @@ import (
 // maxRequestBodySize is the maximum allowed request body size for API endpoints.
 const maxRequestBodySize = 1 << 20 // 1 MB
 
+// maxSessionIDLength caps the length of the user-provided session_id to
+// prevent oversized audit log lines and log-volume amplification.
+const maxSessionIDLength = 128
+
 // API handles the service API endpoints (token management, users).
 type API struct {
 	cfg                *config.Config
@@ -139,12 +143,17 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		duration = d
 	}
 
+	sessionID := req.SessionID
+	if len(sessionID) > maxSessionIDLength {
+		sessionID = sessionID[:maxSessionIDLength]
+	}
+
 	createReq := token.CreateRequest{
 		TokenType: tt,
 		UserID:    session.UserID,
 		Scopes:    scopes,
 		Duration:  duration,
-		SessionID: req.SessionID,
+		SessionID: sessionID,
 	}
 
 	switch tt {

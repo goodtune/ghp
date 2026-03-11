@@ -35,6 +35,15 @@ func TestHandleCreateToken_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestMaxSessionIDLength(t *testing.T) {
+	if maxSessionIDLength <= 0 {
+		t.Fatal("maxSessionIDLength must be positive")
+	}
+	if maxSessionIDLength > 1024 {
+		t.Error("maxSessionIDLength seems unreasonably large")
+	}
+}
+
 func TestOAuthScopesToPermissions(t *testing.T) {
 	tests := []struct {
 		name        string
