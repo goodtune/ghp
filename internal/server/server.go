@@ -183,10 +183,18 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 
+	// Create a server-lifecycle context tied to shutdown signals so that all
+	// background work (cache warming, token-warm goroutines) is reliably
+	// cancelled when the process receives SIGTERM/SIGINT or when Run returns.
+	// This single context is shared with the serve functions below so that
+	// only one signal registration is needed for the whole server.
+	lifecycleCtx, lifecycleCancel := signal.NotifyContext(ctx, shutdownSignals()...)
+	defer lifecycleCancel()
+
 	authHandler := auth.NewHandler(s.cfg, store, enc, s.logger)
 	usernameResolver := proxy.NewUsernameResolver(store, s.logger)
 	proxyTokenResolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc, appTokenProvider)
-	usernameResolver.WarmCache(ctx, proxyTokenResolver)
+	usernameResolver.WarmCache(lifecycleCtx, proxyTokenResolver)
 	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, usernameResolver, s.logger)
 
 	// Recover the concrete *github.AppTokenProvider for admin API endpoints.
@@ -194,7 +202,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if atp, ok := appTokenProvider.(*github.AppTokenProvider); ok {
 		concreteATP = atp
 	}
-	api := NewAPI(ctx, s.cfg, store, tokenSvc, authHandler, enc, concreteATP, proxyTokenResolver, usernameResolver, s.logger)
+	api := NewAPI(lifecycleCtx, s.cfg, store, tokenSvc, authHandler, enc, concreteATP, proxyTokenResolver, usernameResolver, s.logger)
 	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
 
 	// Build HTTP mux.
@@ -270,15 +278,15 @@ func (s *Server) Run(ctx context.Context) error {
 		if metricsTLS != nil {
 			metricsLn = tls.NewListener(metricsLn, metricsTLS)
 		}
-		go s.serveMetrics(ctx, metricsLn, metricsTLS)
+		go s.serveMetrics(lifecycleCtx, metricsLn, metricsTLS)
 	}
 
 	if hasTLS {
-		return s.serveTLS(ctx, handler)
+		return s.serveTLS(lifecycleCtx, handler)
 	}
 
 	// Plain HTTP mode (single port, no TLS).
-	return s.servePlain(ctx, handler)
+	return s.servePlain(lifecycleCtx, handler)
 }
 
 // serveTLS starts an HTTPS server with TLS termination and an optional
@@ -362,11 +370,10 @@ func (s *Server) serveTLS(ctx context.Context, handler http.Handler) error {
 		}()
 	}
 
-	// Graceful shutdown for both servers.
-	shutdownCtx, cancel := signal.NotifyContext(ctx, shutdownSignals()...)
-	defer cancel()
+	// Graceful shutdown for both servers. ctx is already lifecycle-aware
+	// (signal.NotifyContext created in Run), so we use it directly.
 	go func() {
-		<-shutdownCtx.Done()
+		<-ctx.Done()
 		s.logger.Info("server_shutdown", "msg", "shutting down")
 		timeout, tcancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer tcancel()
@@ -402,10 +409,9 @@ func (s *Server) servePlain(ctx context.Context, handler http.Handler) error {
 
 	httpServer := &http.Server{Handler: handler}
 
-	shutdownCtx, cancel := signal.NotifyContext(ctx, shutdownSignals()...)
-	defer cancel()
+	// ctx is already lifecycle-aware (signal.NotifyContext created in Run).
 	go func() {
-		<-shutdownCtx.Done()
+		<-ctx.Done()
 		s.logger.Info("server_shutdown", "msg", "shutting down")
 		timeout, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -462,10 +468,9 @@ func (s *Server) serveMetrics(ctx context.Context, ln net.Listener, tlsCfg *tls.
 
 	srv := &http.Server{Handler: mux, TLSConfig: tlsCfg}
 
-	shutdownCtx, cancel := signal.NotifyContext(ctx, shutdownSignals()...)
-	defer cancel()
+	// ctx is already lifecycle-aware (signal.NotifyContext created in Run).
 	go func() {
-		<-shutdownCtx.Done()
+		<-ctx.Done()
 		timeout, tcancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer tcancel()
 		_ = srv.Shutdown(timeout)
