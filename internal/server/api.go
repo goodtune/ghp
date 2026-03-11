@@ -197,14 +197,14 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		Username:  session.Username,
 		TokenID:   result.ID,
 		TokenType: string(tt),
-		SessionID: req.SessionID,
+		SessionID: result.SessionID,
 	})
 
 	a.logger.Info("token_created",
 		"user", session.Username,
 		"type", string(tt),
 		"repos", result.Repositories,
-		"session", req.SessionID,
+		"session", result.SessionID,
 	)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
