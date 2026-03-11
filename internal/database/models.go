@@ -1,7 +1,7 @@
 // Package database provides the data access layer for ghp, abstracting over
 // PostgreSQL (production) and SQLite (development) backends. It defines the
 // Store interface for all database operations, the data models (User,
-// GitHubToken, ProxyToken, AuditEntry), and the migration system. Both
+// GitHubToken, ProxyToken), and the migration system. Both
 // drivers are pure Go (no CGO) — SQLite via modernc.org/sqlite and PostgreSQL
 // via pgx.
 package database
@@ -55,22 +55,6 @@ type ProxyToken struct {
 	CreatedAt      time.Time       `json:"created_at"`
 }
 
-// AuditEntry represents an entry in the audit log.
-type AuditEntry struct {
-	ID           string          `json:"id"`
-	Timestamp    time.Time       `json:"timestamp"`
-	UserID       string          `json:"user_id"`
-	ProxyTokenID *string         `json:"proxy_token_id,omitempty"`
-	Action       string          `json:"action"`
-	Method       string          `json:"method,omitempty"`
-	Path         string          `json:"path,omitempty"`
-	Repository   string          `json:"repository,omitempty"`
-	StatusCode   int             `json:"status_code,omitempty"`
-	DurationMS   int             `json:"duration_ms,omitempty"`
-	SessionID    string          `json:"session_id,omitempty"`
-	Metadata     json.RawMessage `json:"metadata,omitempty"`
-}
-
 // Scopes represents a map of permission to access level.
 type Scopes map[string]string
 
@@ -120,21 +104,7 @@ type Store interface {
 	RevokeProxyToken(ctx context.Context, id string) error
 	UpdateProxyTokenUsage(ctx context.Context, id string) error
 
-	// Audit log
-	CreateAuditEntry(ctx context.Context, entry *AuditEntry) error
-	ListAuditEntries(ctx context.Context, filter AuditFilter) ([]*AuditEntry, error)
-
 	// Lifecycle
 	Close() error
 }
 
-// AuditFilter defines criteria for querying the audit log.
-type AuditFilter struct {
-	UserID     string
-	Repository string
-	TokenID    string
-	Action     string
-	StatusCode int
-	Limit      int
-	Offset     int
-}

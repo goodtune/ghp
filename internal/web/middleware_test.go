@@ -213,10 +213,6 @@ func (noopStore) ListAllProxyTokens(_ context.Context) ([]*database.ProxyToken, 
 func (noopStore) ListActiveProxyTokens(_ context.Context) ([]*database.ProxyToken, error)       { return nil, nil }
 func (noopStore) RevokeProxyToken(_ context.Context, _ string) error                            { return nil }
 func (noopStore) UpdateProxyTokenUsage(_ context.Context, _ string) error                       { return nil }
-func (noopStore) CreateAuditEntry(_ context.Context, _ *database.AuditEntry) error              { return nil }
-func (noopStore) ListAuditEntries(_ context.Context, _ database.AuditFilter) ([]*database.AuditEntry, error) {
-	return nil, nil
-}
 func (noopStore) Close() error { return nil }
 
 // stubStore is a minimal database.Store that overrides UpsertUser and

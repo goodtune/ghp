@@ -26,7 +26,11 @@ import (
 // maxRequestBodySize is the maximum allowed request body size for API endpoints.
 const maxRequestBodySize = 1 << 20 // 1 MB
 
-// API handles the service API endpoints (token management, users, audit).
+// maxSessionIDLength caps the length of the user-provided session_id to
+// prevent oversized audit log lines and log-volume amplification.
+const maxSessionIDLength = 128
+
+// API handles the service API endpoints (token management, users).
 type API struct {
 	cfg                *config.Config
 	ctx                context.Context     // server lifecycle context; cancelled on shutdown
@@ -39,12 +43,16 @@ type API struct {
 	usernameResolver   *proxy.UsernameResolver     // caches GitHub username lookups
 	logger             *slog.Logger
 	httpClient         *http.Client // used for outbound GitHub API calls
+	auditLog           *auditLogWriter
 
 	tokenCreateLimiter *auth.IPRateLimiter // POST /api/tokens
 }
 
 // NewAPI creates a new API handler.
-func NewAPI(ctx context.Context, cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, ptr *proxy.ProxyTokenResolver, ur *proxy.UsernameResolver, logger *slog.Logger) *API {
+func NewAPI(ctx context.Context, cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, ptr *proxy.ProxyTokenResolver, ur *proxy.UsernameResolver, logger *slog.Logger, aw *auditLogWriter) *API {
+	if aw == nil {
+		aw = newAuditLogWriter(nil)
+	}
 	return &API{
 		cfg:                cfg,
 		ctx:                ctx,
@@ -57,6 +65,7 @@ func NewAPI(ctx context.Context, cfg *config.Config, store database.Store, ts *t
 		usernameResolver:   ur,
 		logger:             logger,
 		httpClient:         &http.Client{Timeout: 10 * time.Second},
+		auditLog:           aw,
 		tokenCreateLimiter: auth.NewIPRateLimiter(20, time.Minute, "/api/tokens", logger),
 	}
 }
@@ -77,7 +86,6 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/github/installations", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallations)))
 	mux.Handle("GET /api/github/installations/{id}/repositories", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallationRepos)))
 
-	mux.Handle("GET /api/audit", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListAudit)))
 }
 
 type createTokenRequest struct {
@@ -135,12 +143,14 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		duration = d
 	}
 
+	sessionID := truncateSessionID(req.SessionID)
+
 	createReq := token.CreateRequest{
 		TokenType: tt,
 		UserID:    session.UserID,
 		Scopes:    scopes,
 		Duration:  duration,
-		SessionID: req.SessionID,
+		SessionID: sessionID,
 	}
 
 	switch tt {
@@ -177,18 +187,21 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	// lazily on first use.
 	a.warmTokenUsername(result.ID)
 
-	// Audit log.
-	a.store.CreateAuditEntry(r.Context(), &database.AuditEntry{
-		UserID:    session.UserID,
+	a.auditLog.writeEntry(&auditLogEntry{
+		Msg:       "audit event",
 		Action:    "token_created",
-		SessionID: req.SessionID,
+		UserID:    session.UserID,
+		Username:  session.Username,
+		TokenID:   result.ID,
+		TokenType: string(tt),
+		SessionID: result.SessionID,
 	})
 
 	a.logger.Info("token_created",
 		"user", session.Username,
 		"type", string(tt),
 		"repos", result.Repositories,
-		"session", req.SessionID,
+		"session", result.SessionID,
 	)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
@@ -281,10 +294,13 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	metrics.TokenRevokedTotal.WithLabelValues(ownerID).Inc()
 	metrics.TokenActive.WithLabelValues(ownerID).Dec()
 
-	// Audit log.
-	a.store.CreateAuditEntry(r.Context(), &database.AuditEntry{
-		UserID: session.UserID,
-		Action: "token_revoked",
+	a.auditLog.writeEntry(&auditLogEntry{
+		Msg:       "audit event",
+		Action:    "token_revoked",
+		UserID:    session.UserID,
+		Username:  session.Username,
+		TokenID:   id,
+		TokenType: pt.TokenType,
 	})
 
 	a.logger.Info("token_revoked", "user", session.Username, "token_id", id)
@@ -314,35 +330,6 @@ func (a *API) handleListUserTokens(w http.ResponseWriter, r *http.Request) {
 		tokens = []*database.ProxyToken{}
 	}
 	writeJSON(w, http.StatusOK, tokens)
-}
-
-func (a *API) handleListAudit(w http.ResponseWriter, r *http.Request) {
-	session := auth.SessionFromContext(r.Context())
-
-	filter := database.AuditFilter{
-		Repository: r.URL.Query().Get("repository"),
-		TokenID:    r.URL.Query().Get("token_id"),
-		Action:     r.URL.Query().Get("action"),
-		Limit:      100,
-	}
-
-	// Non-admins can only see their own audit entries.
-	if session.Role != "admin" {
-		filter.UserID = session.UserID
-	} else if uid := r.URL.Query().Get("user_id"); uid != "" {
-		filter.UserID = uid
-	}
-
-	entries, err := a.store.ListAuditEntries(r.Context(), filter)
-	if err != nil {
-		a.logger.Error("failed to list audit entries", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
-		return
-	}
-	if entries == nil {
-		entries = []*database.AuditEntry{}
-	}
-	writeJSON(w, http.StatusOK, entries)
 }
 
 func (a *API) handleListUserRepos(w http.ResponseWriter, r *http.Request) {
@@ -602,6 +589,24 @@ func (a *API) warmTokenUsername(tokenID string) {
 		}
 		a.usernameResolver.ResolveFromGitHubToken(ctx, ghToken)
 	}()
+}
+
+// truncateSessionID caps s to maxSessionIDLength bytes to prevent oversized
+// audit log lines from user-provided session identifiers. The truncation
+// respects UTF-8 rune boundaries so the result is always valid UTF-8.
+func truncateSessionID(s string) string {
+	if len(s) <= maxSessionIDLength {
+		return s
+	}
+	// Walk rune boundaries and find the last one at or before the limit.
+	cut := maxSessionIDLength
+	for i := range s {
+		if i > maxSessionIDLength {
+			break
+		}
+		cut = i
+	}
+	return s[:cut]
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

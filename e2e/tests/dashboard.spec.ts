@@ -61,14 +61,6 @@ test.describe("Dashboard", () => {
     await expect(page.locator("#token-list")).toContainText("No tokens found");
   });
 
-  test("shows Audit Log section", async ({ page }) => {
-    await page.goto("/");
-
-    await expect(
-      page.locator('h2:has-text("Audit Log")')
-    ).toBeVisible();
-  });
-
   test("duration dropdown has expected options", async ({ page }) => {
     await page.goto("/");
 

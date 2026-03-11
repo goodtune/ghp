@@ -197,12 +197,16 @@ func (s *Server) Run(ctx context.Context) error {
 	usernameResolver.WarmCache(lifecycleCtx, proxyTokenResolver)
 	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, usernameResolver, s.logger)
 
+	// Build audit log writer for structured JSON audit events.
+	auditWriter := newAuditLogWriter(s.logWriter)
+	proxyHandler.SetAuditLogWriter(auditWriter)
+
 	// Recover the concrete *github.AppTokenProvider for admin API endpoints.
 	var concreteATP *github.AppTokenProvider
 	if atp, ok := appTokenProvider.(*github.AppTokenProvider); ok {
 		concreteATP = atp
 	}
-	api := NewAPI(lifecycleCtx, s.cfg, store, tokenSvc, authHandler, enc, concreteATP, proxyTokenResolver, usernameResolver, s.logger)
+	api := NewAPI(lifecycleCtx, s.cfg, store, tokenSvc, authHandler, enc, concreteATP, proxyTokenResolver, usernameResolver, s.logger, auditWriter)
 	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
 
 	// Build HTTP mux.

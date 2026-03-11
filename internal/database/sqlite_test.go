@@ -298,41 +298,6 @@ func TestMigrations(t *testing.T) {
 	}
 }
 
-func TestAuditLog(t *testing.T) {
-	store := newTestStore(t)
-	ctx := context.Background()
-
-	user := &User{GitHubID: 1, GitHubUsername: "charlie", Role: "user"}
-	if err := store.UpsertUser(ctx, user); err != nil {
-		t.Fatal(err)
-	}
-
-	entry := &AuditEntry{
-		UserID:     user.ID,
-		Action:     "proxy_request",
-		Method:     "GET",
-		Path:       "/repos/org/repo/pulls",
-		Repository: "org/repo",
-		StatusCode: 200,
-		DurationMS: 42,
-		SessionID:  "test",
-	}
-	if err := store.CreateAuditEntry(ctx, entry); err != nil {
-		t.Fatal(err)
-	}
-
-	entries, err := store.ListAuditEntries(ctx, AuditFilter{UserID: user.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("ListAuditEntries = %d, want 1", len(entries))
-	}
-	if entries[0].Action != "proxy_request" {
-		t.Errorf("action = %q, want proxy_request", entries[0].Action)
-	}
-}
-
 // Ensure temporary files are cleaned up.
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())

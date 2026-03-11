@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestHandleCreateToken_BodyTooLarge(t *testing.T) {
@@ -33,6 +34,50 @@ func TestHandleCreateToken_InvalidJSON(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
 	}
+}
+
+func TestTruncateSessionID(t *testing.T) {
+	t.Run("short input unchanged", func(t *testing.T) {
+		in := "abc-123"
+		if got := truncateSessionID(in); got != in {
+			t.Errorf("expected %q, got %q", in, got)
+		}
+	})
+	t.Run("exact limit unchanged", func(t *testing.T) {
+		in := strings.Repeat("x", maxSessionIDLength)
+		if got := truncateSessionID(in); got != in {
+			t.Errorf("expected len %d, got len %d", len(in), len(got))
+		}
+	})
+	t.Run("over limit truncated", func(t *testing.T) {
+		in := strings.Repeat("x", maxSessionIDLength+50)
+		got := truncateSessionID(in)
+		if len(got) != maxSessionIDLength {
+			t.Errorf("expected len %d, got len %d", maxSessionIDLength, len(got))
+		}
+	})
+	t.Run("empty input unchanged", func(t *testing.T) {
+		if got := truncateSessionID(""); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+	t.Run("multi-byte rune not split", func(t *testing.T) {
+		// Build a string of 3-byte runes (e.g. '€') that exceeds the limit.
+		rune3 := "€" // 3 bytes
+		in := strings.Repeat(rune3, maxSessionIDLength)
+		got := truncateSessionID(in)
+		if len(got) > maxSessionIDLength {
+			t.Errorf("result exceeds limit: len %d > %d", len(got), maxSessionIDLength)
+		}
+		// Must be valid UTF-8 with no partial rune.
+		if !utf8.ValidString(got) {
+			t.Error("result is not valid UTF-8")
+		}
+		// Length should be a multiple of 3 (each rune is 3 bytes).
+		if len(got)%3 != 0 {
+			t.Errorf("expected length multiple of 3, got %d", len(got))
+		}
+	})
 }
 
 func TestOAuthScopesToPermissions(t *testing.T) {

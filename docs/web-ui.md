@@ -1,7 +1,7 @@
 # Web UI
 
-ghp includes a built-in web dashboard for managing tokens and viewing audit
-logs. Access it at the management host (e.g. `https://ghp.example.com`).
+ghp includes a built-in web dashboard for managing tokens. Access it at the
+management host (e.g. `https://ghp.example.com`).
 
 ## Authentication
 
@@ -28,7 +28,6 @@ The admin panel provides:
 
 - **Users** — list all registered users with their GitHub ID, role, and creation date
 - **All Tokens** — view and revoke tokens across all users
-- **Audit Log** — browse the full audit trail of proxied requests
 
 In dev mode, navigating to `/admin` without a session shows a test-login form
 that authenticates directly as an admin.

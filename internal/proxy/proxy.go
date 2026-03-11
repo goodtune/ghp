@@ -7,7 +7,7 @@
 //   - Swapping the ghp token for the real GitHub credential (decrypted or
 //     obtained from the GitHub App installation token provider)
 //   - Forwarding the request to the real GitHub API and streaming the response
-//   - Recording audit log entries for API proxy requests and Prometheus metrics for all requests
+//   - Emitting structured JSON audit log entries for API proxy requests and Prometheus metrics for all requests
 //
 // The proxy handles three distinct traffic patterns through separate handlers:
 //
@@ -49,6 +49,27 @@ const (
 	tokenRefreshSkew = 5 * time.Minute
 )
 
+// AuditLogWriter is the interface used by the proxy handler to write
+// structured JSON audit log entries.
+type AuditLogWriter interface {
+	WriteAuditEntry(entry AuditLogEntry)
+}
+
+// AuditLogEntry holds the fields for a structured JSON audit event.
+type AuditLogEntry struct {
+	Action     string
+	UserID     string
+	Username   string
+	TokenID    string
+	TokenType  string
+	SessionID  string
+	Method     string
+	Path       string
+	Repository string
+	StatusCode int
+	DurationMS int
+}
+
 // Handler is the reverse proxy HTTP handler.
 type Handler struct {
 	cfg              *config.Config
@@ -59,6 +80,12 @@ type Handler struct {
 	usernameResolver *UsernameResolver
 	logger           *slog.Logger
 	client           *http.Client
+	auditLog         AuditLogWriter // may be nil
+}
+
+// SetAuditLogWriter sets the audit log writer for the handler.
+func (h *Handler) SetAuditLogWriter(w AuditLogWriter) {
+	h.auditLog = w
 }
 
 // NewHandler creates a new reverse proxy handler.
@@ -222,7 +249,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
 			h.logger.Error("failed to record token usage", "error", err)
 		}
-		h.logRequest(r.Context(), pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
+		h.logRequest(pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
 		return
 	}
 
@@ -237,7 +264,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusForbidden,
 			fmt.Sprintf("Token is not scoped to %s", repo))
-		h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+		h.logRequest(pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
 
@@ -251,7 +278,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
-			h.logRequest(r.Context(), pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+			h.logRequest(pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
 		}
 	}
@@ -304,7 +331,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to record token usage", "error", err)
 	}
 
-	h.logRequest(r.Context(), pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
+	h.logRequest(pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
 }
 
 func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, si tokenScopeInfo, rewriteAuth func(string) string, start time.Time) {
@@ -320,7 +347,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusForbidden,
 			"Token is repository-restricted; GraphQL is not supported for repository-scoped tokens")
-		h.logRequest(r.Context(), pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+		h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
 	metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
@@ -360,7 +387,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		h.logger.Error("failed to record token usage", "error", err)
 	}
 
-	h.logRequest(r.Context(), pt, r, "/graphql", "", status, time.Since(start), "proxy_request")
+	h.logRequest(pt, r, "/graphql", "", status, time.Since(start), "proxy_request")
 }
 
 // resolveTokenUsername resolves the identity behind a GitHub token by querying
@@ -732,7 +759,7 @@ func syntheticOAuthScopes(scopes database.Scopes) string {
 	return strings.Join(parts, ", ")
 }
 
-func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, r *http.Request, path, repo string, status int, dur time.Duration, action string) {
+func (h *Handler) logRequest(pt *database.ProxyToken, r *http.Request, path, repo string, status int, dur time.Duration, action string) {
 	userID := ""
 	if pt.UserID != nil {
 		userID = *pt.UserID
@@ -760,21 +787,20 @@ func (h *Handler) logRequest(ctx context.Context, pt *database.ProxyToken, r *ht
 	}
 	metrics.ObserveProxyRequest(backend.API, pt, r.Method, status, dur, apiType, username)
 
-	entry := &database.AuditEntry{
-		UserID:     userID,
-		Action:     action,
-		Method:     r.Method,
-		Path:       path,
-		Repository: repo,
-		StatusCode: status,
-		DurationMS: int(dur.Milliseconds()),
-		SessionID:  pt.SessionID,
-	}
-	tokenID := pt.ID
-	entry.ProxyTokenID = &tokenID
-
-	if err := h.store.CreateAuditEntry(ctx, entry); err != nil {
-		h.logger.Error("failed to create audit entry", "error", err)
+	if h.auditLog != nil {
+		h.auditLog.WriteAuditEntry(AuditLogEntry{
+			Action:     action,
+			UserID:     userID,
+			Username:   username,
+			TokenID:    pt.ID,
+			TokenType:  pt.TokenType,
+			SessionID:  pt.SessionID,
+			Method:     r.Method,
+			Path:       path,
+			Repository: repo,
+			StatusCode: status,
+			DurationMS: int(dur.Milliseconds()),
+		})
 	}
 }
 
