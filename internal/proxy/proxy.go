@@ -588,9 +588,12 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 
 	// Trigger async username lookup early so it can run concurrently with
 	// the upstream roundtrip. On a cache hit this returns immediately; on a
-	// cache miss a background goroutine is spawned.
+	// cache miss a background goroutine is spawned. Capture any cached
+	// username so error-path metrics can attribute the request.
 	if rawToken != "" && h.usernameResolver != nil {
-		h.usernameResolver.ResolveFromGitHubToken(r.Context(), rawToken)
+		if username := h.usernameResolver.ResolveFromGitHubToken(r.Context(), rawToken); username != "" {
+			SetUsername(r, username)
+		}
 	}
 
 	apiType := "rest"
@@ -605,7 +608,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
-		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusInternalServerError, time.Since(start), apiType, passthroughTokenType(rawToken), "")
+		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusInternalServerError, time.Since(start), apiType, passthroughTokenType(rawToken), GetUsername(r))
 		writeError(w, http.StatusInternalServerError, "Failed to create upstream request")
 		return
 	}
@@ -639,7 +642,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	resp, err := h.client.Do(proxyReq)
 	if err != nil {
 		h.logger.Error("upstream passthrough request failed", "error", err)
-		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusBadGateway, time.Since(start), apiType, passthroughTokenType(rawToken), "")
+		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusBadGateway, time.Since(start), apiType, passthroughTokenType(rawToken), GetUsername(r))
 		writeError(w, http.StatusBadGateway, "Upstream request failed")
 		return
 	}
