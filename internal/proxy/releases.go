@@ -96,11 +96,29 @@ var headCheckClient = &http.Client{Timeout: 10 * time.Second}
 //     is made to the target URL first; if the upstream returns 404, a friendly
 //     HTML page is returned instead of a redirect.
 //
+// When cfg.Releases.RedirectHeadCheckNetrc is set, credentials from the
+// specified netrc file are sent as Basic auth on HEAD availability probes.
+//
 // Any other mode value or an empty mode passes all requests through to inner
 // unchanged. The allow list check is always performed before applying the
 // policy, so explicitly listed orgs and repos are never affected.
 func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger) http.Handler {
-	return NewReleasesHandlerWithClient(inner, cfg, logger, headCheckClient)
+	client := headCheckClient
+	if cfg.Releases.RedirectHeadCheckNetrc != "" {
+		transport, err := newNetrcTransport(cfg.Releases.RedirectHeadCheckNetrc, nil)
+		if err != nil {
+			if logger != nil {
+				logger.Error("failed to load netrc for HEAD check, continuing without auth",
+					"path", cfg.Releases.RedirectHeadCheckNetrc, "error", err)
+			}
+		} else {
+			client = &http.Client{
+				Timeout:   10 * time.Second,
+				Transport: transport,
+			}
+		}
+	}
+	return NewReleasesHandlerWithClient(inner, cfg, logger, client)
 }
 
 // NewReleasesHandlerWithClient is like NewReleasesHandler but accepts a custom

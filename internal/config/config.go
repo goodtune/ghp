@@ -82,6 +82,12 @@ type ReleasesConfig struct {
 	// client to a URL that would itself 404. This is useful when the redirect
 	// target is a selective mirror that only hosts a subset of releases.
 	RedirectHeadCheck bool `koanf:"redirect_head_check"`
+	// RedirectHeadCheckNetrc is the path to a netrc file whose credentials are
+	// sent as Basic auth on HEAD availability probes. Because GHP typically runs
+	// as a DynamicUser (no home directory), this must be an absolute path to a
+	// file the service can read — e.g. /etc/ghp/netrc.
+	// When empty, HEAD requests are sent without authentication.
+	RedirectHeadCheckNetrc string `koanf:"redirect_head_check_netrc"`
 	// RedirectNotFoundTemplate is the path to a custom HTML template file rendered
 	// when RedirectHeadCheck detects a 404 from the redirect target. The template
 	// is executed with html/template and receives a struct with fields Owner, Repo,
