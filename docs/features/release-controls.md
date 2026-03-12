@@ -111,6 +111,17 @@ If the netrc file cannot be read at startup, ghp logs an error and falls back
 to unauthenticated HEAD checks. Existing `Authorization` headers on a request
 are never overwritten.
 
+!!! warning "Redirect behaviour during HEAD probes"
+    HEAD availability probes do **not** follow HTTP redirects. If the mirror
+    responds with a redirect, ghp treats it as success (non-404) and proceeds
+    with the normal client redirect. This means probe credentials are never
+    forwarded to an unintended redirect target.
+
+    Be cautious with `default` netrc entries. A `default` block matches any
+    hostname, so if a future code path or configuration change causes probes to
+    follow redirects, credentials could be sent to the redirect target. Prefer
+    host-specific `machine` entries for your mirror wherever possible.
+
 ##### Custom 404 Template
 
 The built-in 404 page is clean and informative, but you can replace it with

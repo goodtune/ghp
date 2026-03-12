@@ -27,17 +27,29 @@ func parseNetrc(path string) (map[string]netrcEntry, error) {
 	entries := make(map[string]netrcEntry)
 	scanner := bufio.NewScanner(f)
 
-	var currentKey string // hostname, or "\x00" for the default entry
+	var currentKey string // hostname, or "" for the default entry
 	var current netrcEntry
 	inEntry := false
+	inMacdef := false // true while consuming lines of a macdef body
 
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		if inMacdef {
+			// macdef bodies terminate at a blank line.
+			if trimmed == "" {
+				inMacdef = false
+			}
 			continue
 		}
 
-		tokens := strings.Fields(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		tokens := strings.Fields(trimmed)
+	tokenLoop:
 		for i := 0; i < len(tokens); i++ {
 			switch tokens[i] {
 			case "machine":
@@ -72,9 +84,21 @@ func parseNetrc(path string) (map[string]netrcEntry, error) {
 					return nil, fmt.Errorf("netrc: password keyword without value")
 				}
 				current.Password = tokens[i]
-			case "account", "macdef":
-				// Skip these standard netrc tokens.
-				i++
+			case "account":
+				// account is a standard netrc token we don't use; skip its value if present.
+				if i+1 < len(tokens) {
+					i++
+				}
+			case "macdef":
+				// macdef starts a named multi-line macro that terminates at a blank line.
+				// Skip the macro name if present on the same line, then consume the body
+				// at the outer scanner loop level to avoid misinterpreting macro content
+				// as credential tokens.
+				if i+1 < len(tokens) {
+					i++
+				}
+				inMacdef = true
+				break tokenLoop
 			}
 		}
 	}

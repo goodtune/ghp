@@ -82,6 +82,40 @@ password s3cret
 			content: ``,
 			want:    map[string]netrcEntry{},
 		},
+		{
+			name: "macdef body with keyword-like lines is not parsed as credentials",
+			content: `machine mirror.example.com login deploy password s3cret
+macdef uploadtest
+machine fake.example.com
+login notreal
+password notreal
+
+machine other.example.com login other password otherpass`,
+			want: map[string]netrcEntry{
+				"mirror.example.com": {Login: "deploy", Password: "s3cret"},
+				"other.example.com":  {Login: "other", Password: "otherpass"},
+			},
+		},
+		{
+			name: "macdef name on same line",
+			content: `machine mirror.example.com login user password pass
+macdef init
+cd /pub
+get README
+
+machine backup.example.com login buser password bpass`,
+			want: map[string]netrcEntry{
+				"mirror.example.com": {Login: "user", Password: "pass"},
+				"backup.example.com": {Login: "buser", Password: "bpass"},
+			},
+		},
+		{
+			name: "account token is skipped",
+			content: `machine mirror.example.com account myacct login deploy password s3cret`,
+			want: map[string]netrcEntry{
+				"mirror.example.com": {Login: "deploy", Password: "s3cret"},
+			},
+		},
 	}
 
 	for _, tt := range tests {

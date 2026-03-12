@@ -115,6 +115,12 @@ func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Log
 			client = &http.Client{
 				Timeout:   10 * time.Second,
 				Transport: transport,
+				// Do not follow redirects during HEAD availability probes.
+				// Following a redirect to a different host could send credentials
+				// from a netrc "default" entry to an unintended server.
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
 			}
 		}
 	}
