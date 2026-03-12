@@ -14,6 +14,7 @@ import (
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
+	"github.com/prometheus/client_golang/prometheus"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
@@ -1404,5 +1405,92 @@ func TestServeHTTP_Passthrough_UpstreamRedirect_PassedThrough(t *testing.T) {
 	}
 	if !strings.Contains(loc, "productionresultssa1.blob.core.windows.net") {
 		t.Errorf("expected Location to point to blob storage, got %q", loc)
+	}
+}
+
+func getCounterValue(t *testing.T, counter *prometheus.CounterVec, labels prometheus.Labels) float64 {
+	t.Helper()
+	var m io_prometheus_client.Metric
+	c, err := counter.GetMetricWith(labels)
+	if err != nil {
+		t.Fatalf("GetMetricWith: %v", err)
+	}
+	if err := c.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+func TestServeHTTP_NativeTokenPassthrough_RecordsMetrics(t *testing.T) {
+	// A native GitHub token (gho_) forwarded via passthrough must emit
+	// ProxyRequestTotal with token_type=gho and user=unknown.
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:    &config.Config{},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	labels := prometheus.Labels{
+		"backend":    "api.github.com",
+		"method":     "GET",
+		"status":     "200",
+		"token_type": "gho",
+		"type":       "rest",
+		"user":       "unknown",
+		"app":        "",
+	}
+
+	before := getCounterValue(t, metrics.ProxyRequestTotal, labels)
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo", nil)
+	req.Header.Set("Authorization", "Bearer gho_nativetoken")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	after := getCounterValue(t, metrics.ProxyRequestTotal, labels)
+	if after-before != 1 {
+		t.Errorf("expected ProxyRequestTotal to increment by 1, got %f", after-before)
+	}
+}
+
+func TestServeHTTP_NativeTokenPassthrough_GraphQL_RecordsMetrics(t *testing.T) {
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:    &config.Config{},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	labels := prometheus.Labels{
+		"backend":    "api.github.com",
+		"method":     "POST",
+		"status":     "200",
+		"token_type": "gho",
+		"type":       "graphql",
+		"user":       "unknown",
+		"app":        "",
+	}
+
+	before := getCounterValue(t, metrics.ProxyRequestTotal, labels)
+
+	req := httptest.NewRequest("POST", "http://api.github.com/graphql", nil)
+	req.Header.Set("Authorization", "Bearer gho_nativetoken")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	after := getCounterValue(t, metrics.ProxyRequestTotal, labels)
+	if after-before != 1 {
+		t.Errorf("expected ProxyRequestTotal to increment by 1 for graphql, got %f", after-before)
 	}
 }

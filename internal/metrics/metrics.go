@@ -5,7 +5,7 @@
 //
 // The package covers four metric categories:
 //   - HTTP-level: request count and duration for all traffic by backend
-//   - Proxy-level: detailed metrics for ghx_/gha_ authenticated traffic (API and git smart-HTTP)
+//   - Proxy-level: detailed metrics for ghx_/gha_ authenticated and native GitHub token traffic (API and git smart-HTTP)
 //   - Token lifecycle: creation, revocation, and active token counts
 //   - Decision pipeline: per-stage latency breakdown of the proxy overhead
 package metrics
@@ -207,6 +207,23 @@ func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string,
 
 	ProxyRequestDuration.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, username, app).Observe(dur.Seconds())
 	ProxyRequestTotal.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, username, app).Inc()
+}
+
+// ObservePassthroughRequest records proxy-level request metrics for passthrough
+// traffic forwarded without ghx_/gha_ token resolution. It uses the same
+// ProxyRequestDuration and ProxyRequestTotal vectors as managed tokens, with an
+// empty "app" label. Token type and username are best-effort: when no native
+// token is present they are recorded as "unknown".
+func ObservePassthroughRequest(backendName, method string, status int, dur time.Duration, apiType, tokenType, username string) {
+	if username == "" {
+		username = "unknown"
+	}
+	if tokenType == "" {
+		tokenType = "unknown"
+	}
+	statusStr := strconv.Itoa(status)
+	ProxyRequestDuration.WithLabelValues(backendName, method, statusStr, tokenType, apiType, username, "").Observe(dur.Seconds())
+	ProxyRequestTotal.WithLabelValues(backendName, method, statusStr, tokenType, apiType, username, "").Inc()
 }
 
 // SetBuildInfo records build metadata as a gauge with a constant value of 1.
