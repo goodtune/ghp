@@ -399,7 +399,7 @@ func extractRawGitHubToken(r *http.Request) string {
 // credentials whose identity can be resolved via the GitHub API. This
 // includes human user tokens (gho_, ghp_, ghu_) and GitHub App
 // installation tokens (ghs_) which identify bot accounts.
-var nativeGitHubTokenPrefixes = []string{"gho_", "ghp_", "ghu_", "ghs_"}
+var nativeGitHubTokenPrefixes = [...]string{"gho_", "ghp_", "ghu_", "ghs_"}
 
 // isResolvableGitHubToken returns true for tokens with prefixes whose
 // identity can be resolved via the GitHub GraphQL viewer query.

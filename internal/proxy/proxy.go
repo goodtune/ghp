@@ -593,6 +593,11 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 		h.usernameResolver.ResolveFromGitHubToken(r.Context(), rawToken)
 	}
 
+	apiType := "rest"
+	if path == "/graphql" {
+		apiType = "graphql"
+	}
+
 	targetURL := githubAPIBase + path
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
@@ -600,7 +605,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
-		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusInternalServerError, time.Since(start), "rest", passthroughTokenType(rawToken), "")
+		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusInternalServerError, time.Since(start), apiType, passthroughTokenType(rawToken), "")
 		writeError(w, http.StatusInternalServerError, "Failed to create upstream request")
 		return
 	}
@@ -634,7 +639,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	resp, err := h.client.Do(proxyReq)
 	if err != nil {
 		h.logger.Error("upstream passthrough request failed", "error", err)
-		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusBadGateway, time.Since(start), "rest", passthroughTokenType(rawToken), "")
+		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusBadGateway, time.Since(start), apiType, passthroughTokenType(rawToken), "")
 		writeError(w, http.StatusBadGateway, "Upstream request failed")
 		return
 	}
@@ -662,10 +667,6 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	io.Copy(w, resp.Body)
 
 	// Emit proxy-level metrics for native-token passthrough traffic.
-	apiType := "rest"
-	if path == "/graphql" {
-		apiType = "graphql"
-	}
 	metrics.ObservePassthroughRequest(backend.API, r.Method, resp.StatusCode, time.Since(start), apiType, passthroughTokenType(rawToken), GetUsername(r))
 }
 
