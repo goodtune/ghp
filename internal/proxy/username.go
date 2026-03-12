@@ -395,22 +395,28 @@ func extractRawGitHubToken(r *http.Request) string {
 	return ""
 }
 
-// isResolvableGitHubToken returns true for tokens with prefixes whose
-// identity can be resolved via the GitHub GraphQL viewer query. This
+// nativeGitHubTokenPrefixes lists the token prefixes for native GitHub
+// credentials whose identity can be resolved via the GitHub API. This
 // includes human user tokens (gho_, ghp_, ghu_) and GitHub App
 // installation tokens (ghs_) which identify bot accounts.
+var nativeGitHubTokenPrefixes = []string{"gho_", "ghp_", "ghu_", "ghs_"}
+
+// isResolvableGitHubToken returns true for tokens with prefixes whose
+// identity can be resolved via the GitHub GraphQL viewer query.
 func isResolvableGitHubToken(t string) bool {
-	return strings.HasPrefix(t, "gho_") ||
-		strings.HasPrefix(t, "ghp_") ||
-		strings.HasPrefix(t, "ghu_") ||
-		strings.HasPrefix(t, "ghs_")
+	for _, prefix := range nativeGitHubTokenPrefixes {
+		if strings.HasPrefix(t, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // passthroughTokenType returns the token type prefix (without the trailing
 // underscore) for native GitHub tokens. For example, "gho_abc" returns "gho".
 // Returns "unknown" if the token does not match any known prefix.
 func passthroughTokenType(rawToken string) string {
-	for _, prefix := range []string{"gho_", "ghp_", "ghu_", "ghs_"} {
+	for _, prefix := range nativeGitHubTokenPrefixes {
 		if strings.HasPrefix(rawToken, prefix) {
 			return strings.TrimSuffix(prefix, "_")
 		}

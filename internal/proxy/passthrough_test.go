@@ -17,7 +17,6 @@ import (
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
 	"github.com/prometheus/client_golang/prometheus"
-	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
 type mockTokenResolver struct {
@@ -828,7 +827,7 @@ func TestScopedPassthrough_NativeToken_RecordsMetrics(t *testing.T) {
 		"app":        "",
 	}
 
-	before := getPassthroughCounterValue(t, metrics.ProxyRequestTotal, labels)
+	before := getCounterValue(t, metrics.ProxyRequestTotal, labels)
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
 	req.Header.Set("Authorization", "Bearer gho_nativetoken")
@@ -840,21 +839,9 @@ func TestScopedPassthrough_NativeToken_RecordsMetrics(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 
-	after := getPassthroughCounterValue(t, metrics.ProxyRequestTotal, labels)
+	after := getCounterValue(t, metrics.ProxyRequestTotal, labels)
 	if after-before != 1 {
 		t.Errorf("expected ProxyRequestTotal to increment by 1, got %f", after-before)
 	}
 }
 
-func getPassthroughCounterValue(t *testing.T, counter *prometheus.CounterVec, labels prometheus.Labels) float64 {
-	t.Helper()
-	var m io_prometheus_client.Metric
-	c, err := counter.GetMetricWith(labels)
-	if err != nil {
-		t.Fatalf("GetMetricWith: %v", err)
-	}
-	if err := c.(prometheus.Metric).Write(&m); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	return m.GetCounter().GetValue()
-}
