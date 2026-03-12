@@ -666,7 +666,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 
-	// Emit proxy-level metrics for native-token passthrough traffic.
+	// Emit proxy-level metrics for passthrough traffic (token type may be "unknown").
 	metrics.ObservePassthroughRequest(backend.API, r.Method, resp.StatusCode, time.Since(start), apiType, passthroughTokenType(rawToken), GetUsername(r))
 }
 

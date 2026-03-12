@@ -819,20 +819,21 @@ func TestUsernameResolver_WarmCache_SkipsExpiredAndRevoked(t *testing.T) {
 
 func TestPassthroughTokenType(t *testing.T) {
 	tests := []struct {
+		name  string
 		token string
 		want  string
 	}{
-		{"gho_abc123", "gho"},
-		{"ghp_def456", "ghp"},
-		{"ghu_xyz789", "ghu"},
-		{"ghs_bot123", "ghs"},
-		{"ghx_abc123", "unknown"},
-		{"gha_abc123", "unknown"},
-		{"randomtoken", "unknown"},
-		{"", "unknown"},
+		{"gho_prefix", "gho_abc123", "gho"},
+		{"ghp_prefix", "ghp_def456", "ghp"},
+		{"ghu_prefix", "ghu_xyz789", "ghu"},
+		{"ghs_prefix", "ghs_bot123", "ghs"},
+		{"ghx_unrecognized", "ghx_abc123", "unknown"},
+		{"gha_unrecognized", "gha_abc123", "unknown"},
+		{"random_token", "randomtoken", "unknown"},
+		{"empty_token", "", "unknown"},
 	}
 	for _, tt := range tests {
-		t.Run(tt.token, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			got := passthroughTokenType(tt.token)
 			if got != tt.want {
 				t.Errorf("passthroughTokenType(%q) = %q, want %q", tt.token, got, tt.want)

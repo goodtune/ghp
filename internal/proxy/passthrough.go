@@ -139,7 +139,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 					SetUsername(r, u)
 				}
 			}
-			// Emit proxy-level metrics for native-token passthrough traffic.
+			// Emit proxy-level metrics for passthrough traffic (token type may be "unknown").
 			metrics.ObservePassthroughRequest(backend.GitHub, r.Method, rec.status, time.Since(decisionStart), "git", passthroughTokenType(raw), GetUsername(r))
 			return
 		}
