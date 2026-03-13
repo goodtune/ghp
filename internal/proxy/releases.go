@@ -83,12 +83,13 @@ type HTTPHeadDoer interface {
 }
 
 // headCheckClient is the default HEAD-check probe client used by
-// NewReleasesHandler when no netrc transport is configured. It disables
+// NewReleasesHandler for all HEAD availability probes. It disables
 // redirect-following so that a mirror responding with a redirect is treated as
 // "found" (non-404) and probe credentials are never forwarded to an unintended
 // redirect target. A 10-second timeout ensures that an unresponsive mirror
 // degrades gracefully to a normal redirect rather than blocking the client
-// request indefinitely.
+// request indefinitely. When netrc credentials are configured, Basic auth is
+// injected per-request via creds.setBasicAuth rather than via a transport wrapper.
 var headCheckClient = &http.Client{
 	Timeout: 10 * time.Second,
 	CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -170,7 +171,7 @@ func (c *netrcCreds) setBasicAuth(req *http.Request) {
 // policy, so explicitly listed orgs and repos are never affected.
 func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger) http.Handler {
 	var creds *netrcCreds
-	if cfg.Releases.RedirectHeadCheck && cfg.Releases.RedirectHeadCheckNetrc != "" {
+	if cfg.Releases.RedirectHeadCheckNetrc != "" {
 		var err error
 		creds, err = parseNetrcFile(cfg.Releases.RedirectHeadCheckNetrc)
 		if err != nil {
