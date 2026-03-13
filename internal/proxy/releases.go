@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/metrics"
+	"github.com/jdx/go-netrc"
 )
 
 // releasesDownloadRe matches github.com release download paths of the form
@@ -94,10 +96,57 @@ var headCheckClient = &http.Client{
 	},
 }
 
-// netrcTransportBase is the base RoundTripper passed to newNetrcTransport.
-// Nil selects http.DefaultTransport. Overridable in tests to inject a custom
-// TLS configuration (e.g. to trust a httptest.NewTLSServer certificate).
-var netrcTransportBase http.RoundTripper
+// netrcCreds holds pre-parsed netrc credentials for injecting Basic auth
+// on HEAD probes at the request level, rather than via a transport wrapper.
+type netrcCreds struct {
+	netrc *netrc.Netrc
+}
+
+// parseNetrcFile parses the given netrc file path and returns a netrcCreds
+// that can be used to look up credentials by hostname. Returns an error if the
+// file cannot be parsed.
+func parseNetrcFile(path string) (*netrcCreds, error) {
+	n, err := netrc.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("parsing netrc file: %w", err)
+	}
+	return &netrcCreds{netrc: n}, nil
+}
+
+// lookupMachine finds a machine entry by hostname (case-insensitive).
+// Default entries are intentionally ignored to prevent credential leakage
+// to unintended hosts.
+func (c *netrcCreds) lookupMachine(host string) (login, password string, ok bool) {
+	host = strings.ToLower(host)
+	for _, m := range c.netrc.Machines() {
+		if !m.IsDefault && strings.ToLower(m.Name) == host {
+			login = m.Get("login")
+			if login != "" {
+				return login, m.Get("password"), true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// setBasicAuth sets Basic auth on req if creds match the request hostname.
+// Credentials are only injected when:
+//   - the scheme is HTTPS (to prevent sending credentials in cleartext)
+//   - the request does not already have an Authorization header
+func (c *netrcCreds) setBasicAuth(req *http.Request) {
+	if req.URL.Scheme != "https" {
+		return
+	}
+	if _, _, ok := req.BasicAuth(); ok {
+		return
+	}
+	if req.Header.Get("Authorization") != "" {
+		return
+	}
+	if login, password, ok := c.lookupMachine(req.URL.Hostname()); ok {
+		req.SetBasicAuth(login, password)
+	}
+}
 
 // NewReleasesHandler wraps inner with a policy handler for github.com release
 // download requests. Paths matching /{org}/{repo}/releases/download/** are
@@ -120,34 +169,24 @@ var netrcTransportBase http.RoundTripper
 // unchanged. The allow list check is always performed before applying the
 // policy, so explicitly listed orgs and repos are never affected.
 func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger) http.Handler {
-	// Always build a no-redirect probe client so that hot-reloading
-	// redirect_head_check from false→true works correctly. The base
-	// headCheckClient already disables redirect-following; we only need
-	// a custom client when netrc auth is configured.
-	var client HTTPHeadDoer = headCheckClient
+	var creds *netrcCreds
 	if cfg.Releases.RedirectHeadCheckNetrc != "" {
-		transport, err := newNetrcTransport(cfg.Releases.RedirectHeadCheckNetrc, netrcTransportBase)
+		var err error
+		creds, err = parseNetrcFile(cfg.Releases.RedirectHeadCheckNetrc)
 		if err != nil {
 			if logger != nil {
 				logger.Error("failed to load netrc for HEAD check, continuing without auth",
 					"path", cfg.Releases.RedirectHeadCheckNetrc, "error", err)
 			}
-		} else {
-			client = &http.Client{
-				Timeout:   10 * time.Second,
-				Transport: transport,
-				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-					return http.ErrUseLastResponse
-				},
-			}
 		}
 	}
-	return NewReleasesHandlerWithClient(inner, cfg, logger, client)
+	return NewReleasesHandlerWithClient(inner, cfg, logger, headCheckClient, creds)
 }
 
 // NewReleasesHandlerWithClient is like NewReleasesHandler but accepts a custom
-// HTTP client for HEAD requests, enabling testing without real network calls.
-func NewReleasesHandlerWithClient(inner http.Handler, cfg *config.Config, logger *slog.Logger, client HTTPHeadDoer) http.Handler {
+// HTTP client for HEAD requests and optional pre-parsed netrc credentials,
+// enabling testing without real network calls.
+func NewReleasesHandlerWithClient(inner http.Handler, cfg *config.Config, logger *slog.Logger, client HTTPHeadDoer, creds *netrcCreds) http.Handler {
 	// Pre-load the not-found template once at construction time so it is not
 	// re-read and re-parsed on every 404 response.
 	notFoundTmpl := defaultNotFoundTmpl
@@ -199,7 +238,7 @@ func NewReleasesHandlerWithClient(inner http.Handler, cfg *config.Config, logger
 			target := redirectTo + r.URL.RequestURI()
 
 			if cfg.Releases.RedirectHeadCheck {
-				if servedNotFound := headCheckAndServe404(w, r, target, client, notFoundTmpl, logger); servedNotFound {
+				if servedNotFound := headCheckAndServe404(w, r, target, client, creds, notFoundTmpl, logger); servedNotFound {
 					return
 				}
 			}
@@ -217,8 +256,9 @@ func NewReleasesHandlerWithClient(inner http.Handler, cfg *config.Config, logger
 // headCheckAndServe404 issues a HEAD request to target. If the response is 404,
 // it renders tmpl and returns true. For any other outcome (non-404 response,
 // network error) it returns false and the caller should proceed with the normal
-// redirect.
-func headCheckAndServe404(w http.ResponseWriter, r *http.Request, target string, client HTTPHeadDoer, tmpl *template.Template, logger *slog.Logger) bool {
+// redirect. When creds is non-nil, Basic auth is injected on the HEAD request
+// for HTTPS targets that match a netrc machine entry.
+func headCheckAndServe404(w http.ResponseWriter, r *http.Request, target string, client HTTPHeadDoer, creds *netrcCreds, tmpl *template.Template, logger *slog.Logger) bool {
 	headReq, err := http.NewRequestWithContext(r.Context(), http.MethodHead, target, nil)
 	if err != nil {
 		if logger != nil {
@@ -226,6 +266,10 @@ func headCheckAndServe404(w http.ResponseWriter, r *http.Request, target string,
 		}
 		metrics.ReleasesRedirectHeadCheckTotal.WithLabelValues("error").Inc()
 		return false
+	}
+
+	if creds != nil {
+		creds.setBasicAuth(headReq)
 	}
 
 	start := time.Now()

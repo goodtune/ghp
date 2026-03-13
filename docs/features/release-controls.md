@@ -118,10 +118,8 @@ are never overwritten.
     with the normal client redirect. This means probe credentials are never
     forwarded to an unintended redirect target.
 
-    Be cautious with `default` netrc entries. A `default` block matches any
-    hostname, so if a future code path or configuration change causes probes to
-    follow redirects, credentials could be sent to the redirect target. Prefer
-    host-specific `machine` entries for your mirror wherever possible.
+    `default` netrc entries are intentionally ignored to prevent credential
+    leakage to unintended hosts. Use host-specific `machine` entries only.
 
 ##### Custom 404 Template
 
