@@ -73,12 +73,18 @@ func parseNetrc(path string) (map[string]netrcEntry, error) {
 				current = netrcEntry{}
 				inEntry = true
 			case "login":
+				if !inEntry {
+					return nil, fmt.Errorf("netrc: login keyword before machine or default")
+				}
 				i++
 				if i >= len(tokens) {
 					return nil, fmt.Errorf("netrc: login keyword without value")
 				}
 				current.Login = tokens[i]
 			case "password":
+				if !inEntry {
+					return nil, fmt.Errorf("netrc: password keyword before machine or default")
+				}
 				i++
 				if i >= len(tokens) {
 					return nil, fmt.Errorf("netrc: password keyword without value")

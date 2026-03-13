@@ -83,9 +83,11 @@ type ReleasesConfig struct {
 	// target is a selective mirror that only hosts a subset of releases.
 	RedirectHeadCheck bool `koanf:"redirect_head_check"`
 	// RedirectHeadCheckNetrc is the path to a netrc file whose credentials are
-	// sent as Basic auth on HEAD availability probes. Because GHP typically runs
-	// as a DynamicUser (no home directory), this should normally be an absolute
-	// path to a file the service can read — e.g. /etc/ghp/netrc.
+	// sent as Basic auth on HEAD availability probes over HTTPS. Credentials
+	// are never injected for plain http:// URLs (to prevent cleartext leakage)
+	// and existing Authorization headers are never overwritten. Because GHP
+	// typically runs as a DynamicUser (no home directory), this should normally
+	// be an absolute path to a file the service can read — e.g. /etc/ghp/netrc.
 	// When empty, HEAD requests are sent without authentication.
 	RedirectHeadCheckNetrc string `koanf:"redirect_head_check_netrc"`
 	// RedirectNotFoundTemplate is the path to a custom HTML template file rendered

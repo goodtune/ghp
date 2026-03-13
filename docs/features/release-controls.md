@@ -84,7 +84,8 @@ probe.
 If your mirror requires authentication, point `redirect_head_check_netrc` at a
 [netrc](https://www.gnu.org/software/inetutils/manual/html_node/The-_002enetrc-file.html)-format
 file. Credentials matching the redirect target's hostname are sent as HTTP
-Basic auth on each HEAD probe.
+Basic auth on each HEAD probe over **HTTPS**. Credentials are never injected
+for plain `http://` URLs to prevent sending them in cleartext.
 
 Because ghp typically runs as a `DynamicUser` (no home directory),
 `~/.netrc` is not available. Use an absolute path to a file the service can

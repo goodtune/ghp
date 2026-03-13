@@ -90,6 +90,16 @@ password s3cret
 			want:    map[string]netrcEntry{},
 		},
 		{
+			name:    "login before machine or default",
+			content: `login orphan`,
+			wantErr: true,
+		},
+		{
+			name:    "password before machine or default",
+			content: `password orphan`,
+			wantErr: true,
+		},
+		{
 			name: "macdef body with keyword-like lines is not parsed as credentials",
 			content: `machine mirror.example.com login deploy password s3cret
 macdef uploadtest
@@ -117,7 +127,7 @@ machine backup.example.com login buser password bpass`,
 			},
 		},
 		{
-			name: "account token is skipped",
+			name:    "account token is skipped",
 			content: `machine mirror.example.com account myacct login deploy password s3cret`,
 			want: map[string]netrcEntry{
 				"mirror.example.com": {Login: "deploy", Password: "s3cret"},
