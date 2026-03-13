@@ -510,10 +510,10 @@ func TestNewReleasesHandlerNetrcAuth(t *testing.T) {
 	}
 }
 
-// TestNewReleasesHandlerNetrcLoadErrorNoRedirect verifies that HEAD probes do
-// not follow redirects even when the netrc file cannot be loaded. A mirror
-// returning 302 must be treated as "found" regardless of auth configuration,
-// and must never trigger the friendly 404 page.
+// TestNewReleasesHandlerNetrcLoadErrorNoRedirect verifies that a netrc load
+// failure still produces a no-redirect HEAD client. A mirror returning 302 must
+// be treated as "found" regardless of auth configuration, and must never
+// trigger the friendly 404 page.
 func TestNewReleasesHandlerNetrcLoadErrorNoRedirect(t *testing.T) {
 	passthrough := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

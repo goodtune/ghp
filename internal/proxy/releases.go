@@ -80,12 +80,19 @@ type HTTPHeadDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// headCheckClient is the initial HEAD-check client assigned in NewReleasesHandler.
-// When redirect_head_check is enabled, it is replaced by a dedicated probe client
-// that disables redirect-following. A 10-second timeout ensures that an
-// unresponsive mirror degrades gracefully to a normal redirect rather than
-// blocking the client request indefinitely.
-var headCheckClient = &http.Client{Timeout: 10 * time.Second}
+// headCheckClient is the default HEAD-check probe client used by
+// NewReleasesHandler when no netrc transport is configured. It disables
+// redirect-following so that a mirror responding with a redirect is treated as
+// "found" (non-404) and probe credentials are never forwarded to an unintended
+// redirect target. A 10-second timeout ensures that an unresponsive mirror
+// degrades gracefully to a normal redirect rather than blocking the client
+// request indefinitely.
+var headCheckClient = &http.Client{
+	Timeout: 10 * time.Second,
+	CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
 
 // netrcTransportBase is the base RoundTripper passed to newNetrcTransport.
 // Nil selects http.DefaultTransport. Overridable in tests to inject a custom
@@ -110,31 +117,27 @@ var netrcTransportBase http.RoundTripper
 // unchanged. The allow list check is always performed before applying the
 // policy, so explicitly listed orgs and repos are never affected.
 func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger) http.Handler {
+	// Always build a no-redirect probe client so that hot-reloading
+	// redirect_head_check from false→true works correctly. The base
+	// headCheckClient already disables redirect-following; we only need
+	// a custom client when netrc auth is configured.
 	var client HTTPHeadDoer = headCheckClient
-	if cfg.Releases.RedirectHeadCheck {
-		// Always disable redirect-following for HEAD probes when head_check is
-		// enabled, regardless of whether netrc auth is configured. A mirror
-		// responding with a redirect is treated as "found" (non-404), and
-		// following the redirect to another host could leak netrc "default"
-		// credentials to an unintended server.
-		probeClient := &http.Client{
-			Timeout: 10 * time.Second,
-			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		}
-		if cfg.Releases.RedirectHeadCheckNetrc != "" {
-			transport, err := newNetrcTransport(cfg.Releases.RedirectHeadCheckNetrc, netrcTransportBase)
-			if err != nil {
-				if logger != nil {
-					logger.Error("failed to load netrc for HEAD check, continuing without auth",
-						"path", cfg.Releases.RedirectHeadCheckNetrc, "error", err)
-				}
-			} else {
-				probeClient.Transport = transport
+	if cfg.Releases.RedirectHeadCheckNetrc != "" {
+		transport, err := newNetrcTransport(cfg.Releases.RedirectHeadCheckNetrc, netrcTransportBase)
+		if err != nil {
+			if logger != nil {
+				logger.Error("failed to load netrc for HEAD check, continuing without auth",
+					"path", cfg.Releases.RedirectHeadCheckNetrc, "error", err)
+			}
+		} else {
+			client = &http.Client{
+				Timeout:   10 * time.Second,
+				Transport: transport,
+				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
 			}
 		}
-		client = probeClient
 	}
 	return NewReleasesHandlerWithClient(inner, cfg, logger, client)
 }
