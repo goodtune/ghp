@@ -80,10 +80,11 @@ type HTTPHeadDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// headCheckClient is a dedicated HTTP client used for HEAD availability probes
-// when redirect_head_check is disabled or as a fallback. A 10-second timeout
-// ensures that an unresponsive mirror degrades gracefully to a normal redirect
-// rather than blocking the client request indefinitely.
+// headCheckClient is the initial HEAD-check client assigned in NewReleasesHandler.
+// When redirect_head_check is enabled, it is replaced by a dedicated probe client
+// that disables redirect-following. A 10-second timeout ensures that an
+// unresponsive mirror degrades gracefully to a normal redirect rather than
+// blocking the client request indefinitely.
 var headCheckClient = &http.Client{Timeout: 10 * time.Second}
 
 // netrcTransportBase is the base RoundTripper passed to newNetrcTransport.
