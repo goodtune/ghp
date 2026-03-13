@@ -198,6 +198,7 @@ of environment variables and YAML fields.
     GHP_RELEASES_MODE=block
     GHP_RELEASES_REDIRECT_TO=https://releases.internal.example.com/
     GHP_RELEASES_REDIRECT_HEAD_CHECK=true
+    GHP_RELEASES_REDIRECT_HEAD_CHECK_NETRC=/etc/ghp/netrc
     GHP_RELEASES_REDIRECT_NOT_FOUND_TEMPLATE=/etc/ghp/404.html
     GHP_RELEASES_ALLOW=myorg,trusted/tool
     ```

@@ -102,13 +102,13 @@ type netrcCreds struct {
 	netrc *netrc.Netrc
 }
 
-// parseNetrcFile parses the given netrc file path and returns a netrcCreds
-// that can be used to look up credentials by hostname. Returns an error if the
-// file cannot be parsed.
+// parseNetrcFile reads and parses the given netrc file path and returns a
+// netrcCreds that can be used to look up credentials by hostname. Returns an
+// error if the file cannot be read or parsed.
 func parseNetrcFile(path string) (*netrcCreds, error) {
 	n, err := netrc.Parse(path)
 	if err != nil {
-		return nil, fmt.Errorf("parsing netrc file: %w", err)
+		return nil, fmt.Errorf("reading netrc file %q: %w", path, err)
 	}
 	return &netrcCreds{netrc: n}, nil
 }
