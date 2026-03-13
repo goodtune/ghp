@@ -111,7 +111,10 @@ var netrcTransportBase http.RoundTripper
 //     HTML page is returned instead of a redirect.
 //
 // When cfg.Releases.RedirectHeadCheckNetrc is set, credentials from the
-// specified netrc file are sent as Basic auth on HEAD availability probes.
+// specified netrc file are sent as Basic auth on HEAD availability probes
+// over HTTPS only (plain http:// requests are never authenticated to avoid
+// sending credentials in cleartext). Existing Authorization headers on a
+// request are preserved and never overwritten.
 //
 // Any other mode value or an empty mode passes all requests through to inner
 // unchanged. The allow list check is always performed before applying the

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goodtune/ghp/internal/config"
 )
@@ -506,12 +507,16 @@ func TestNewReleasesHandlerNetrcAuth(t *testing.T) {
 	if w.Code != http.StatusFound {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusFound)
 	}
-	auth := <-authCh
-	if !auth.ok {
-		t.Error("expected Basic auth on HEAD request to mirror")
-	}
-	if auth.user != "mirroruser" || auth.pass != "mirrorsecret" {
-		t.Errorf("auth credentials = %q/%q, want mirroruser/mirrorsecret", auth.user, auth.pass)
+	select {
+	case auth := <-authCh:
+		if !auth.ok {
+			t.Error("expected Basic auth on HEAD request to mirror")
+		}
+		if auth.user != "mirroruser" || auth.pass != "mirrorsecret" {
+			t.Errorf("auth credentials = %q/%q, want mirroruser/mirrorsecret", auth.user, auth.pass)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for HEAD probe to mirror — handler did not issue expected request")
 	}
 }
 
