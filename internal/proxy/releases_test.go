@@ -459,10 +459,14 @@ func TestNewReleasesHandlerNetrcAuth(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	var capturedUser, capturedPass string
-	var gotAuth bool
+	type authResult struct {
+		user, pass string
+		ok         bool
+	}
+	authCh := make(chan authResult, 1)
 	mirror := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedUser, capturedPass, gotAuth = r.BasicAuth()
+		u, p, ok := r.BasicAuth()
+		authCh <- authResult{u, p, ok}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer mirror.Close()
@@ -502,11 +506,12 @@ func TestNewReleasesHandlerNetrcAuth(t *testing.T) {
 	if w.Code != http.StatusFound {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusFound)
 	}
-	if !gotAuth {
+	auth := <-authCh
+	if !auth.ok {
 		t.Error("expected Basic auth on HEAD request to mirror")
 	}
-	if capturedUser != "mirroruser" || capturedPass != "mirrorsecret" {
-		t.Errorf("auth credentials = %q/%q, want mirroruser/mirrorsecret", capturedUser, capturedPass)
+	if auth.user != "mirroruser" || auth.pass != "mirrorsecret" {
+		t.Errorf("auth credentials = %q/%q, want mirroruser/mirrorsecret", auth.user, auth.pass)
 	}
 }
 

@@ -112,7 +112,7 @@ If the netrc file cannot be read at startup, ghp logs an error and falls back
 to unauthenticated HEAD checks. Existing `Authorization` headers on a request
 are never overwritten.
 
-!!! warning "Redirect behaviour during HEAD probes"
+!!! warning "Redirect behavior during HEAD probes"
     HEAD availability probes do **not** follow HTTP redirects. If the mirror
     responds with a redirect, ghp treats it as success (non-404) and proceeds
     with the normal client redirect. This means probe credentials are never
