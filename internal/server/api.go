@@ -89,7 +89,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/github/installations/{id}/repositories", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallationRepos)))
 
 	// App management routes.
-	mux.Handle("GET /api/apps", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListApps)))
+	mux.Handle("GET /api/apps", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListApps)))
 	mux.Handle("POST /api/apps", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleCreateApp)))
 	mux.Handle("GET /api/apps/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleGetApp)))
 	mux.Handle("PUT /api/apps/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleUpdateApp)))
@@ -634,8 +634,6 @@ func (a *API) handleListApps(w http.ResponseWriter, r *http.Request) {
 	if apps == nil {
 		apps = []*database.App{}
 	}
-	// Redact sensitive fields for non-admin users.
-	session := auth.SessionFromContext(r.Context())
 	type appResponse struct {
 		ID        string `json:"id"`
 		Name      string `json:"name"`
@@ -648,19 +646,16 @@ func (a *API) handleListApps(w http.ResponseWriter, r *http.Request) {
 	}
 	var result []appResponse
 	for _, app := range apps {
-		resp := appResponse{
+		result = append(result, appResponse{
 			ID:        app.ID,
 			Name:      app.Name,
 			AppID:     app.AppID,
+			ClientID:  app.ClientID,
 			BaseURL:   app.BaseURL,
 			IsDefault: app.IsDefault,
 			CreatedAt: app.CreatedAt.Format(time.RFC3339),
 			UpdatedAt: app.UpdatedAt.Format(time.RFC3339),
-		}
-		if session.Role == "admin" {
-			resp.ClientID = app.ClientID
-		}
-		result = append(result, resp)
+		})
 	}
 	writeJSON(w, http.StatusOK, result)
 }
@@ -774,6 +769,19 @@ func (a *API) handleGetApp(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// updateAppRequest is used for PUT /api/apps/{id}. IsDefault uses a pointer
+// so that omitting the field in the request body leaves the existing value
+// unchanged (avoids clearing the default flag when it is not provided).
+type updateAppRequest struct {
+	Name         string `json:"name"`
+	AppID        int64  `json:"app_id"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	PrivateKey   string `json:"private_key"`
+	BaseURL      string `json:"base_url"`
+	IsDefault    *bool  `json:"is_default"`
+}
+
 func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	existing, err := a.store.GetAppByID(r.Context(), id)
@@ -788,7 +796,7 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	var req createAppRequest
+	var req updateAppRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
 		return
@@ -830,7 +838,9 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	if req.BaseURL != "" {
 		existing.BaseURL = req.BaseURL
 	}
-	existing.IsDefault = req.IsDefault
+	if req.IsDefault != nil {
+		existing.IsDefault = *req.IsDefault
+	}
 
 	if err := a.store.UpdateApp(r.Context(), existing); err != nil {
 		a.logger.Error("failed to update app", "error", err)
@@ -851,7 +861,12 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := a.store.DeleteApp(r.Context(), id); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found"})
+		if errors.Is(err, database.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found"})
+		} else {
+			a.logger.Error("failed to delete app", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to delete app"})
+		}
 		return
 	}
 
@@ -869,8 +884,8 @@ func (a *API) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleListAppInstallations(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if a.appRegistry == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "App registry not configured"})
+	if a.appRegistry == nil || a.appRegistry.Count() == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "No apps configured"})
 		return
 	}
 
@@ -892,8 +907,8 @@ func (a *API) handleListAppInstallations(w http.ResponseWriter, r *http.Request)
 
 func (a *API) handleListAppInstallationRepos(w http.ResponseWriter, r *http.Request) {
 	appID := r.PathValue("id")
-	if a.appRegistry == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "App registry not configured"})
+	if a.appRegistry == nil || a.appRegistry.Count() == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "No apps configured"})
 		return
 	}
 

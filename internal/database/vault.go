@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,14 @@ type VaultStore struct {
 	client    *vault.Client
 	mountPath string // KV v2 mount path, e.g. "secret"
 	basePath  string // prefix within the mount, e.g. "ghp"
+
+	// Stored for re-authentication when the token expires.
+	roleID   string
+	secretID string
+
+	// usageMu serialises UpdateProxyTokenUsage writes to prevent lost
+	// increments under concurrent load (Vault KV lacks atomic counters).
+	usageMu sync.Mutex
 }
 
 // VaultConfig holds configuration for Vault connectivity.
@@ -29,7 +38,7 @@ type VaultConfig struct {
 }
 
 // NewVaultStore creates a VaultStore authenticated via AppRole.
-func NewVaultStore(cfg VaultConfig) (*VaultStore, error) {
+func NewVaultStore(ctx context.Context, cfg VaultConfig) (*VaultStore, error) {
 	vaultCfg := vault.DefaultConfig()
 	vaultCfg.Address = cfg.Addr
 
@@ -37,19 +46,6 @@ func NewVaultStore(cfg VaultConfig) (*VaultStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating vault client: %w", err)
 	}
-
-	// Authenticate via AppRole.
-	loginResp, err := client.Logical().Write("auth/approle/login", map[string]interface{}{
-		"role_id":   cfg.RoleID,
-		"secret_id": cfg.SecretID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("vault approle login: %w", err)
-	}
-	if loginResp == nil || loginResp.Auth == nil {
-		return nil, fmt.Errorf("vault approle login returned no auth token")
-	}
-	client.SetToken(loginResp.Auth.ClientToken)
 
 	mountPath := cfg.MountPath
 	if mountPath == "" {
@@ -60,11 +56,56 @@ func NewVaultStore(cfg VaultConfig) (*VaultStore, error) {
 		basePath = "ghp"
 	}
 
-	return &VaultStore{
+	store := &VaultStore{
 		client:    client,
 		mountPath: mountPath,
 		basePath:  basePath,
-	}, nil
+		roleID:    cfg.RoleID,
+		secretID:  cfg.SecretID,
+	}
+
+	// Authenticate via AppRole.
+	if err := store.login(ctx); err != nil {
+		return nil, fmt.Errorf("vault approle login: %w", err)
+	}
+
+	return store, nil
+}
+
+// login authenticates to Vault using the stored AppRole credentials.
+// It is safe to call repeatedly; each call replaces the current token.
+func (s *VaultStore) login(ctx context.Context) error {
+	loginResp, err := s.client.Logical().WriteWithContext(ctx, "auth/approle/login", map[string]interface{}{
+		"role_id":   s.roleID,
+		"secret_id": s.secretID,
+	})
+	if err != nil {
+		return fmt.Errorf("approle login: %w", err)
+	}
+	if loginResp == nil || loginResp.Auth == nil {
+		return fmt.Errorf("approle login returned no auth token")
+	}
+	s.client.SetToken(loginResp.Auth.ClientToken)
+	return nil
+}
+
+// withRelogin executes fn; if fn returns a permission-denied error it
+// re-authenticates once and retries. This transparently handles AppRole
+// tokens that expire during the server's lifetime.
+func (s *VaultStore) withRelogin(ctx context.Context, fn func() error) error {
+	err := fn()
+	if err == nil {
+		return nil
+	}
+	// Vault returns a 403 for expired/invalid tokens. Attempt re-auth once.
+	if strings.Contains(err.Error(), "403") || strings.Contains(err.Error(), "permission denied") {
+		if reloginErr := s.login(ctx); reloginErr != nil {
+			// Return original error — re-login failed.
+			return err
+		}
+		return fn()
+	}
+	return err
 }
 
 // NewVaultStoreFromClient creates a VaultStore from an existing authenticated client.
@@ -97,28 +138,36 @@ func (s *VaultStore) metadataPath(key string) string {
 	return fmt.Sprintf("%s/metadata/%s/%s", s.mountPath, s.basePath, key)
 }
 
-// kvWrite writes data to a KV v2 path.
+// kvWrite writes data to a KV v2 path. Re-authenticates once on 403 errors.
 func (s *VaultStore) kvWrite(ctx context.Context, key string, data map[string]interface{}) error {
-	_, err := s.client.Logical().WriteWithContext(ctx, s.dataPath(key), map[string]interface{}{
-		"data": data,
+	return s.withRelogin(ctx, func() error {
+		_, err := s.client.Logical().WriteWithContext(ctx, s.dataPath(key), map[string]interface{}{
+			"data": data,
+		})
+		return err
 	})
-	return err
 }
 
 // kvRead reads data from a KV v2 path. Returns nil, nil if not found.
+// Re-authenticates once on 403 errors.
 func (s *VaultStore) kvRead(ctx context.Context, key string) (map[string]interface{}, error) {
-	secret, err := s.client.Logical().ReadWithContext(ctx, s.dataPath(key))
+	var secret *vault.Secret
+	err := s.withRelogin(ctx, func() error {
+		var readErr error
+		secret, readErr = s.client.Logical().ReadWithContext(ctx, s.dataPath(key))
+		return readErr
+	})
 	if err != nil {
 		return nil, err
 	}
 	if secret == nil {
 		return nil, nil
 	}
-	data, ok := secret.Data["data"].(map[string]interface{})
+	result, ok := secret.Data["data"].(map[string]interface{})
 	if !ok {
 		return nil, nil
 	}
-	return data, nil
+	return result, nil
 }
 
 // kvDelete deletes a secret at the given path (destroys all versions via metadata).
@@ -256,7 +305,7 @@ func (s *VaultStore) DeleteApp(ctx context.Context, id string) error {
 		return err
 	}
 	if existing == nil {
-		return fmt.Errorf("app not found")
+		return fmt.Errorf("app %s: %w", id, ErrNotFound)
 	}
 	return s.kvDelete(ctx, "apps/"+id)
 }
@@ -608,6 +657,11 @@ func (s *VaultStore) RevokeProxyToken(ctx context.Context, id string) error {
 }
 
 func (s *VaultStore) UpdateProxyTokenUsage(ctx context.Context, id string) error {
+	// Serialise writes to avoid lost increments under concurrent load.
+	// Vault KV v2 lacks atomic counters; a mutex is the simplest safe approach.
+	s.usageMu.Lock()
+	defer s.usageMu.Unlock()
+
 	token, err := s.GetProxyTokenByID(ctx, id)
 	if err != nil {
 		return err
@@ -618,6 +672,24 @@ func (s *VaultStore) UpdateProxyTokenUsage(ctx context.Context, id string) error
 	now := time.Now().UTC()
 	token.LastUsedAt = &now
 	token.RequestCount++
+
+	data, err := marshalToMap(token)
+	if err != nil {
+		return err
+	}
+	data["token_hash"] = token.TokenHash
+	return s.kvWrite(ctx, "proxy-tokens/"+id, data)
+}
+
+func (s *VaultStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error {
+	token, err := s.GetProxyTokenByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if token == nil {
+		return fmt.Errorf("token not found: %s", id)
+	}
+	token.AppID = &appID
 
 	data, err := marshalToMap(token)
 	if err != nil {

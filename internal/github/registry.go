@@ -125,7 +125,9 @@ func (r *AppRegistry) GetDefaultID() string {
 	return r.defaultID
 }
 
-// Reload re-reads apps from the store and updates providers.
+// Reload re-reads apps from the store and updates providers. It rebuilds
+// every provider so that changes to an existing app (rotated private key,
+// base_url change, etc.) take effect immediately without a restart.
 func (r *AppRegistry) Reload(ctx context.Context) error {
 	apps, err := r.store.ListApps(ctx)
 	if err != nil {
@@ -135,14 +137,17 @@ func (r *AppRegistry) Reload(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Reset defaultID before recomputing; if no app is marked default after
+	// the reload, GetDefault() should reflect that rather than return stale state.
+	r.defaultID = ""
+
 	// Track which IDs are still valid.
 	seen := make(map[string]bool)
 	for _, app := range apps {
 		seen[app.ID] = true
-		if _, exists := r.providers[app.ID]; !exists {
-			if err := r.loadAppLocked(app); err != nil {
-				r.logger.Warn("skipping app on reload", "app_id", app.ID, "name", app.Name, "error", err)
-			}
+		// Always reload the provider so key/config changes take effect.
+		if err := r.loadAppLocked(app); err != nil {
+			r.logger.Warn("skipping app on reload", "app_id", app.ID, "name", app.Name, "error", err)
 		}
 		if app.IsDefault {
 			r.defaultID = app.ID
@@ -156,6 +161,7 @@ func (r *AppRegistry) Reload(ctx context.Context) error {
 		}
 	}
 
+	r.logger.Info("app registry reloaded", "count", len(r.providers))
 	return nil
 }
 

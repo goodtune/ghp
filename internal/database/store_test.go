@@ -14,6 +14,7 @@ func testStoreContract(t *testing.T, store Store) {
 	t.Run("UserCRUD", func(t *testing.T) { testUserCRUD(t, store) })
 	t.Run("ProxyTokenCRUD", func(t *testing.T) { testProxyTokenCRUD(t, store) })
 	t.Run("ProxyTokenWithAppID", func(t *testing.T) { testProxyTokenWithAppID(t, store) })
+	t.Run("GitHubTokenAppID", func(t *testing.T) { testGitHubTokenAppID(t, store) })
 	t.Run("SyncAdminRoles", func(t *testing.T) { testSyncAdminRoles(t, store) })
 }
 
@@ -397,6 +398,93 @@ func testProxyTokenWithAppID(t *testing.T, store Store) {
 
 	// Cleanup.
 	store.DeleteApp(ctx, app.ID)
+}
+
+func testGitHubTokenAppID(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	// Create an app to associate with the token.
+	app := &App{Name: "GitHubToken App", AppID: 77777}
+	if err := store.CreateApp(ctx, app); err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	defer store.DeleteApp(ctx, app.ID)
+
+	// Create a user.
+	user := &User{GitHubID: 99003, GitHubUsername: "ghtokenuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatalf("UpsertUser: %v", err)
+	}
+
+	// Upsert a GitHub token with AppID set.
+	gt := &GitHubToken{
+		UserID:                user.ID,
+		AppID:                 &app.ID,
+		AccessToken:           "enc_access_appid",
+		RefreshToken:          "enc_refresh_appid",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+		Scopes:                "repo",
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatalf("UpsertGitHubToken with AppID: %v", err)
+	}
+
+	// Round-trip via GetGitHubToken.
+	got, err := store.GetGitHubToken(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetGitHubToken: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected token, got nil")
+	}
+	if got.AppID == nil {
+		t.Fatal("expected AppID to be set after round-trip")
+	}
+	if *got.AppID != app.ID {
+		t.Errorf("AppID = %q, want %q", *got.AppID, app.ID)
+	}
+
+	// Round-trip via GetGitHubTokenByID.
+	got2, err := store.GetGitHubTokenByID(ctx, gt.ID)
+	if err != nil {
+		t.Fatalf("GetGitHubTokenByID: %v", err)
+	}
+	if got2 == nil {
+		t.Fatal("expected token by ID, got nil")
+	}
+	if got2.AppID == nil {
+		t.Fatal("expected AppID to be set in GetGitHubTokenByID result")
+	}
+	if *got2.AppID != app.ID {
+		t.Errorf("GetGitHubTokenByID AppID = %q, want %q", *got2.AppID, app.ID)
+	}
+
+	// Verify nil AppID is preserved for tokens without an app association.
+	user2 := &User{GitHubID: 99004, GitHubUsername: "ghtokenuser2", Role: "user"}
+	if err := store.UpsertUser(ctx, user2); err != nil {
+		t.Fatalf("UpsertUser2: %v", err)
+	}
+	gt2 := &GitHubToken{
+		UserID:                user2.ID,
+		AccessToken:           "enc_access_noapp",
+		RefreshToken:          "enc_refresh_noapp",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt2); err != nil {
+		t.Fatalf("UpsertGitHubToken without AppID: %v", err)
+	}
+	got3, err := store.GetGitHubToken(ctx, user2.ID)
+	if err != nil {
+		t.Fatalf("GetGitHubToken (no app): %v", err)
+	}
+	if got3 == nil {
+		t.Fatal("expected token, got nil")
+	}
+	if got3.AppID != nil {
+		t.Errorf("expected nil AppID for token without app, got %q", *got3.AppID)
+	}
 }
 
 func testSyncAdminRoles(t *testing.T, store Store) {

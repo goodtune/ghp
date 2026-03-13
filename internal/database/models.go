@@ -9,8 +9,14 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// ErrNotFound is returned by store operations when the requested record does
+// not exist. Callers can distinguish "not found" from other errors using
+// errors.Is(err, ErrNotFound).
+var ErrNotFound = errors.New("not found")
 
 // App represents a GitHub App configured in the proxy.
 type App struct {
@@ -127,6 +133,7 @@ type Store interface {
 	ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error)
 	RevokeProxyToken(ctx context.Context, id string) error
 	UpdateProxyTokenUsage(ctx context.Context, id string) error
+	UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error
 
 	// Lifecycle
 	Close() error

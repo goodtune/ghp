@@ -207,6 +207,8 @@
                 if (apps.length === 1) {
                     sel.innerHTML = '<option value="' + apps[0].id + '">' + esc(apps[0].name) + '</option>';
                     sel.value = apps[0].id;
+                    // With exactly one app, load installations automatically.
+                    loadInstallations();
                 }
                 return;
             }
@@ -218,9 +220,16 @@
                 opt.textContent = app.name + (app.is_default ? ' (default)' : '');
                 sel.appendChild(opt);
             }
-            // Auto-select the default app.
+            // Auto-select the default app if one exists and load installations.
             const defaultApp = apps.find(a => a.is_default);
-            if (defaultApp) sel.value = defaultApp.id;
+            if (defaultApp) {
+                sel.value = defaultApp.id;
+                loadInstallations();
+            } else {
+                // No default — show placeholder and wait for user selection.
+                const sel2 = document.getElementById('installation-id');
+                sel2.innerHTML = '<option value="">Select an app first...</option>';
+            }
         }
 
         async function createApp() {
@@ -478,7 +487,9 @@
         }
 
         // ── Init ───────────────────────────────────────────────────
-        loadApps().then(() => loadInstallations());
+        // loadInstallations() is called from populateAppSelect() once an app
+        // is selected (or auto-selected), so it is not called unconditionally here.
+        loadApps();
         loadUsers();
         loadAllTokens();
     </script>

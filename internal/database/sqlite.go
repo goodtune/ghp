@@ -479,6 +479,22 @@ func (s *SQLiteStore) UpdateProxyTokenUsage(ctx context.Context, id string) erro
 	return err
 }
 
+func (s *SQLiteStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE proxy_tokens SET app_id = ? WHERE id = ?`, appID, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("token not found: %s", id)
+	}
+	return nil
+}
+
 // --- Apps ---
 
 func (s *SQLiteStore) CreateApp(ctx context.Context, app *App) error {
@@ -584,7 +600,7 @@ func (s *SQLiteStore) DeleteApp(ctx context.Context, id string) error {
 		return err
 	}
 	if n == 0 {
-		return fmt.Errorf("app not found")
+		return fmt.Errorf("app %s: %w", id, ErrNotFound)
 	}
 	return nil
 }

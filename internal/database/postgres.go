@@ -392,6 +392,22 @@ func (s *PostgresStore) UpdateProxyTokenUsage(ctx context.Context, id string) er
 	return err
 }
 
+func (s *PostgresStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE proxy_tokens SET app_id = $1 WHERE id = $2`, appID, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("token not found: %s", id)
+	}
+	return nil
+}
+
 // --- Apps ---
 
 func (s *PostgresStore) CreateApp(ctx context.Context, app *App) error {
@@ -485,7 +501,7 @@ func (s *PostgresStore) DeleteApp(ctx context.Context, id string) error {
 		return err
 	}
 	if n == 0 {
-		return fmt.Errorf("app not found")
+		return fmt.Errorf("app %s: %w", id, ErrNotFound)
 	}
 	return nil
 }

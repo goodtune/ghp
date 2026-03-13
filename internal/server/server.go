@@ -177,11 +177,9 @@ func (s *Server) backfillTokenAppID(ctx context.Context, store database.Store, a
 	count := 0
 	for _, t := range tokens {
 		if t.AppID == nil && t.InstallationID != nil {
-			t.AppID = &appID
-			// Re-create the token to update the app_id (store doesn't have an Update method for tokens).
-			// This is a one-time migration operation.
-			if err := store.UpdateProxyTokenUsage(ctx, t.ID); err != nil {
+			if err := store.UpdateProxyTokenAppID(ctx, t.ID, appID); err != nil {
 				s.logger.Warn("backfill token failed", "token_id", t.ID, "error", err)
+				continue
 			}
 			count++
 		}
@@ -197,7 +195,7 @@ func (s *Server) Run(ctx context.Context) error {
 	var store database.Store
 	var err error
 	if s.cfg.Database.Driver == "vault" {
-		store, err = database.OpenVault(database.VaultConfig{
+		store, err = database.OpenVault(ctx, database.VaultConfig{
 			Addr:      s.cfg.Database.VaultAddr,
 			RoleID:    s.cfg.Database.VaultRoleID,
 			SecretID:  s.cfg.Database.VaultSecretID,
@@ -319,10 +317,18 @@ func (s *Server) Run(ctx context.Context) error {
 	auditWriter := newAuditLogWriter(s.logWriter)
 	proxyHandler.SetAuditLogWriter(auditWriter)
 
-	// Recover the concrete *github.AppTokenProvider for admin API endpoints.
+	// Recover the concrete *github.AppTokenProvider for legacy admin API
+	// endpoints (/api/github/installations). In multi-app mode the registry
+	// is used instead; we fall back to the default registry provider here so
+	// those endpoints remain functional when no specific app is selected.
 	var concreteATP *github.AppTokenProvider
 	if atp, ok := appTokenProvider.(*github.AppTokenProvider); ok {
 		concreteATP = atp
+	} else if appRegistry != nil && appRegistry.Count() > 0 {
+		// In multi-app mode, use the default app provider for the legacy endpoints.
+		if defaultProvider, err := appRegistry.GetDefault(); err == nil {
+			concreteATP = defaultProvider
+		}
 	}
 	api := NewAPI(lifecycleCtx, s.cfg, store, tokenSvc, authHandler, enc, concreteATP, appRegistry, proxyTokenResolver, usernameResolver, s.logger, auditWriter)
 	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)

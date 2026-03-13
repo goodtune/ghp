@@ -1,6 +1,9 @@
 package database
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // Open creates a Store for the given driver and DSN.
 // For SQL backends, the DSN is the connection string.
@@ -17,6 +20,6 @@ func Open(driver, dsn string) (Store, error) {
 }
 
 // OpenVault creates a VaultStore with the given configuration.
-func OpenVault(cfg VaultConfig) (Store, error) {
-	return NewVaultStore(cfg)
+func OpenVault(ctx context.Context, cfg VaultConfig) (Store, error) {
+	return NewVaultStore(ctx, cfg)
 }
