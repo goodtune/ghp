@@ -108,7 +108,7 @@ type netrcCreds struct {
 func parseNetrcFile(path string) (*netrcCreds, error) {
 	n, err := netrc.Parse(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading netrc file %q: %w", path, err)
+		return nil, fmt.Errorf("loading netrc file %q: %w", path, err)
 	}
 	return &netrcCreds{netrc: n}, nil
 }
@@ -170,7 +170,7 @@ func (c *netrcCreds) setBasicAuth(req *http.Request) {
 // policy, so explicitly listed orgs and repos are never affected.
 func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger) http.Handler {
 	var creds *netrcCreds
-	if cfg.Releases.RedirectHeadCheckNetrc != "" {
+	if cfg.Releases.RedirectHeadCheck && cfg.Releases.RedirectHeadCheckNetrc != "" {
 		var err error
 		creds, err = parseNetrcFile(cfg.Releases.RedirectHeadCheckNetrc)
 		if err != nil {

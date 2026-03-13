@@ -2,13 +2,16 @@ package proxy
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goodtune/ghp/internal/config"
 )
@@ -506,6 +509,83 @@ func TestNewReleasesHandlerNetrcAuth(t *testing.T) {
 	}
 	if user != "mirroruser" || pass != "mirrorsecret" {
 		t.Errorf("auth credentials = %q/%q, want mirroruser/mirrorsecret", user, pass)
+	}
+}
+
+// TestNewReleasesHandlerNetrcEndToEnd exercises the full config-to-auth wiring
+// through NewReleasesHandler (the public constructor): a netrc file is loaded
+// from cfg.Releases.RedirectHeadCheckNetrc, credentials are injected on the
+// HEAD probe to a TLS mirror, and the handler issues a redirect when the mirror
+// responds 200.
+func TestNewReleasesHandlerNetrcEndToEnd(t *testing.T) {
+	passthrough := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	type authResult struct {
+		user, pass string
+		ok         bool
+	}
+	authCh := make(chan authResult, 1)
+	mirror := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok := r.BasicAuth()
+		authCh <- authResult{u, p, ok}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mirror.Close()
+
+	// Build a netrc file for the mirror's hostname.
+	mirrorURL, err := url.Parse(mirror.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	netrcPath := filepath.Join(dir, "netrc")
+	content := fmt.Sprintf("machine %s login mirroruser password mirrorsecret\n", mirrorURL.Hostname())
+	if err := os.WriteFile(netrcPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Override the package-level headCheckClient so it trusts the test TLS
+	// certificate and still disables redirect-following.
+	orig := headCheckClient
+	headCheckClient = &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: mirror.Client().Transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	defer func() { headCheckClient = orig }()
+
+	cfg := &config.Config{
+		Releases: config.ReleasesConfig{
+			Mode:                   "redirect",
+			RedirectTo:             mirror.URL,
+			RedirectHeadCheck:      true,
+			RedirectHeadCheckNetrc: netrcPath,
+		},
+	}
+	handler := NewReleasesHandler(passthrough, cfg, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/goodtune/ghp/releases/download/v1.0.0/ghp_linux.tar.gz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// Mirror returned 200, so handler should issue a client redirect.
+	if w.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusFound)
+	}
+	select {
+	case auth := <-authCh:
+		if !auth.ok {
+			t.Error("expected Basic auth on HEAD request to mirror")
+		}
+		if auth.user != "mirroruser" || auth.pass != "mirrorsecret" {
+			t.Errorf("auth credentials = %q/%q, want mirroruser/mirrorsecret", auth.user, auth.pass)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for HEAD probe to mirror")
 	}
 }
 
