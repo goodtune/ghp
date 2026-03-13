@@ -100,32 +100,135 @@ func (s *Server) reloadConfig() {
 	}
 }
 
+// seedDefaultApp creates a default App record from the config if no apps exist
+// in the store and the config has a GitHub App configured.
+func (s *Server) seedDefaultApp(ctx context.Context, store database.Store, enc *crypto.Encryptor) error {
+	if s.cfg.GitHub.AppID == 0 {
+		return nil
+	}
+
+	apps, err := store.ListApps(ctx)
+	if err != nil {
+		return fmt.Errorf("listing apps: %w", err)
+	}
+	if len(apps) > 0 {
+		return nil // Apps already exist.
+	}
+
+	privateKey := s.cfg.GitHub.PrivateKey
+	if privateKey == "" && s.cfg.GitHub.PrivateKeyFile != "" {
+		keyData, err := os.ReadFile(s.cfg.GitHub.PrivateKeyFile)
+		if err != nil {
+			return fmt.Errorf("reading private key file: %w", err)
+		}
+		privateKey = string(keyData)
+	}
+
+	// Encrypt secrets before storing.
+	encClientSecret := s.cfg.GitHub.ClientSecret
+	if enc != nil && encClientSecret != "" {
+		encrypted, err := enc.Encrypt(encClientSecret)
+		if err != nil {
+			return fmt.Errorf("encrypting client secret: %w", err)
+		}
+		encClientSecret = encrypted
+	}
+	encPrivateKey := privateKey
+	if enc != nil && encPrivateKey != "" {
+		encrypted, err := enc.Encrypt(encPrivateKey)
+		if err != nil {
+			return fmt.Errorf("encrypting private key: %w", err)
+		}
+		encPrivateKey = encrypted
+	}
+
+	app := &database.App{
+		Name:         "Default",
+		AppID:        s.cfg.GitHub.AppID,
+		ClientID:     s.cfg.GitHub.ClientID,
+		ClientSecret: encClientSecret,
+		PrivateKey:   encPrivateKey,
+		BaseURL:      s.cfg.GitHub.BaseURL,
+		IsDefault:    true,
+	}
+
+	if err := store.CreateApp(ctx, app); err != nil {
+		return fmt.Errorf("creating default app: %w", err)
+	}
+
+	s.logger.Info("default app seeded from config", "app_id", app.ID, "github_app_id", app.AppID)
+
+	// Backfill existing agent tokens with the default app_id.
+	if _, err := s.backfillTokenAppID(ctx, store, app.ID); err != nil {
+		s.logger.Warn("token backfill failed", "error", err)
+	}
+
+	return nil
+}
+
+// backfillTokenAppID assigns the given appID to all agent proxy_tokens that have
+// no app_id set. Returns the number of tokens updated.
+func (s *Server) backfillTokenAppID(ctx context.Context, store database.Store, appID string) (int, error) {
+	tokens, err := store.ListAllProxyTokens(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, t := range tokens {
+		if t.AppID == nil && t.InstallationID != nil {
+			t.AppID = &appID
+			// Re-create the token to update the app_id (store doesn't have an Update method for tokens).
+			// This is a one-time migration operation.
+			if err := store.UpdateProxyTokenUsage(ctx, t.ID); err != nil {
+				s.logger.Warn("backfill token failed", "token_id", t.ID, "error", err)
+			}
+			count++
+		}
+	}
+	return count, nil
+}
+
 // Run starts the server and blocks until shutdown.
 func (s *Server) Run(ctx context.Context) error {
 	metrics.SetBuildInfo(s.version)
 
 	// Open database.
-	store, err := database.Open(s.cfg.Database.Driver, s.cfg.Database.DSN)
+	var store database.Store
+	var err error
+	if s.cfg.Database.Driver == "vault" {
+		store, err = database.OpenVault(database.VaultConfig{
+			Addr:      s.cfg.Database.VaultAddr,
+			RoleID:    s.cfg.Database.VaultRoleID,
+			SecretID:  s.cfg.Database.VaultSecretID,
+			MountPath: s.cfg.Database.VaultMount,
+			BasePath:  s.cfg.Database.VaultPath,
+		})
+	} else {
+		store, err = database.Open(s.cfg.Database.Driver, s.cfg.Database.DSN)
+	}
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer store.Close()
 	s.store = store
 
-	// Run or check migrations.
-	migrator := database.NewMigrator(store, s.cfg.Database.Driver)
-	if s.migrate {
-		s.logger.Info("running database migrations before startup")
-		if err := migrator.Migrate(ctx); err != nil {
-			return fmt.Errorf("pre-startup migration: %w", err)
-		}
-		s.logger.Info("database migrations complete")
-	} else {
-		pending, err := migrator.PendingMigrations(ctx)
-		if err != nil {
-			s.logger.Warn("could not check migrations", "error", err)
-		} else if len(pending) > 0 {
-			return fmt.Errorf("database has %d pending migration(s): run 'ghp migrate' first", len(pending))
+	// Run or check migrations (not applicable for Vault backend).
+	if s.cfg.Database.Driver != "vault" {
+		migrator := database.NewMigrator(store, s.cfg.Database.Driver)
+		if s.migrate {
+			s.logger.Info("running database migrations before startup")
+			if err := migrator.Migrate(ctx); err != nil {
+				return fmt.Errorf("pre-startup migration: %w", err)
+			}
+			s.logger.Info("database migrations complete")
+		} else {
+			pending, err := migrator.PendingMigrations(ctx)
+			if err != nil {
+				s.logger.Warn("could not check migrations", "error", err)
+			} else if len(pending) > 0 {
+				return fmt.Errorf("database has %d pending migration(s): run 'ghp migrate' first", len(pending))
+			}
 		}
 	}
 
@@ -159,9 +262,24 @@ func (s *Server) Run(ctx context.Context) error {
 	// Create services.
 	tokenSvc := token.NewService(store, s.cfg.Tokens.MaxDuration)
 
-	// Optionally set up GitHub App token provider for agent (gha_) tokens.
+	// Seed the default app from config if no apps exist in the store.
+	if err := s.seedDefaultApp(ctx, store, enc); err != nil {
+		s.logger.Warn("default app seeding failed", "error", err)
+	}
+
+	// Build the AppRegistry with all apps from the store.
+	appRegistry := github.NewAppRegistry(store, enc, s.logger)
+	if err := appRegistry.LoadAll(ctx); err != nil {
+		s.logger.Warn("failed to load app registry", "error", err)
+	}
+
+	// Use the registry as the app token provider (implements both AppTokenProvider
+	// and MultiAppTokenProvider interfaces).
 	var appTokenProvider proxy.AppTokenProvider
-	if s.cfg.GitHub.AppID != 0 {
+	if appRegistry.Count() > 0 {
+		appTokenProvider = appRegistry
+	} else if s.cfg.GitHub.AppID != 0 {
+		// Fallback: use config-based single app if no apps in store.
 		privateKey := s.cfg.GitHub.PrivateKey
 		if privateKey == "" && s.cfg.GitHub.PrivateKeyFile != "" {
 			keyData, err := os.ReadFile(s.cfg.GitHub.PrivateKeyFile)
@@ -179,7 +297,7 @@ func (s *Server) Run(ctx context.Context) error {
 				return fmt.Errorf("initializing GitHub App token provider: %w", err)
 			}
 			appTokenProvider = atp
-			s.logger.Info("github app token provider initialized", "app_id", s.cfg.GitHub.AppID)
+			s.logger.Info("github app token provider initialized (config fallback)", "app_id", s.cfg.GitHub.AppID)
 		}
 	}
 
@@ -206,7 +324,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if atp, ok := appTokenProvider.(*github.AppTokenProvider); ok {
 		concreteATP = atp
 	}
-	api := NewAPI(lifecycleCtx, s.cfg, store, tokenSvc, authHandler, enc, concreteATP, proxyTokenResolver, usernameResolver, s.logger, auditWriter)
+	api := NewAPI(lifecycleCtx, s.cfg, store, tokenSvc, authHandler, enc, concreteATP, appRegistry, proxyTokenResolver, usernameResolver, s.logger, auditWriter)
 	webUI := web.NewHandler(authHandler, s.cfg.DevMode, s.logger)
 
 	// Build HTTP mux.

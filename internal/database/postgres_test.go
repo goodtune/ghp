@@ -47,6 +47,7 @@ func newTestPostgresStore(t *testing.T) *PostgresStore {
 		"DROP TABLE IF EXISTS proxy_tokens",
 		"DROP TYPE IF EXISTS token_type",
 		"DROP TABLE IF EXISTS github_tokens",
+		"DROP TABLE IF EXISTS apps",
 		"DROP TABLE IF EXISTS users",
 		"DROP TABLE IF EXISTS schema_migrations",
 	} {
@@ -64,6 +65,12 @@ func newTestPostgresStore(t *testing.T) *PostgresStore {
 		t.Fatalf("Migrate: %v", err)
 	}
 	return store
+}
+
+// TestPostgresStoreContract runs the shared store contract tests against PostgreSQL.
+func TestPostgresStoreContract(t *testing.T) {
+	store := newTestPostgresStore(t)
+	testStoreContract(t, store)
 }
 
 func TestPostgresUserCRUD(t *testing.T) {

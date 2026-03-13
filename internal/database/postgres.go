@@ -189,16 +189,17 @@ func (s *PostgresStore) UpsertGitHubToken(ctx context.Context, token *GitHubToke
 	}
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO github_tokens (id, user_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO github_tokens (id, user_id, app_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT(user_id) DO UPDATE SET
 			access_token = EXCLUDED.access_token,
 			refresh_token = EXCLUDED.refresh_token,
 			access_token_expires_at = EXCLUDED.access_token_expires_at,
 			refresh_token_expires_at = EXCLUDED.refresh_token_expires_at,
 			scopes = EXCLUDED.scopes,
+			app_id = EXCLUDED.app_id,
 			updated_at = EXCLUDED.updated_at
-	`, token.ID, token.UserID, token.AccessToken, token.RefreshToken,
+	`, token.ID, token.UserID, token.AppID, token.AccessToken, token.RefreshToken,
 		token.AccessTokenExpiresAt, token.RefreshTokenExpiresAt,
 		token.Scopes, now, now)
 	return err
@@ -206,30 +207,38 @@ func (s *PostgresStore) UpsertGitHubToken(ctx context.Context, token *GitHubToke
 
 func (s *PostgresStore) GetGitHubToken(ctx context.Context, userID string) (*GitHubToken, error) {
 	t := &GitHubToken{}
+	var appID sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
+		`SELECT id, user_id, app_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
 		 FROM github_tokens WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1`, userID,
-	).Scan(&t.ID, &t.UserID, &t.AccessToken, &t.RefreshToken, &t.AccessTokenExpiresAt, &t.RefreshTokenExpiresAt, &t.Scopes, &t.CreatedAt, &t.UpdatedAt)
+	).Scan(&t.ID, &t.UserID, &appID, &t.AccessToken, &t.RefreshToken, &t.AccessTokenExpiresAt, &t.RefreshTokenExpiresAt, &t.Scopes, &t.CreatedAt, &t.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if appID.Valid {
+		t.AppID = &appID.String
 	}
 	return t, nil
 }
 
 func (s *PostgresStore) GetGitHubTokenByID(ctx context.Context, id string) (*GitHubToken, error) {
 	t := &GitHubToken{}
+	var appID sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
+		`SELECT id, user_id, app_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
 		 FROM github_tokens WHERE id = $1`, id,
-	).Scan(&t.ID, &t.UserID, &t.AccessToken, &t.RefreshToken, &t.AccessTokenExpiresAt, &t.RefreshTokenExpiresAt, &t.Scopes, &t.CreatedAt, &t.UpdatedAt)
+	).Scan(&t.ID, &t.UserID, &appID, &t.AccessToken, &t.RefreshToken, &t.AccessTokenExpiresAt, &t.RefreshTokenExpiresAt, &t.Scopes, &t.CreatedAt, &t.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if appID.Valid {
+		t.AppID = &appID.String
 	}
 	return t, nil
 }
@@ -254,9 +263,9 @@ func (s *PostgresStore) CreateProxyToken(ctx context.Context, token *ProxyToken)
 		tokenType = "proxy"
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO proxy_tokens (id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, request_count, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0, $12)
-	`, token.ID, token.TokenHash, token.TokenPrefix, tokenType, token.UserID, token.GitHubTokenID,
+		INSERT INTO proxy_tokens (id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, request_count, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0, $13)
+	`, token.ID, token.TokenHash, token.TokenPrefix, tokenType, token.AppID, token.UserID, token.GitHubTokenID,
 		token.InstallationID, string(reposJSON), string(scopesJSON), token.SessionID,
 		token.ExpiresAt, now)
 	return err
@@ -266,15 +275,18 @@ func scanPostgresProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, 
 	t := &ProxyToken{}
 	var scopesStr, reposStr string
 	var revokedAt, lastUsedAt sql.NullTime
-	var userID, githubTokenID sql.NullString
+	var appID, userID, githubTokenID sql.NullString
 	var installationID sql.NullInt64
-	err := scan(&t.ID, &t.TokenHash, &t.TokenPrefix, &t.TokenType, &userID, &githubTokenID, &installationID, &reposStr, &scopesStr,
+	err := scan(&t.ID, &t.TokenHash, &t.TokenPrefix, &t.TokenType, &appID, &userID, &githubTokenID, &installationID, &reposStr, &scopesStr,
 		&t.SessionID, &t.ExpiresAt, &revokedAt, &lastUsedAt, &t.RequestCount, &t.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	t.Scopes = json.RawMessage(scopesStr)
 	t.Repositories = json.RawMessage(reposStr)
+	if appID.Valid {
+		t.AppID = &appID.String
+	}
 	if userID.Valid {
 		t.UserID = &userID.String
 	}
@@ -293,7 +305,7 @@ func scanPostgresProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, 
 	return t, nil
 }
 
-const pgProxyTokenCols = `id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at`
+const pgProxyTokenCols = `id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at`
 
 func (s *PostgresStore) GetProxyTokenByHash(ctx context.Context, hash string) (*ProxyToken, error) {
 	row := s.db.QueryRowContext(ctx,
@@ -378,6 +390,104 @@ func (s *PostgresStore) UpdateProxyTokenUsage(ctx context.Context, id string) er
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE proxy_tokens SET last_used_at = $1, request_count = request_count + 1 WHERE id = $2`, now, id)
 	return err
+}
+
+// --- Apps ---
+
+func (s *PostgresStore) CreateApp(ctx context.Context, app *App) error {
+	if app.ID == "" {
+		app.ID = uuid.New().String()
+	}
+	now := time.Now().UTC()
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO apps (id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING created_at, updated_at
+	`, app.ID, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, now, now,
+	).Scan(&app.CreatedAt, &app.UpdatedAt)
+	return err
+}
+
+func (s *PostgresStore) GetAppByID(ctx context.Context, id string) (*App, error) {
+	a := &App{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps WHERE id = $1`, id,
+	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.CreatedAt, &a.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+func (s *PostgresStore) GetDefaultApp(ctx context.Context) (*App, error) {
+	a := &App{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps WHERE is_default = TRUE LIMIT 1`,
+	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.CreatedAt, &a.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+func (s *PostgresStore) ListApps(ctx context.Context) ([]*App, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var apps []*App
+	for rows.Next() {
+		a := &App{}
+		if err := rows.Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		apps = append(apps, a)
+	}
+	return apps, rows.Err()
+}
+
+func (s *PostgresStore) UpdateApp(ctx context.Context, app *App) error {
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE apps SET name = $1, app_id = $2, client_id = $3, client_secret = $4, private_key = $5, base_url = $6, is_default = $7, updated_at = $8
+		WHERE id = $9
+	`, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, now, app.ID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("app not found")
+	}
+	app.UpdatedAt = now
+	return nil
+}
+
+func (s *PostgresStore) DeleteApp(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM apps WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("app not found")
+	}
+	return nil
 }
 
 // Ensure PostgresStore implements all required interfaces.

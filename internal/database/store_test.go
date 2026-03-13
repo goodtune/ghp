@@ -1,0 +1,435 @@
+package database
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+)
+
+// testStoreContract runs the full CRUD test suite against any Store implementation.
+// Each backend test file calls this with its own Store instance.
+func testStoreContract(t *testing.T, store Store) {
+	t.Run("AppCRUD", func(t *testing.T) { testAppCRUD(t, store) })
+	t.Run("UserCRUD", func(t *testing.T) { testUserCRUD(t, store) })
+	t.Run("ProxyTokenCRUD", func(t *testing.T) { testProxyTokenCRUD(t, store) })
+	t.Run("ProxyTokenWithAppID", func(t *testing.T) { testProxyTokenWithAppID(t, store) })
+	t.Run("SyncAdminRoles", func(t *testing.T) { testSyncAdminRoles(t, store) })
+}
+
+func testAppCRUD(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	// Create.
+	app := &App{
+		Name:         "Test App",
+		AppID:        12345,
+		ClientID:     "Iv1.abc123",
+		ClientSecret: "encrypted_secret",
+		PrivateKey:   "encrypted_key",
+		BaseURL:      "https://api.github.com",
+		IsDefault:    true,
+	}
+	if err := store.CreateApp(ctx, app); err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	if app.ID == "" {
+		t.Fatal("expected ID to be set")
+	}
+	if app.CreatedAt.IsZero() {
+		t.Fatal("expected CreatedAt to be set")
+	}
+
+	// Get by ID.
+	got, err := store.GetAppByID(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("GetAppByID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected app, got nil")
+	}
+	if got.Name != "Test App" {
+		t.Errorf("name = %q, want Test App", got.Name)
+	}
+	if got.AppID != 12345 {
+		t.Errorf("app_id = %d, want 12345", got.AppID)
+	}
+	if got.ClientID != "Iv1.abc123" {
+		t.Errorf("client_id = %q, want Iv1.abc123", got.ClientID)
+	}
+	if !got.IsDefault {
+		t.Error("expected is_default = true")
+	}
+
+	// Get default.
+	def, err := store.GetDefaultApp(ctx)
+	if err != nil {
+		t.Fatalf("GetDefaultApp: %v", err)
+	}
+	if def == nil {
+		t.Fatal("expected default app, got nil")
+	}
+	if def.ID != app.ID {
+		t.Errorf("default app ID = %q, want %q", def.ID, app.ID)
+	}
+
+	// List.
+	apps, err := store.ListApps(ctx)
+	if err != nil {
+		t.Fatalf("ListApps: %v", err)
+	}
+	if len(apps) != 1 {
+		t.Errorf("ListApps returned %d, want 1", len(apps))
+	}
+
+	// Update.
+	app.Name = "Updated App"
+	app.IsDefault = false
+	if err := store.UpdateApp(ctx, app); err != nil {
+		t.Fatalf("UpdateApp: %v", err)
+	}
+	got2, err := store.GetAppByID(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("GetAppByID after update: %v", err)
+	}
+	if got2.Name != "Updated App" {
+		t.Errorf("name after update = %q, want Updated App", got2.Name)
+	}
+
+	// Create a second app.
+	app2 := &App{
+		Name:      "Second App",
+		AppID:     67890,
+		IsDefault: true,
+	}
+	if err := store.CreateApp(ctx, app2); err != nil {
+		t.Fatalf("CreateApp (second): %v", err)
+	}
+
+	apps2, err := store.ListApps(ctx)
+	if err != nil {
+		t.Fatalf("ListApps: %v", err)
+	}
+	if len(apps2) != 2 {
+		t.Errorf("ListApps returned %d, want 2", len(apps2))
+	}
+
+	// Delete.
+	if err := store.DeleteApp(ctx, app.ID); err != nil {
+		t.Fatalf("DeleteApp: %v", err)
+	}
+	got3, err := store.GetAppByID(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("GetAppByID after delete: %v", err)
+	}
+	if got3 != nil {
+		t.Error("expected nil after delete")
+	}
+
+	// Delete non-existent.
+	if err := store.DeleteApp(ctx, "nonexistent-id"); err == nil {
+		t.Error("expected error deleting non-existent app")
+	}
+
+	// Cleanup second app.
+	if err := store.DeleteApp(ctx, app2.ID); err != nil {
+		t.Fatalf("DeleteApp (second): %v", err)
+	}
+}
+
+func testUserCRUD(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	user := &User{
+		GitHubID:      12345,
+		GitHubUsername: "alice",
+		GitHubEmail:   "alice@example.com",
+		Role:          "user",
+	}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatalf("UpsertUser: %v", err)
+	}
+	if user.ID == "" {
+		t.Fatal("expected ID to be set")
+	}
+
+	// Get by GitHub ID.
+	got, err := store.GetUserByGitHubID(ctx, 12345)
+	if err != nil {
+		t.Fatalf("GetUserByGitHubID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected user, got nil")
+	}
+	if got.GitHubUsername != "alice" {
+		t.Errorf("username = %q, want alice", got.GitHubUsername)
+	}
+
+	// Get by ID.
+	got2, err := store.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	if got2 == nil || got2.GitHubUsername != "alice" {
+		t.Error("GetUserByID failed")
+	}
+
+	// Upsert again (update).
+	user.GitHubUsername = "alice-updated"
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatalf("UpsertUser (update): %v", err)
+	}
+	got3, err := store.GetUserByGitHubID(ctx, 12345)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got3.GitHubUsername != "alice-updated" {
+		t.Errorf("username after update = %q, want alice-updated", got3.GitHubUsername)
+	}
+
+	// List users.
+	users, err := store.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) < 1 {
+		t.Errorf("ListUsers returned %d users, want >= 1", len(users))
+	}
+}
+
+func testProxyTokenCRUD(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	// Create a user first.
+	user := &User{GitHubID: 99001, GitHubUsername: "tokenuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a GitHub token.
+	gt := &GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           "enc_access",
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+		Scopes:                "",
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test proxy token (ghx_ type).
+	scopes := json.RawMessage(`{"contents":"read","pull_requests":"write"}`)
+	repos := json.RawMessage(`["org/repo"]`)
+	pt := &ProxyToken{
+		TokenHash:     "contract_hash_001",
+		TokenPrefix:   "ghx_c001",
+		TokenType:     "proxy",
+		UserID:        &user.ID,
+		GitHubTokenID: &gt.ID,
+		Repositories:  repos,
+		Scopes:        scopes,
+		SessionID:     "test-session",
+		ExpiresAt:     time.Now().Add(24 * time.Hour),
+	}
+	if err := store.CreateProxyToken(ctx, pt); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetProxyTokenByHash(ctx, "contract_hash_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected token, got nil")
+	}
+	if got.TokenType != "proxy" {
+		t.Errorf("token_type = %q, want proxy", got.TokenType)
+	}
+	if got.TokenPrefix != "ghx_c001" {
+		t.Errorf("prefix = %q, want ghx_c001", got.TokenPrefix)
+	}
+
+	var gotRepos []string
+	if err := json.Unmarshal(got.Repositories, &gotRepos); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotRepos) != 1 || gotRepos[0] != "org/repo" {
+		t.Errorf("repositories = %v, want [org/repo]", gotRepos)
+	}
+
+	// Test agent token.
+	installID := int64(12345)
+	at := &ProxyToken{
+		TokenHash:      "contract_hash_002",
+		TokenPrefix:    "gha_c002",
+		TokenType:      "agent",
+		UserID:         &user.ID,
+		InstallationID: &installID,
+		Repositories:   json.RawMessage(`["org/repo1","org/repo2"]`),
+		Scopes:         json.RawMessage(`{"contents":"read"}`),
+		SessionID:      "admin-session",
+		ExpiresAt:      time.Now().Add(365 * 24 * time.Hour),
+	}
+	if err := store.CreateProxyToken(ctx, at); err != nil {
+		t.Fatal(err)
+	}
+
+	gotAgent, err := store.GetProxyTokenByHash(ctx, "contract_hash_002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAgent.TokenType != "agent" {
+		t.Errorf("token_type = %q, want agent", gotAgent.TokenType)
+	}
+	if gotAgent.InstallationID == nil || *gotAgent.InstallationID != 12345 {
+		t.Errorf("installation_id = %v, want 12345", gotAgent.InstallationID)
+	}
+
+	// Update usage.
+	if err := store.UpdateProxyTokenUsage(ctx, pt.ID); err != nil {
+		t.Fatal(err)
+	}
+	got2, _ := store.GetProxyTokenByID(ctx, pt.ID)
+	if got2.RequestCount != 1 {
+		t.Errorf("request_count = %d, want 1", got2.RequestCount)
+	}
+	if got2.LastUsedAt == nil {
+		t.Error("last_used_at should be set")
+	}
+
+	// List by user.
+	tokens, err := store.ListProxyTokens(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) < 2 {
+		t.Errorf("ListProxyTokens = %d, want >= 2", len(tokens))
+	}
+
+	// Revoke.
+	if err := store.RevokeProxyToken(ctx, pt.ID); err != nil {
+		t.Fatal(err)
+	}
+	got3, _ := store.GetProxyTokenByID(ctx, pt.ID)
+	if got3.RevokedAt == nil {
+		t.Error("revoked_at should be set")
+	}
+
+	// Double revoke should fail.
+	if err := store.RevokeProxyToken(ctx, pt.ID); err == nil {
+		t.Error("expected error on double revoke")
+	}
+}
+
+func testProxyTokenWithAppID(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	// Create an app.
+	app := &App{
+		Name:  "Token Test App",
+		AppID: 55555,
+	}
+	if err := store.CreateApp(ctx, app); err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+
+	// Create a user.
+	user := &User{GitHubID: 99002, GitHubUsername: "appuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an agent token with app_id.
+	installID := int64(67890)
+	pt := &ProxyToken{
+		TokenHash:      "contract_hash_app_001",
+		TokenPrefix:    "gha_app1",
+		TokenType:      "agent",
+		AppID:          &app.ID,
+		UserID:         &user.ID,
+		InstallationID: &installID,
+		Repositories:   json.RawMessage(`["org/app-repo"]`),
+		Scopes:         json.RawMessage(`{"contents":"write"}`),
+		SessionID:      "app-session",
+		ExpiresAt:      time.Now().Add(24 * time.Hour),
+	}
+	if err := store.CreateProxyToken(ctx, pt); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetProxyTokenByHash(ctx, "contract_hash_app_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected token, got nil")
+	}
+	if got.AppID == nil {
+		t.Fatal("expected app_id to be set")
+	}
+	if *got.AppID != app.ID {
+		t.Errorf("app_id = %q, want %q", *got.AppID, app.ID)
+	}
+
+	// Create a token WITHOUT app_id (backward compat).
+	pt2 := &ProxyToken{
+		TokenHash:      "contract_hash_app_002",
+		TokenPrefix:    "gha_app2",
+		TokenType:      "agent",
+		UserID:         &user.ID,
+		InstallationID: &installID,
+		Repositories:   json.RawMessage(`[]`),
+		Scopes:         json.RawMessage(`{}`),
+		ExpiresAt:      time.Now().Add(24 * time.Hour),
+	}
+	if err := store.CreateProxyToken(ctx, pt2); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := store.GetProxyTokenByHash(ctx, "contract_hash_app_002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.AppID != nil {
+		t.Errorf("expected nil app_id, got %q", *got2.AppID)
+	}
+
+	// Cleanup.
+	store.DeleteApp(ctx, app.ID)
+}
+
+func testSyncAdminRoles(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	u1 := &User{GitHubID: 99101, GitHubUsername: "syncalice", Role: "user"}
+	u2 := &User{GitHubID: 99102, GitHubUsername: "syncbob", Role: "user"}
+	if err := store.UpsertUser(ctx, u1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertUser(ctx, u2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Promote syncalice.
+	if err := store.SyncAdminRoles(ctx, []string{"syncalice"}); err != nil {
+		t.Fatalf("SyncAdminRoles: %v", err)
+	}
+	got, _ := store.GetUserByGitHubID(ctx, 99101)
+	if got.Role != "admin" {
+		t.Errorf("syncalice role = %q, want admin", got.Role)
+	}
+	got2, _ := store.GetUserByGitHubID(ctx, 99102)
+	if got2.Role != "user" {
+		t.Errorf("syncbob role = %q, want user", got2.Role)
+	}
+
+	// Demote.
+	if err := store.SyncAdminRoles(ctx, []string{}); err != nil {
+		t.Fatalf("SyncAdminRoles (empty): %v", err)
+	}
+	got3, _ := store.GetUserByGitHubID(ctx, 99101)
+	if got3.Role != "user" {
+		t.Errorf("syncalice role after demotion = %q, want user", got3.Role)
+	}
+}

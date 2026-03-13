@@ -14,6 +14,14 @@ type AppTokenProvider interface {
 	GetInstallationToken(ctx context.Context, installationID int64, repos []string, permissions map[string]string) (string, error)
 }
 
+// MultiAppTokenProvider generates installation tokens with app-specific dispatch.
+type MultiAppTokenProvider interface {
+	AppTokenProvider
+	// GetInstallationTokenForApp returns a token using the provider for the specified app.
+	// If appID is empty, the default provider is used.
+	GetInstallationTokenForApp(ctx context.Context, appID string, installationID int64, repos []string, permissions map[string]string) (string, error)
+}
+
 // ProxyTokenResolver resolves client tokens (ghx_/gha_) to real GitHub access tokens.
 type ProxyTokenResolver struct {
 	tokenService     *token.Service
@@ -91,6 +99,11 @@ func (r *ProxyTokenResolver) resolveAgentToken(ctx context.Context, pt *database
 	si, err := parseScopeInfo(pt)
 	if err != nil {
 		return "", fmt.Errorf("parsing agent token scope: %w", err)
+	}
+
+	// If the provider supports multi-app dispatch and the token has an app_id, use it.
+	if multi, ok := r.appTokenProvider.(MultiAppTokenProvider); ok && pt.AppID != nil {
+		return multi.GetInstallationTokenForApp(ctx, *pt.AppID, *pt.InstallationID, si.Repos, si.Scopes)
 	}
 
 	return r.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, si.Repos, si.Scopes)

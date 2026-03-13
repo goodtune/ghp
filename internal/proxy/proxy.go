@@ -455,6 +455,11 @@ func (h *Handler) getAgentGitHubToken(ctx context.Context, pt *database.ProxyTok
 		return "", fmt.Errorf("parsing agent token scope: %w", err)
 	}
 
+	// If the provider supports multi-app dispatch and the token has an app_id, use it.
+	if multi, ok := h.appTokenProvider.(MultiAppTokenProvider); ok && pt.AppID != nil {
+		return multi.GetInstallationTokenForApp(ctx, *pt.AppID, *pt.InstallationID, si.Repos, si.Scopes)
+	}
+
 	return h.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, si.Repos, si.Scopes)
 }
 

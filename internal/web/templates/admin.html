@@ -54,6 +54,44 @@
         </header>
 
         <div class="section">
+            <h2>Apps</h2>
+            <div id="apps-list"></div>
+            <details style="margin-top:1rem">
+                <summary class="btn btn-secondary" style="cursor:pointer">Add App</summary>
+                <div class="create-form" style="margin-top:0.5rem">
+                    <div class="form-group">
+                        <label for="app-name">Name</label>
+                        <input type="text" id="app-name" placeholder="My GitHub App">
+                    </div>
+                    <div class="form-group">
+                        <label for="app-github-id">GitHub App ID</label>
+                        <input type="number" id="app-github-id" placeholder="12345">
+                    </div>
+                    <div class="form-group">
+                        <label for="app-client-id">Client ID</label>
+                        <input type="text" id="app-client-id" placeholder="Iv1.xxx">
+                    </div>
+                    <div class="form-group">
+                        <label for="app-client-secret">Client Secret</label>
+                        <input type="password" id="app-client-secret" placeholder="secret">
+                    </div>
+                    <div class="form-group">
+                        <label for="app-private-key">Private Key (PEM)</label>
+                        <textarea id="app-private-key" rows="6" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.75rem;font-family:monospace;" placeholder="-----BEGIN RSA PRIVATE KEY-----"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="app-base-url">Base URL (optional, for GHES)</label>
+                        <input type="text" id="app-base-url" placeholder="https://api.github.com">
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" id="app-is-default"> Default app</label>
+                    </div>
+                    <button class="btn" onclick="createApp()">Create App</button>
+                </div>
+            </details>
+        </div>
+
+        <div class="section">
             <h2>Users</h2>
             <div id="users-list"></div>
         </div>
@@ -61,6 +99,12 @@
         <div class="section">
             <h2>Create Agent Token</h2>
             <div class="create-form">
+                <div class="form-group">
+                    <label for="app-select">App</label>
+                    <select id="app-select" onchange="onAppChange()">
+                        <option value="">Loading apps...</option>
+                    </select>
+                </div>
                 <div class="form-group">
                     <label for="installation-id">Installation</label>
                     <select id="installation-id" onchange="onInstallationChange()">
@@ -114,15 +158,130 @@
 
         // ── State ───────────────────────────────────────────────────
         let installations = [];
+        let apps = [];
 
         const repoSelect = document.getElementById('repo-select');
         const permSelect = document.getElementById('perm-select');
 
+        // ── Apps ────────────────────────────────────────────────────
+        async function loadApps() {
+            try {
+                const data = await api('GET', '/api/apps');
+                apps = Array.isArray(data) ? data : [];
+                renderAppsList();
+                populateAppSelect();
+            } catch (err) {
+                console.error('Failed to load apps:', err);
+            }
+        }
+
+        function renderAppsList() {
+            const container = document.getElementById('apps-list');
+            if (apps.length === 0) {
+                container.innerHTML = '<div class="empty">No apps configured</div>';
+                return;
+            }
+            let html = '<table><tr><th>Name</th><th>GitHub App ID</th><th>Client ID</th><th>Base URL</th><th>Default</th><th>Created</th><th></th></tr>';
+            for (const app of apps) {
+                const created = new Date(app.created_at).toLocaleString();
+                const isDefault = app.is_default ? '<span class="badge badge-active">Default</span>' : '';
+                html += '<tr>';
+                html += '<td>' + esc(app.name) + '</td>';
+                html += '<td>' + app.app_id + '</td>';
+                html += '<td>' + esc(app.client_id || '-') + '</td>';
+                html += '<td>' + esc(app.base_url || 'github.com') + '</td>';
+                html += '<td>' + isDefault + '</td>';
+                html += '<td>' + created + '</td>';
+                html += '<td><button class="btn btn-danger" onclick="deleteApp(\'' + app.id + '\')">Delete</button></td>';
+                html += '</tr>';
+            }
+            html += '</table>';
+            container.innerHTML = html;
+        }
+
+        function populateAppSelect() {
+            const sel = document.getElementById('app-select');
+            if (apps.length <= 1) {
+                // Single app or no apps — hide selector and auto-select.
+                sel.parentElement.style.display = 'none';
+                if (apps.length === 1) {
+                    sel.innerHTML = '<option value="' + apps[0].id + '">' + esc(apps[0].name) + '</option>';
+                    sel.value = apps[0].id;
+                }
+                return;
+            }
+            sel.parentElement.style.display = '';
+            sel.innerHTML = '<option value="">Select an app...</option>';
+            for (const app of apps) {
+                const opt = document.createElement('option');
+                opt.value = app.id;
+                opt.textContent = app.name + (app.is_default ? ' (default)' : '');
+                sel.appendChild(opt);
+            }
+            // Auto-select the default app.
+            const defaultApp = apps.find(a => a.is_default);
+            if (defaultApp) sel.value = defaultApp.id;
+        }
+
+        async function createApp() {
+            const body = {
+                name: document.getElementById('app-name').value,
+                app_id: parseInt(document.getElementById('app-github-id').value) || 0,
+                client_id: document.getElementById('app-client-id').value,
+                client_secret: document.getElementById('app-client-secret').value,
+                private_key: document.getElementById('app-private-key').value,
+                base_url: document.getElementById('app-base-url').value,
+                is_default: document.getElementById('app-is-default').checked,
+            };
+            if (!body.name || !body.app_id) {
+                alert('Name and GitHub App ID are required.');
+                return;
+            }
+            const data = await api('POST', '/api/apps', body);
+            if (data.id) {
+                // Clear form fields.
+                document.getElementById('app-name').value = '';
+                document.getElementById('app-github-id').value = '';
+                document.getElementById('app-client-id').value = '';
+                document.getElementById('app-client-secret').value = '';
+                document.getElementById('app-private-key').value = '';
+                document.getElementById('app-base-url').value = '';
+                document.getElementById('app-is-default').checked = false;
+                loadApps();
+            } else {
+                alert(data.message || 'Failed to create app');
+            }
+        }
+
+        async function deleteApp(id) {
+            if (!confirm('Delete this app? Tokens associated with it will stop working.')) return;
+            await api('DELETE', '/api/apps/' + id);
+            loadApps();
+        }
+
+        async function onAppChange() {
+            // Reset installation and repo selectors when app changes.
+            const sel = document.getElementById('installation-id');
+            sel.innerHTML = '<option value="">Loading installations...</option>';
+            repoSelect.clear();
+            repoSelect.disabled = true;
+            permSelect.permissions = {};
+            document.getElementById('new-token').style.display = 'none';
+            loadInstallations();
+        }
+
         // ── Installation select ────────────────────────────────────
         async function loadInstallations() {
             const sel = document.getElementById('installation-id');
+            const appId = document.getElementById('app-select').value;
+            let url;
+            if (appId) {
+                url = '/api/apps/' + appId + '/installations';
+            } else {
+                url = '/api/github/installations';
+            }
             try {
-                const data = await api('GET', '/api/github/installations');
+                const data = await api('GET', url);
                 if (!Array.isArray(data) || data.length === 0) {
                     sel.innerHTML = '<option value="">No installations found</option>';
                     return;
@@ -156,12 +315,20 @@
             const inst = installations.find(i => i.id === id);
             permSelect.permissions = inst ? (inst.permissions || {}) : {};
 
-            // Load repos.
+            // Load repos — use app-specific endpoint if an app is selected.
             repoSelect.disabled = true;
             repoSelect.setAttribute('placeholder', 'Loading repositories...');
 
+            const appId = document.getElementById('app-select').value;
+            let url;
+            if (appId) {
+                url = '/api/apps/' + appId + '/installations/' + id + '/repositories';
+            } else {
+                url = '/api/github/installations/' + id + '/repositories';
+            }
+
             try {
-                const data = await api('GET', '/api/github/installations/' + id + '/repositories');
+                const data = await api('GET', url);
                 repoSelect.repos = Array.isArray(data) ? data : [];
                 repoSelect.disabled = false;
                 repoSelect.setAttribute('placeholder', 'Search repositories...');
@@ -187,11 +354,13 @@
             // Build scope string (empty means open-scoped).
             const scopeStr = Object.entries(scopes).map(([k, v]) => k + ':' + v).join(',');
 
+            const appId = document.getElementById('app-select').value;
             const body = {
                 type: 'agent',
                 installation_id: installationId,
                 duration: duration,
             };
+            if (appId) body.app_id = appId;
             if (selectedRepos.length > 0) body.repositories = selectedRepos;
             if (scopeStr) body.scopes = scopeStr;
             if (session) body.session_id = session;
@@ -309,7 +478,7 @@
         }
 
         // ── Init ───────────────────────────────────────────────────
-        loadInstallations();
+        loadApps().then(() => loadInstallations());
         loadUsers();
         loadAllTokens();
     </script>

@@ -18,8 +18,13 @@ values from the config file.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GHP_DATABASE_DRIVER` | `sqlite` or `postgres` | `sqlite` |
-| `GHP_DATABASE_DSN` | Database connection string | `ghp.db` |
+| `GHP_DATABASE_DRIVER` | `sqlite`, `postgres`, or `vault` | `sqlite` |
+| `GHP_DATABASE_DSN` | Database connection string (sqlite/postgres only) | `ghp.db` |
+| `GHP_DATABASE_VAULT_ADDR` | Vault server address (vault driver only) | |
+| `GHP_DATABASE_VAULT_MOUNT` | Vault KV v2 mount path | `secret` |
+| `GHP_DATABASE_VAULT_PATH` | Key prefix within the mount | `ghp` |
+| `GHP_DATABASE_VAULT_ROLE_ID` | Vault AppRole role ID | |
+| `GHP_DATABASE_VAULT_SECRET_ID` | Vault AppRole secret ID | |
 
 ### Server
 
@@ -135,8 +140,13 @@ github:
   # base_url: ""               # (reserved) intended GHES API base URL override; currently ignored
 
 database:
-  driver: "sqlite"             # "sqlite" or "postgres"
+  driver: "sqlite"             # "sqlite", "postgres", or "vault"
   dsn: "ghp.db"
+  # vault_addr: ""             # Vault server address (vault driver only)
+  # vault_mount: "secret"      # KV v2 mount path
+  # vault_path: "ghp"          # key prefix within the mount
+  # vault_role_id: ""          # AppRole role ID
+  # vault_secret_id: ""        # AppRole secret ID
 
 server:
   listen: ":8080"              # plain HTTP mode (development or behind reverse proxy)

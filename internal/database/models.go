@@ -12,6 +12,20 @@ import (
 	"time"
 )
 
+// App represents a GitHub App configured in the proxy.
+type App struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	AppID        int64     `json:"app_id"`
+	ClientID     string    `json:"client_id"`
+	ClientSecret string    `json:"client_secret"`
+	PrivateKey   string    `json:"private_key"`
+	BaseURL      string    `json:"base_url"`
+	IsDefault    bool      `json:"is_default"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 // User represents a ghp user authenticated via GitHub OAuth.
 type User struct {
 	ID             string    `json:"id"`
@@ -27,6 +41,7 @@ type User struct {
 type GitHubToken struct {
 	ID                    string    `json:"id"`
 	UserID                string    `json:"user_id"`
+	AppID                 *string   `json:"app_id,omitempty"`
 	AccessToken           string    `json:"access_token"`
 	RefreshToken          string    `json:"refresh_token"`
 	AccessTokenExpiresAt  time.Time `json:"access_token_expires_at"`
@@ -42,6 +57,7 @@ type ProxyToken struct {
 	TokenHash      string          `json:"-"`
 	TokenPrefix    string          `json:"token_prefix"`
 	TokenType      string          `json:"token_type"`
+	AppID          *string         `json:"app_id,omitempty"`
 	UserID         *string         `json:"user_id,omitempty"`
 	GitHubTokenID  *string         `json:"github_token_id,omitempty"`
 	InstallationID *int64          `json:"installation_id,omitempty"`
@@ -82,6 +98,14 @@ func (s Scopes) HasPermission(permission, level string) bool {
 
 // Store defines the database operations for ghp.
 type Store interface {
+	// Apps
+	CreateApp(ctx context.Context, app *App) error
+	GetAppByID(ctx context.Context, id string) (*App, error)
+	GetDefaultApp(ctx context.Context) (*App, error)
+	ListApps(ctx context.Context) ([]*App, error)
+	UpdateApp(ctx context.Context, app *App) error
+	DeleteApp(ctx context.Context, id string) error
+
 	// Users
 	UpsertUser(ctx context.Context, user *User) error
 	GetUserByGitHubID(ctx context.Context, githubID int64) (*User, error)

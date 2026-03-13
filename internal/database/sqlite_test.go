@@ -298,6 +298,12 @@ func TestMigrations(t *testing.T) {
 	}
 }
 
+// TestSQLiteStoreContract runs the shared store contract tests against SQLite.
+func TestSQLiteStoreContract(t *testing.T) {
+	store := newTestStore(t)
+	testStoreContract(t, store)
+}
+
 // Ensure temporary files are cleaned up.
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())

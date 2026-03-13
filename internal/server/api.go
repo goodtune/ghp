@@ -39,6 +39,7 @@ type API struct {
 	authHandler        *auth.Handler
 	encryptor          *crypto.Encryptor
 	appTokenProvider   *ghpgithub.AppTokenProvider // nil if GitHub App not configured
+	appRegistry        *ghpgithub.AppRegistry      // nil if no apps loaded
 	proxyTokenResolver *proxy.ProxyTokenResolver   // resolves proxy tokens to GitHub credentials
 	usernameResolver   *proxy.UsernameResolver     // caches GitHub username lookups
 	logger             *slog.Logger
@@ -49,7 +50,7 @@ type API struct {
 }
 
 // NewAPI creates a new API handler.
-func NewAPI(ctx context.Context, cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, ptr *proxy.ProxyTokenResolver, ur *proxy.UsernameResolver, logger *slog.Logger, aw *auditLogWriter) *API {
+func NewAPI(ctx context.Context, cfg *config.Config, store database.Store, ts *token.Service, ah *auth.Handler, enc *crypto.Encryptor, atp *ghpgithub.AppTokenProvider, ar *ghpgithub.AppRegistry, ptr *proxy.ProxyTokenResolver, ur *proxy.UsernameResolver, logger *slog.Logger, aw *auditLogWriter) *API {
 	if aw == nil {
 		aw = newAuditLogWriter(nil)
 	}
@@ -61,6 +62,7 @@ func NewAPI(ctx context.Context, cfg *config.Config, store database.Store, ts *t
 		authHandler:        ah,
 		encryptor:          enc,
 		appTokenProvider:   atp,
+		appRegistry:        ar,
 		proxyTokenResolver: ptr,
 		usernameResolver:   ur,
 		logger:             logger,
@@ -86,10 +88,20 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/github/installations", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallations)))
 	mux.Handle("GET /api/github/installations/{id}/repositories", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListInstallationRepos)))
 
+	// App management routes.
+	mux.Handle("GET /api/apps", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListApps)))
+	mux.Handle("POST /api/apps", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleCreateApp)))
+	mux.Handle("GET /api/apps/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleGetApp)))
+	mux.Handle("PUT /api/apps/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleUpdateApp)))
+	mux.Handle("DELETE /api/apps/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleDeleteApp)))
+	mux.Handle("GET /api/apps/{id}/installations", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListAppInstallations)))
+	mux.Handle("GET /api/apps/{id}/installations/{iid}/repositories", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListAppInstallationRepos)))
+
 }
 
 type createTokenRequest struct {
 	Type           string   `json:"type"`
+	AppID          string   `json:"app_id"`
 	Repository     string   `json:"repository"`
 	Repositories   []string `json:"repositories"`
 	InstallationID int64    `json:"installation_id"`
@@ -147,6 +159,7 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 
 	createReq := token.CreateRequest{
 		TokenType: tt,
+		AppID:     req.AppID,
 		UserID:    session.UserID,
 		Scopes:    scopes,
 		Duration:  duration,
@@ -607,6 +620,304 @@ func truncateSessionID(s string) string {
 		cut = i
 	}
 	return s[:cut]
+}
+
+// --- App management handlers ---
+
+func (a *API) handleListApps(w http.ResponseWriter, r *http.Request) {
+	apps, err := a.store.ListApps(r.Context())
+	if err != nil {
+		a.logger.Error("failed to list apps", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+	if apps == nil {
+		apps = []*database.App{}
+	}
+	// Redact sensitive fields for non-admin users.
+	session := auth.SessionFromContext(r.Context())
+	type appResponse struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		AppID     int64  `json:"app_id"`
+		ClientID  string `json:"client_id"`
+		BaseURL   string `json:"base_url"`
+		IsDefault bool   `json:"is_default"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	var result []appResponse
+	for _, app := range apps {
+		resp := appResponse{
+			ID:        app.ID,
+			Name:      app.Name,
+			AppID:     app.AppID,
+			BaseURL:   app.BaseURL,
+			IsDefault: app.IsDefault,
+			CreatedAt: app.CreatedAt.Format(time.RFC3339),
+			UpdatedAt: app.UpdatedAt.Format(time.RFC3339),
+		}
+		if session.Role == "admin" {
+			resp.ClientID = app.ClientID
+		}
+		result = append(result, resp)
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+type createAppRequest struct {
+	Name         string `json:"name"`
+	AppID        int64  `json:"app_id"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	PrivateKey   string `json:"private_key"`
+	BaseURL      string `json:"base_url"`
+	IsDefault    bool   `json:"is_default"`
+}
+
+func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	var req createAppRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		return
+	}
+
+	if req.Name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "name is required"})
+		return
+	}
+	if req.AppID == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "app_id is required"})
+		return
+	}
+
+	// Encrypt secrets before storing.
+	encClientSecret := req.ClientSecret
+	if a.encryptor != nil && encClientSecret != "" {
+		encrypted, err := a.encryptor.Encrypt(encClientSecret)
+		if err != nil {
+			a.logger.Error("failed to encrypt client secret", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
+			return
+		}
+		encClientSecret = encrypted
+	}
+	encPrivateKey := req.PrivateKey
+	if a.encryptor != nil && encPrivateKey != "" {
+		encrypted, err := a.encryptor.Encrypt(encPrivateKey)
+		if err != nil {
+			a.logger.Error("failed to encrypt private key", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
+			return
+		}
+		encPrivateKey = encrypted
+	}
+
+	app := &database.App{
+		Name:         req.Name,
+		AppID:        req.AppID,
+		ClientID:     req.ClientID,
+		ClientSecret: encClientSecret,
+		PrivateKey:   encPrivateKey,
+		BaseURL:      req.BaseURL,
+		IsDefault:    req.IsDefault,
+	}
+
+	if err := a.store.CreateApp(r.Context(), app); err != nil {
+		a.logger.Error("failed to create app", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to create app"})
+		return
+	}
+
+	// Reload the app registry to pick up the new app.
+	if a.appRegistry != nil {
+		if err := a.appRegistry.Reload(r.Context()); err != nil {
+			a.logger.Warn("failed to reload app registry", "error", err)
+		}
+	}
+
+	session := auth.SessionFromContext(r.Context())
+	a.logger.Info("app_created", "user", session.Username, "app_id", app.ID, "name", app.Name)
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"id":         app.ID,
+		"name":       app.Name,
+		"app_id":     app.AppID,
+		"is_default": app.IsDefault,
+		"created_at": app.CreatedAt.Format(time.RFC3339),
+	})
+}
+
+func (a *API) handleGetApp(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	app, err := a.store.GetAppByID(r.Context(), id)
+	if err != nil {
+		a.logger.Error("failed to get app", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+	if app == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found"})
+		return
+	}
+	// Return without sensitive fields.
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":         app.ID,
+		"name":       app.Name,
+		"app_id":     app.AppID,
+		"client_id":  app.ClientID,
+		"base_url":   app.BaseURL,
+		"is_default": app.IsDefault,
+		"created_at": app.CreatedAt.Format(time.RFC3339),
+		"updated_at": app.UpdatedAt.Format(time.RFC3339),
+	})
+}
+
+func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	existing, err := a.store.GetAppByID(r.Context(), id)
+	if err != nil {
+		a.logger.Error("failed to get app", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+	if existing == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	var req createAppRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		return
+	}
+
+	if req.Name != "" {
+		existing.Name = req.Name
+	}
+	if req.AppID != 0 {
+		existing.AppID = req.AppID
+	}
+	if req.ClientID != "" {
+		existing.ClientID = req.ClientID
+	}
+	if req.ClientSecret != "" {
+		if a.encryptor != nil {
+			encrypted, err := a.encryptor.Encrypt(req.ClientSecret)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
+				return
+			}
+			existing.ClientSecret = encrypted
+		} else {
+			existing.ClientSecret = req.ClientSecret
+		}
+	}
+	if req.PrivateKey != "" {
+		if a.encryptor != nil {
+			encrypted, err := a.encryptor.Encrypt(req.PrivateKey)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
+				return
+			}
+			existing.PrivateKey = encrypted
+		} else {
+			existing.PrivateKey = req.PrivateKey
+		}
+	}
+	if req.BaseURL != "" {
+		existing.BaseURL = req.BaseURL
+	}
+	existing.IsDefault = req.IsDefault
+
+	if err := a.store.UpdateApp(r.Context(), existing); err != nil {
+		a.logger.Error("failed to update app", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to update app"})
+		return
+	}
+
+	// Reload the app registry.
+	if a.appRegistry != nil {
+		if err := a.appRegistry.Reload(r.Context()); err != nil {
+			a.logger.Warn("failed to reload app registry", "error", err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "App updated"})
+}
+
+func (a *API) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := a.store.DeleteApp(r.Context(), id); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found"})
+		return
+	}
+
+	// Reload the app registry.
+	if a.appRegistry != nil {
+		if err := a.appRegistry.Reload(r.Context()); err != nil {
+			a.logger.Warn("failed to reload app registry", "error", err)
+		}
+	}
+
+	session := auth.SessionFromContext(r.Context())
+	a.logger.Info("app_deleted", "user", session.Username, "app_id", id)
+	writeJSON(w, http.StatusOK, map[string]string{"message": "App deleted"})
+}
+
+func (a *API) handleListAppInstallations(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if a.appRegistry == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "App registry not configured"})
+		return
+	}
+
+	provider, err := a.appRegistry.Get(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found or not loaded"})
+		return
+	}
+
+	installations, err := provider.ListInstallations(r.Context())
+	if err != nil {
+		a.logger.Error("failed to list installations for app", "error", err, "app_id", id)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"message": "Failed to list GitHub installations"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, installations)
+}
+
+func (a *API) handleListAppInstallationRepos(w http.ResponseWriter, r *http.Request) {
+	appID := r.PathValue("id")
+	if a.appRegistry == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "App registry not configured"})
+		return
+	}
+
+	provider, err := a.appRegistry.Get(appID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found or not loaded"})
+		return
+	}
+
+	iidStr := r.PathValue("iid")
+	installationID, err := strconv.ParseInt(iidStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid installation ID"})
+		return
+	}
+
+	repos, err := provider.ListInstallationRepositories(r.Context(), installationID)
+	if err != nil {
+		a.logger.Error("failed to list installation repos for app", "error", err, "app_id", appID, "installation_id", installationID)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"message": "Failed to list repositories"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, repos)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

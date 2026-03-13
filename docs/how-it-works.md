@@ -100,6 +100,34 @@ manage their own credentials, so ghp does not intercept tokens or enforce
 scopes on this traffic. All Copilot requests are still logged and counted
 in metrics for full visibility.
 
+### Multi-App Support
+
+ghp supports multiple GitHub Apps simultaneously. Each app can have its own
+set of installations, and agent tokens (`gha_`) can be scoped to a specific
+app. This is useful for organizations that need to separate concerns across
+different GitHub Apps (e.g., CI vs. code review vs. deployment).
+
+Apps are managed dynamically via the admin UI or API (`/api/apps`). The
+config-based GitHub App (`github.app_id`, `github.private_key`, etc.)
+coexists as the permanent default alongside dynamically created apps.
+On first startup, if no apps exist in the database, the config-based app
+is automatically seeded as the default.
+
+### Storage Backends
+
+ghp supports three storage backends:
+
+- **SQLite** — single-file database, ideal for development and small deployments
+- **PostgreSQL** — production-grade relational database
+- **HashiCorp Vault** — secrets-native storage using KV v2 secrets engine with AppRole authentication
+
+All backends implement the same `Store` interface and provide identical
+feature parity. The Vault backend stores all data (users, tokens, apps) as
+KV v2 secrets and uses index entries for lookups. It does not require SQL
+migrations.
+
+See [Configuration](admin/configuration.md) for backend-specific settings.
+
 ### OAuth Broker
 
 ghp can act as an OAuth broker for other services on your network, allowing
