@@ -63,6 +63,13 @@ password s3cret
 			},
 		},
 		{
+			name:    "machine hostname is lowercased",
+			content: `machine Mirror.Example.COM login user password pass`,
+			want: map[string]netrcEntry{
+				"mirror.example.com": {Login: "user", Password: "pass"},
+			},
+		},
+		{
 			name:    "machine without value",
 			content: `machine`,
 			wantErr: true,
@@ -233,6 +240,80 @@ func TestNetrcTransport(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNetrcTransportCaseInsensitiveHost(t *testing.T) {
+	dir := t.TempDir()
+	netrcPath := filepath.Join(dir, "netrc")
+	// netrc has a lowercase machine entry; request URL uses mixed case.
+	if err := os.WriteFile(netrcPath, []byte("machine mirror.example.com login deploy password s3cret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedReq *http.Request
+	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		capturedReq = req
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+
+	transport, err := newNetrcTransport(netrcPath, base)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	client := &http.Client{Transport: transport}
+	req, _ := http.NewRequest(http.MethodHead, "https://Mirror.Example.COM/asset", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+
+	user, pass, ok := capturedReq.BasicAuth()
+	if !ok {
+		t.Fatal("expected Basic auth for case-insensitive hostname match")
+	}
+	if user != "deploy" || pass != "s3cret" {
+		t.Errorf("got user=%q pass=%q, want deploy/s3cret", user, pass)
+	}
+}
+
+func TestNetrcTransportHTTPNoAuth(t *testing.T) {
+	dir := t.TempDir()
+	netrcPath := filepath.Join(dir, "netrc")
+	if err := os.WriteFile(netrcPath, []byte("machine mirror.example.com login deploy password s3cret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedReq *http.Request
+	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		capturedReq = req
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+
+	transport, err := newNetrcTransport(netrcPath, base)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	client := &http.Client{Transport: transport}
+	req, _ := http.NewRequest(http.MethodHead, "http://mirror.example.com/asset", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+
+	_, _, ok := capturedReq.BasicAuth()
+	if ok {
+		t.Error("expected no Basic auth for plain http:// request")
 	}
 }
 

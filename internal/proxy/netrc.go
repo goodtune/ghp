@@ -61,7 +61,7 @@ func parseNetrc(path string) (map[string]netrcEntry, error) {
 				if i >= len(tokens) {
 					return nil, fmt.Errorf("netrc: machine keyword without value")
 				}
-				currentKey = tokens[i]
+				currentKey = strings.ToLower(tokens[i])
 				current = netrcEntry{}
 				inEntry = true
 			case "default":
@@ -136,9 +136,10 @@ func newNetrcTransport(netrcPath string, base http.RoundTripper) (*netrcTranspor
 }
 
 func (t *netrcTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Only inject credentials when the request doesn't already have auth.
-	if _, _, ok := req.BasicAuth(); !ok && req.Header.Get("Authorization") == "" {
-		host := req.URL.Hostname()
+	// Only inject credentials when the request doesn't already have auth and
+	// the scheme is https (to prevent sending credentials in cleartext).
+	if _, _, ok := req.BasicAuth(); !ok && req.Header.Get("Authorization") == "" && req.URL.Scheme == "https" {
+		host := strings.ToLower(req.URL.Hostname())
 		entry, found := t.entries[host]
 		if !found {
 			// Try the default entry (empty-string key).

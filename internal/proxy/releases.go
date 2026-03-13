@@ -104,7 +104,7 @@ var headCheckClient = &http.Client{Timeout: 10 * time.Second}
 // policy, so explicitly listed orgs and repos are never affected.
 func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger) http.Handler {
 	client := headCheckClient
-	if cfg.Releases.RedirectHeadCheckNetrc != "" {
+	if cfg.Releases.RedirectHeadCheck && cfg.Releases.RedirectHeadCheckNetrc != "" {
 		transport, err := newNetrcTransport(cfg.Releases.RedirectHeadCheckNetrc, nil)
 		if err != nil {
 			if logger != nil {
