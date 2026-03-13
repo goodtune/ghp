@@ -79,6 +79,48 @@ For any response other than 404 (including network errors), ghp proceeds with
 the redirect as normal — the HEAD check is purely an optimistic availability
 probe.
 
+##### Authenticated HEAD Checks
+
+If your mirror requires authentication, point `redirect_head_check_netrc` at a
+[netrc](https://www.gnu.org/software/inetutils/manual/html_node/The-_002enetrc-file.html)-format
+file. Credentials matching the redirect target's hostname are sent as HTTP
+Basic auth on each HEAD probe over **HTTPS**. Credentials are never injected
+for plain `http://` URLs to prevent sending them in cleartext.
+
+Because ghp typically runs as a `DynamicUser` (no home directory),
+`~/.netrc` is not available. Use an absolute path to a file the service can
+read — for example `/etc/ghp/netrc`, which is under the systemd
+`ConfigurationDirectory`:
+
+```yaml
+releases:
+  mode: redirect
+  redirect_to: "https://releases.internal.example.com/"
+  redirect_head_check: true
+  redirect_head_check_netrc: "/etc/ghp/netrc"
+```
+
+The netrc file uses the standard format:
+
+```
+machine releases.internal.example.com
+login deploy
+password s3cret
+```
+
+If the netrc file cannot be read at startup, ghp logs an error and falls back
+to unauthenticated HEAD checks. Existing `Authorization` headers on a request
+are never overwritten.
+
+!!! warning "Redirect behavior during HEAD probes"
+    HEAD availability probes do **not** follow HTTP redirects. If the mirror
+    responds with a redirect, ghp treats it as success (non-404) and proceeds
+    with the normal client redirect. This means probe credentials are never
+    forwarded to an unintended redirect target.
+
+    `default` netrc entries are intentionally ignored to prevent credential
+    leakage to unintended hosts. Use host-specific `machine` entries only.
+
 ##### Custom 404 Template
 
 The built-in 404 page is clean and informative, but you can replace it with
@@ -143,6 +185,7 @@ of environment variables and YAML fields.
       mode: "block"                    # "block", "redirect", or "" (disabled)
       redirect_to: ""                  # base URL for redirect mode
       redirect_head_check: false       # HEAD-check target before redirecting
+      redirect_head_check_netrc: ""    # netrc file for HEAD check auth
       redirect_not_found_template: ""  # custom 404 HTML template path
       allow:
         - "myorg"
@@ -155,6 +198,7 @@ of environment variables and YAML fields.
     GHP_RELEASES_MODE=block
     GHP_RELEASES_REDIRECT_TO=https://releases.internal.example.com/
     GHP_RELEASES_REDIRECT_HEAD_CHECK=true
+    GHP_RELEASES_REDIRECT_HEAD_CHECK_NETRC=/etc/ghp/netrc
     GHP_RELEASES_REDIRECT_NOT_FOUND_TEMPLATE=/etc/ghp/404.html
     GHP_RELEASES_ALLOW=myorg,trusted/tool
     ```
