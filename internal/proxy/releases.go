@@ -80,10 +80,16 @@ type HTTPHeadDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// headCheckClient is a dedicated HTTP client used for HEAD availability probes.
-// A 10-second timeout ensures that an unresponsive mirror degrades gracefully
-// to a normal redirect rather than blocking the client request indefinitely.
+// headCheckClient is a dedicated HTTP client used for HEAD availability probes
+// when redirect_head_check is disabled or as a fallback. A 10-second timeout
+// ensures that an unresponsive mirror degrades gracefully to a normal redirect
+// rather than blocking the client request indefinitely.
 var headCheckClient = &http.Client{Timeout: 10 * time.Second}
+
+// netrcTransportBase is the base RoundTripper passed to newNetrcTransport.
+// Nil selects http.DefaultTransport. Overridable in tests to inject a custom
+// TLS configuration (e.g. to trust a httptest.NewTLSServer certificate).
+var netrcTransportBase http.RoundTripper
 
 // NewReleasesHandler wraps inner with a policy handler for github.com release
 // download requests. Paths matching /{org}/{repo}/releases/download/** are
@@ -103,26 +109,31 @@ var headCheckClient = &http.Client{Timeout: 10 * time.Second}
 // unchanged. The allow list check is always performed before applying the
 // policy, so explicitly listed orgs and repos are never affected.
 func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger) http.Handler {
-	client := headCheckClient
-	if cfg.Releases.RedirectHeadCheck && cfg.Releases.RedirectHeadCheckNetrc != "" {
-		transport, err := newNetrcTransport(cfg.Releases.RedirectHeadCheckNetrc, nil)
-		if err != nil {
-			if logger != nil {
-				logger.Error("failed to load netrc for HEAD check, continuing without auth",
-					"path", cfg.Releases.RedirectHeadCheckNetrc, "error", err)
-			}
-		} else {
-			client = &http.Client{
-				Timeout:   10 * time.Second,
-				Transport: transport,
-				// Do not follow redirects during HEAD availability probes.
-				// Following a redirect to a different host could send credentials
-				// from a netrc "default" entry to an unintended server.
-				CheckRedirect: func(req *http.Request, via []*http.Request) error {
-					return http.ErrUseLastResponse
-				},
+	var client HTTPHeadDoer = headCheckClient
+	if cfg.Releases.RedirectHeadCheck {
+		// Always disable redirect-following for HEAD probes when head_check is
+		// enabled, regardless of whether netrc auth is configured. A mirror
+		// responding with a redirect is treated as "found" (non-404), and
+		// following the redirect to another host could leak netrc "default"
+		// credentials to an unintended server.
+		probeClient := &http.Client{
+			Timeout: 10 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		if cfg.Releases.RedirectHeadCheckNetrc != "" {
+			transport, err := newNetrcTransport(cfg.Releases.RedirectHeadCheckNetrc, netrcTransportBase)
+			if err != nil {
+				if logger != nil {
+					logger.Error("failed to load netrc for HEAD check, continuing without auth",
+						"path", cfg.Releases.RedirectHeadCheckNetrc, "error", err)
+				}
+			} else {
+				probeClient.Transport = transport
 			}
 		}
+		client = probeClient
 	}
 	return NewReleasesHandlerWithClient(inner, cfg, logger, client)
 }

@@ -2,9 +2,11 @@ package proxy
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -446,5 +448,154 @@ func TestReleasesHandlerHeadCheckBadCustomTemplate(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "Release Not Found") {
 		t.Error("expected default template fallback when custom template path is invalid")
+	}
+}
+
+// TestNewReleasesHandlerNetrcAuth verifies the end-to-end wiring of
+// NewReleasesHandler when redirect_head_check_netrc is set: the handler must
+// send Basic auth credentials from the netrc file on outgoing HEAD probes.
+func TestNewReleasesHandlerNetrcAuth(t *testing.T) {
+	passthrough := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	var capturedUser, capturedPass string
+	var gotAuth bool
+	mirror := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedUser, capturedPass, gotAuth = r.BasicAuth()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mirror.Close()
+
+	// Build a netrc file for the mirror's hostname.
+	mirrorURL, err := url.Parse(mirror.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	netrcPath := filepath.Join(dir, "netrc")
+	content := fmt.Sprintf("machine %s login mirroruser password mirrorsecret\n", mirrorURL.Hostname())
+	if err := os.WriteFile(netrcPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Override the base transport so the netrc client trusts the test TLS cert.
+	orig := netrcTransportBase
+	netrcTransportBase = mirror.Client().Transport
+	defer func() { netrcTransportBase = orig }()
+
+	cfg := &config.Config{
+		Releases: config.ReleasesConfig{
+			Mode:                   "redirect",
+			RedirectTo:             mirror.URL,
+			RedirectHeadCheck:      true,
+			RedirectHeadCheckNetrc: netrcPath,
+		},
+	}
+	handler := NewReleasesHandler(passthrough, cfg, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/goodtune/ghp/releases/download/v1.0.0/ghp_linux.tar.gz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// Mirror returned 200, so handler should issue a client redirect.
+	if w.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusFound)
+	}
+	if !gotAuth {
+		t.Error("expected Basic auth on HEAD request to mirror")
+	}
+	if capturedUser != "mirroruser" || capturedPass != "mirrorsecret" {
+		t.Errorf("auth credentials = %q/%q, want mirroruser/mirrorsecret", capturedUser, capturedPass)
+	}
+}
+
+// TestNewReleasesHandlerNetrcLoadErrorNoRedirect verifies that when the netrc
+// file cannot be loaded, HEAD probes still do not follow redirects. Previously
+// the error path fell back to headCheckClient (which follows redirects),
+// meaning a mirror returning 302→404 would incorrectly trigger the 404 page.
+func TestNewReleasesHandlerNetrcLoadErrorNoRedirect(t *testing.T) {
+	passthrough := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// redirectTarget returns 404 — if the HEAD client follows the mirror's
+	// redirect, the handler would incorrectly serve a 404 page.
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer redirectTarget.Close()
+
+	// Mirror returns 302 on HEAD requests.
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			http.Redirect(w, r, redirectTarget.URL+r.URL.Path, http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mirror.Close()
+
+	cfg := &config.Config{
+		Releases: config.ReleasesConfig{
+			Mode:                   "redirect",
+			RedirectTo:             mirror.URL,
+			RedirectHeadCheck:      true,
+			RedirectHeadCheckNetrc: "/nonexistent/netrc", // triggers load error
+		},
+	}
+	handler := NewReleasesHandler(passthrough, cfg, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/goodtune/ghp/releases/download/v1.0.0/ghp_linux.tar.gz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// The mirror returned 302 (not 404) for the HEAD probe.
+	// A client that stops at the first response treats 302 as "found" and the
+	// handler issues a 302 redirect to the original client.
+	// A client that follows the redirect would hit redirectTarget (404) and
+	// serve the friendly 404 page instead.
+	if w.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d — HEAD client must not follow redirects even when netrc loading fails", w.Code, http.StatusFound)
+	}
+}
+
+// TestNewReleasesHandlerNoRedirectWithoutNetrc verifies that HEAD probes do not
+// follow redirects when redirect_head_check is enabled but no netrc is set.
+func TestNewReleasesHandlerNoRedirectWithoutNetrc(t *testing.T) {
+	passthrough := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// redirectTarget returns 404 — following the redirect would trigger a 404 page.
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer redirectTarget.Close()
+
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			http.Redirect(w, r, redirectTarget.URL+r.URL.Path, http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mirror.Close()
+
+	cfg := &config.Config{
+		Releases: config.ReleasesConfig{
+			Mode:              "redirect",
+			RedirectTo:        mirror.URL,
+			RedirectHeadCheck: true,
+		},
+	}
+	handler := NewReleasesHandler(passthrough, cfg, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/goodtune/ghp/releases/download/v1.0.0/ghp_linux.tar.gz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d — HEAD probes must not follow redirects", w.Code, http.StatusFound)
 	}
 }
