@@ -41,6 +41,11 @@ func (r *AppRegistry) LoadAll(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Reset all state so that a second LoadAll call (e.g. in tests) does not
+	// accumulate stale providers or a stale defaultID from a previous load.
+	r.providers = make(map[string]*AppTokenProvider)
+	r.defaultID = ""
+
 	for _, app := range apps {
 		if err := r.loadAppLocked(app); err != nil {
 			r.logger.Warn("skipping app", "app_id", app.ID, "name", app.Name, "error", err)

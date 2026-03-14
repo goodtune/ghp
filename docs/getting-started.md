@@ -40,7 +40,9 @@ Administrators can also create agent tokens backed by a GitHub App installation
       --scope contents:read,pull_requests:write
 
 When multiple GitHub Apps are configured, use the `--app-id` flag to specify
-which app the agent token should use. If omitted, the default app is used.
+which app the agent token should use. The value is the **database record ID**
+(a UUID shown in the admin Apps table), not the numeric GitHub App ID. If
+omitted, the default app is used.
 
 See [Token Scoping](features/token-scoping.md) for a full explanation of
 repository restrictions, permission scopes, and open-scoped tokens.

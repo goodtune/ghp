@@ -178,13 +178,22 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := truncateSessionID(req.SessionID)
 
+	// For agent tokens in multi-app mode, pin the token to the default app
+	// when no app_record_id was specified. This makes dispatch deterministic
+	// at creation time rather than depending on which app happens to be
+	// default at request time.
+	appRecordID := req.AppRecordID
+	if tt == token.TokenTypeAgent && appRecordID == "" && a.appRegistry != nil && a.appRegistry.Count() > 0 {
+		appRecordID = a.appRegistry.GetDefaultID()
+	}
+
 	createReq := token.CreateRequest{
-		TokenType: tt,
-		AppID:     req.AppRecordID,
-		UserID:    session.UserID,
-		Scopes:    scopes,
-		Duration:  duration,
-		SessionID: sessionID,
+		TokenType:   tt,
+		AppRecordID: appRecordID,
+		UserID:      session.UserID,
+		Scopes:      scopes,
+		Duration:    duration,
+		SessionID:   sessionID,
 	}
 
 	switch tt {

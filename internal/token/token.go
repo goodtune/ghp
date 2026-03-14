@@ -63,7 +63,7 @@ func PrefixForType(tt TokenType) string {
 // CreateRequest contains the parameters for creating a new token.
 type CreateRequest struct {
 	TokenType      TokenType
-	AppID          string            // Optional — database App record ID (not the GitHub numeric App ID).
+	AppRecordID    string            // Optional — database App record ID (not the GitHub numeric App ID).
 	UserID         string
 	GitHubTokenID  string            // Required for proxy tokens.
 	InstallationID int64             // Required for agent tokens.
@@ -178,8 +178,8 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 	}
 
 	// Set type-specific fields.
-	if req.AppID != "" {
-		pt.AppID = &req.AppID
+	if req.AppRecordID != "" {
+		pt.AppID = &req.AppRecordID
 	}
 	if req.UserID != "" {
 		pt.UserID = &req.UserID

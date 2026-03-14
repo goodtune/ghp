@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -90,7 +91,7 @@ func (s *VaultStore) login(ctx context.Context) error {
 	return nil
 }
 
-// withRelogin executes fn; if fn returns a permission-denied error it
+// withRelogin executes fn; if fn returns a 403 (expired/invalid token) it
 // re-authenticates once and retries. This transparently handles AppRole
 // tokens that expire during the server's lifetime.
 func (s *VaultStore) withRelogin(ctx context.Context, fn func() error) error {
@@ -98,8 +99,15 @@ func (s *VaultStore) withRelogin(ctx context.Context, fn func() error) error {
 	if err == nil {
 		return nil
 	}
-	// Vault returns a 403 for expired/invalid tokens. Attempt re-auth once.
-	if strings.Contains(err.Error(), "403") || strings.Contains(err.Error(), "permission denied") {
+	// Check for a structured Vault 403 response, which indicates an expired or
+	// invalid token. Fall back to string matching for non-ResponseError paths
+	// (e.g. wrapped errors from helper functions).
+	var respErr *vault.ResponseError
+	is403 := errors.As(err, &respErr) && respErr.StatusCode == 403
+	if !is403 {
+		is403 = strings.Contains(err.Error(), "permission denied")
+	}
+	if is403 {
 		if reloginErr := s.login(ctx); reloginErr != nil {
 			// Return original error — re-login failed.
 			return err

@@ -153,7 +153,14 @@
             const opts = { method, headers: { 'Content-Type': 'application/json' } };
             if (body) opts.body = JSON.stringify(body);
             const resp = await fetch(path, opts);
-            return resp.json();
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                const err = new Error(data.message || `HTTP ${resp.status}`);
+                err.status = resp.status;
+                err.data = data;
+                throw err;
+            }
+            return data;
         }
 
         // ── State ───────────────────────────────────────────────────
@@ -253,8 +260,8 @@
                 alert('Name and GitHub App ID are required.');
                 return;
             }
-            const data = await api('POST', '/api/apps', body);
-            if (data.id) {
+            try {
+                await api('POST', '/api/apps', body);
                 // Clear form fields.
                 document.getElementById('app-name').value = '';
                 document.getElementById('app-github-id').value = '';
@@ -264,14 +271,18 @@
                 document.getElementById('app-base-url').value = '';
                 document.getElementById('app-is-default').checked = false;
                 loadApps();
-            } else {
-                alert(data.message || 'Failed to create app');
+            } catch (err) {
+                alert(err.message || 'Failed to create app');
             }
         }
 
         async function deleteApp(id) {
             if (!confirm('Delete this app? Tokens associated with it will stop working.')) return;
-            await api('DELETE', '/api/apps/' + id);
+            try {
+                await api('DELETE', '/api/apps/' + id);
+            } catch (err) {
+                alert(err.message || 'Failed to delete app');
+            }
             loadApps();
         }
 
@@ -385,17 +396,16 @@
             btn.disabled = true;
             btn.textContent = 'Creating...';
 
-            const data = await api('POST', '/api/tokens', body);
-
-            btn.disabled = false;
-            btn.textContent = 'Create Agent Token';
-
-            if (data.token) {
+            try {
+                const data = await api('POST', '/api/tokens', body);
                 document.getElementById('token-value').textContent = data.token;
                 document.getElementById('new-token').style.display = 'block';
                 loadAllTokens();
-            } else {
-                alert(data.message || 'Failed to create agent token');
+            } catch (err) {
+                alert(err.message || 'Failed to create agent token');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Create Agent Token';
             }
         }
 

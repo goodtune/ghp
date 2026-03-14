@@ -107,11 +107,12 @@ set of installations, and agent tokens (`gha_`) can be scoped to a specific
 app. This is useful for organizations that need to separate concerns across
 different GitHub Apps (e.g., CI vs. code review vs. deployment).
 
-Apps are managed dynamically via the admin UI or API (`/api/apps`). The
-config-based GitHub App (`github.app_id`, `github.private_key`, etc.)
-coexists as the permanent default alongside dynamically created apps.
-On first startup, if no apps exist in the database, the config-based app
-is automatically seeded as the default.
+Apps are managed dynamically via the admin UI or API (`/api/apps`). On first
+startup, if no apps exist in the database, the config-based GitHub App
+(`github.app_id`, `github.private_key`, etc.) is automatically seeded as a
+default App record in the store. After seeding, all app management goes
+through the store — the config-based values are not used as an independent
+provider in parallel with store apps.
 
 ### Storage Backends
 
