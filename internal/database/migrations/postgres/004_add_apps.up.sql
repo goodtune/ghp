@@ -11,5 +11,5 @@ CREATE TABLE apps (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-ALTER TABLE proxy_tokens ADD COLUMN app_id UUID REFERENCES apps(id);
-ALTER TABLE github_tokens ADD COLUMN app_id UUID REFERENCES apps(id);
+ALTER TABLE proxy_tokens ADD COLUMN app_id UUID REFERENCES apps(id) ON DELETE SET NULL;
+ALTER TABLE github_tokens ADD COLUMN app_id UUID REFERENCES apps(id) ON DELETE SET NULL;

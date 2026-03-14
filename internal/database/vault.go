@@ -171,14 +171,23 @@ func (s *VaultStore) kvRead(ctx context.Context, key string) (map[string]interfa
 }
 
 // kvDelete deletes a secret at the given path (destroys all versions via metadata).
+// Re-authenticates once on 403 errors.
 func (s *VaultStore) kvDelete(ctx context.Context, key string) error {
-	_, err := s.client.Logical().DeleteWithContext(ctx, s.metadataPath(key))
-	return err
+	return s.withRelogin(ctx, func() error {
+		_, err := s.client.Logical().DeleteWithContext(ctx, s.metadataPath(key))
+		return err
+	})
 }
 
 // kvList lists keys at the given path prefix. Returns nil if empty.
+// Re-authenticates once on 403 errors.
 func (s *VaultStore) kvList(ctx context.Context, key string) ([]string, error) {
-	secret, err := s.client.Logical().ListWithContext(ctx, s.metadataPath(key))
+	var secret *vault.Secret
+	err := s.withRelogin(ctx, func() error {
+		var listErr error
+		secret, listErr = s.client.Logical().ListWithContext(ctx, s.metadataPath(key))
+		return listErr
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -658,7 +667,13 @@ func (s *VaultStore) RevokeProxyToken(ctx context.Context, id string) error {
 
 func (s *VaultStore) UpdateProxyTokenUsage(ctx context.Context, id string) error {
 	// Serialise writes to avoid lost increments under concurrent load.
-	// Vault KV v2 lacks atomic counters; a mutex is the simplest safe approach.
+	// Vault KV v2 lacks atomic counters; a mutex is the simplest safe approach
+	// for a single ghp instance. Note: in multi-instance deployments sharing
+	// the same Vault backend, each instance has its own mutex, so concurrent
+	// writes from different instances can still result in lost increments.
+	// Usage counts are therefore best-effort in multi-instance configurations.
+	// If precise counts are required, consider using Vault KV v2 check-and-set
+	// (CAS) with a retry loop to make increments atomic across processes.
 	s.usageMu.Lock()
 	defer s.usageMu.Unlock()
 

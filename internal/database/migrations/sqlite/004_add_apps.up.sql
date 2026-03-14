@@ -11,5 +11,5 @@ CREATE TABLE apps (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-ALTER TABLE proxy_tokens ADD COLUMN app_id TEXT REFERENCES apps(id);
-ALTER TABLE github_tokens ADD COLUMN app_id TEXT REFERENCES apps(id);
+ALTER TABLE proxy_tokens ADD COLUMN app_id TEXT REFERENCES apps(id) ON DELETE SET NULL;
+ALTER TABLE github_tokens ADD COLUMN app_id TEXT REFERENCES apps(id) ON DELETE SET NULL;

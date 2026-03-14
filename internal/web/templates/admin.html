@@ -201,15 +201,19 @@
 
         function populateAppSelect() {
             const sel = document.getElementById('app-select');
-            if (apps.length <= 1) {
-                // Single app or no apps — hide selector and auto-select.
+            if (apps.length === 0) {
+                // No apps configured — hide selector and fall back to the
+                // config-based legacy endpoint (/api/github/installations).
                 sel.parentElement.style.display = 'none';
-                if (apps.length === 1) {
-                    sel.innerHTML = '<option value="' + apps[0].id + '">' + esc(apps[0].name) + '</option>';
-                    sel.value = apps[0].id;
-                    // With exactly one app, load installations automatically.
-                    loadInstallations();
-                }
+                loadInstallations();
+                return;
+            }
+            if (apps.length === 1) {
+                // Single app — hide selector and auto-select.
+                sel.parentElement.style.display = 'none';
+                sel.innerHTML = '<option value="' + apps[0].id + '">' + esc(apps[0].name) + '</option>';
+                sel.value = apps[0].id;
+                loadInstallations();
                 return;
             }
             sel.parentElement.style.display = '';
