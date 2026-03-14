@@ -13,10 +13,12 @@ import (
 	"time"
 )
 
-// ErrNotFound is returned by mutating store operations (Delete, Update) when
-// the target record does not exist. Read operations (Get*, List*) return
-// (nil, nil) for missing records. Callers can distinguish "not found" from
-// other errors using errors.Is(err, ErrNotFound).
+// ErrNotFound is returned by DeleteApp, UpdateApp, and UpdateProxyTokenAppID
+// when the target record does not exist. Other mutating operations
+// (RevokeProxyToken, UpdateProxyTokenUsage) and all read operations (Get*,
+// List*) do not wrap ErrNotFound — reads return (nil, nil) for missing
+// records. Callers can distinguish "not found" from other errors using
+// errors.Is(err, ErrNotFound).
 var ErrNotFound = errors.New("not found")
 
 // App represents a GitHub App configured in the proxy.

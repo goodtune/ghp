@@ -11,5 +11,8 @@ CREATE TABLE apps (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- Enforce at most one default app at the DB level.
+CREATE UNIQUE INDEX apps_single_default ON apps (is_default) WHERE is_default = 1;
+
 ALTER TABLE proxy_tokens ADD COLUMN app_id TEXT REFERENCES apps(id) ON DELETE SET NULL;
 ALTER TABLE github_tokens ADD COLUMN app_id TEXT REFERENCES apps(id) ON DELETE SET NULL;

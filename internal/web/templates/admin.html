@@ -191,7 +191,7 @@
                 html += '<td>' + esc(app.name) + '</td>';
                 html += '<td>' + app.app_id + '</td>';
                 html += '<td>' + esc(app.client_id || '-') + '</td>';
-                html += '<td>' + esc(app.base_url || 'github.com') + '</td>';
+                html += '<td>' + esc(app.base_url || 'https://api.github.com') + '</td>';
                 html += '<td>' + isDefault + '</td>';
                 html += '<td>' + created + '</td>';
                 html += '<td><button class="btn btn-danger" onclick="deleteApp(\'' + app.id + '\')">Delete</button></td>';

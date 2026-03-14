@@ -11,5 +11,8 @@ CREATE TABLE apps (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Enforce at most one default app at the DB level.
+CREATE UNIQUE INDEX apps_single_default ON apps (is_default) WHERE is_default = TRUE;
+
 ALTER TABLE proxy_tokens ADD COLUMN app_id UUID REFERENCES apps(id) ON DELETE SET NULL;
 ALTER TABLE github_tokens ADD COLUMN app_id UUID REFERENCES apps(id) ON DELETE SET NULL;

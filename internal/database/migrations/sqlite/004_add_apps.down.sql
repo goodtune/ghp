@@ -48,4 +48,5 @@ CREATE TABLE github_tokens (
 INSERT INTO github_tokens SELECT * FROM github_tokens_backup;
 DROP TABLE github_tokens_backup;
 
+DROP INDEX IF EXISTS apps_single_default;
 DROP TABLE apps;

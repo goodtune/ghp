@@ -155,7 +155,8 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		duration = d
 	}
 
-	// Validate app_id if provided: the referenced app must exist in the store.
+	// Validate app_id if provided: the referenced app must exist in the store
+	// and be loaded/usable in the registry (valid private key, provider ready).
 	if req.AppID != "" {
 		app, err := a.store.GetAppByID(r.Context(), req.AppID)
 		if err != nil {
@@ -166,6 +167,12 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		if app == nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid app_id: app not found"})
 			return
+		}
+		if a.appRegistry != nil {
+			if _, err := a.appRegistry.Get(req.AppID); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid app_id: app is not loaded (invalid credentials or private key)"})
+				return
+			}
 		}
 	}
 

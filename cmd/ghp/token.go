@@ -33,6 +33,7 @@ func newTokenCmd() *cobra.Command {
 			}
 
 			tokenType, _ := cmd.Flags().GetString("type")
+			appID, _ := cmd.Flags().GetString("app-id")
 			repo, _ := cmd.Flags().GetString("repo")
 			repos, _ := cmd.Flags().GetString("repos")
 			installationID, _ := cmd.Flags().GetInt64("installation-id")
@@ -44,6 +45,9 @@ func newTokenCmd() *cobra.Command {
 				"type":     tokenType,
 				"scopes":   scope,
 				"duration": duration,
+			}
+			if appID != "" {
+				body["app_id"] = appID
 			}
 			if sessionID != "" {
 				body["session_id"] = sessionID
@@ -122,6 +126,7 @@ func newTokenCmd() *cobra.Command {
 		},
 	}
 	createCmd.Flags().String("type", "proxy", "token type (proxy or agent)")
+	createCmd.Flags().String("app-id", "", "database app record ID — selects which GitHub App to use (multi-app mode); omit to use the default app")
 	createCmd.Flags().String("repo", "", "single repository (owner/repo) — omit to allow any repo")
 	createCmd.Flags().String("repos", "", "comma-separated repositories — omit to allow any repo; omitting both repos and scope creates an open-scoped token")
 	createCmd.Flags().Int64("installation-id", 0, "GitHub App installation ID for agent tokens")
