@@ -191,11 +191,12 @@
                 container.innerHTML = '<div class="empty">No apps configured</div>';
                 return;
             }
-            let html = '<table><tr><th>Name</th><th>GitHub App ID</th><th>Client ID</th><th>Base URL</th><th>Default</th><th>Created</th><th></th></tr>';
+            let html = '<table><tr><th>Record ID</th><th>Name</th><th>GitHub App ID</th><th>Client ID</th><th>Base URL</th><th>Default</th><th>Created</th><th></th></tr>';
             for (const app of apps) {
                 const created = new Date(app.created_at).toLocaleString();
                 const isDefault = app.is_default ? '<span class="badge badge-active">Default</span>' : '';
                 html += '<tr>';
+                html += '<td><code title="' + esc(app.id) + '" style="cursor:pointer;user-select:all" onclick="navigator.clipboard.writeText(\'' + esc(app.id) + '\')">' + esc(app.id.substring(0, 8)) + '&hellip;</code></td>';
                 html += '<td>' + esc(app.name) + '</td>';
                 html += '<td>' + app.app_id + '</td>';
                 html += '<td>' + esc(app.client_id || '-') + '</td>';

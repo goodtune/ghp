@@ -215,3 +215,19 @@ func (r *AppRegistry) GetInstallationTokenForApp(ctx context.Context, appID stri
 	}
 	return provider.GetInstallationToken(ctx, installationID, repos, permissions)
 }
+
+// NewRegistryWithState constructs an AppRegistry with pre-populated provider
+// slot IDs and an optional default ID. Provider values are nil, so the
+// registry reports the correct Count() and GetDefaultID() without needing
+// real GitHub App credentials. Use this in tests that verify dispatch logic
+// without actually minting tokens.
+func NewRegistryWithState(providerIDs []string, defaultID string) *AppRegistry {
+	r := &AppRegistry{
+		providers: make(map[string]*AppTokenProvider),
+		defaultID: defaultID,
+	}
+	for _, id := range providerIDs {
+		r.providers[id] = nil
+	}
+	return r
+}

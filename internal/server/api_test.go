@@ -7,7 +7,12 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"github.com/goodtune/ghp/internal/auth"
+	"github.com/goodtune/ghp/internal/config"
+	ghpgithub "github.com/goodtune/ghp/internal/github"
 )
 
 func TestHandleCreateToken_BodyTooLarge(t *testing.T) {
@@ -216,4 +221,103 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// adminSession returns a minimal admin Session for injecting into test contexts.
+func adminSession() *auth.Session {
+	return &auth.Session{
+		UserID:    "user-1",
+		Username:  "admin",
+		Role:      "admin",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+}
+
+func TestHandleCreateToken_AppRecordIDRejectedForProxyToken(t *testing.T) {
+	a := &API{}
+
+	body := strings.NewReader(`{"type":"","app_record_id":"some-uuid"}`)
+	req := httptest.NewRequest("POST", "/api/tokens", body)
+	w := httptest.NewRecorder()
+	a.handleCreateToken(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "app_record_id is only valid for agent tokens") {
+		t.Errorf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestHandleCreateToken_MultiAppNoDefault_RequiresAppRecordID(t *testing.T) {
+	// Two apps loaded, neither is default → agent token without explicit
+	// app_record_id must be rejected with a clear 400.
+	registry := ghpgithub.NewRegistryWithState([]string{"app-1", "app-2"}, "")
+	a := &API{appRegistry: registry, cfg: &config.Config{}}
+
+	body := strings.NewReader(`{"type":"agent","installation_id":1}`)
+	req := httptest.NewRequest("POST", "/api/tokens", body)
+	req = req.WithContext(auth.NewContextWithSession(req.Context(), adminSession()))
+	w := httptest.NewRecorder()
+	a.handleCreateToken(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "app_record_id is required") {
+		t.Errorf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestHandleCreateApp_BodyTooLarge(t *testing.T) {
+	a := &API{}
+
+	body := strings.NewReader(`{"name":"` + strings.Repeat("x", maxRequestBodySize) + `"}`)
+	req := httptest.NewRequest("POST", "/api/apps", body)
+	w := httptest.NewRecorder()
+	a.handleCreateApp(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected %d, got %d", http.StatusRequestEntityTooLarge, w.Code)
+	}
+}
+
+func TestHandleCreateApp_RequiredFields(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int
+		msg  string
+	}{
+		{"missing name", `{"app_id":1,"private_key":"key"}`, http.StatusBadRequest, "name is required"},
+		{"missing app_id", `{"name":"myapp","private_key":"key"}`, http.StatusBadRequest, "app_id is required"},
+		{"missing private_key", `{"name":"myapp","app_id":1}`, http.StatusBadRequest, "private_key is required"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &API{}
+			req := httptest.NewRequest("POST", "/api/apps", strings.NewReader(tc.body))
+			w := httptest.NewRecorder()
+			a.handleCreateApp(w, req)
+			if w.Code != tc.want {
+				t.Errorf("expected %d, got %d", tc.want, w.Code)
+			}
+			if !strings.Contains(w.Body.String(), tc.msg) {
+				t.Errorf("expected %q in body, got: %s", tc.msg, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleUpdateApp_BodyTooLarge(t *testing.T) {
+	a := &API{}
+
+	body := strings.NewReader(`{"name":"` + strings.Repeat("x", maxRequestBodySize) + `"}`)
+	req := httptest.NewRequest("PUT", "/api/apps/some-id", body)
+	w := httptest.NewRecorder()
+	a.handleUpdateApp(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected %d, got %d", http.StatusRequestEntityTooLarge, w.Code)
+	}
 }

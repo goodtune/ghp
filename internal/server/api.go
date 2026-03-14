@@ -134,6 +134,14 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// app_record_id is only meaningful for agent tokens. GitHub App installations
+	// are not used for proxy (OAuth-backed) tokens, so reject the field early to
+	// prevent confusing state where a proxy token carries an unused app association.
+	if req.AppRecordID != "" && tt == token.TokenTypeProxy {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "app_record_id is only valid for agent tokens"})
+		return
+	}
+
 	// Scopes are optional — an empty string means open-scoped.
 	var scopes map[string]string
 	if req.Scopes != "" {
@@ -185,6 +193,13 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	appRecordID := req.AppRecordID
 	if tt == token.TokenTypeAgent && appRecordID == "" && a.appRegistry != nil && a.appRegistry.Count() > 0 {
 		appRecordID = a.appRegistry.GetDefaultID()
+		// When multiple apps are configured but none is marked as default, the
+		// caller must explicitly specify which app the token belongs to; there is
+		// no unambiguous choice to make on their behalf.
+		if appRecordID == "" && a.appRegistry.Count() > 1 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "app_record_id is required when multiple apps are configured and no default app is set"})
+			return
+		}
 	}
 
 	createReq := token.CreateRequest{

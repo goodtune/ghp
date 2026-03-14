@@ -231,6 +231,12 @@ func SessionFromContext(ctx context.Context) *Session {
 	return s
 }
 
+// NewContextWithSession returns a copy of ctx carrying s as the authenticated
+// session. This is intended for use in tests that bypass the HTTP middleware.
+func NewContextWithSession(ctx context.Context, s *Session) context.Context {
+	return context.WithValue(ctx, sessionKey{}, s)
+}
+
 func (h *Handler) lookupSession(token string) *Session {
 	s, ok := h.sessions.Get(token)
 	if !ok {
