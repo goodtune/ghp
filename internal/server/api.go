@@ -712,6 +712,10 @@ func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "app_id is required"})
 		return
 	}
+	if req.PrivateKey == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "private_key is required"})
+		return
+	}
 
 	// Encrypt secrets before storing.
 	encClientSecret := req.ClientSecret
@@ -735,6 +739,9 @@ func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		encPrivateKey = encrypted
 	}
 
+	// Create the app with IsDefault=false first. If the caller requested it to
+	// be the default, we promote it after a successful insert so that a failed
+	// CreateApp cannot leave the system with no default app.
 	app := &database.App{
 		Name:         req.Name,
 		AppID:        req.AppID,
@@ -742,23 +749,29 @@ func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		ClientSecret: encClientSecret,
 		PrivateKey:   encPrivateKey,
 		BaseURL:      req.BaseURL,
-		IsDefault:    req.IsDefault,
-	}
-
-	// Enforce at most one default app: clear the flag on all existing apps
-	// before marking this new one as default.
-	if req.IsDefault {
-		if err := a.clearDefaultApps(r.Context(), ""); err != nil {
-			a.logger.Error("failed to clear default apps", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to update app"})
-			return
-		}
+		IsDefault:    false,
 	}
 
 	if err := a.store.CreateApp(r.Context(), app); err != nil {
 		a.logger.Error("failed to create app", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to create app"})
 		return
+	}
+
+	// Enforce at most one default app: clear the flag on all other apps and
+	// then promote the newly created one.
+	if req.IsDefault {
+		if err := a.clearDefaultApps(r.Context(), app.ID); err != nil {
+			a.logger.Error("failed to clear default apps", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to update app"})
+			return
+		}
+		app.IsDefault = true
+		if err := a.store.UpdateApp(r.Context(), app); err != nil {
+			a.logger.Error("failed to set default app", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to update app"})
+			return
+		}
 	}
 
 	// Reload the app registry to pick up the new app.

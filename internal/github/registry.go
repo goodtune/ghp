@@ -47,6 +47,10 @@ func (r *AppRegistry) LoadAll(ctx context.Context) error {
 			continue
 		}
 		if app.IsDefault {
+			if r.defaultID != "" {
+				r.logger.Warn("multiple apps marked as default; using most recently encountered one — fix via admin UI",
+					"previous_default", r.defaultID, "new_default", app.ID)
+			}
 			r.defaultID = app.ID
 		}
 	}
@@ -154,6 +158,10 @@ func (r *AppRegistry) Reload(ctx context.Context) error {
 			continue
 		}
 		if app.IsDefault {
+			if r.defaultID != "" {
+				r.logger.Warn("multiple apps marked as default on reload; using most recently encountered one — fix via admin UI",
+					"previous_default", r.defaultID, "new_default", app.ID)
+			}
 			r.defaultID = app.ID
 		}
 	}

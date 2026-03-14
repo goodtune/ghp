@@ -173,6 +173,7 @@
             } catch (err) {
                 console.error('Failed to load apps:', err);
                 apps = [];
+                renderAppsList();
                 populateAppSelect();
             }
         }
