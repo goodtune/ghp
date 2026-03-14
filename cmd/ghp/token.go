@@ -47,7 +47,7 @@ func newTokenCmd() *cobra.Command {
 				"duration": duration,
 			}
 			if appID != "" {
-				body["app_id"] = appID
+				body["app_record_id"] = appID
 			}
 			if sessionID != "" {
 				body["session_id"] = sessionID

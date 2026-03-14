@@ -375,7 +375,7 @@
                 installation_id: installationId,
                 duration: duration,
             };
-            if (appId) body.app_id = appId;
+            if (appId) body.app_record_id = appId;
             if (selectedRepos.length > 0) body.repositories = selectedRepos;
             if (scopeStr) body.scopes = scopeStr;
             if (session) body.session_id = session;

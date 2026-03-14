@@ -101,7 +101,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 
 type createTokenRequest struct {
 	Type           string   `json:"type"`
-	AppID          string   `json:"app_id"`
+	AppRecordID    string   `json:"app_record_id"`
 	Repository     string   `json:"repository"`
 	Repositories   []string `json:"repositories"`
 	InstallationID int64    `json:"installation_id"`
@@ -155,22 +155,22 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		duration = d
 	}
 
-	// Validate app_id if provided: the referenced app must exist in the store
-	// and be loaded/usable in the registry (valid private key, provider ready).
-	if req.AppID != "" {
-		app, err := a.store.GetAppByID(r.Context(), req.AppID)
+	// Validate app_record_id if provided: the referenced app must exist in the
+	// store and be loaded/usable in the registry (valid private key, provider ready).
+	if req.AppRecordID != "" {
+		app, err := a.store.GetAppByID(r.Context(), req.AppRecordID)
 		if err != nil {
 			a.logger.Error("failed to look up app for token creation", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
 			return
 		}
 		if app == nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid app_id: app not found"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid app_record_id: app not found"})
 			return
 		}
 		if a.appRegistry != nil {
-			if _, err := a.appRegistry.Get(req.AppID); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid app_id: app is not loaded (invalid credentials or private key)"})
+			if _, err := a.appRegistry.Get(req.AppRecordID); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid app_record_id: app is not loaded (invalid credentials or private key)"})
 				return
 			}
 		}
@@ -180,7 +180,7 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 
 	createReq := token.CreateRequest{
 		TokenType: tt,
-		AppID:     req.AppID,
+		AppID:     req.AppRecordID,
 		UserID:    session.UserID,
 		Scopes:    scopes,
 		Duration:  duration,
@@ -665,7 +665,7 @@ func (a *API) handleListApps(w http.ResponseWriter, r *http.Request) {
 		CreatedAt string `json:"created_at"`
 		UpdatedAt string `json:"updated_at"`
 	}
-	var result []appResponse
+	result := make([]appResponse, 0, len(apps))
 	for _, app := range apps {
 		result = append(result, appResponse{
 			ID:        app.ID,
@@ -695,7 +695,12 @@ func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	var req createAppRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"message": "Request body too large"})
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		}
 		return
 	}
 
@@ -800,17 +805,19 @@ func (a *API) handleGetApp(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateAppRequest is used for PUT /api/apps/{id}. IsDefault uses a pointer
-// so that omitting the field in the request body leaves the existing value
-// unchanged (avoids clearing the default flag when it is not provided).
+// updateAppRequest is used for PUT /api/apps/{id}. IsDefault and BaseURL use
+// pointers so that omitting them in the request body leaves the existing value
+// unchanged. For IsDefault this avoids clearing the default flag; for BaseURL
+// this allows explicitly clearing it back to empty (dotcom default) by sending
+// "base_url": "" — omitting the field entirely leaves the current value intact.
 type updateAppRequest struct {
-	Name         string `json:"name"`
-	AppID        int64  `json:"app_id"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-	PrivateKey   string `json:"private_key"`
-	BaseURL      string `json:"base_url"`
-	IsDefault    *bool  `json:"is_default"`
+	Name         string  `json:"name"`
+	AppID        int64   `json:"app_id"`
+	ClientID     string  `json:"client_id"`
+	ClientSecret string  `json:"client_secret"`
+	PrivateKey   string  `json:"private_key"`
+	BaseURL      *string `json:"base_url"`
+	IsDefault    *bool   `json:"is_default"`
 }
 
 func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
@@ -829,7 +836,12 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	var req updateAppRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"message": "Request body too large"})
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		}
 		return
 	}
 
@@ -866,8 +878,8 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 			existing.PrivateKey = req.PrivateKey
 		}
 	}
-	if req.BaseURL != "" {
-		existing.BaseURL = req.BaseURL
+	if req.BaseURL != nil {
+		existing.BaseURL = *req.BaseURL
 	}
 	if req.IsDefault != nil {
 		existing.IsDefault = *req.IsDefault

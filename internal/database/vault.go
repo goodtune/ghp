@@ -1,6 +1,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -214,8 +215,14 @@ func marshalToMap(v interface{}) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Use json.Decoder with UseNumber so that numeric fields (e.g. int64 App.AppID,
+	// ProxyToken.RequestCount) are preserved as json.Number rather than float64.
+	// float64 loses precision for integers > 2^53, and re-marshalling json.Number
+	// values produces the original decimal representation, so the round-trip is exact.
 	var m map[string]interface{}
-	if err := json.Unmarshal(b, &m); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
 		return nil, err
 	}
 	return m, nil

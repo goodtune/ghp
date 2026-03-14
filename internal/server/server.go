@@ -124,6 +124,14 @@ func (s *Server) seedDefaultApp(ctx context.Context, store database.Store, enc *
 		privateKey = string(keyData)
 	}
 
+	// A private key is required to create a usable app record. If none is
+	// configured the app would be stored but AppRegistry would fail to load
+	// it, resulting in confusing UI/API behaviour with no provider available.
+	if privateKey == "" {
+		s.logger.Info("skipping default app seeding: no private key configured")
+		return nil
+	}
+
 	// Encrypt secrets before storing.
 	encClientSecret := s.cfg.GitHub.ClientSecret
 	if enc != nil && encClientSecret != "" {

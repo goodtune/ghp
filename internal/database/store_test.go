@@ -398,7 +398,9 @@ func testProxyTokenWithAppID(t *testing.T, store Store) {
 	}
 
 	// Cleanup.
-	store.DeleteApp(ctx, app.ID)
+	if err := store.DeleteApp(ctx, app.ID); err != nil {
+		t.Errorf("cleanup DeleteApp: %v", err)
+	}
 }
 
 func testGitHubTokenAppID(t *testing.T, store Store) {
