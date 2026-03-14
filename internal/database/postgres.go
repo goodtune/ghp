@@ -403,7 +403,7 @@ func (s *PostgresStore) UpdateProxyTokenAppID(ctx context.Context, id string, ap
 		return err
 	}
 	if n == 0 {
-		return fmt.Errorf("token not found: %s", id)
+		return fmt.Errorf("proxy token %s: %w", id, ErrNotFound)
 	}
 	return nil
 }
@@ -485,7 +485,7 @@ func (s *PostgresStore) UpdateApp(ctx context.Context, app *App) error {
 		return err
 	}
 	if n == 0 {
-		return fmt.Errorf("app not found")
+		return fmt.Errorf("app %s: %w", app.ID, ErrNotFound)
 	}
 	app.UpdatedAt = now
 	return nil

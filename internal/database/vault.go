@@ -298,7 +298,7 @@ func (s *VaultStore) UpdateApp(ctx context.Context, app *App) error {
 		return err
 	}
 	if existing == nil {
-		return fmt.Errorf("app not found")
+		return fmt.Errorf("app %s: %w", app.ID, ErrNotFound)
 	}
 	app.UpdatedAt = time.Now().UTC()
 	data, err := marshalToMap(app)
@@ -702,7 +702,7 @@ func (s *VaultStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID
 		return err
 	}
 	if token == nil {
-		return fmt.Errorf("token not found: %s", id)
+		return fmt.Errorf("proxy token %s: %w", id, ErrNotFound)
 	}
 	token.AppID = &appID
 

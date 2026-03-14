@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -128,8 +129,8 @@ func testAppCRUD(t *testing.T, store Store) {
 	}
 
 	// Delete non-existent.
-	if err := store.DeleteApp(ctx, "nonexistent-id"); err == nil {
-		t.Error("expected error deleting non-existent app")
+	if err := store.DeleteApp(ctx, "nonexistent-id"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound deleting non-existent app, got: %v", err)
 	}
 
 	// Cleanup second app.

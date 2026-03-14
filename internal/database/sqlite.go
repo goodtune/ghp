@@ -490,7 +490,7 @@ func (s *SQLiteStore) UpdateProxyTokenAppID(ctx context.Context, id string, appI
 		return err
 	}
 	if n == 0 {
-		return fmt.Errorf("token not found: %s", id)
+		return fmt.Errorf("proxy token %s: %w", id, ErrNotFound)
 	}
 	return nil
 }
@@ -584,7 +584,7 @@ func (s *SQLiteStore) UpdateApp(ctx context.Context, app *App) error {
 		return err
 	}
 	if n == 0 {
-		return fmt.Errorf("app not found")
+		return fmt.Errorf("app %s: %w", app.ID, ErrNotFound)
 	}
 	app.UpdatedAt = parseTime(now)
 	return nil

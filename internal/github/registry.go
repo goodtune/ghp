@@ -148,6 +148,10 @@ func (r *AppRegistry) Reload(ctx context.Context) error {
 		// Always reload the provider so key/config changes take effect.
 		if err := r.loadAppLocked(app); err != nil {
 			r.logger.Warn("skipping app on reload", "app_id", app.ID, "name", app.Name, "error", err)
+			// Remove any stale provider so the registry doesn't serve
+			// an invalidated credential after a key rotation failure.
+			delete(r.providers, app.ID)
+			continue
 		}
 		if app.IsDefault {
 			r.defaultID = app.ID

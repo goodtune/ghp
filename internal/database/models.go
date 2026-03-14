@@ -13,9 +13,10 @@ import (
 	"time"
 )
 
-// ErrNotFound is returned by store operations when the requested record does
-// not exist. Callers can distinguish "not found" from other errors using
-// errors.Is(err, ErrNotFound).
+// ErrNotFound is returned by mutating store operations (Delete, Update) when
+// the target record does not exist. Read operations (Get*, List*) return
+// (nil, nil) for missing records. Callers can distinguish "not found" from
+// other errors using errors.Is(err, ErrNotFound).
 var ErrNotFound = errors.New("not found")
 
 // App represents a GitHub App configured in the proxy.
