@@ -182,10 +182,15 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reject agent token creation when apps exist in the store but none loaded
-	// successfully — the token would be created but reliably fail at use time.
-	if tt == token.TokenTypeAgent && a.appRegistry != nil && a.appRegistry.TotalApps() > 0 && a.appRegistry.Count() == 0 {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "cannot create agent tokens: apps exist but none loaded successfully (check private keys)"})
+	// Reject agent token creation when no usable app provider exists — the
+	// token would be created but reliably fail at use time. This covers both
+	// "apps exist but failed to load" and "no apps configured at all".
+	if tt == token.TokenTypeAgent && a.appRegistry != nil && a.appRegistry.Count() == 0 && a.appTokenProvider == nil {
+		msg := "cannot create agent tokens: no app provider available"
+		if a.appRegistry.TotalApps() > 0 {
+			msg = "cannot create agent tokens: apps exist but none loaded successfully (check private keys)"
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": msg})
 		return
 	}
 

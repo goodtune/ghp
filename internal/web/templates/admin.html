@@ -212,7 +212,7 @@
             // Attach event listeners programmatically instead of inline JS
             // to avoid HTML-escaping in JavaScript string contexts.
             container.querySelectorAll('[data-copy-id]').forEach(el => {
-                el.addEventListener('click', () => navigator.clipboard.writeText(el.dataset.copyId));
+                el.addEventListener('click', () => navigator.clipboard.writeText(el.dataset.copyId).catch(() => {}));
             });
             container.querySelectorAll('[data-delete-app]').forEach(el => {
                 el.addEventListener('click', () => deleteApp(el.dataset.deleteApp));
