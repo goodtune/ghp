@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { loginTestUser } from "./helpers";
+import { loginTestUser, ensureAppExists } from "./helpers";
 
 /** Inject repositories into the ghp-repo-select component and select them (multi mode). */
 async function selectRepos(page: Page, repos: string[]) {
@@ -38,6 +38,7 @@ async function getRenderedPermissions(page: Page): Promise<string[]> {
 
 test.describe("Token management", () => {
   test.beforeEach(async ({ context }) => {
+    await ensureAppExists(context);
     await loginTestUser(context);
   });
 

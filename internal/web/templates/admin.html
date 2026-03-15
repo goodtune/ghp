@@ -83,8 +83,8 @@
                         <label for="app-base-url">Base URL (optional, for GHES)</label>
                         <input type="text" id="app-base-url" placeholder="https://api.github.com">
                     </div>
-                    <div class="form-group">
-                        <label><input type="checkbox" id="app-is-default"> Default app</label>
+                    <div style="margin-bottom:1rem">
+                        <label style="display:inline-flex;align-items:center;gap:0.5rem;font-size:0.875rem;color:#8b949e;cursor:pointer"><input type="checkbox" id="app-is-default"> Default app</label>
                     </div>
                     <button class="btn" id="create-app-btn">Create App</button>
                 </div>
@@ -96,7 +96,7 @@
             <div id="users-list"></div>
         </div>
 
-        <div class="section">
+        <div class="section" id="agent-token-section"{{ if not .HasApps }} style="display:none"{{ end }}>
             <h2>Create Agent Token</h2>
             <div class="create-form">
                 <div class="form-group">
@@ -105,6 +105,7 @@
                         <option value="">Loading apps...</option>
                     </select>
                 </div>
+                <div id="agent-token-fields">
                 <div class="form-group">
                     <label for="installation-id">Installation</label>
                     <select id="installation-id">
@@ -137,10 +138,11 @@
                     <div class="token-display" id="token-value"></div>
                     <p style="color:#f0883e;margin-top:0.5rem;font-size:0.8rem">This token will only be shown once. Copy it now.</p>
                 </div>
+                </div>
             </div>
         </div>
 
-        <div class="section">
+        <div class="section" id="all-tokens-section"{{ if not .HasApps }} style="display:none"{{ end }}>
             <h2>All Tokens</h2>
             <div id="all-tokens"></div>
         </div>
@@ -203,7 +205,7 @@
                 html += '<td>' + esc(app.base_url || 'https://api.github.com') + '</td>';
                 html += '<td>' + isDefault + '</td>';
                 html += '<td>' + created + '</td>';
-                html += '<td><button class="btn btn-danger" data-delete-app="' + esc(app.id) + '">Delete</button></td>';
+                html += '<td><button class="btn btn-secondary" data-edit-app="' + esc(app.id) + '">Edit</button> <button class="btn btn-danger" data-delete-app="' + esc(app.id) + '">Delete</button></td>';
                 html += '</tr>';
             }
             html += '</table>';
@@ -214,28 +216,191 @@
             container.querySelectorAll('[data-copy-id]').forEach(el => {
                 el.addEventListener('click', () => navigator.clipboard?.writeText(el.dataset.copyId).catch(() => {}));
             });
+            container.querySelectorAll('[data-edit-app]').forEach(el => {
+                el.addEventListener('click', () => editApp(el.dataset.editApp));
+            });
             container.querySelectorAll('[data-delete-app]').forEach(el => {
                 el.addEventListener('click', () => deleteApp(el.dataset.deleteApp));
             });
         }
 
+        function editApp(id) {
+            // Remove any existing edit row.
+            const existing = document.getElementById('edit-app-row');
+            if (existing) existing.remove();
+
+            const app = apps.find(a => a.id === id);
+            if (!app) return;
+
+            // Find the row with the matching edit button.
+            const btn = document.querySelector('[data-edit-app="' + CSS.escape(id) + '"]');
+            if (!btn) return;
+            const appRow = btn.closest('tr');
+
+            // Create the edit form row.
+            const editRow = document.createElement('tr');
+            editRow.id = 'edit-app-row';
+            const editCell = document.createElement('td');
+            editCell.colSpan = 8;
+            editCell.style.background = '#161b22';
+            editCell.style.padding = '1rem';
+
+            const form = document.createElement('div');
+            form.style.display = 'grid';
+            form.style.gridTemplateColumns = '1fr 1fr';
+            form.style.gap = '0.75rem';
+
+            function makeField(labelText, type, value, placeholder) {
+                const group = document.createElement('div');
+                group.className = 'form-group';
+                group.style.marginBottom = '0';
+                const label = document.createElement('label');
+                label.textContent = labelText;
+                label.style.display = 'block';
+                label.style.marginBottom = '0.25rem';
+                label.style.fontSize = '0.875rem';
+                label.style.color = '#8b949e';
+                group.appendChild(label);
+                if (type === 'textarea') {
+                    const textarea = document.createElement('textarea');
+                    textarea.rows = 4;
+                    textarea.value = value || '';
+                    textarea.placeholder = placeholder || '';
+                    textarea.style.cssText = 'width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.75rem;font-family:monospace;';
+                    group.appendChild(textarea);
+                    return group;
+                }
+                const input = document.createElement('input');
+                input.type = type;
+                input.value = value || '';
+                input.placeholder = placeholder || '';
+                input.style.cssText = 'width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.875rem;';
+                group.appendChild(input);
+                return group;
+            }
+
+            const nameField = makeField('Name', 'text', app.name, 'App name');
+            const appIdField = makeField('GitHub App ID', 'number', String(app.app_id), 'GitHub App ID');
+            const clientIdField = makeField('Client ID', 'text', app.client_id || '', 'Client ID');
+            const clientSecretField = makeField('Client Secret', 'password', '', 'Leave empty to keep unchanged');
+            const privateKeyField = makeField('Private Key (PEM)', 'textarea', '', 'Leave empty to keep unchanged');
+            const baseUrlField = makeField('Base URL', 'text', app.base_url || '', 'https://api.github.com');
+
+            // Checkbox for is_default.
+            const defaultGroup = document.createElement('div');
+            defaultGroup.className = 'form-group';
+            defaultGroup.style.marginBottom = '0';
+            defaultGroup.style.display = 'flex';
+            defaultGroup.style.alignItems = 'center';
+            defaultGroup.style.gap = '0.5rem';
+            const defaultCheckbox = document.createElement('input');
+            defaultCheckbox.type = 'checkbox';
+            defaultCheckbox.checked = !!app.is_default;
+            const defaultLabel = document.createElement('label');
+            defaultLabel.textContent = 'Default app';
+            defaultLabel.style.fontSize = '0.875rem';
+            defaultLabel.style.color = '#8b949e';
+            defaultLabel.style.marginBottom = '0';
+            defaultGroup.appendChild(defaultCheckbox);
+            defaultGroup.appendChild(defaultLabel);
+
+            form.appendChild(nameField);
+            form.appendChild(appIdField);
+            form.appendChild(clientIdField);
+            form.appendChild(clientSecretField);
+            form.appendChild(privateKeyField);
+            form.appendChild(baseUrlField);
+
+            editCell.appendChild(form);
+
+            // Default checkbox and buttons row.
+            const actionsDiv = document.createElement('div');
+            actionsDiv.style.cssText = 'display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;';
+            actionsDiv.appendChild(defaultGroup);
+
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'btn';
+            saveBtn.textContent = 'Save';
+            saveBtn.style.marginLeft = 'auto';
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'btn btn-secondary';
+            cancelBtn.textContent = 'Cancel';
+
+            actionsDiv.appendChild(saveBtn);
+            actionsDiv.appendChild(cancelBtn);
+            editCell.appendChild(actionsDiv);
+
+            editRow.appendChild(editCell);
+            appRow.after(editRow);
+
+            cancelBtn.addEventListener('click', function() {
+                editRow.remove();
+            });
+
+            saveBtn.addEventListener('click', async function() {
+                const body = {};
+                const newName = nameField.querySelector('input').value;
+                if (newName !== app.name) body.name = newName;
+
+                const newAppId = parseInt(appIdField.querySelector('input').value) || 0;
+                if (newAppId !== app.app_id) body.app_id = newAppId;
+
+                const newClientId = clientIdField.querySelector('input').value;
+                if (newClientId !== (app.client_id || '')) body.client_id = newClientId;
+
+                const newClientSecret = clientSecretField.querySelector('input').value;
+                if (newClientSecret) body.client_secret = newClientSecret;
+
+                const newPrivateKey = privateKeyField.querySelector('textarea').value;
+                if (newPrivateKey) body.private_key = newPrivateKey;
+
+                const newBaseUrl = baseUrlField.querySelector('input').value;
+                if (newBaseUrl !== (app.base_url || '')) body.base_url = newBaseUrl;
+
+                const newIsDefault = defaultCheckbox.checked;
+                if (newIsDefault !== !!app.is_default) body.is_default = newIsDefault;
+
+                if (Object.keys(body).length === 0) {
+                    editRow.remove();
+                    return;
+                }
+
+                saveBtn.disabled = true;
+                saveBtn.textContent = 'Saving...';
+                try {
+                    await api('PUT', '/api/apps/' + id, body);
+                    loadApps();
+                } catch (err) {
+                    alert(err.message || 'Failed to update app');
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = 'Save';
+                }
+            });
+        }
+
         function populateAppSelect() {
             const sel = document.getElementById('app-select');
+            const tokenSection = document.getElementById('agent-token-section');
+            const allTokensSection = document.getElementById('all-tokens-section');
+            const agentTokenFields = document.getElementById('agent-token-fields');
             if (apps.length === 0) {
-                // No apps configured — hide selector, clear any stale
-                // options/value so loadInstallations() falls back to the
-                // config-based legacy endpoint (/api/github/installations).
+                // No apps configured — hide token sections since tokens
+                // are associated with apps.
+                tokenSection.style.display = 'none';
+                allTokensSection.style.display = 'none';
                 sel.innerHTML = '';
                 sel.value = '';
-                sel.parentElement.style.display = 'none';
-                loadInstallations();
                 return;
             }
+            tokenSection.style.display = '';
+            allTokensSection.style.display = '';
             if (apps.length === 1) {
                 // Single app — hide selector and auto-select.
                 sel.parentElement.style.display = 'none';
                 sel.innerHTML = '<option value="' + esc(apps[0].id) + '">' + esc(apps[0].name) + '</option>';
                 sel.value = apps[0].id;  // programmatic assignment, no escaping needed
+                agentTokenFields.style.display = '';
                 loadInstallations();
                 return;
             }
@@ -251,9 +416,11 @@
             const defaultApp = apps.find(a => a.is_default);
             if (defaultApp) {
                 sel.value = defaultApp.id;
+                agentTokenFields.style.display = '';
                 loadInstallations();
             } else {
-                // No default — show placeholder and wait for user selection.
+                // No default — hide fields and wait for user selection.
+                agentTokenFields.style.display = 'none';
                 const sel2 = document.getElementById('installation-id');
                 sel2.innerHTML = '<option value="">Select an app first...</option>';
             }
@@ -283,6 +450,7 @@
                 document.getElementById('app-private-key').value = '';
                 document.getElementById('app-base-url').value = '';
                 document.getElementById('app-is-default').checked = false;
+                document.querySelector('details').removeAttribute('open');
                 loadApps();
             } catch (err) {
                 alert(err.message || 'Failed to create app');
@@ -307,6 +475,14 @@
             repoSelect.disabled = true;
             permSelect.permissions = {};
             document.getElementById('new-token').style.display = 'none';
+
+            const agentTokenFields = document.getElementById('agent-token-fields');
+            const appSelect = document.getElementById('app-select');
+            if (!appSelect.value) {
+                agentTokenFields.style.display = 'none';
+                return;
+            }
+            agentTokenFields.style.display = '';
             loadInstallations();
         }
 
