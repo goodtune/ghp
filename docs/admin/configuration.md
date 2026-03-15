@@ -47,7 +47,7 @@ values from the config file.
 | `GHP_GITHUB_PRIVATE_KEY` | PEM-encoded GitHub App private key content | |
 | `GHP_GITHUB_PRIVATE_KEY_FILE` | Path to GitHub App private key PEM file | |
 | `GHP_GITHUB_ENTERPRISE_SLUG` | Enterprise slug for access restriction header | |
-| `GHP_GITHUB_BASE_URL` | Reserved for future GitHub Enterprise Server support; currently ignored (server always uses `https://api.github.com`) | `https://api.github.com` |
+| `GHP_GITHUB_BASE_URL` | GitHub API base URL for GHES deployments (must be HTTPS; e.g. `https://ghes.example.com/api/v3`). Omit or leave empty for github.com. Per-app overrides are set via the admin UI. | `https://api.github.com` |
 
 ### TLS
 
@@ -138,7 +138,7 @@ github:
   private_key_file: ""         # path to PEM file for GitHub App authentication
   # private_key: ""            # or inline PEM content (useful in containers)
   enterprise_slug: ""
-  # base_url: ""               # (reserved) intended GHES API base URL override; currently ignored
+  # base_url: ""               # GHES API base URL (e.g. https://ghes.example.com/api/v3); omit for github.com
 
 database:
   driver: "sqlite"             # "sqlite", "postgres", or "vault"

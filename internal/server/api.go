@@ -906,14 +906,13 @@ func (a *API) handleGetApp(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateAppRequest is used for PUT /api/apps/{id}. IsDefault and BaseURL use
-// pointers so that omitting them in the request body leaves the existing value
-// unchanged. For IsDefault this avoids clearing the default flag; for BaseURL
-// this allows explicitly clearing it back to empty (dotcom default) by sending
-// "base_url": "" — omitting the field entirely leaves the current value intact.
+// updateAppRequest is used for PUT /api/apps/{id}. Pointer fields distinguish
+// "omitted" from "set to zero-value": omitting a pointer field leaves the
+// existing value unchanged, while sending null or a zero-value explicitly
+// clears it.
 type updateAppRequest struct {
 	Name         string  `json:"name"`
-	AppID        int64   `json:"app_id"`
+	AppID        *int64  `json:"app_id"`
 	ClientID     string  `json:"client_id"`
 	ClientSecret string  `json:"client_secret"`
 	PrivateKey   string  `json:"private_key"`
@@ -955,12 +954,12 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	if req.Name != "" {
 		existing.Name = req.Name
 	}
-	if req.AppID < 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "app_id must be a positive integer"})
-		return
-	}
-	if req.AppID != 0 {
-		existing.AppID = req.AppID
+	if req.AppID != nil {
+		if *req.AppID <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "app_id must be a positive integer"})
+			return
+		}
+		existing.AppID = *req.AppID
 	}
 	if req.ClientID != "" {
 		existing.ClientID = req.ClientID
