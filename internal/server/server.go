@@ -283,10 +283,13 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Always wire the registry as the app token provider so that apps
 	// created via the admin UI/API take effect without a restart. The
-	// registry consults the store dynamically on Reload().
+	// registry consults the store dynamically on Reload(). Even when
+	// zero apps exist at startup, the registry is wired so that apps
+	// created later via the admin API become usable immediately.
 	//
 	// Config-based fallback is only used when LoadAll succeeded and
-	// confirmed zero apps exist in the store (fresh deployment).
+	// confirmed zero apps exist in the store AND a legacy config-based
+	// app ID is set (fresh deployment with config-only setup).
 	var appTokenProvider proxy.AppTokenProvider
 	if appRegistry.TotalApps() > 0 || loadAllFailed {
 		// Apps exist (or may exist — load failed). Always use the registry
@@ -321,6 +324,11 @@ func (s *Server) Run(ctx context.Context) error {
 			appTokenProvider = atp
 			s.logger.Info("github app token provider initialized (config fallback)", "app_id", s.cfg.GitHub.AppID)
 		}
+	} else {
+		// No apps in store and no config-based app. Wire the empty
+		// registry so apps created via the admin API take effect after
+		// Reload() without requiring a server restart.
+		appTokenProvider = appRegistry
 	}
 
 	// Create a server-lifecycle context tied to shutdown signals so that all
