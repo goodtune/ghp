@@ -150,6 +150,13 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject agent token creation when apps exist in the store but none loaded
+	// successfully — the token would be created but reliably fail at use time.
+	if tt == token.TokenTypeAgent && a.appRegistry != nil && a.appRegistry.TotalApps() > 0 && a.appRegistry.Count() == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "cannot create agent tokens: apps exist but none loaded successfully (check private keys)"})
+		return
+	}
+
 	// Scopes are optional — an empty string means open-scoped.
 	var scopes map[string]string
 	if req.Scopes != "" {
