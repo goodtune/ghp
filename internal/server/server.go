@@ -275,8 +275,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Build the AppRegistry with all apps from the store.
 	appRegistry := github.NewAppRegistry(store, enc, s.logger)
+	loadAllFailed := false
 	if err := appRegistry.LoadAll(ctx); err != nil {
 		s.logger.Warn("failed to load app registry", "error", err)
+		loadAllFailed = true
 	}
 
 	// Use the registry as the app token provider (implements both AppTokenProvider
@@ -290,6 +292,11 @@ func (s *Server) Run(ctx context.Context) error {
 		// against the wrong app. Log an error so the admin can fix the keys.
 		s.logger.Error("apps exist in store but none loaded successfully; fix app private keys via admin UI",
 			"total_apps", appRegistry.TotalApps())
+	} else if loadAllFailed {
+		// LoadAll failed (transient DB/Vault error) — we don't know whether
+		// apps exist in the store. Refuse config fallback to avoid silently
+		// dispatching against the wrong app.
+		s.logger.Error("app registry load failed; refusing config fallback until store is reachable")
 	} else if s.cfg.GitHub.AppID != 0 {
 		// Fallback: use config-based single app only when no apps exist in store.
 		privateKey := s.cfg.GitHub.PrivateKey

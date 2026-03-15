@@ -234,8 +234,8 @@
             if (apps.length === 1) {
                 // Single app — hide selector and auto-select.
                 sel.parentElement.style.display = 'none';
-                sel.innerHTML = '<option value="' + apps[0].id + '">' + esc(apps[0].name) + '</option>';
-                sel.value = apps[0].id;
+                sel.innerHTML = '<option value="' + esc(apps[0].id) + '">' + esc(apps[0].name) + '</option>';
+                sel.value = apps[0].id;  // programmatic assignment, no escaping needed
                 loadInstallations();
                 return;
             }
@@ -269,8 +269,8 @@
                 base_url: document.getElementById('app-base-url').value,
                 is_default: document.getElementById('app-is-default').checked,
             };
-            if (!body.name || !body.app_id) {
-                alert('Name and GitHub App ID are required.');
+            if (!body.name || !body.app_id || !body.private_key) {
+                alert('Name, GitHub App ID, and Private Key are required.');
                 return;
             }
             try {

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	ghub "github.com/google/go-github/v84/github"
 
 	"github.com/goodtune/ghp/internal/auth"
@@ -25,6 +27,12 @@ import (
 
 // maxRequestBodySize is the maximum allowed request body size for API endpoints.
 const maxRequestBodySize = 1 << 20 // 1 MB
+
+// isValidUUID returns true if s is a well-formed UUID string.
+func isValidUUID(s string) bool {
+	_, err := uuid.Parse(s)
+	return err == nil
+}
 
 // maxSessionIDLength caps the length of the user-provided session_id to
 // prevent oversized audit log lines and log-volume amplification.
@@ -163,9 +171,13 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		duration = d
 	}
 
-	// Validate app_record_id if provided: the referenced app must exist in the
-	// store and be loaded/usable in the registry (valid private key, provider ready).
+	// Validate app_record_id if provided: must be a valid UUID and the
+	// referenced app must exist in the store and be loaded in the registry.
 	if req.AppRecordID != "" {
+		if !isValidUUID(req.AppRecordID) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid app_record_id: not a valid UUID"})
+			return
+		}
 		app, err := a.store.GetAppByID(r.Context(), req.AppRecordID)
 		if err != nil {
 			a.logger.Error("failed to look up app for token creation", "error", err)
@@ -819,6 +831,10 @@ func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleGetApp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !isValidUUID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid app ID format"})
+		return
+	}
 	app, err := a.store.GetAppByID(r.Context(), id)
 	if err != nil {
 		a.logger.Error("failed to get app", "error", err)
@@ -873,6 +889,10 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := r.PathValue("id")
+	if !isValidUUID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid app ID format"})
+		return
+	}
 	existing, err := a.store.GetAppByID(r.Context(), id)
 	if err != nil {
 		a.logger.Error("failed to get app", "error", err)
@@ -952,6 +972,10 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !isValidUUID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid app ID format"})
+		return
+	}
 	if err := a.store.DeleteApp(r.Context(), id); err != nil {
 		if errors.Is(err, database.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found"})
@@ -977,7 +1001,11 @@ func (a *API) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleListAppInstallations(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if a.appRegistry == nil || a.appRegistry.Count() == 0 {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "No apps configured"})
+		msg := "No apps configured"
+		if a.appRegistry != nil && a.appRegistry.TotalApps() > 0 {
+			msg = "Apps exist but none loaded successfully (check private keys)"
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": msg})
 		return
 	}
 
@@ -1000,7 +1028,11 @@ func (a *API) handleListAppInstallations(w http.ResponseWriter, r *http.Request)
 func (a *API) handleListAppInstallationRepos(w http.ResponseWriter, r *http.Request) {
 	appID := r.PathValue("id")
 	if a.appRegistry == nil || a.appRegistry.Count() == 0 {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "No apps configured"})
+		msg := "No apps configured"
+		if a.appRegistry != nil && a.appRegistry.TotalApps() > 0 {
+			msg = "Apps exist but none loaded successfully (check private keys)"
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": msg})
 		return
 	}
 

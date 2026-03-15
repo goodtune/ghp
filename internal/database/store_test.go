@@ -128,8 +128,8 @@ func testAppCRUD(t *testing.T, store Store) {
 		t.Error("expected nil after delete")
 	}
 
-	// Delete non-existent.
-	if err := store.DeleteApp(ctx, "nonexistent-id"); !errors.Is(err, ErrNotFound) {
+	// Delete non-existent (use a valid UUID so Postgres doesn't reject the format).
+	if err := store.DeleteApp(ctx, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound deleting non-existent app, got: %v", err)
 	}
 
