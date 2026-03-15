@@ -446,11 +446,18 @@
                 html += '<td>' + (u.github_id || '-') + '</td>';
                 html += '<td>' + esc(u.role) + '</td>';
                 html += '<td>' + created + '</td>';
-                html += '<td><a class="link" href="#" onclick="loadUserTokens(\'' + u.id + '\', \'' + esc(u.username) + '\'); return false;">View tokens</a></td>';
+                html += '<td><a class="link" href="#" data-view-tokens="' + esc(u.id) + '" data-username="' + esc(u.username) + '">View tokens</a></td>';
                 html += '</tr>';
             }
             html += '</table>';
             container.innerHTML = html;
+
+            container.querySelectorAll('[data-view-tokens]').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    loadUserTokens(el.dataset.viewTokens, el.dataset.username);
+                });
+            });
         }
 
         async function loadUserTokens(userId, username) {
@@ -469,6 +476,7 @@
             }
 
             container.innerHTML = '<p style="color:#8b949e;margin-bottom:0.5rem">Showing tokens for <strong>' + esc(username) + '</strong></p>' + renderTokenTable(tokens);
+            bindRevokeButtons(container);
         }
 
         async function loadAllTokens() {
@@ -487,6 +495,13 @@
             }
 
             container.innerHTML = renderTokenTable(tokens);
+            bindRevokeButtons(container);
+        }
+
+        function bindRevokeButtons(container) {
+            container.querySelectorAll('[data-revoke-token]').forEach(el => {
+                el.addEventListener('click', () => revokeToken(el.dataset.revokeToken));
+            });
         }
 
         function renderTokenTable(tokens) {
@@ -510,7 +525,7 @@
                 html += '<td><span class="badge ' + badge + '">' + status + '</span></td>';
                 html += '<td>' + (t.request_count || 0) + '</td>';
                 html += '<td>' + expires.toLocaleString() + '</td>';
-                html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" onclick="revokeToken(\'' + t.id + '\')">Revoke</button>' : '') + '</td>';
+                html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" data-revoke-token="' + esc(t.id) + '">Revoke</button>' : '') + '</td>';
                 html += '</tr>';
             }
             html += '</table>';
