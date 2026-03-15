@@ -203,6 +203,7 @@ func (noopStore) GetDefaultApp(_ context.Context) (*database.App, error)        
 func (noopStore) ListApps(_ context.Context) ([]*database.App, error)                           { return nil, nil }
 func (noopStore) UpdateApp(_ context.Context, _ *database.App) error                            { return nil }
 func (noopStore) DeleteApp(_ context.Context, _ string) error                                   { return nil }
+func (noopStore) SetDefaultApp(_ context.Context, _ string) error                               { return nil }
 func (noopStore) UpsertUser(_ context.Context, _ *database.User) error                          { return nil }
 func (noopStore) GetUserByGitHubID(_ context.Context, _ int64) (*database.User, error)         { return nil, nil }
 func (noopStore) GetUserByID(_ context.Context, _ string) (*database.User, error)               { return nil, nil }

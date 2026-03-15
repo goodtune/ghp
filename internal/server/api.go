@@ -852,20 +852,15 @@ func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce at most one default app: clear the flag on all other apps and
-	// then promote the newly created one.
+	// Atomically set the new app as default (clears the flag on all others
+	// within a single transaction for SQL backends).
 	if req.IsDefault {
-		if err := a.clearDefaultApps(r.Context(), app.ID); err != nil {
-			a.logger.Error("failed to clear default apps", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to update app"})
-			return
-		}
-		app.IsDefault = true
-		if err := a.store.UpdateApp(r.Context(), app); err != nil {
+		if err := a.store.SetDefaultApp(r.Context(), app.ID); err != nil {
 			a.logger.Error("failed to set default app", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to update app"})
 			return
 		}
+		app.IsDefault = true
 	}
 
 	// Reload the app registry to pick up the new app.
@@ -994,20 +989,21 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		existing.IsDefault = *req.IsDefault
 	}
 
-	// Enforce at most one default app: clear the flag on all other apps
-	// before persisting this one as the new default.
-	if existing.IsDefault {
-		if err := a.clearDefaultApps(r.Context(), existing.ID); err != nil {
-			a.logger.Error("failed to clear default apps", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to update app"})
-			return
-		}
-	}
-
 	if err := a.store.UpdateApp(r.Context(), existing); err != nil {
 		a.logger.Error("failed to update app", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to update app"})
 		return
+	}
+
+	// Atomically enforce at most one default app after the field update
+	// succeeds. SetDefaultApp clears all other defaults and sets this one
+	// within a single transaction (SQL) or set-then-clear (Vault).
+	if existing.IsDefault {
+		if err := a.store.SetDefaultApp(r.Context(), existing.ID); err != nil {
+			a.logger.Error("failed to set default app", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to update app"})
+			return
+		}
 	}
 
 	// Reload the app registry.
@@ -1118,28 +1114,6 @@ func (a *API) handleListAppInstallationRepos(w http.ResponseWriter, r *http.Requ
 	}
 
 	writeJSON(w, http.StatusOK, repos)
-}
-
-// clearDefaultApps sets IsDefault=false on all apps except the one with
-// excludeID. Pass an empty excludeID to clear all defaults (e.g. before
-// creating a new default app). This enforces the invariant that at most one
-// app can be the default at any time. Note: this is not a single atomic
-// operation — it reads and updates apps one by one. For admin-only config
-// paths this is acceptable.
-func (a *API) clearDefaultApps(ctx context.Context, excludeID string) error {
-	apps, err := a.store.ListApps(ctx)
-	if err != nil {
-		return err
-	}
-	for _, app := range apps {
-		if app.IsDefault && app.ID != excludeID {
-			app.IsDefault = false
-			if err := a.store.UpdateApp(ctx, app); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

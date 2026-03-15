@@ -119,6 +119,12 @@ type Store interface {
 	ListApps(ctx context.Context) ([]*App, error)
 	UpdateApp(ctx context.Context, app *App) error
 	DeleteApp(ctx context.Context, id string) error
+	// SetDefaultApp atomically marks appID as the default and clears the
+	// default flag on all other apps. For SQL backends this runs inside a
+	// transaction; for Vault the new default is set before clearing the old
+	// one so that a partial failure never leaves the system with no default.
+	// Returns ErrNotFound if appID does not exist.
+	SetDefaultApp(ctx context.Context, appID string) error
 
 	// Users
 	UpsertUser(ctx context.Context, user *User) error

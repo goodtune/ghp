@@ -270,7 +270,20 @@ func (s *SQLiteStore) UpsertGitHubToken(ctx context.Context, token *GitHubToken)
 		token.AccessTokenExpiresAt.Format(time.RFC3339Nano),
 		token.RefreshTokenExpiresAt.Format(time.RFC3339Nano),
 		token.Scopes, now, now)
-	return err
+	if err != nil {
+		return err
+	}
+	// Re-read to get the actual ID and timestamps (on conflict, the existing row's ID is kept).
+	var createdStr, updatedStr string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT id, created_at, updated_at FROM github_tokens WHERE user_id = ?`, token.UserID,
+	).Scan(&token.ID, &createdStr, &updatedStr)
+	if err != nil {
+		return err
+	}
+	token.CreatedAt = parseTime(createdStr)
+	token.UpdatedAt = parseTime(updatedStr)
+	return nil
 }
 
 func (s *SQLiteStore) GetGitHubToken(ctx context.Context, userID string) (*GitHubToken, error) {
@@ -588,6 +601,41 @@ func (s *SQLiteStore) UpdateApp(ctx context.Context, app *App) error {
 	}
 	app.UpdatedAt = parseTime(now)
 	return nil
+}
+
+func (s *SQLiteStore) SetDefaultApp(ctx context.Context, appID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Verify the target app exists.
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM apps WHERE id = ?`, appID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return fmt.Errorf("app %s: %w", appID, ErrNotFound)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	// Clear default flag on all other apps.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE apps SET is_default = 0, updated_at = ? WHERE is_default = 1 AND id != ?`, now, appID,
+	); err != nil {
+		return err
+	}
+
+	// Set the target app as default.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE apps SET is_default = 1, updated_at = ? WHERE id = ?`, now, appID,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) DeleteApp(ctx context.Context, id string) error {

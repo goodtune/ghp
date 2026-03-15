@@ -12,6 +12,7 @@ import (
 // Each backend test file calls this with its own Store instance.
 func testStoreContract(t *testing.T, store Store) {
 	t.Run("AppCRUD", func(t *testing.T) { testAppCRUD(t, store) })
+	t.Run("SetDefaultApp", func(t *testing.T) { testSetDefaultApp(t, store) })
 	t.Run("UserCRUD", func(t *testing.T) { testUserCRUD(t, store) })
 	t.Run("ProxyTokenCRUD", func(t *testing.T) { testProxyTokenCRUD(t, store) })
 	t.Run("ProxyTokenWithAppID", func(t *testing.T) { testProxyTokenWithAppID(t, store) })
@@ -158,6 +159,97 @@ func testAppCRUD(t *testing.T, store Store) {
 	// Cleanup second app.
 	if err := store.DeleteApp(ctx, app2.ID); err != nil {
 		t.Fatalf("DeleteApp (second): %v", err)
+	}
+}
+
+func testSetDefaultApp(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	// Create two apps, neither is default.
+	app1 := &App{Name: "SetDefault App1", AppID: 10001, PrivateKey: "key1"}
+	if err := store.CreateApp(ctx, app1); err != nil {
+		t.Fatalf("CreateApp(app1): %v", err)
+	}
+	app2 := &App{Name: "SetDefault App2", AppID: 10002, PrivateKey: "key2"}
+	if err := store.CreateApp(ctx, app2); err != nil {
+		t.Fatalf("CreateApp(app2): %v", err)
+	}
+
+	// No default initially.
+	def, err := store.GetDefaultApp(ctx)
+	if err != nil {
+		t.Fatalf("GetDefaultApp: %v", err)
+	}
+	if def != nil {
+		t.Fatalf("expected no default app, got %q", def.ID)
+	}
+
+	// Set app1 as default.
+	if err := store.SetDefaultApp(ctx, app1.ID); err != nil {
+		t.Fatalf("SetDefaultApp(app1): %v", err)
+	}
+
+	got1, err := store.GetAppByID(ctx, app1.ID)
+	if err != nil {
+		t.Fatalf("GetAppByID(app1): %v", err)
+	}
+	if !got1.IsDefault {
+		t.Error("expected app1 to be default after SetDefaultApp")
+	}
+
+	got2, err := store.GetAppByID(ctx, app2.ID)
+	if err != nil {
+		t.Fatalf("GetAppByID(app2): %v", err)
+	}
+	if got2.IsDefault {
+		t.Error("expected app2 to NOT be default")
+	}
+
+	// Switch default to app2.
+	if err := store.SetDefaultApp(ctx, app2.ID); err != nil {
+		t.Fatalf("SetDefaultApp(app2): %v", err)
+	}
+
+	got1, err = store.GetAppByID(ctx, app1.ID)
+	if err != nil {
+		t.Fatalf("GetAppByID(app1) after switch: %v", err)
+	}
+	if got1.IsDefault {
+		t.Error("expected app1 to NOT be default after switching to app2")
+	}
+
+	got2, err = store.GetAppByID(ctx, app2.ID)
+	if err != nil {
+		t.Fatalf("GetAppByID(app2) after switch: %v", err)
+	}
+	if !got2.IsDefault {
+		t.Error("expected app2 to be default after SetDefaultApp")
+	}
+
+	// Verify GetDefaultApp returns app2.
+	def2, err := store.GetDefaultApp(ctx)
+	if err != nil {
+		t.Fatalf("GetDefaultApp: %v", err)
+	}
+	if def2 == nil {
+		t.Fatal("expected a default app, got nil")
+	}
+	if def2.ID != app2.ID {
+		t.Errorf("default app ID = %q, want %q", def2.ID, app2.ID)
+	}
+
+	// SetDefaultApp on non-existent ID returns ErrNotFound.
+	err = store.SetDefaultApp(ctx, "00000000-0000-0000-0000-000000000000")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for missing app, got: %v", err)
+	}
+
+	// Cleanup.
+	if err := store.DeleteApp(ctx, app1.ID); err != nil {
+		t.Errorf("cleanup DeleteApp(app1): %v", err)
+	}
+	if err := store.DeleteApp(ctx, app2.ID); err != nil {
+		t.Errorf("cleanup DeleteApp(app2): %v", err)
 	}
 }
 

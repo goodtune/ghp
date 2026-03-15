@@ -188,7 +188,7 @@ func (s *PostgresStore) UpsertGitHubToken(ctx context.Context, token *GitHubToke
 		token.ID = uuid.New().String()
 	}
 	now := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `
+	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO github_tokens (id, user_id, app_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT(user_id) DO UPDATE SET
@@ -199,9 +199,11 @@ func (s *PostgresStore) UpsertGitHubToken(ctx context.Context, token *GitHubToke
 			scopes = EXCLUDED.scopes,
 			app_id = EXCLUDED.app_id,
 			updated_at = EXCLUDED.updated_at
+		RETURNING id, created_at, updated_at
 	`, token.ID, token.UserID, token.AppID, token.AccessToken, token.RefreshToken,
 		token.AccessTokenExpiresAt, token.RefreshTokenExpiresAt,
-		token.Scopes, now, now)
+		token.Scopes, now, now,
+	).Scan(&token.ID, &token.CreatedAt, &token.UpdatedAt)
 	return err
 }
 
@@ -489,6 +491,41 @@ func (s *PostgresStore) UpdateApp(ctx context.Context, app *App) error {
 	}
 	app.UpdatedAt = now
 	return nil
+}
+
+func (s *PostgresStore) SetDefaultApp(ctx context.Context, appID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Verify the target app exists.
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM apps WHERE id = $1`, appID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return fmt.Errorf("app %s: %w", appID, ErrNotFound)
+	}
+
+	now := time.Now().UTC()
+
+	// Clear default flag on all other apps.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE apps SET is_default = FALSE, updated_at = $1 WHERE is_default = TRUE AND id != $2`, now, appID,
+	); err != nil {
+		return err
+	}
+
+	// Set the target app as default.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE apps SET is_default = TRUE, updated_at = $1 WHERE id = $2`, now, appID,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (s *PostgresStore) DeleteApp(ctx context.Context, id string) error {

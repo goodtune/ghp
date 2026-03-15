@@ -324,6 +324,52 @@ func (s *VaultStore) UpdateApp(ctx context.Context, app *App) error {
 	return s.kvWrite(ctx, "apps/"+app.ID, data)
 }
 
+func (s *VaultStore) SetDefaultApp(ctx context.Context, appID string) error {
+	// Vault has no transaction support. Follow the set-then-clear pattern
+	// documented in CLAUDE.md: set the new default first so that a partial
+	// failure never leaves the system with no default app.
+	target, err := s.GetAppByID(ctx, appID)
+	if err != nil {
+		return err
+	}
+	if target == nil {
+		return fmt.Errorf("app %s: %w", appID, ErrNotFound)
+	}
+
+	// Set the target as default.
+	target.IsDefault = true
+	target.UpdatedAt = time.Now().UTC()
+	data, err := marshalToMap(target)
+	if err != nil {
+		return fmt.Errorf("marshaling app: %w", err)
+	}
+	if err := s.kvWrite(ctx, "apps/"+target.ID, data); err != nil {
+		return err
+	}
+
+	// Now clear the default flag on all other apps.
+	apps, err := s.ListApps(ctx)
+	if err != nil {
+		return err
+	}
+	for _, app := range apps {
+		if app.ID == appID || !app.IsDefault {
+			continue
+		}
+		app.IsDefault = false
+		app.UpdatedAt = time.Now().UTC()
+		clearData, err := marshalToMap(app)
+		if err != nil {
+			return fmt.Errorf("marshaling app: %w", err)
+		}
+		if err := s.kvWrite(ctx, "apps/"+app.ID, clearData); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (s *VaultStore) DeleteApp(ctx context.Context, id string) error {
 	existing, err := s.GetAppByID(ctx, id)
 	if err != nil {

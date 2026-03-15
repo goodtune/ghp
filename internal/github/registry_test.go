@@ -26,6 +26,7 @@ func (m *mockStore) GetAppByID(ctx context.Context, id string) (*database.App, e
 func (m *mockStore) GetDefaultApp(ctx context.Context) (*database.App, error) { panic("unexpected") }
 func (m *mockStore) UpdateApp(ctx context.Context, app *database.App) error    { panic("unexpected") }
 func (m *mockStore) DeleteApp(ctx context.Context, id string) error            { panic("unexpected") }
+func (m *mockStore) SetDefaultApp(ctx context.Context, appID string) error     { panic("unexpected") }
 
 func (m *mockStore) UpsertUser(ctx context.Context, user *database.User) error { panic("unexpected") }
 func (m *mockStore) GetUserByGitHubID(ctx context.Context, githubID int64) (*database.User, error) {
