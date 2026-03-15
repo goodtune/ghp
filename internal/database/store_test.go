@@ -99,11 +99,11 @@ func testAppCRUD(t *testing.T, store Store) {
 		t.Errorf("name after update = %q, want Updated App", got2.Name)
 	}
 
-	// Create a second app.
+	// Create a second app (not default — the unique index enforces at most one).
 	app2 := &App{
 		Name:      "Second App",
 		AppID:     67890,
-		IsDefault: true,
+		IsDefault: false,
 	}
 	if err := store.CreateApp(ctx, app2); err != nil {
 		t.Fatalf("CreateApp (second): %v", err)
