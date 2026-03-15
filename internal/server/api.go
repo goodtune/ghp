@@ -38,32 +38,33 @@ func isValidUUID(s string) bool {
 
 // validateBaseURL checks that s is a valid HTTPS URL suitable for use as a
 // GitHub API base URL. Paths are allowed (GHES uses /api/v3), but query
-// strings, fragments, and userinfo are rejected. An empty string is allowed
-// (means use the default GitHub API URL).
-func validateBaseURL(s string) error {
+// strings, fragments, and userinfo are rejected. A trailing slash is stripped
+// to prevent double-slash issues in URL construction. An empty string is
+// allowed (means use the default GitHub API URL). Returns the normalized URL.
+func validateBaseURL(s string) (string, error) {
 	if s == "" {
-		return nil
+		return "", nil
 	}
 	u, err := url.Parse(s)
 	if err != nil {
-		return fmt.Errorf("malformed URL")
+		return "", fmt.Errorf("malformed URL")
 	}
 	if u.Scheme != "https" {
-		return fmt.Errorf("scheme must be https")
+		return "", fmt.Errorf("scheme must be https")
 	}
 	if u.Host == "" {
-		return fmt.Errorf("host is required")
+		return "", fmt.Errorf("host is required")
 	}
 	if u.RawQuery != "" {
-		return fmt.Errorf("query string is not allowed")
+		return "", fmt.Errorf("query string is not allowed")
 	}
 	if u.Fragment != "" {
-		return fmt.Errorf("fragment is not allowed")
+		return "", fmt.Errorf("fragment is not allowed")
 	}
 	if u.User != nil {
-		return fmt.Errorf("userinfo is not allowed")
+		return "", fmt.Errorf("userinfo is not allowed")
 	}
-	return nil
+	return strings.TrimRight(s, "/"), nil
 }
 
 // maxSessionIDLength caps the length of the user-provided session_id to
@@ -796,10 +797,12 @@ func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "private_key is required"})
 		return
 	}
-	if err := validateBaseURL(req.BaseURL); err != nil {
+	normalizedBaseURL, err := validateBaseURL(req.BaseURL)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": fmt.Sprintf("invalid base_url: %s", err)})
 		return
 	}
+	req.BaseURL = normalizedBaseURL
 
 	// Encrypt secrets before storing.
 	encClientSecret := req.ClientSecret
@@ -989,10 +992,12 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.BaseURL != nil {
-		if err := validateBaseURL(*req.BaseURL); err != nil {
+		normalized, err := validateBaseURL(*req.BaseURL)
+		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": fmt.Sprintf("invalid base_url: %s", err)})
 			return
 		}
+		*req.BaseURL = normalized
 		existing.BaseURL = *req.BaseURL
 	}
 	if req.IsDefault != nil {

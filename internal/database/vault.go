@@ -315,6 +315,7 @@ func (s *VaultStore) UpdateApp(ctx context.Context, app *App) error {
 	if existing == nil {
 		return fmt.Errorf("app %s: %w", app.ID, ErrNotFound)
 	}
+	app.CreatedAt = existing.CreatedAt // preserve immutable field
 	app.UpdatedAt = time.Now().UTC()
 	data, err := marshalToMap(app)
 	if err != nil {
