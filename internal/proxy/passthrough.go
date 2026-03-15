@@ -251,25 +251,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			upstreamStart := time.Now()
 			inner.ServeHTTP(rec, r)
 			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
-			// Re-check cache after the roundtrip; the async lookup may have completed.
-			if username == "" && ur != nil {
-				if u := ur.CheckCache(realToken); u != "" {
-					username = u
-					SetUsername(r, username)
-				}
-			}
-			// Fallback for ghx_ proxy tokens: if the GraphQL viewer lookup hasn't
-			// resolved yet, derive identity from the known token creator so that
-			// access logs and metrics remain populated during GitHub GraphQL outages
-			// or rate limiting. Skip for gha_ agent tokens to avoid misattributing
-			// the bot request to the human creator.
-			if username == "" && ur != nil && pt != nil && pt.UserID != nil &&
-				token.TokenType(pt.TokenType) != token.TokenTypeAgent {
-				if u := ur.ResolveFromUserID(r.Context(), *pt.UserID); u != "" {
-					username = u
-					SetUsername(r, username)
-				}
-			}
+			username = resolveUsernameAfterRoundtrip(r, realToken, username, ur, pt)
 			return
 		}
 
@@ -320,25 +302,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		upstreamStart := time.Now()
 		inner.ServeHTTP(rec, r)
 		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
-		// Re-check cache after the roundtrip; the async lookup may have completed.
-		if username == "" && ur != nil {
-			if u := ur.CheckCache(realToken); u != "" {
-				username = u
-				SetUsername(r, username)
-			}
-		}
-		// Fallback for ghx_ proxy tokens: if the GraphQL viewer lookup hasn't
-		// resolved yet, derive identity from the known token creator so that
-		// access logs and metrics remain populated during GitHub GraphQL outages
-		// or rate limiting. Skip for gha_ agent tokens to avoid misattributing
-		// the bot request to the human creator.
-		if username == "" && ur != nil && pt != nil && pt.UserID != nil &&
-			token.TokenType(pt.TokenType) != token.TokenTypeAgent {
-			if u := ur.ResolveFromUserID(r.Context(), *pt.UserID); u != "" {
-				username = u
-				SetUsername(r, username)
-			}
-		}
+		username = resolveUsernameAfterRoundtrip(r, realToken, username, ur, pt)
 	})
 }
 

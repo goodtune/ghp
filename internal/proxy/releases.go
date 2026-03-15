@@ -203,6 +203,20 @@ func NewReleasesHandlerWithClient(inner http.Handler, cfg *config.Config, logger
 		}
 	}
 
+	// Pre-validate and normalize the redirect base URL once at construction
+	// time so the per-request handler avoids repeated TrimRight + url.Parse.
+	var redirectBase string
+	if strings.ToLower(cfg.Releases.Mode) == "redirect" {
+		redirectBase = strings.TrimRight(cfg.Releases.RedirectTo, "/")
+		if u, err := url.Parse(redirectBase); redirectBase == "" || err != nil || !u.IsAbs() {
+			if logger != nil {
+				logger.Error("releases redirect_to must be an absolute URL", "redirect_to", cfg.Releases.RedirectTo)
+			}
+			// Leave redirectBase empty; the handler will return 500 for redirect requests.
+			redirectBase = ""
+		}
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mode := cfg.Releases.Mode
 		if mode == "" {
@@ -227,16 +241,11 @@ func NewReleasesHandlerWithClient(inner http.Handler, cfg *config.Config, logger
 		case "block":
 			writeError(w, http.StatusForbidden, "Release downloads are not permitted")
 		case "redirect":
-			redirectTo := strings.TrimRight(cfg.Releases.RedirectTo, "/")
-			u, err := url.Parse(redirectTo)
-			if redirectTo == "" || err != nil || !u.IsAbs() {
-				if logger != nil {
-					logger.Error("releases redirect_to must be an absolute URL", "redirect_to", cfg.Releases.RedirectTo)
-				}
+			if redirectBase == "" {
 				writeError(w, http.StatusInternalServerError, "Release redirect is misconfigured")
 				return
 			}
-			target := redirectTo + r.URL.RequestURI()
+			target := redirectBase + r.URL.RequestURI()
 
 			if cfg.Releases.RedirectHeadCheck {
 				if servedNotFound := headCheckAndServe404(w, r, target, client, creds, notFoundTmpl, logger); servedNotFound {

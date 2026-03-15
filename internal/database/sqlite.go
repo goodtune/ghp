@@ -338,7 +338,7 @@ func (s *SQLiteStore) CreateProxyToken(ctx context.Context, token *ProxyToken) e
 	}
 	tokenType := token.TokenType
 	if tokenType == "" {
-		tokenType = "proxy"
+		tokenType = DefaultTokenType
 	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO proxy_tokens (id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, request_count, created_at)

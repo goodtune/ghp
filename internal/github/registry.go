@@ -270,8 +270,11 @@ func (r *AppRegistry) GetInstallationTokenForApp(ctx context.Context, appID stri
 // NewRegistryWithState constructs an AppRegistry with pre-populated provider
 // slot IDs and an optional default ID. Provider values are nil — Get()
 // returns a clear error ("not initialized") instead of a nil pointer, so
-// calling GetInstallationToken on a test registry safely fails. Intended
-// for tests that verify dispatch logic without actually minting tokens.
+// calling GetInstallationToken on a test registry safely fails.
+//
+// This helper exists in production code (not a _test.go file) because it is
+// called cross-package from internal/server/api_test.go and Go does not
+// support cross-package test-only exports.
 func NewRegistryWithState(providerIDs []string, defaultID string) *AppRegistry {
 	r := &AppRegistry{
 		providers: make(map[string]*AppTokenProvider),
@@ -283,3 +286,4 @@ func NewRegistryWithState(providerIDs []string, defaultID string) *AppRegistry {
 	}
 	return r
 }
+

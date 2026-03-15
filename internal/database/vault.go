@@ -527,17 +527,10 @@ func (s *VaultStore) CreateProxyToken(ctx context.Context, token *ProxyToken) er
 	now := time.Now().UTC()
 	token.CreatedAt = now
 	if token.TokenType == "" {
-		token.TokenType = "proxy"
+		token.TokenType = DefaultTokenType
 	}
 
-	data, err := marshalToMap(token)
-	if err != nil {
-		return fmt.Errorf("marshaling proxy token: %w", err)
-	}
-	// Store the token hash in vault data since it's excluded from JSON via json:"-".
-	data["token_hash"] = token.TokenHash
-
-	if err := s.kvWrite(ctx, "proxy-tokens/"+token.ID, data); err != nil {
+	if err := s.writeProxyToken(ctx, token); err != nil {
 		return err
 	}
 	// Write hash index.
@@ -659,6 +652,17 @@ func (s *VaultStore) ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, 
 	return active, nil
 }
 
+// writeProxyToken marshals a ProxyToken and writes it to Vault, preserving
+// the token_hash field that is excluded from JSON serialization.
+func (s *VaultStore) writeProxyToken(ctx context.Context, t *ProxyToken) error {
+	data, err := marshalToMap(t)
+	if err != nil {
+		return err
+	}
+	data["token_hash"] = t.TokenHash
+	return s.kvWrite(ctx, "proxy-tokens/"+t.ID, data)
+}
+
 func (s *VaultStore) RevokeProxyToken(ctx context.Context, id string) error {
 	token, err := s.GetProxyTokenByID(ctx, id)
 	if err != nil {
@@ -672,13 +676,7 @@ func (s *VaultStore) RevokeProxyToken(ctx context.Context, id string) error {
 	}
 	now := time.Now().UTC()
 	token.RevokedAt = &now
-
-	data, err := marshalToMap(token)
-	if err != nil {
-		return err
-	}
-	data["token_hash"] = token.TokenHash
-	return s.kvWrite(ctx, "proxy-tokens/"+id, data)
+	return s.writeProxyToken(ctx, token)
 }
 
 func (s *VaultStore) UpdateProxyTokenUsage(ctx context.Context, id string) error {
@@ -703,13 +701,7 @@ func (s *VaultStore) UpdateProxyTokenUsage(ctx context.Context, id string) error
 	now := time.Now().UTC()
 	token.LastUsedAt = &now
 	token.RequestCount++
-
-	data, err := marshalToMap(token)
-	if err != nil {
-		return err
-	}
-	data["token_hash"] = token.TokenHash
-	return s.kvWrite(ctx, "proxy-tokens/"+id, data)
+	return s.writeProxyToken(ctx, token)
 }
 
 func (s *VaultStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error {
@@ -721,13 +713,7 @@ func (s *VaultStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID
 		return fmt.Errorf("proxy token %s: %w", id, ErrNotFound)
 	}
 	token.AppID = &appID
-
-	data, err := marshalToMap(token)
-	if err != nil {
-		return err
-	}
-	data["token_hash"] = token.TokenHash
-	return s.kvWrite(ctx, "proxy-tokens/"+id, data)
+	return s.writeProxyToken(ctx, token)
 }
 
 // Ensure VaultStore implements Store.

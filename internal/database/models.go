@@ -21,6 +21,11 @@ import (
 // errors.Is(err, ErrNotFound).
 var ErrNotFound = errors.New("not found")
 
+// DefaultTokenType is the default ProxyToken.TokenType used when none is
+// specified at creation time. This mirrors token.TokenTypeProxy but is
+// defined here to avoid a circular import (token → database).
+const DefaultTokenType = "proxy"
+
 // App represents a GitHub App configured in the proxy.
 type App struct {
 	ID           string    `json:"id"`

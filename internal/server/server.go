@@ -133,21 +133,13 @@ func (s *Server) seedDefaultApp(ctx context.Context, store database.Store, enc *
 	}
 
 	// Encrypt secrets before storing.
-	encClientSecret := s.cfg.GitHub.ClientSecret
-	if enc != nil && encClientSecret != "" {
-		encrypted, err := enc.Encrypt(encClientSecret)
-		if err != nil {
-			return fmt.Errorf("encrypting client secret: %w", err)
-		}
-		encClientSecret = encrypted
+	encClientSecret, err := encryptIfPresent(enc, s.cfg.GitHub.ClientSecret)
+	if err != nil {
+		return fmt.Errorf("encrypting client secret: %w", err)
 	}
-	encPrivateKey := privateKey
-	if enc != nil && encPrivateKey != "" {
-		encrypted, err := enc.Encrypt(encPrivateKey)
-		if err != nil {
-			return fmt.Errorf("encrypting private key: %w", err)
-		}
-		encPrivateKey = encrypted
+	encPrivateKey, err := encryptIfPresent(enc, privateKey)
+	if err != nil {
+		return fmt.Errorf("encrypting private key: %w", err)
 	}
 
 	app := &database.App{

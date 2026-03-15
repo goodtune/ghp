@@ -67,6 +67,15 @@ func validateBaseURL(s string) (string, error) {
 	return strings.TrimRight(s, "/"), nil
 }
 
+// encryptIfPresent encrypts value with enc when both are non-nil/non-empty.
+// Returns value unchanged when encryption is not configured or value is empty.
+func encryptIfPresent(enc *crypto.Encryptor, value string) (string, error) {
+	if enc == nil || value == "" {
+		return value, nil
+	}
+	return enc.Encrypt(value)
+}
+
 // maxSessionIDLength caps the length of the user-provided session_id to
 // prevent oversized audit log lines and log-volume amplification.
 const maxSessionIDLength = 128
@@ -726,6 +735,31 @@ func truncateSessionID(s string) string {
 
 // --- App management handlers ---
 
+// appResponse is the public JSON shape for an App, excluding secrets.
+type appResponse struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	AppID     int64  `json:"app_id"`
+	ClientID  string `json:"client_id"`
+	BaseURL   string `json:"base_url"`
+	IsDefault bool   `json:"is_default"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+func appToResponse(app *database.App) appResponse {
+	return appResponse{
+		ID:        app.ID,
+		Name:      app.Name,
+		AppID:     app.AppID,
+		ClientID:  app.ClientID,
+		BaseURL:   app.BaseURL,
+		IsDefault: app.IsDefault,
+		CreatedAt: app.CreatedAt.Format(time.RFC3339),
+		UpdatedAt: app.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
 func (a *API) handleListApps(w http.ResponseWriter, r *http.Request) {
 	apps, err := a.store.ListApps(r.Context())
 	if err != nil {
@@ -736,28 +770,9 @@ func (a *API) handleListApps(w http.ResponseWriter, r *http.Request) {
 	if apps == nil {
 		apps = []*database.App{}
 	}
-	type appResponse struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		AppID     int64  `json:"app_id"`
-		ClientID  string `json:"client_id"`
-		BaseURL   string `json:"base_url"`
-		IsDefault bool   `json:"is_default"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-	}
 	result := make([]appResponse, 0, len(apps))
 	for _, app := range apps {
-		result = append(result, appResponse{
-			ID:        app.ID,
-			Name:      app.Name,
-			AppID:     app.AppID,
-			ClientID:  app.ClientID,
-			BaseURL:   app.BaseURL,
-			IsDefault: app.IsDefault,
-			CreatedAt: app.CreatedAt.Format(time.RFC3339),
-			UpdatedAt: app.UpdatedAt.Format(time.RFC3339),
-		})
+		result = append(result, appToResponse(app))
 	}
 	writeJSON(w, http.StatusOK, result)
 }
@@ -805,25 +820,17 @@ func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	req.BaseURL = normalizedBaseURL
 
 	// Encrypt secrets before storing.
-	encClientSecret := req.ClientSecret
-	if a.encryptor != nil && encClientSecret != "" {
-		encrypted, err := a.encryptor.Encrypt(encClientSecret)
-		if err != nil {
-			a.logger.Error("failed to encrypt client secret", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
-			return
-		}
-		encClientSecret = encrypted
+	encClientSecret, err := encryptIfPresent(a.encryptor, req.ClientSecret)
+	if err != nil {
+		a.logger.Error("failed to encrypt client secret", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
+		return
 	}
-	encPrivateKey := req.PrivateKey
-	if a.encryptor != nil && encPrivateKey != "" {
-		encrypted, err := a.encryptor.Encrypt(encPrivateKey)
-		if err != nil {
-			a.logger.Error("failed to encrypt private key", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
-			return
-		}
-		encPrivateKey = encrypted
+	encPrivateKey, err := encryptIfPresent(a.encryptor, req.PrivateKey)
+	if err != nil {
+		a.logger.Error("failed to encrypt private key", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
+		return
 	}
 
 	// Create the app with IsDefault=false first. If the caller requested it to
@@ -897,16 +904,7 @@ func (a *API) handleGetApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Return without sensitive fields.
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"id":         app.ID,
-		"name":       app.Name,
-		"app_id":     app.AppID,
-		"client_id":  app.ClientID,
-		"base_url":   app.BaseURL,
-		"is_default": app.IsDefault,
-		"created_at": app.CreatedAt.Format(time.RFC3339),
-		"updated_at": app.UpdatedAt.Format(time.RFC3339),
-	})
+	writeJSON(w, http.StatusOK, appToResponse(app))
 }
 
 // updateAppRequest is used for PUT /api/apps/{id}. String fields use
@@ -968,28 +966,20 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		existing.ClientID = req.ClientID
 	}
 	if req.ClientSecret != "" {
-		if a.encryptor != nil {
-			encrypted, err := a.encryptor.Encrypt(req.ClientSecret)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
-				return
-			}
-			existing.ClientSecret = encrypted
-		} else {
-			existing.ClientSecret = req.ClientSecret
+		enc, err := encryptIfPresent(a.encryptor, req.ClientSecret)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
+			return
 		}
+		existing.ClientSecret = enc
 	}
 	if req.PrivateKey != "" {
-		if a.encryptor != nil {
-			encrypted, err := a.encryptor.Encrypt(req.PrivateKey)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
-				return
-			}
-			existing.PrivateKey = encrypted
-		} else {
-			existing.PrivateKey = req.PrivateKey
+		enc, err := encryptIfPresent(a.encryptor, req.PrivateKey)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
+			return
 		}
+		existing.PrivateKey = enc
 	}
 	if req.BaseURL != nil {
 		normalized, err := validateBaseURL(*req.BaseURL)
@@ -1058,14 +1048,22 @@ func (a *API) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "App deleted"})
 }
 
-func (a *API) handleListAppInstallations(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+// checkAppRegistry returns false and writes a 503 if no app providers are available.
+func (a *API) checkAppRegistry(w http.ResponseWriter) bool {
 	if a.appRegistry == nil || a.appRegistry.Count() == 0 {
 		msg := "No apps configured"
 		if a.appRegistry != nil && a.appRegistry.TotalApps() > 0 {
 			msg = "Apps exist but none loaded successfully (check private keys)"
 		}
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": msg})
+		return false
+	}
+	return true
+}
+
+func (a *API) handleListAppInstallations(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !a.checkAppRegistry(w) {
 		return
 	}
 
@@ -1091,12 +1089,7 @@ func (a *API) handleListAppInstallations(w http.ResponseWriter, r *http.Request)
 
 func (a *API) handleListAppInstallationRepos(w http.ResponseWriter, r *http.Request) {
 	appID := r.PathValue("id")
-	if a.appRegistry == nil || a.appRegistry.Count() == 0 {
-		msg := "No apps configured"
-		if a.appRegistry != nil && a.appRegistry.TotalApps() > 0 {
-			msg = "Apps exist but none loaded successfully (check private keys)"
-		}
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": msg})
+	if !a.checkAppRegistry(w) {
 		return
 	}
 
