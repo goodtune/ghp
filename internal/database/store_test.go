@@ -60,8 +60,23 @@ func testAppCRUD(t *testing.T, store Store) {
 	if got.ClientID != "Iv1.abc123" {
 		t.Errorf("client_id = %q, want Iv1.abc123", got.ClientID)
 	}
+	if got.ClientSecret != "encrypted_secret" {
+		t.Errorf("client_secret = %q, want encrypted_secret", got.ClientSecret)
+	}
+	if got.PrivateKey != "encrypted_key" {
+		t.Errorf("private_key = %q, want encrypted_key", got.PrivateKey)
+	}
+	if got.BaseURL != "https://api.github.com" {
+		t.Errorf("base_url = %q, want https://api.github.com", got.BaseURL)
+	}
 	if !got.IsDefault {
 		t.Error("expected is_default = true")
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be set on retrieved app")
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt to be set on retrieved app")
 	}
 
 	// Get default.
@@ -97,6 +112,12 @@ func testAppCRUD(t *testing.T, store Store) {
 	}
 	if got2.Name != "Updated App" {
 		t.Errorf("name after update = %q, want Updated App", got2.Name)
+	}
+	if got2.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt preserved after update")
+	}
+	if got2.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt set after update")
 	}
 
 	// Create a second app (not default — the unique index enforces at most one).

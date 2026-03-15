@@ -49,7 +49,7 @@
             <div class="user-info">
                 <span>{{ .Username }} ({{ .Role }})</span>
                 <a href="/" class="btn btn-secondary">Dashboard</a>
-                <button class="btn btn-secondary" onclick="logout()">Sign out</button>
+                <button class="btn btn-secondary" id="logout-btn">Sign out</button>
             </div>
         </header>
 
@@ -86,7 +86,7 @@
                     <div class="form-group">
                         <label><input type="checkbox" id="app-is-default"> Default app</label>
                     </div>
-                    <button class="btn" onclick="createApp()">Create App</button>
+                    <button class="btn" id="create-app-btn">Create App</button>
                 </div>
             </details>
         </div>
@@ -101,13 +101,13 @@
             <div class="create-form">
                 <div class="form-group">
                     <label for="app-select">App</label>
-                    <select id="app-select" onchange="onAppChange()">
+                    <select id="app-select">
                         <option value="">Loading apps...</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <label for="installation-id">Installation</label>
-                    <select id="installation-id" onchange="onInstallationChange()">
+                    <select id="installation-id">
                         <option value="">Loading installations...</option>
                     </select>
                 </div>
@@ -132,7 +132,7 @@
                     <label for="session">Session identifier (optional)</label>
                     <input type="text" id="session" placeholder="ci-agent-run-42">
                 </div>
-                <button class="btn" id="create-btn" onclick="createAgentToken()">Create Agent Token</button>
+                <button class="btn" id="create-btn">Create Agent Token</button>
                 <div id="new-token" style="display:none">
                     <div class="token-display" id="token-value"></div>
                     <p style="color:#f0883e;margin-top:0.5rem;font-size:0.8rem">This token will only be shown once. Copy it now.</p>
@@ -544,6 +544,13 @@
         }
 
         // ── Init ───────────────────────────────────────────────────
+        // Attach event listeners programmatically instead of inline handlers.
+        document.getElementById('logout-btn').addEventListener('click', logout);
+        document.getElementById('create-app-btn').addEventListener('click', createApp);
+        document.getElementById('app-select').addEventListener('change', onAppChange);
+        document.getElementById('installation-id').addEventListener('change', onInstallationChange);
+        document.getElementById('create-btn').addEventListener('click', createAgentToken);
+
         // loadInstallations() is called from populateAppSelect() once an app
         // is selected (or auto-selected), so it is not called unconditionally here.
         loadApps();

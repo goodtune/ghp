@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 
 	"github.com/goodtune/ghp/internal/crypto"
@@ -48,6 +49,12 @@ func (r *AppRegistry) LoadAll(ctx context.Context) error {
 	r.defaultID = ""
 	r.totalApps = len(apps)
 
+	// Sort by CreatedAt so default selection is deterministic across backends
+	// (Vault list order is not guaranteed stable across restarts).
+	sort.Slice(apps, func(i, j int) bool {
+		return apps[i].CreatedAt.Before(apps[j].CreatedAt)
+	})
+
 	for _, app := range apps {
 		if err := r.loadAppLocked(app); err != nil {
 			r.logger.Warn("skipping app", "app_id", app.ID, "name", app.Name, "error", err)
@@ -55,7 +62,7 @@ func (r *AppRegistry) LoadAll(ctx context.Context) error {
 		}
 		if app.IsDefault {
 			if r.defaultID != "" {
-				r.logger.Warn("multiple apps marked as default; using most recently encountered one — fix via admin UI",
+				r.logger.Warn("multiple apps marked as default; using earliest created one — fix via admin UI",
 					"previous_default", r.defaultID, "new_default", app.ID)
 			}
 			r.defaultID = app.ID
@@ -189,6 +196,11 @@ func (r *AppRegistry) Reload(ctx context.Context) error {
 	r.defaultID = ""
 	r.totalApps = len(apps)
 
+	// Sort by CreatedAt so default selection is deterministic (see LoadAll).
+	sort.Slice(apps, func(i, j int) bool {
+		return apps[i].CreatedAt.Before(apps[j].CreatedAt)
+	})
+
 	// Track which IDs are still valid.
 	seen := make(map[string]bool)
 	for _, app := range apps {
@@ -203,7 +215,7 @@ func (r *AppRegistry) Reload(ctx context.Context) error {
 		}
 		if app.IsDefault {
 			if r.defaultID != "" {
-				r.logger.Warn("multiple apps marked as default on reload; using most recently encountered one — fix via admin UI",
+				r.logger.Warn("multiple apps marked as default on reload; using earliest created one — fix via admin UI",
 					"previous_default", r.defaultID, "new_default", app.ID)
 			}
 			r.defaultID = app.ID
