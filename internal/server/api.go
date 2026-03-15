@@ -36,8 +36,10 @@ func isValidUUID(s string) bool {
 	return err == nil
 }
 
-// validateBaseURL checks that s is a valid HTTPS URL with no path or query.
-// An empty string is allowed (means use the default GitHub API URL).
+// validateBaseURL checks that s is a valid HTTPS URL suitable for use as a
+// GitHub API base URL. Paths are allowed (GHES uses /api/v3), but query
+// strings, fragments, and userinfo are rejected. An empty string is allowed
+// (means use the default GitHub API URL).
 func validateBaseURL(s string) error {
 	if s == "" {
 		return nil
@@ -51,6 +53,15 @@ func validateBaseURL(s string) error {
 	}
 	if u.Host == "" {
 		return fmt.Errorf("host is required")
+	}
+	if u.RawQuery != "" {
+		return fmt.Errorf("query string is not allowed")
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("fragment is not allowed")
+	}
+	if u.User != nil {
+		return fmt.Errorf("userinfo is not allowed")
 	}
 	return nil
 }
