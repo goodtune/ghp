@@ -15,6 +15,7 @@ type AppRegistry struct {
 	mu        sync.RWMutex
 	providers map[string]*AppTokenProvider // keyed by App.ID (database UUID)
 	defaultID string                       // ID of the default app
+	totalApps int                          // total App records from last load (may differ from len(providers) if some failed)
 	store     database.Store
 	encryptor *crypto.Encryptor
 	logger    *slog.Logger
@@ -45,6 +46,7 @@ func (r *AppRegistry) LoadAll(ctx context.Context) error {
 	// accumulate stale providers or a stale defaultID from a previous load.
 	r.providers = make(map[string]*AppTokenProvider)
 	r.defaultID = ""
+	r.totalApps = len(apps)
 
 	for _, app := range apps {
 		if err := r.loadAppLocked(app); err != nil {
@@ -59,8 +61,18 @@ func (r *AppRegistry) LoadAll(ctx context.Context) error {
 			r.defaultID = app.ID
 		}
 	}
-	r.logger.Info("app registry loaded", "count", len(r.providers))
+	r.logger.Info("app registry loaded", "count", len(r.providers), "total_apps", len(apps))
 	return nil
+}
+
+// TotalApps returns the number of App records in the store as of the last
+// LoadAll or Reload call. This may differ from Count() when apps exist in
+// the store but fail to load (e.g. bad private keys). Use this to
+// distinguish "no apps in store" from "apps present but none loaded".
+func (r *AppRegistry) TotalApps() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.totalApps
 }
 
 // loadAppLocked creates a provider for the given app. Caller must hold r.mu.
@@ -149,6 +161,7 @@ func (r *AppRegistry) Reload(ctx context.Context) error {
 	// Reset defaultID before recomputing; if no app is marked default after
 	// the reload, GetDefault() should reflect that rather than return stale state.
 	r.defaultID = ""
+	r.totalApps = len(apps)
 
 	// Track which IDs are still valid.
 	seen := make(map[string]bool)
@@ -217,17 +230,22 @@ func (r *AppRegistry) GetInstallationTokenForApp(ctx context.Context, appID stri
 }
 
 // NewRegistryWithState constructs an AppRegistry with pre-populated provider
-// slot IDs and an optional default ID. Provider values are nil, so the
-// registry reports the correct Count() and GetDefaultID() without needing
-// real GitHub App credentials. Use this in tests that verify dispatch logic
-// without actually minting tokens.
+// slot IDs and an optional default ID. Providers are stubs that return a
+// clear error instead of nil-pointer panics, so the registry reports the
+// correct Count() and GetDefaultID() without needing real GitHub App
+// credentials. Intended for tests that verify dispatch logic without
+// actually minting tokens.
 func NewRegistryWithState(providerIDs []string, defaultID string) *AppRegistry {
 	r := &AppRegistry{
 		providers: make(map[string]*AppTokenProvider),
 		defaultID: defaultID,
+		totalApps: len(providerIDs),
 	}
+	// Use a sentinel non-nil provider so Get() returns a value that won't
+	// cause nil-pointer panics if accidentally used outside narrow test cases.
+	stub := &AppTokenProvider{}
 	for _, id := range providerIDs {
-		r.providers[id] = nil
+		r.providers[id] = stub
 	}
 	return r
 }

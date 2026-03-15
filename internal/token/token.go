@@ -177,8 +177,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 		ExpiresAt:    expiresAt,
 	}
 
-	// Set type-specific fields.
-	if req.AppRecordID != "" {
+	// Set type-specific fields. AppRecordID only applies to agent tokens;
+	// ignore it for proxy tokens as a defense-in-depth measure (the API
+	// layer also rejects it, but the service should be independently safe).
+	if req.AppRecordID != "" && tt == TokenTypeAgent {
 		pt.AppID = &req.AppRecordID
 	}
 	if req.UserID != "" {

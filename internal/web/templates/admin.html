@@ -196,18 +196,27 @@
                 const created = new Date(app.created_at).toLocaleString();
                 const isDefault = app.is_default ? '<span class="badge badge-active">Default</span>' : '';
                 html += '<tr>';
-                html += '<td><code title="' + esc(app.id) + '" style="cursor:pointer;user-select:all" onclick="navigator.clipboard.writeText(\'' + esc(app.id) + '\')">' + esc(app.id.substring(0, 8)) + '&hellip;</code></td>';
+                html += '<td><code data-copy-id="' + esc(app.id) + '" title="' + esc(app.id) + '" style="cursor:pointer;user-select:all">' + esc(app.id.substring(0, 8)) + '&hellip;</code></td>';
                 html += '<td>' + esc(app.name) + '</td>';
-                html += '<td>' + app.app_id + '</td>';
+                html += '<td>' + esc(String(app.app_id)) + '</td>';
                 html += '<td>' + esc(app.client_id || '-') + '</td>';
                 html += '<td>' + esc(app.base_url || 'https://api.github.com') + '</td>';
                 html += '<td>' + isDefault + '</td>';
                 html += '<td>' + created + '</td>';
-                html += '<td><button class="btn btn-danger" onclick="deleteApp(\'' + app.id + '\')">Delete</button></td>';
+                html += '<td><button class="btn btn-danger" data-delete-app="' + esc(app.id) + '">Delete</button></td>';
                 html += '</tr>';
             }
             html += '</table>';
             container.innerHTML = html;
+
+            // Attach event listeners programmatically instead of inline JS
+            // to avoid HTML-escaping in JavaScript string contexts.
+            container.querySelectorAll('[data-copy-id]').forEach(el => {
+                el.addEventListener('click', () => navigator.clipboard.writeText(el.dataset.copyId));
+            });
+            container.querySelectorAll('[data-delete-app]').forEach(el => {
+                el.addEventListener('click', () => deleteApp(el.dataset.deleteApp));
+            });
         }
 
         function populateAppSelect() {

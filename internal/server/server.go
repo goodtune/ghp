@@ -284,8 +284,14 @@ func (s *Server) Run(ctx context.Context) error {
 	var appTokenProvider proxy.AppTokenProvider
 	if appRegistry.Count() > 0 {
 		appTokenProvider = appRegistry
+	} else if appRegistry.TotalApps() > 0 {
+		// Apps exist in the store but none loaded successfully (e.g. bad keys).
+		// Do NOT fall back to config — that would silently dispatch tokens
+		// against the wrong app. Log an error so the admin can fix the keys.
+		s.logger.Error("apps exist in store but none loaded successfully; fix app private keys via admin UI",
+			"total_apps", appRegistry.TotalApps())
 	} else if s.cfg.GitHub.AppID != 0 {
-		// Fallback: use config-based single app if no apps in store.
+		// Fallback: use config-based single app only when no apps exist in store.
 		privateKey := s.cfg.GitHub.PrivateKey
 		if privateKey == "" && s.cfg.GitHub.PrivateKeyFile != "" {
 			keyData, err := os.ReadFile(s.cfg.GitHub.PrivateKeyFile)
