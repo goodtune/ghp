@@ -281,24 +281,27 @@ func (s *Server) Run(ctx context.Context) error {
 		loadAllFailed = true
 	}
 
-	// Use the registry as the app token provider (implements both AppTokenProvider
-	// and MultiAppTokenProvider interfaces).
+	// Always wire the registry as the app token provider so that apps
+	// created via the admin UI/API take effect without a restart. The
+	// registry consults the store dynamically on Reload().
+	//
+	// Config-based fallback is only used when LoadAll succeeded and
+	// confirmed zero apps exist in the store (fresh deployment).
 	var appTokenProvider proxy.AppTokenProvider
-	if appRegistry.Count() > 0 {
+	if appRegistry.TotalApps() > 0 || loadAllFailed {
+		// Apps exist (or may exist — load failed). Always use the registry
+		// so newly created/fixed apps take effect after Reload().
 		appTokenProvider = appRegistry
-	} else if appRegistry.TotalApps() > 0 {
-		// Apps exist in the store but none loaded successfully (e.g. bad keys).
-		// Do NOT fall back to config — that would silently dispatch tokens
-		// against the wrong app. Log an error so the admin can fix the keys.
-		s.logger.Error("apps exist in store but none loaded successfully; fix app private keys via admin UI",
-			"total_apps", appRegistry.TotalApps())
-	} else if loadAllFailed {
-		// LoadAll failed (transient DB/Vault error) — we don't know whether
-		// apps exist in the store. Refuse config fallback to avoid silently
-		// dispatching against the wrong app.
-		s.logger.Error("app registry load failed; refusing config fallback until store is reachable")
+		if appRegistry.TotalApps() > 0 && appRegistry.Count() == 0 {
+			s.logger.Error("apps exist in store but none loaded successfully; fix app private keys via admin UI",
+				"total_apps", appRegistry.TotalApps())
+		}
+		if loadAllFailed {
+			s.logger.Error("app registry load failed; app provider will retry on next Reload()")
+		}
 	} else if s.cfg.GitHub.AppID != 0 {
-		// Fallback: use config-based single app only when no apps exist in store.
+		// Fallback: use config-based single app only when a successful
+		// LoadAll confirmed zero apps exist in the store.
 		privateKey := s.cfg.GitHub.PrivateKey
 		if privateKey == "" && s.cfg.GitHub.PrivateKeyFile != "" {
 			keyData, err := os.ReadFile(s.cfg.GitHub.PrivateKeyFile)

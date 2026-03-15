@@ -130,6 +130,9 @@ func (r *AppRegistry) GetDefault() (*AppTokenProvider, error) {
 		// If no explicit default, return the first provider if there's only one.
 		if len(r.providers) == 1 {
 			for _, p := range r.providers {
+				if p == nil {
+					return nil, fmt.Errorf("sole app provider is not initialized")
+				}
 				return p, nil
 			}
 		}
@@ -138,6 +141,9 @@ func (r *AppRegistry) GetDefault() (*AppTokenProvider, error) {
 	provider, ok := r.providers[r.defaultID]
 	if !ok {
 		return nil, fmt.Errorf("default app provider not found")
+	}
+	if provider == nil {
+		return nil, fmt.Errorf("default app provider is not initialized")
 	}
 	return provider, nil
 }

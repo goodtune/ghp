@@ -47,6 +47,9 @@ func newTokenCmd() *cobra.Command {
 				"duration": duration,
 			}
 			if appID != "" {
+				if tokenType != "agent" {
+					return fmt.Errorf("--app-id is only valid for agent tokens")
+				}
 				body["app_record_id"] = appID
 			}
 			if sessionID != "" {
