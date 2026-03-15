@@ -149,6 +149,23 @@ func (r *AppRegistry) GetDefaultID() string {
 	return r.defaultID
 }
 
+// DefaultOrOnlyID returns the default app ID, or if no default is set and
+// exactly one app is loaded, returns that app's ID. Returns empty string
+// only when there are zero or 2+ apps with no explicit default.
+func (r *AppRegistry) DefaultOrOnlyID() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.defaultID != "" {
+		return r.defaultID
+	}
+	if len(r.providers) == 1 {
+		for id := range r.providers {
+			return id
+		}
+	}
+	return ""
+}
+
 // Reload re-reads apps from the store and updates providers. It rebuilds
 // every provider so that changes to an existing app (rotated private key,
 // base_url change, etc.) take effect immediately without a restart.

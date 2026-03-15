@@ -424,7 +424,13 @@
 
         // ── Users / Tokens ─────────────────────────────────────────
         async function loadUsers() {
-            const users = await api('GET', '/api/users');
+            let users;
+            try {
+                users = await api('GET', '/api/users');
+            } catch (e) {
+                document.getElementById('users-list').innerHTML = '<div class="empty">Failed to load users</div>';
+                return;
+            }
             const container = document.getElementById('users-list');
 
             if (!Array.isArray(users) || users.length === 0) {
@@ -448,7 +454,13 @@
         }
 
         async function loadUserTokens(userId, username) {
-            const tokens = await api('GET', '/api/users/' + userId + '/tokens');
+            let tokens;
+            try {
+                tokens = await api('GET', '/api/users/' + userId + '/tokens');
+            } catch (e) {
+                document.getElementById('all-tokens').innerHTML = '<div class="empty">Failed to load tokens</div>';
+                return;
+            }
             const container = document.getElementById('all-tokens');
 
             if (!Array.isArray(tokens) || tokens.length === 0) {
@@ -460,7 +472,13 @@
         }
 
         async function loadAllTokens() {
-            const tokens = await api('GET', '/api/tokens?all=true');
+            let tokens;
+            try {
+                tokens = await api('GET', '/api/tokens?all=true');
+            } catch (e) {
+                document.getElementById('all-tokens').innerHTML = '<div class="empty">Failed to load tokens</div>';
+                return;
+            }
             const container = document.getElementById('all-tokens');
 
             if (!Array.isArray(tokens) || tokens.length === 0) {
@@ -501,7 +519,12 @@
 
         async function revokeToken(id) {
             if (!confirm('Revoke this token?')) return;
-            await api('DELETE', '/api/tokens/' + id);
+            try {
+                await api('DELETE', '/api/tokens/' + id);
+            } catch (e) {
+                alert('Failed to revoke token: ' + e.message);
+                return;
+            }
             loadAllTokens();
         }
 
@@ -512,7 +535,11 @@
         }
 
         async function logout() {
-            await api('POST', '/auth/logout');
+            try {
+                await api('POST', '/auth/logout');
+            } catch (e) {
+                // Best-effort — redirect to login regardless.
+            }
             window.location.href = '/login';
         }
 

@@ -198,17 +198,17 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := truncateSessionID(req.SessionID)
 
-	// For agent tokens in multi-app mode, pin the token to the default app
-	// when no app_record_id was specified. This makes dispatch deterministic
-	// at creation time rather than depending on which app happens to be
-	// default at request time.
+	// For agent tokens in multi-app mode, pin the token to the default (or
+	// sole) app when no app_record_id was specified. DefaultOrOnlyID handles
+	// both the explicit-default case and the single-app-no-default case so
+	// that dispatch stays deterministic even if more apps are added later.
 	appRecordID := req.AppRecordID
 	if tt == token.TokenTypeAgent && appRecordID == "" && a.appRegistry != nil && a.appRegistry.Count() > 0 {
-		appRecordID = a.appRegistry.GetDefaultID()
+		appRecordID = a.appRegistry.DefaultOrOnlyID()
 		// When multiple apps are configured but none is marked as default, the
 		// caller must explicitly specify which app the token belongs to; there is
 		// no unambiguous choice to make on their behalf.
-		if appRecordID == "" && a.appRegistry.Count() > 1 {
+		if appRecordID == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "app_record_id is required when multiple apps are configured and no default app is set"})
 			return
 		}
@@ -1009,6 +1009,10 @@ func (a *API) handleListAppInstallations(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if !isValidUUID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid app ID format"})
+		return
+	}
 	provider, err := a.appRegistry.Get(id)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found or not loaded"})
@@ -1036,6 +1040,10 @@ func (a *API) handleListAppInstallationRepos(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if !isValidUUID(appID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid app ID format"})
+		return
+	}
 	provider, err := a.appRegistry.Get(appID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found or not loaded"})
