@@ -906,10 +906,10 @@ func (a *API) handleGetApp(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateAppRequest is used for PUT /api/apps/{id}. Pointer fields distinguish
-// "omitted" from "set to zero-value": omitting a pointer field leaves the
-// existing value unchanged, while sending null or a zero-value explicitly
-// clears it.
+// updateAppRequest is used for PUT /api/apps/{id}. String fields use
+// zero-value semantics: an empty string means "don't change". Pointer fields
+// (AppID, BaseURL, IsDefault) distinguish "omitted" from "set to zero/empty"
+// so callers can explicitly clear BaseURL or toggle IsDefault.
 type updateAppRequest struct {
 	Name         string  `json:"name"`
 	AppID        *int64  `json:"app_id"`

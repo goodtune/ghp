@@ -15,6 +15,7 @@ func testStoreContract(t *testing.T, store Store) {
 	t.Run("UserCRUD", func(t *testing.T) { testUserCRUD(t, store) })
 	t.Run("ProxyTokenCRUD", func(t *testing.T) { testProxyTokenCRUD(t, store) })
 	t.Run("ProxyTokenWithAppID", func(t *testing.T) { testProxyTokenWithAppID(t, store) })
+	t.Run("UpdateProxyTokenAppID", func(t *testing.T) { testUpdateProxyTokenAppID(t, store) })
 	t.Run("GitHubTokenAppID", func(t *testing.T) { testGitHubTokenAppID(t, store) })
 	t.Run("SyncAdminRoles", func(t *testing.T) { testSyncAdminRoles(t, store) })
 }
@@ -395,6 +396,78 @@ func testProxyTokenWithAppID(t *testing.T, store Store) {
 	}
 	if got2.AppID != nil {
 		t.Errorf("expected nil app_id, got %q", *got2.AppID)
+	}
+
+	// Cleanup.
+	if err := store.DeleteApp(ctx, app.ID); err != nil {
+		t.Errorf("cleanup DeleteApp: %v", err)
+	}
+}
+
+func testUpdateProxyTokenAppID(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	// Create an app to use as the target.
+	app := &App{
+		Name:  "Update AppID Test App",
+		AppID: 77777,
+	}
+	if err := store.CreateApp(ctx, app); err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+
+	// Create a user.
+	user := &User{GitHubID: 99003, GitHubUsername: "backfilluser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an agent token WITHOUT app_id (simulates pre-multi-app token).
+	installID := int64(11111)
+	pt := &ProxyToken{
+		TokenHash:      "contract_hash_backfill_001",
+		TokenPrefix:    "gha_bf1",
+		TokenType:      "agent",
+		UserID:         &user.ID,
+		InstallationID: &installID,
+		Repositories:   json.RawMessage(`[]`),
+		Scopes:         json.RawMessage(`{}`),
+		ExpiresAt:      time.Now().Add(24 * time.Hour),
+	}
+	if err := store.CreateProxyToken(ctx, pt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify app_id is nil before update.
+	got, err := store.GetProxyTokenByHash(ctx, "contract_hash_backfill_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AppID != nil {
+		t.Fatalf("expected nil app_id before update, got %q", *got.AppID)
+	}
+
+	// Update app_id.
+	if err := store.UpdateProxyTokenAppID(ctx, got.ID, app.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify app_id is set after update.
+	got2, err := store.GetProxyTokenByHash(ctx, "contract_hash_backfill_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.AppID == nil {
+		t.Fatal("expected app_id to be set after update")
+	}
+	if *got2.AppID != app.ID {
+		t.Errorf("app_id = %q, want %q", *got2.AppID, app.ID)
+	}
+
+	// Verify ErrNotFound for nonexistent token.
+	err = store.UpdateProxyTokenAppID(ctx, "00000000-0000-0000-0000-000000000000", app.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for missing token, got: %v", err)
 	}
 
 	// Cleanup.
