@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +34,25 @@ const maxRequestBodySize = 1 << 20 // 1 MB
 func isValidUUID(s string) bool {
 	_, err := uuid.Parse(s)
 	return err == nil
+}
+
+// validateBaseURL checks that s is a valid HTTPS URL with no path or query.
+// An empty string is allowed (means use the default GitHub API URL).
+func validateBaseURL(s string) error {
+	if s == "" {
+		return nil
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("malformed URL")
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("scheme must be https")
+	}
+	if u.Host == "" {
+		return fmt.Errorf("host is required")
+	}
+	return nil
 }
 
 // maxSessionIDLength caps the length of the user-provided session_id to
@@ -751,12 +772,16 @@ func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "name is required"})
 		return
 	}
-	if req.AppID == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "app_id is required"})
+	if req.AppID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "app_id must be a positive integer"})
 		return
 	}
 	if req.PrivateKey == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "private_key is required"})
+		return
+	}
+	if err := validateBaseURL(req.BaseURL); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": fmt.Sprintf("invalid base_url: %s", err)})
 		return
 	}
 
@@ -914,6 +939,10 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	if req.Name != "" {
 		existing.Name = req.Name
 	}
+	if req.AppID < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "app_id must be a positive integer"})
+		return
+	}
 	if req.AppID != 0 {
 		existing.AppID = req.AppID
 	}
@@ -945,6 +974,10 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.BaseURL != nil {
+		if err := validateBaseURL(*req.BaseURL); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": fmt.Sprintf("invalid base_url: %s", err)})
+			return
+		}
 		existing.BaseURL = *req.BaseURL
 	}
 	if req.IsDefault != nil {

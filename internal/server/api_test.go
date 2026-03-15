@@ -290,7 +290,7 @@ func TestHandleCreateApp_RequiredFields(t *testing.T) {
 		msg  string
 	}{
 		{"missing name", `{"app_id":1,"private_key":"key"}`, http.StatusBadRequest, "name is required"},
-		{"missing app_id", `{"name":"myapp","private_key":"key"}`, http.StatusBadRequest, "app_id is required"},
+		{"missing app_id", `{"name":"myapp","private_key":"key"}`, http.StatusBadRequest, "app_id must be a positive integer"},
 		{"missing private_key", `{"name":"myapp","app_id":1}`, http.StatusBadRequest, "private_key is required"},
 	}
 	for _, tc := range tests {
