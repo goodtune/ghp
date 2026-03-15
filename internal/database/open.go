@@ -15,7 +15,7 @@ func Open(driver, dsn string) (Store, error) {
 	case "postgres":
 		return NewPostgresStore(dsn)
 	case "vault":
-		return nil, fmt.Errorf("vault backend must be opened via database.OpenVault, not Open (DSN-based open is not supported for vault)")
+		return nil, fmt.Errorf("vault backend does not use DSN-based connections or SQL migrations; configure it via the vault section in your config file (see docs)")
 	default:
 		return nil, fmt.Errorf("unsupported database driver: %s", driver)
 	}
