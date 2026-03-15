@@ -115,6 +115,9 @@ func (r *AppRegistry) Get(appID string) (*AppTokenProvider, error) {
 	if !ok {
 		return nil, fmt.Errorf("no provider for app %s", appID)
 	}
+	if provider == nil {
+		return nil, fmt.Errorf("provider for app %s is not initialized", appID)
+	}
 	return provider, nil
 }
 
@@ -230,22 +233,18 @@ func (r *AppRegistry) GetInstallationTokenForApp(ctx context.Context, appID stri
 }
 
 // NewRegistryWithState constructs an AppRegistry with pre-populated provider
-// slot IDs and an optional default ID. Providers are stubs that return a
-// clear error instead of nil-pointer panics, so the registry reports the
-// correct Count() and GetDefaultID() without needing real GitHub App
-// credentials. Intended for tests that verify dispatch logic without
-// actually minting tokens.
+// slot IDs and an optional default ID. Provider values are nil — Get()
+// returns a clear error ("not initialized") instead of a nil pointer, so
+// calling GetInstallationToken on a test registry safely fails. Intended
+// for tests that verify dispatch logic without actually minting tokens.
 func NewRegistryWithState(providerIDs []string, defaultID string) *AppRegistry {
 	r := &AppRegistry{
 		providers: make(map[string]*AppTokenProvider),
 		defaultID: defaultID,
 		totalApps: len(providerIDs),
 	}
-	// Use a sentinel non-nil provider so Get() returns a value that won't
-	// cause nil-pointer panics if accidentally used outside narrow test cases.
-	stub := &AppTokenProvider{}
 	for _, id := range providerIDs {
-		r.providers[id] = stub
+		r.providers[id] = nil
 	}
 	return r
 }

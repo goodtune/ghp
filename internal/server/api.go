@@ -858,18 +858,8 @@ type updateAppRequest struct {
 }
 
 func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	existing, err := a.store.GetAppByID(r.Context(), id)
-	if err != nil {
-		a.logger.Error("failed to get app", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
-		return
-	}
-	if existing == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found"})
-		return
-	}
-
+	// Parse and validate the request body before hitting the store so that
+	// oversized/invalid payloads are rejected cheaply without I/O.
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	var req updateAppRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -879,6 +869,18 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
 		}
+		return
+	}
+
+	id := r.PathValue("id")
+	existing, err := a.store.GetAppByID(r.Context(), id)
+	if err != nil {
+		a.logger.Error("failed to get app", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+	if existing == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "App not found"})
 		return
 	}
 

@@ -222,8 +222,11 @@
         function populateAppSelect() {
             const sel = document.getElementById('app-select');
             if (apps.length === 0) {
-                // No apps configured — hide selector and fall back to the
+                // No apps configured — hide selector, clear any stale
+                // options/value so loadInstallations() falls back to the
                 // config-based legacy endpoint (/api/github/installations).
+                sel.innerHTML = '';
+                sel.value = '';
                 sel.parentElement.style.display = 'none';
                 loadInstallations();
                 return;
