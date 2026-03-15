@@ -291,7 +291,12 @@ func TestHandleCreateApp_RequiredFields(t *testing.T) {
 	}{
 		{"missing name", `{"app_id":1,"private_key":"key"}`, http.StatusBadRequest, "name is required"},
 		{"missing app_id", `{"name":"myapp","private_key":"key"}`, http.StatusBadRequest, "app_id must be a positive integer"},
+		{"negative app_id", `{"name":"myapp","app_id":-1,"private_key":"key"}`, http.StatusBadRequest, "app_id must be a positive integer"},
 		{"missing private_key", `{"name":"myapp","app_id":1}`, http.StatusBadRequest, "private_key is required"},
+		{"http base_url", `{"name":"myapp","app_id":1,"private_key":"key","base_url":"http://example.com"}`, http.StatusBadRequest, "scheme must be https"},
+		{"base_url with query", `{"name":"myapp","app_id":1,"private_key":"key","base_url":"https://example.com?q=1"}`, http.StatusBadRequest, "query string is not allowed"},
+		{"base_url with fragment", `{"name":"myapp","app_id":1,"private_key":"key","base_url":"https://example.com#frag"}`, http.StatusBadRequest, "fragment is not allowed"},
+		{"base_url with userinfo", `{"name":"myapp","app_id":1,"private_key":"key","base_url":"https://user:pass@example.com"}`, http.StatusBadRequest, "userinfo is not allowed"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
