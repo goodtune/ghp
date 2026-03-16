@@ -53,6 +53,10 @@ internal/docs/site/*
 # Git worktrees
 .worktrees/
 
+# Playwright
+.playwright-mcp/
+test-results/
+
 # Editor/IDE
 # .idea/
 # .vscode/
