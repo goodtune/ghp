@@ -49,6 +49,14 @@ Start the server:
     ./ghp migrate
     ./ghp serve
 
+!!! note "Agent tokens require a GitHub App"
+    The SQLite quick setup does not configure a GitHub App, so `ghx_` proxy
+    tokens work but `gha_` agent tokens cannot be created. To work with agent
+    tokens, either add `GHP_GITHUB_APP_ID` and `GHP_GITHUB_PRIVATE_KEY` to
+    seed an app from config, or register one via the admin UI at `/admin`.
+    The [Docker Compose with Vault](#docker-compose-with-vault) setup below
+    is recommended for multi-app development.
+
 ### Docker Compose with Vault
 
 A Docker Compose file is provided that runs GHP with a HashiCorp Vault backend

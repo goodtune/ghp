@@ -10,7 +10,7 @@ values from the config file.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GHP_ENCRYPTION_KEY` | AES-256-GCM key for encrypting GitHub tokens at rest (required) | |
+| `GHP_ENCRYPTION_KEY` | AES-256-GCM key for encrypting GitHub tokens at rest (required for sqlite/postgres; not needed for vault) | |
 | `GHP_DEV_MODE` | Enable test endpoints — never use in production | `false` |
 | `GHP_ADMINS` | Comma-separated list of admin GitHub usernames | |
 
@@ -130,6 +130,7 @@ See [Release Download Controls](../features/release-controls.md) for details.
 
 ```yaml
 # encryption_key: ""            # WARNING: prefer GHP_ENCRYPTION_KEY env var; never commit this to version control
+                                 # Not required when database.driver is "vault" (Vault encrypts at rest)
 
 github:
   client_id: ""
@@ -226,6 +227,11 @@ This key encrypts GitHub tokens at rest. Store it securely — if lost, stored
 tokens cannot be decrypted. Use an environment variable or secrets manager
 rather than putting it in the config file.
 
+!!! note "Not required for Vault backend"
+    When using `driver: vault`, the encryption key is not needed. Vault
+    provides encryption at rest natively, so GHP uses a passthrough encryptor
+    and the `GHP_ENCRYPTION_KEY` setting is ignored.
+
 ## Hot Reloading
 
 The following settings can be changed without restarting the server by sending
@@ -242,6 +248,11 @@ TLS certificates, the encryption key, logging configuration, metrics
 enable/disable, OAuth broker enable/disable and signing key
 (`auth.jwt_private_key` / `auth.jwt_private_key_file`), and `tokens.max_duration`
 (captured at server startup).
+
+!!! note "App changes are live without reload"
+    GitHub Apps created, updated, or deleted via the admin UI or API take effect
+    immediately — the app registry is reloaded automatically after each change.
+    No `SIGUSR1` or restart is required.
 
 ```bash
 # Reload configuration
