@@ -403,18 +403,6 @@ func testProxyTokenCRUD(t *testing.T, store Store) {
 		t.Errorf("installation_id = %v, want 12345", gotAgent.InstallationID)
 	}
 
-	// Update usage.
-	if err := store.UpdateProxyTokenUsage(ctx, pt.ID); err != nil {
-		t.Fatal(err)
-	}
-	got2, _ := store.GetProxyTokenByID(ctx, pt.ID)
-	if got2.RequestCount != 1 {
-		t.Errorf("request_count = %d, want 1", got2.RequestCount)
-	}
-	if got2.LastUsedAt == nil {
-		t.Error("last_used_at should be set")
-	}
-
 	// List by user.
 	tokens, err := store.ListProxyTokens(ctx, user.ID)
 	if err != nil {

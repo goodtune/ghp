@@ -3,11 +3,20 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/token"
 )
+
+const credentialCacheTTL = 5 * time.Minute
+
+type cachedCredential struct {
+	plaintext string
+	cachedAt  time.Time
+}
 
 // AppTokenProvider generates installation tokens for agent (gha_) tokens.
 type AppTokenProvider interface {
@@ -28,6 +37,10 @@ type ProxyTokenResolver struct {
 	store            database.Store
 	encryptor        *crypto.Encryptor
 	appTokenProvider AppTokenProvider // nil if not configured
+
+	// credCache caches decrypted GitHub access tokens keyed by github_token_id
+	// to avoid a database read + decrypt on every proxied request.
+	credCache sync.Map // map[string]cachedCredential
 }
 
 // NewProxyTokenResolver creates a new resolver.
@@ -59,6 +72,16 @@ func (r *ProxyTokenResolver) resolveProxyToken(ctx context.Context, pt *database
 	if pt.GitHubTokenID == nil {
 		return "", fmt.Errorf("proxy token has no linked GitHub credential")
 	}
+
+	// Check the credential cache first.
+	if entry, ok := r.credCache.Load(*pt.GitHubTokenID); ok {
+		cc := entry.(cachedCredential)
+		if time.Since(cc.cachedAt) < credentialCacheTTL {
+			return cc.plaintext, nil
+		}
+		r.credCache.Delete(*pt.GitHubTokenID)
+	}
+
 	gt, err := r.store.GetGitHubTokenByID(ctx, *pt.GitHubTokenID)
 	if err != nil {
 		return "", fmt.Errorf("loading github token: %w", err)
@@ -70,6 +93,13 @@ func (r *ProxyTokenResolver) resolveProxyToken(ctx context.Context, pt *database
 	if err != nil {
 		return "", fmt.Errorf("decrypting github token: %w", err)
 	}
+
+	// Cache the decrypted credential.
+	r.credCache.Store(*pt.GitHubTokenID, cachedCredential{
+		plaintext: plaintext,
+		cachedAt:  time.Now(),
+	})
+
 	return plaintext, nil
 }
 

@@ -15,7 +15,7 @@ import (
 
 // ErrNotFound is returned by DeleteApp, UpdateApp, and UpdateProxyTokenAppID
 // when the target record does not exist. Other mutating operations
-// (RevokeProxyToken, UpdateProxyTokenUsage) and all read operations (Get*,
+// (RevokeProxyToken) and all read operations (Get*,
 // List*) do not wrap ErrNotFound — reads return (nil, nil) for missing
 // records. Callers can distinguish "not found" from other errors using
 // errors.Is(err, ErrNotFound).
@@ -78,11 +78,9 @@ type ProxyToken struct {
 	Repositories   json.RawMessage `json:"repositories"`
 	Scopes         json.RawMessage `json:"scopes"`
 	SessionID      string          `json:"session_id"`
-	ExpiresAt      time.Time       `json:"expires_at"`
-	RevokedAt      *time.Time      `json:"revoked_at,omitempty"`
-	LastUsedAt     *time.Time      `json:"last_used_at,omitempty"`
-	RequestCount   int64           `json:"request_count"`
-	CreatedAt      time.Time       `json:"created_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // Scopes represents a map of permission to access level.
@@ -146,7 +144,6 @@ type Store interface {
 	ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, error)
 	ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error)
 	RevokeProxyToken(ctx context.Context, id string) error
-	UpdateProxyTokenUsage(ctx context.Context, id string) error
 	UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error
 
 	// Lifecycle

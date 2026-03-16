@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,10 +22,6 @@ type VaultStore struct {
 	// Stored for re-authentication when the token expires.
 	roleID   string
 	secretID string
-
-	// usageMu serialises UpdateProxyTokenUsage writes to prevent lost
-	// increments under concurrent load (Vault KV lacks atomic counters).
-	usageMu sync.Mutex
 }
 
 // VaultConfig holds configuration for Vault connectivity.
@@ -223,8 +217,8 @@ func marshalToMap(v interface{}) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Use json.Decoder with UseNumber so that numeric fields (e.g. int64 App.AppID,
-	// ProxyToken.RequestCount) are preserved as json.Number rather than float64.
+	// Use json.Decoder with UseNumber so that numeric fields (e.g. int64 App.AppID)
+	// are preserved as json.Number rather than float64.
 	// float64 loses precision for integers > 2^53, and re-marshalling json.Number
 	// values produces the original decimal representation, so the round-trip is exact.
 	var m map[string]interface{}
@@ -627,19 +621,6 @@ func (s *VaultStore) GetProxyTokenByID(ctx context.Context, id string) (*ProxyTo
 	if hash, ok := data["token_hash"].(string); ok {
 		token.TokenHash = hash
 	}
-	// Handle request_count which may come back as json.Number or float64.
-	if rc, ok := data["request_count"]; ok {
-		switch v := rc.(type) {
-		case float64:
-			token.RequestCount = int64(v)
-		case json.Number:
-			n, _ := v.Int64()
-			token.RequestCount = n
-		case string:
-			n, _ := strconv.ParseInt(v, 10, 64)
-			token.RequestCount = n
-		}
-	}
 	return &token, nil
 }
 
@@ -722,31 +703,6 @@ func (s *VaultStore) RevokeProxyToken(ctx context.Context, id string) error {
 	}
 	now := time.Now().UTC()
 	token.RevokedAt = &now
-	return s.writeProxyToken(ctx, token)
-}
-
-func (s *VaultStore) UpdateProxyTokenUsage(ctx context.Context, id string) error {
-	// Serialise writes to avoid lost increments under concurrent load.
-	// Vault KV v2 lacks atomic counters; a mutex is the simplest safe approach
-	// for a single ghp instance. Note: in multi-instance deployments sharing
-	// the same Vault backend, each instance has its own mutex, so concurrent
-	// writes from different instances can still result in lost increments.
-	// Usage counts are therefore best-effort in multi-instance configurations.
-	// If precise counts are required, consider using Vault KV v2 check-and-set
-	// (CAS) with a retry loop to make increments atomic across processes.
-	s.usageMu.Lock()
-	defer s.usageMu.Unlock()
-
-	token, err := s.GetProxyTokenByID(ctx, id)
-	if err != nil {
-		return err
-	}
-	if token == nil {
-		return nil
-	}
-	now := time.Now().UTC()
-	token.LastUsedAt = &now
-	token.RequestCount++
 	return s.writeProxyToken(ctx, token)
 }
 

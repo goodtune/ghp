@@ -304,7 +304,7 @@
                 return;
             }
 
-            let html = '<table><tr><th>ID</th><th>Type</th><th>Repositories</th><th>Scopes</th><th>Session</th><th>Status</th><th>Requests</th><th>Expires</th><th></th></tr>';
+            let html = '<table><tr><th>ID</th><th>Type</th><th>Repositories</th><th>Scopes</th><th>Session</th><th>Status</th><th>Expires</th><th></th></tr>';
             for (const t of tokens) {
                 const now = new Date();
                 const expires = new Date(t.expires_at);
@@ -322,7 +322,6 @@
                 html += '<td>' + esc(scopes) + '</td>';
                 html += '<td>' + esc(t.session_id || '-') + '</td>';
                 html += '<td><span class="badge ' + badge + '">' + status + '</span></td>';
-                html += '<td>' + (t.request_count || 0) + '</td>';
                 html += '<td>' + expires.toLocaleString() + '</td>';
                 html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" data-revoke-token="' + esc(t.id) + '">Revoke</button>' : '') + '</td>';
                 html += '</tr>';

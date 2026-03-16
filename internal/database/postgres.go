@@ -265,8 +265,8 @@ func (s *PostgresStore) CreateProxyToken(ctx context.Context, token *ProxyToken)
 		tokenType = DefaultTokenType
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO proxy_tokens (id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, request_count, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0, $13)
+		INSERT INTO proxy_tokens (id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`, token.ID, token.TokenHash, token.TokenPrefix, tokenType, token.AppID, token.UserID, token.GitHubTokenID,
 		token.InstallationID, string(reposJSON), string(scopesJSON), token.SessionID,
 		token.ExpiresAt, now)
@@ -276,11 +276,11 @@ func (s *PostgresStore) CreateProxyToken(ctx context.Context, token *ProxyToken)
 func scanPostgresProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, error) {
 	t := &ProxyToken{}
 	var scopesStr, reposStr string
-	var revokedAt, lastUsedAt sql.NullTime
+	var revokedAt sql.NullTime
 	var appID, userID, githubTokenID sql.NullString
 	var installationID sql.NullInt64
 	err := scan(&t.ID, &t.TokenHash, &t.TokenPrefix, &t.TokenType, &appID, &userID, &githubTokenID, &installationID, &reposStr, &scopesStr,
-		&t.SessionID, &t.ExpiresAt, &revokedAt, &lastUsedAt, &t.RequestCount, &t.CreatedAt)
+		&t.SessionID, &t.ExpiresAt, &revokedAt, &t.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -301,13 +301,10 @@ func scanPostgresProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, 
 	if revokedAt.Valid {
 		t.RevokedAt = &revokedAt.Time
 	}
-	if lastUsedAt.Valid {
-		t.LastUsedAt = &lastUsedAt.Time
-	}
 	return t, nil
 }
 
-const pgProxyTokenCols = `id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at`
+const pgProxyTokenCols = `id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, created_at`
 
 func (s *PostgresStore) GetProxyTokenByHash(ctx context.Context, hash string) (*ProxyToken, error) {
 	row := s.db.QueryRowContext(ctx,
@@ -385,13 +382,6 @@ func (s *PostgresStore) RevokeProxyToken(ctx context.Context, id string) error {
 		return fmt.Errorf("token not found or already revoked")
 	}
 	return nil
-}
-
-func (s *PostgresStore) UpdateProxyTokenUsage(ctx context.Context, id string) error {
-	now := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE proxy_tokens SET last_used_at = $1, request_count = request_count + 1 WHERE id = $2`, now, id)
-	return err
 }
 
 func (s *PostgresStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error {

@@ -219,7 +219,6 @@ func (noopStore) ListProxyTokens(_ context.Context, _ string) ([]*database.Proxy
 func (noopStore) ListAllProxyTokens(_ context.Context) ([]*database.ProxyToken, error)          { return nil, nil }
 func (noopStore) ListActiveProxyTokens(_ context.Context) ([]*database.ProxyToken, error)       { return nil, nil }
 func (noopStore) RevokeProxyToken(_ context.Context, _ string) error                            { return nil }
-func (noopStore) UpdateProxyTokenUsage(_ context.Context, _ string) error                       { return nil }
 func (noopStore) UpdateProxyTokenAppID(_ context.Context, _ string, _ string) error             { return nil }
 func (noopStore) Close() error { return nil }
 

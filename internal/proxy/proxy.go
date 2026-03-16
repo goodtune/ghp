@@ -246,9 +246,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Re-check the cache after the roundtrip; the async lookup triggered
 		// by resolveTokenUsername may have completed during the upstream wait.
 		h.checkCacheAfterRoundtrip(r, githubToken, pt)
-		if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
-			h.logger.Error("failed to record token usage", "error", err)
-		}
 		h.logRequest(pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
 		return
 	}
@@ -326,11 +323,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// by resolveTokenUsername may have completed during the upstream wait.
 	h.checkCacheAfterRoundtrip(r, githubToken, pt)
 
-	// Record usage.
-	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
-		h.logger.Error("failed to record token usage", "error", err)
-	}
-
 	h.logRequest(pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
 }
 
@@ -382,10 +374,6 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	// Re-check the cache after the roundtrip; the async lookup triggered
 	// by resolveTokenUsername may have completed during the upstream wait.
 	h.checkCacheAfterRoundtrip(r, githubToken, pt)
-
-	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
-		h.logger.Error("failed to record token usage", "error", err)
-	}
 
 	h.logRequest(pt, r, "/graphql", "", status, time.Since(start), "proxy_request")
 }

@@ -67,9 +67,6 @@ func (m *mockStore) ListActiveProxyTokens(ctx context.Context) ([]*database.Prox
 	panic("unexpected")
 }
 func (m *mockStore) RevokeProxyToken(ctx context.Context, id string) error { panic("unexpected") }
-func (m *mockStore) UpdateProxyTokenUsage(ctx context.Context, id string) error {
-	panic("unexpected")
-}
 func (m *mockStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error {
 	panic("unexpected")
 }
