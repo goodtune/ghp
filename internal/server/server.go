@@ -244,17 +244,24 @@ func (s *Server) Run(ctx context.Context) error {
 	// Initialise the anonymous git blocking gauge to reflect the startup config.
 	s.syncBlockMetrics()
 
-	// Set up encryption.
-	encKey := s.cfg.EncryptionKey
-	if encKey == "" {
-		encKey = os.Getenv("GHP_ENCRYPTION_KEY")
-	}
-	if encKey == "" {
-		return fmt.Errorf("encryption key not configured (set encryption_key in config or GHP_ENCRYPTION_KEY env var)")
-	}
-	enc, err := crypto.NewEncryptor(encKey)
-	if err != nil {
-		return fmt.Errorf("initializing encryption: %w", err)
+	// Set up encryption. Vault provides encryption at rest, so a
+	// passthrough encryptor is used when the backend is Vault.
+	var enc *crypto.Encryptor
+	if s.cfg.Database.Driver == "vault" {
+		enc = crypto.NewPassthroughEncryptor()
+	} else {
+		encKey := s.cfg.EncryptionKey
+		if encKey == "" {
+			encKey = os.Getenv("GHP_ENCRYPTION_KEY")
+		}
+		if encKey == "" {
+			return fmt.Errorf("encryption key not configured (set encryption_key in config or GHP_ENCRYPTION_KEY env var)")
+		}
+		var err error
+		enc, err = crypto.NewEncryptor(encKey)
+		if err != nil {
+			return fmt.Errorf("initializing encryption: %w", err)
+		}
 	}
 
 	// Create services.
