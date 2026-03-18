@@ -141,7 +141,8 @@ migrations and does not need an `encryption_key` (Vault encrypts at rest).
     usage counter updates may be lost. The counters are best-effort in this
     configuration.
 
-See [Configuration](admin/configuration.md) for backend-specific settings.
+See [Configuration](admin/configuration.md) for backend-specific settings and
+[Vault Backend](admin/vault.md) for a complete Vault setup guide.
 
 ### OAuth Broker
 
