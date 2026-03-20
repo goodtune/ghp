@@ -1,0 +1,118 @@
+package gitcache
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/metrics"
+	"github.com/goodtune/ghp/internal/proxy"
+)
+
+// CacheLookup checks whether a git smart HTTP request targets a
+// cache-enabled repository and routes it to the cache handler if so.
+// Non-git paths and uncached repos pass through to the inner handler.
+type CacheLookup struct {
+	inner   http.Handler
+	cache   *Handler
+	store   database.Store
+	logger  *slog.Logger
+}
+
+// NewCacheLookup creates a middleware that intercepts git smart HTTP requests
+// for cache-enabled repositories.
+func NewCacheLookup(inner http.Handler, cache *Handler, store database.Store, logger *slog.Logger) http.Handler {
+	return &CacheLookup{
+		inner:  inner,
+		cache:  cache,
+		store:  store,
+		logger: logger,
+	}
+}
+
+// ServeHTTP checks if the request targets a cached repository's git
+// endpoints and routes accordingly.
+func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	owner, repo, gitPath := parseGitPath(r.URL.Path)
+	if owner == "" || repo == "" || gitPath == "" {
+		cl.inner.ServeHTTP(w, r)
+		return
+	}
+
+	// Check if this repository has caching enabled.
+	cached, err := cl.store.GetCachedRepositoryByOwnerName(r.Context(), owner, repo)
+	if err != nil {
+		cl.logger.Error("cache lookup failed", "error", err, "owner", owner, "repo", repo)
+		cl.inner.ServeHTTP(w, r)
+		return
+	}
+	if cached == nil || !cached.Enabled {
+		cl.inner.ServeHTTP(w, r)
+		return
+	}
+
+	// Set access log context for cache tracking.
+	proxy.SetCacheRepo(r, owner+"/"+repo)
+
+	switch {
+	case gitPath == "info/refs" && r.Method == "GET":
+		proxy.SetCacheState(r, "hit")
+		metrics.ObserveDecision(metrics.StageCacheLookup, "", 0)
+		cl.cache.ServeInfoRefs(w, r)
+
+	case gitPath == "git-upload-pack" && r.Method == "POST":
+		cl.cache.ServeUploadPack(w, r, owner, repo)
+		// CacheState is set by the handler based on hit/miss/error
+
+	default:
+		// Other git paths (e.g. git-receive-pack) pass through.
+		cl.inner.ServeHTTP(w, r)
+	}
+}
+
+// parseGitPath extracts owner, repo, and the git endpoint path from a URL
+// path like /owner/repo.git/info/refs or /owner/repo.git/git-upload-pack.
+// Returns empty strings if the path doesn't match a git smart HTTP pattern.
+func parseGitPath(path string) (owner, repo, gitPath string) {
+	// Trim leading slash.
+	path = strings.TrimPrefix(path, "/")
+	parts := strings.SplitN(path, "/", 3)
+	if len(parts) < 3 {
+		return "", "", ""
+	}
+	owner = parts[0]
+	repoFull := parts[1]
+	rest := parts[2]
+
+	// Handle both /owner/repo.git/... and /owner/repo/...
+	repo = strings.TrimSuffix(repoFull, ".git")
+
+	// Match known git endpoints.
+	switch {
+	case rest == "info/refs":
+		return owner, repo, "info/refs"
+	case rest == "git-upload-pack":
+		return owner, repo, "git-upload-pack"
+	case rest == "git-receive-pack":
+		return owner, repo, "git-receive-pack"
+	default:
+		return "", "", ""
+	}
+}
+
+// SyncCacheReposMetric queries the store and updates the CacheReposActive gauge.
+func SyncCacheReposMetric(ctx context.Context, store database.Store) {
+	repos, err := store.ListCachedRepositories(ctx)
+	if err != nil {
+		return
+	}
+	count := 0
+	for _, r := range repos {
+		if r.Enabled {
+			count++
+		}
+	}
+	metrics.CacheReposActive.Set(float64(count))
+}

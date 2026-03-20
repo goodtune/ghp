@@ -155,6 +155,37 @@ var (
 		Buckets: decisionBuckets,
 	}, []string{"stage", "token_type"})
 
+	// --- Git Cache Metrics ---
+
+	// CacheFetchTotal counts git fetch requests to cache-enabled repositories,
+	// labeled by result: "hit" (served from cache), "miss" (fetched from upstream
+	// first), "rejected" (access denied), "error" (cache or upstream failure).
+	CacheFetchTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_cache_fetch_total",
+		Help: "Total git fetch requests to cache-enabled repositories, by result.",
+	}, []string{"result", "owner", "repo"})
+
+	// CacheLsRefsTotal counts ls-refs commands forwarded to upstream for
+	// cache-enabled repositories.
+	CacheLsRefsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_cache_lsrefs_total",
+		Help: "Total ls-refs commands forwarded to upstream for cached repos.",
+	}, []string{"owner", "repo"})
+
+	// CacheWarmTotal counts async cache warming operations triggered when
+	// refs change, labeled by result ("success" or "error").
+	CacheWarmTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_cache_warm_total",
+		Help: "Total cache warming operations triggered by ref changes, by result.",
+	}, []string{"result", "owner", "repo"})
+
+	// CacheReposActive is a gauge reflecting how many repositories currently
+	// have caching enabled in the database.
+	CacheReposActive = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ghp_cache_repos_active",
+		Help: "Number of repositories with caching currently enabled.",
+	})
+
 	// BuildInfo is a gauge with a constant value of 1 labeled by build
 	// metadata. It follows the node_exporter_build_info convention.
 	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -175,6 +206,7 @@ const (
 	StageGitHubTokenResolution = "github_token_resolution"
 	StageUpstreamRoundtrip     = "upstream_roundtrip"
 	StageRedirectHeadCheck     = "redirect_head_check"
+	StageCacheLookup           = "cache_lookup"
 )
 
 // ObserveDecision records the duration of a single stage in the proxy

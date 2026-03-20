@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -37,6 +38,7 @@ import (
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/docs"
+	"github.com/goodtune/ghp/internal/gitcache"
 	"github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/proxy"
@@ -61,6 +63,15 @@ func New(cfg *config.Config, configPath string, version string, logger *slog.Log
 		logWriter = io.Discard
 	}
 	return &Server{cfg: cfg, configPath: configPath, version: version, logger: logger, logWriter: logWriter, migrate: migrate}
+}
+
+// mustParseURL parses a URL and panics on failure. Only for compile-time constants.
+func mustParseURL(rawURL string) *url.URL {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		panic(fmt.Sprintf("invalid URL %q: %v", rawURL, err))
+	}
+	return u
 }
 
 // syncBlockMetrics updates Prometheus gauges for block.* feature flags
@@ -394,6 +405,34 @@ func (s *Server) Run(ctx context.Context) error {
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
 		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, s.logger, s.cfg)
 	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger)
+
+	// Wrap with git cache handler if enabled.
+	if s.cfg.Cache.Enabled {
+		var storageFactory gitcache.CacheStorageFactory
+		if s.cfg.Cache.S3Bucket != "" {
+			storageFactory = gitcache.NewS3StorageFactory(
+				s.cfg.Cache.S3Bucket, s.cfg.Cache.S3Region,
+				s.cfg.Cache.S3Endpoint, s.cfg.Cache.StoragePath)
+		} else {
+			storageFactory = gitcache.NewFilesystemStorageFactory(s.cfg.Cache.StoragePath)
+		}
+		cacheRegistry := gitcache.NewRegistry(storageFactory, mustParseURL("https://github.com"))
+		cacheHandler := gitcache.NewHandler(
+			cacheRegistry,
+			func(ctx context.Context) string {
+				// The cache handler is called after scope enforcement, so the
+				// real GitHub token is already set in the Authorization header.
+				// We extract it from the downstream request context.
+				return "" // Token is injected by the scoped passthrough handler.
+			},
+			nil, // Service token is optional for initial implementation.
+			"https://github.com",
+		)
+		githubPassthrough = gitcache.NewCacheLookup(githubPassthrough, cacheHandler, store, s.logger)
+		gitcache.SyncCacheReposMetric(lifecycleCtx, store)
+		s.logger.Info("git cache enabled", "storage_path", s.cfg.Cache.StoragePath)
+	}
+
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 

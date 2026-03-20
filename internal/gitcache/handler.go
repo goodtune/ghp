@@ -11,6 +11,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/google/gitprotocolio"
+
+	"github.com/goodtune/ghp/internal/metrics"
+	"github.com/goodtune/ghp/internal/proxy"
 )
 
 // CacheResult describes the outcome of a cache operation for logging and
@@ -111,8 +114,10 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 	for _, cmd := range commands {
 		switch cmd.Name {
 		case "ls-refs":
+			metrics.CacheLsRefsTotal.WithLabelValues(owner, repo).Inc()
 			if err := h.handleLsRefs(r.Context(), managed, cmd, w); err != nil {
 				slog.Error("ls-refs failed", "repo", owner+"/"+repo, "err", err)
+				proxy.SetCacheState(r, string(CacheRejected))
 				return // upstream rejected — stop, no cached data exposed
 			}
 			lsRefsSucceeded = true
@@ -120,9 +125,13 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 		case "fetch":
 			if !lsRefsSucceeded {
 				WriteError(w, "ERR fetch requires ls-refs first for access verification")
+				proxy.SetCacheState(r, string(CacheRejected))
+				metrics.CacheFetchTotal.WithLabelValues(string(CacheRejected), owner, repo).Inc()
 				return
 			}
 			result, err := h.handleFetch(r.Context(), managed, cmd, w)
+			proxy.SetCacheState(r, string(result))
+			metrics.CacheFetchTotal.WithLabelValues(string(result), owner, repo).Inc()
 			if err != nil {
 				slog.Error("fetch failed", "repo", owner+"/"+repo, "result", result, "err", err)
 				return
@@ -182,10 +191,14 @@ func (h *Handler) handleLsRefs(ctx context.Context, repo *ManagedRepository, cmd
 				svcToken, tokenErr := h.serviceTokenFn(context.Background())
 				if tokenErr != nil {
 					slog.Error("get service token for cache warming", "repo", repo.owner+"/"+repo.name, "err", tokenErr)
+					metrics.CacheWarmTotal.WithLabelValues("error", repo.owner, repo.name).Inc()
 					return
 				}
 				if fetchErr := repo.FetchUpstream(context.Background(), svcToken); fetchErr != nil {
 					slog.Error("async cache warming failed", "repo", repo.owner+"/"+repo.name, "err", fetchErr)
+					metrics.CacheWarmTotal.WithLabelValues("error", repo.owner, repo.name).Inc()
+				} else {
+					metrics.CacheWarmTotal.WithLabelValues("success", repo.owner, repo.name).Inc()
 				}
 			}()
 		}
