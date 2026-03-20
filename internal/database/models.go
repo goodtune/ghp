@@ -9,8 +9,36 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// ErrNotFound is returned by DeleteApp, UpdateApp, and UpdateProxyTokenAppID
+// when the target record does not exist. Other mutating operations
+// (RevokeProxyToken) and all read operations (Get*,
+// List*) do not wrap ErrNotFound — reads return (nil, nil) for missing
+// records. Callers can distinguish "not found" from other errors using
+// errors.Is(err, ErrNotFound).
+var ErrNotFound = errors.New("not found")
+
+// DefaultTokenType is the default ProxyToken.TokenType used when none is
+// specified at creation time. This mirrors token.TokenTypeProxy but is
+// defined here to avoid a circular import (token → database).
+const DefaultTokenType = "proxy"
+
+// App represents a GitHub App configured in the proxy.
+type App struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	AppID        int64     `json:"app_id"`
+	ClientID     string    `json:"client_id"`
+	ClientSecret string    `json:"client_secret"`
+	PrivateKey   string    `json:"private_key"`
+	BaseURL      string    `json:"base_url"`
+	IsDefault    bool      `json:"is_default"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
 
 // User represents a ghp user authenticated via GitHub OAuth.
 type User struct {
@@ -27,6 +55,7 @@ type User struct {
 type GitHubToken struct {
 	ID                    string    `json:"id"`
 	UserID                string    `json:"user_id"`
+	AppID                 *string   `json:"app_id,omitempty"`
 	AccessToken           string    `json:"access_token"`
 	RefreshToken          string    `json:"refresh_token"`
 	AccessTokenExpiresAt  time.Time `json:"access_token_expires_at"`
@@ -42,17 +71,16 @@ type ProxyToken struct {
 	TokenHash      string          `json:"-"`
 	TokenPrefix    string          `json:"token_prefix"`
 	TokenType      string          `json:"token_type"`
+	AppID          *string         `json:"app_id,omitempty"`
 	UserID         *string         `json:"user_id,omitempty"`
 	GitHubTokenID  *string         `json:"github_token_id,omitempty"`
 	InstallationID *int64          `json:"installation_id,omitempty"`
 	Repositories   json.RawMessage `json:"repositories"`
 	Scopes         json.RawMessage `json:"scopes"`
 	SessionID      string          `json:"session_id"`
-	ExpiresAt      time.Time       `json:"expires_at"`
-	RevokedAt      *time.Time      `json:"revoked_at,omitempty"`
-	LastUsedAt     *time.Time      `json:"last_used_at,omitempty"`
-	RequestCount   int64           `json:"request_count"`
-	CreatedAt      time.Time       `json:"created_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // Scopes represents a map of permission to access level.
@@ -82,6 +110,20 @@ func (s Scopes) HasPermission(permission, level string) bool {
 
 // Store defines the database operations for ghp.
 type Store interface {
+	// Apps
+	CreateApp(ctx context.Context, app *App) error
+	GetAppByID(ctx context.Context, id string) (*App, error)
+	GetDefaultApp(ctx context.Context) (*App, error)
+	ListApps(ctx context.Context) ([]*App, error)
+	UpdateApp(ctx context.Context, app *App) error
+	DeleteApp(ctx context.Context, id string) error
+	// SetDefaultApp atomically marks appID as the default and clears the
+	// default flag on all other apps. For SQL backends this runs inside a
+	// transaction; for Vault the new default is set before clearing the old
+	// one so that a partial failure never leaves the system with no default.
+	// Returns ErrNotFound if appID does not exist.
+	SetDefaultApp(ctx context.Context, appID string) error
+
 	// Users
 	UpsertUser(ctx context.Context, user *User) error
 	GetUserByGitHubID(ctx context.Context, githubID int64) (*User, error)
@@ -102,7 +144,7 @@ type Store interface {
 	ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, error)
 	ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error)
 	RevokeProxyToken(ctx context.Context, id string) error
-	UpdateProxyTokenUsage(ctx context.Context, id string) error
+	UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error
 
 	// Lifecycle
 	Close() error

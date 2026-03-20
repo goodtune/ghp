@@ -114,7 +114,7 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 		sessions:         expirable.NewLRU[string, *Session](maxSessions, nil, SessionDuration),
 		states:           expirable.NewLRU[string, struct{}](maxStates, nil, stateTTL),
 		brokerStates:     expirable.NewLRU[string, *brokerState](maxBrokerStates, nil, brokerStateTTL),
-		loginLimiter:     NewIPRateLimiter(30, time.Minute, "/auth/test-login", logger),
+		loginLimiter:     NewIPRateLimiter(100, time.Minute, "/auth/test-login", logger),
 		githubLimiter:    NewIPRateLimiter(10, time.Minute, "/auth/github", logger),
 		authorizeLimiter: NewIPRateLimiter(10, time.Minute, "/auth/authorize", logger),
 		httpClient:       &http.Client{Timeout: authHTTPTimeout},
@@ -229,6 +229,12 @@ type sessionKey struct{}
 func SessionFromContext(ctx context.Context) *Session {
 	s, _ := ctx.Value(sessionKey{}).(*Session)
 	return s
+}
+
+// NewContextWithSession returns a copy of ctx carrying s as the authenticated
+// session. This is intended for use in tests that bypass the HTTP middleware.
+func NewContextWithSession(ctx context.Context, s *Session) context.Context {
+	return context.WithValue(ctx, sessionKey{}, s)
 }
 
 func (h *Handler) lookupSession(token string) *Session {

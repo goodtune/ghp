@@ -37,6 +37,11 @@
         .token-display { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-top: 1rem; font-family: monospace; word-break: break-all; }
         #token-list { min-height: 100px; }
         .empty { text-align: center; color: #8b949e; padding: 2rem; }
+        .app-card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-bottom: 0.5rem; cursor: pointer; }
+        .app-card:hover { border-color: #58a6ff; }
+        .app-card.selected { border-color: #238636; }
+        .app-card .app-name { font-weight: 600; color: #f0f6fc; }
+        .app-card .app-default { font-size: 0.75rem; color: #3fb950; margin-left: 0.5rem; }
     </style>
     <script src="/static/ghp-repo-select.js"></script>
     <script src="/static/ghp-permission-select.js"></script>
@@ -48,11 +53,24 @@
             <div class="user-info">
                 <span>{{ .Username }} ({{ .Role }})</span>
                 {{ if eq .Role "admin" }}<a href="/admin" class="btn btn-secondary">Admin</a>{{ end }}
-                <button class="btn btn-secondary" onclick="logout()">Sign out</button>
+                <button class="btn btn-secondary" id="logout-btn">Sign out</button>
             </div>
         </header>
 
+        {{ if not .HasApps }}
         <div class="section">
+            <div class="empty" id="no-apps-message">No apps have been configured yet. Contact your administrator to set up a GitHub App before tokens can be created.</div>
+        </div>
+        {{ end }}
+
+        {{ if .HasApps }}
+        <div class="section" id="app-list-section" style="display:none">
+            <h2>Select an App</h2>
+            <div id="app-list"></div>
+        </div>
+        {{ end }}
+
+        <div class="section"{{ if not .HasApps }} style="display:none"{{ end }} id="create-token-section">
             <h2>Create Token</h2>
             <div class="create-form">
                 <div class="form-group">
@@ -76,7 +94,7 @@
                     <label for="session">Session identifier (optional)</label>
                     <input type="text" id="session" placeholder="claude-code-feature-123">
                 </div>
-                <button class="btn" id="create-btn" onclick="createToken()">Create Token</button>
+                <button class="btn" id="create-btn">Create Token</button>
                 <div id="new-token" style="display:none">
                     <div class="token-display" id="token-value"></div>
                     <p style="color:#f0883e;margin-top:0.5rem;font-size:0.8rem">This token will only be shown once. Copy it now.</p>
@@ -84,7 +102,7 @@
             </div>
         </div>
 
-        <div class="section">
+        <div class="section"{{ if not .HasApps }} style="display:none"{{ end }} id="active-tokens-section">
             <h2>Active Tokens</h2>
             <div id="token-list"></div>
         </div>
@@ -97,11 +115,97 @@
             const opts = { method, headers: { 'Content-Type': 'application/json' } };
             if (body) opts.body = JSON.stringify(body);
             const resp = await fetch(path, opts);
-            return resp.json();
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                const err = new Error(data.message || `HTTP ${resp.status}`);
+                err.status = resp.status;
+                err.data = data;
+                throw err;
+            }
+            return data;
         }
+
+        // ── State ───────────────────────────────────────────────────
+        const apps = {{ .AppsJSON }};
+        let selectedAppId = '';
 
         const repoSelect = document.getElementById('repo-select');
         const permSelect = document.getElementById('perm-select');
+
+        // ── App selection ───────────────────────────────────────────
+        function renderAppList() {
+            const appListSection = document.getElementById('app-list-section');
+            const createSection = document.getElementById('create-token-section');
+            const tokensSection = document.getElementById('active-tokens-section');
+
+            if (!apps || apps.length === 0) return;
+
+            if (apps.length === 1) {
+                // Single app — auto-select, hide app list, show form directly.
+                selectedAppId = apps[0].id;
+                if (appListSection) appListSection.style.display = 'none';
+                createSection.style.display = '';
+                tokensSection.style.display = '';
+                return;
+            }
+
+            // Multiple apps — show the selector, hide the form until one is picked.
+            if (appListSection) appListSection.style.display = '';
+            createSection.style.display = 'none';
+            tokensSection.style.display = 'none';
+
+            const container = document.getElementById('app-list');
+            container.innerHTML = '';
+
+            for (const app of apps) {
+                const card = document.createElement('div');
+                card.className = 'app-card';
+                card.dataset.appId = app.id;
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'app-name';
+                nameSpan.textContent = app.name;
+                card.appendChild(nameSpan);
+
+                if (app.is_default) {
+                    const defaultSpan = document.createElement('span');
+                    defaultSpan.className = 'app-default';
+                    defaultSpan.textContent = '(default)';
+                    card.appendChild(defaultSpan);
+                }
+
+                card.addEventListener('click', function() {
+                    selectApp(app.id);
+                });
+
+                container.appendChild(card);
+            }
+        }
+
+        function selectApp(appId) {
+            selectedAppId = appId;
+            const createSection = document.getElementById('create-token-section');
+            const tokensSection = document.getElementById('active-tokens-section');
+
+            // Update card selection state.
+            const container = document.getElementById('app-list');
+            if (container) {
+                container.querySelectorAll('.app-card').forEach(function(card) {
+                    if (card.dataset.appId === appId) {
+                        card.classList.add('selected');
+                    } else {
+                        card.classList.remove('selected');
+                    }
+                });
+            }
+
+            // Show the token creation form.
+            createSection.style.display = '';
+            tokensSection.style.display = '';
+
+            // Reset the new-token display when switching apps.
+            document.getElementById('new-token').style.display = 'none';
+        }
 
         // ── Load available permissions from the API ────────────────
         // The endpoint derives available permissions from the user's GitHub
@@ -110,7 +214,7 @@
         async function loadPermissions() {
             try {
                 const data = await api('GET', '/api/github/permissions');
-                if (data && typeof data === 'object' && !data.message) {
+                if (data && typeof data === 'object') {
                     permSelect.permissions = data;
                 }
             } catch (_) {
@@ -120,9 +224,13 @@
 
         // ── Load user repos ────────────────────────────────────────
         async function loadUserRepos() {
-            const data = await api('GET', '/api/github/repositories');
-            if (Array.isArray(data)) {
-                repoSelect.repos = data;
+            try {
+                const data = await api('GET', '/api/github/repositories');
+                if (Array.isArray(data)) {
+                    repoSelect.repos = data;
+                }
+            } catch (_) {
+                // Leave repos empty if the endpoint is unreachable.
             }
             repoSelect.setAttribute('placeholder', 'Search repositories...');
         }
@@ -141,42 +249,62 @@
             if (selectedRepos.length > 0) body.repositories = selectedRepos;
             if (scopeStr) body.scopes = scopeStr;
             if (session) body.session_id = session;
+            // Note: proxy tokens do not use app_record_id (that's for agent tokens).
+            // The app selection here is for UI navigation only.
 
             const btn = document.getElementById('create-btn');
             btn.disabled = true;
             btn.textContent = 'Creating...';
 
-            const data = await api('POST', '/api/tokens', body);
-
-            btn.disabled = false;
-            btn.textContent = 'Create Token';
-
-            if (data.token) {
+            try {
+                const data = await api('POST', '/api/tokens', body);
                 document.getElementById('token-value').textContent = data.token;
                 document.getElementById('new-token').style.display = 'block';
                 loadTokens();
-            } else {
-                alert(data.message || 'Failed to create token');
+            } catch (err) {
+                alert(err.message || 'Failed to create token');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Create Token';
             }
         }
 
         // ── Tokens ─────────────────────────────────────────────────
         async function revokeToken(id) {
             if (!confirm('Revoke this token?')) return;
-            await api('DELETE', '/api/tokens/' + id);
+            try {
+                await api('DELETE', '/api/tokens/' + id);
+            } catch (err) {
+                alert('Failed to revoke token: ' + err.message);
+                return;
+            }
             loadTokens();
         }
 
+        function bindRevokeButtons(container) {
+            container.querySelectorAll('[data-revoke-token]').forEach(function(el) {
+                el.addEventListener('click', function() {
+                    revokeToken(el.dataset.revokeToken);
+                });
+            });
+        }
+
         async function loadTokens() {
-            const tokens = await api('GET', '/api/tokens');
             const container = document.getElementById('token-list');
+            let tokens;
+            try {
+                tokens = await api('GET', '/api/tokens');
+            } catch (err) {
+                container.innerHTML = '<div class="empty">Failed to load tokens</div>';
+                return;
+            }
 
             if (!Array.isArray(tokens) || tokens.length === 0) {
                 container.innerHTML = '<div class="empty">No tokens found</div>';
                 return;
             }
 
-            let html = '<table><tr><th>ID</th><th>Type</th><th>Repositories</th><th>Scopes</th><th>Session</th><th>Status</th><th>Requests</th><th>Expires</th><th></th></tr>';
+            let html = '<table><tr><th>ID</th><th>Type</th><th>Repositories</th><th>Scopes</th><th>Session</th><th>Status</th><th>Expires</th><th></th></tr>';
             for (const t of tokens) {
                 const now = new Date();
                 const expires = new Date(t.expires_at);
@@ -194,13 +322,13 @@
                 html += '<td>' + esc(scopes) + '</td>';
                 html += '<td>' + esc(t.session_id || '-') + '</td>';
                 html += '<td><span class="badge ' + badge + '">' + status + '</span></td>';
-                html += '<td>' + (t.request_count || 0) + '</td>';
                 html += '<td>' + expires.toLocaleString() + '</td>';
-                html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" onclick="revokeToken(\'' + t.id + '\')">Revoke</button>' : '') + '</td>';
+                html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" data-revoke-token="' + esc(t.id) + '">Revoke</button>' : '') + '</td>';
                 html += '</tr>';
             }
             html += '</table>';
             container.innerHTML = html;
+            bindRevokeButtons(container);
         }
 
         function esc(s) {
@@ -210,11 +338,20 @@
         }
 
         async function logout() {
-            await api('POST', '/auth/logout');
+            try {
+                await api('POST', '/auth/logout');
+            } catch (_) {
+                // Best-effort — redirect to login regardless.
+            }
             window.location.href = '/login';
         }
 
         // ── Init ───────────────────────────────────────────────────
+        // Attach event listeners programmatically instead of inline handlers.
+        document.getElementById('logout-btn').addEventListener('click', logout);
+        document.getElementById('create-btn').addEventListener('click', createToken);
+
+        renderAppList();
         loadPermissions();
         loadUserRepos();
         loadTokens();

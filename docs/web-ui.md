@@ -26,6 +26,16 @@ configured via the `admins` list in the server config file (GitHub usernames).
 
 The admin panel provides:
 
+- **Apps** — manage GitHub App registrations:
+    - View all configured apps (record ID, name, GitHub App ID, client ID, base URL, default status)
+    - **Add App** — register a new GitHub App with its credentials (name, GitHub App ID, client ID, client secret, private key PEM, base URL, default flag)
+    - **Edit** — update any app field inline, including rotating private keys
+    - **Delete** — remove an app (tokens referencing it will no longer resolve)
+    - One app must be marked as the default; changing the default is handled automatically
+- **Agent Tokens** — create `gha_`-prefixed agent tokens backed by a GitHub App installation:
+    - Select an app from the dropdown (only shown when apps are configured)
+    - Choose an installation and target repositories
+    - The section is hidden when no apps exist in the store
 - **Users** — list all registered users with their GitHub ID, role, and creation date
 - **All Tokens** — view and revoke tokens across all users
 

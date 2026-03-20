@@ -10,7 +10,7 @@ values from the config file.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GHP_ENCRYPTION_KEY` | AES-256-GCM key for encrypting GitHub tokens at rest (required) | |
+| `GHP_ENCRYPTION_KEY` | AES-256-GCM key for encrypting GitHub tokens at rest (required for sqlite/postgres; not needed for vault) | |
 | `GHP_DEV_MODE` | Enable test endpoints — never use in production | `false` |
 | `GHP_ADMINS` | Comma-separated list of admin GitHub usernames | |
 
@@ -18,8 +18,13 @@ values from the config file.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GHP_DATABASE_DRIVER` | `sqlite` or `postgres` | `sqlite` |
-| `GHP_DATABASE_DSN` | Database connection string | `ghp.db` |
+| `GHP_DATABASE_DRIVER` | `sqlite`, `postgres`, or `vault` | `sqlite` |
+| `GHP_DATABASE_DSN` | Database connection string (sqlite/postgres only) | `ghp.db` |
+| `GHP_DATABASE_VAULT_ADDR` | Vault server address (vault driver only) | |
+| `GHP_DATABASE_VAULT_MOUNT` | Vault KV v2 mount path | `secret` |
+| `GHP_DATABASE_VAULT_PATH` | Key prefix within the mount | `ghp` |
+| `GHP_DATABASE_VAULT_ROLE_ID` | Vault AppRole role ID | |
+| `GHP_DATABASE_VAULT_SECRET_ID` | Vault AppRole secret ID | |
 
 ### Server
 
@@ -42,7 +47,7 @@ values from the config file.
 | `GHP_GITHUB_PRIVATE_KEY` | PEM-encoded GitHub App private key content | |
 | `GHP_GITHUB_PRIVATE_KEY_FILE` | Path to GitHub App private key PEM file | |
 | `GHP_GITHUB_ENTERPRISE_SLUG` | Enterprise slug for access restriction header | |
-| `GHP_GITHUB_BASE_URL` | Reserved for future GitHub Enterprise Server support; currently ignored (server always uses `https://api.github.com`) | `https://api.github.com` |
+| `GHP_GITHUB_BASE_URL` | GitHub API base URL for GHES deployments (must be HTTPS; e.g. `https://ghes.example.com/api/v3`). Omit or leave empty for github.com. Per-app overrides are set via the admin UI. | `https://api.github.com` |
 
 ### TLS
 
@@ -125,6 +130,7 @@ See [Release Download Controls](../features/release-controls.md) for details.
 
 ```yaml
 # encryption_key: ""            # WARNING: prefer GHP_ENCRYPTION_KEY env var; never commit this to version control
+                                 # Not required when database.driver is "vault" (Vault encrypts at rest)
 
 github:
   client_id: ""
@@ -133,11 +139,16 @@ github:
   private_key_file: ""         # path to PEM file for GitHub App authentication
   # private_key: ""            # or inline PEM content (useful in containers)
   enterprise_slug: ""
-  # base_url: ""               # (reserved) intended GHES API base URL override; currently ignored
+  # base_url: ""               # GHES API base URL (e.g. https://ghes.example.com/api/v3); omit for github.com
 
 database:
-  driver: "sqlite"             # "sqlite" or "postgres"
+  driver: "sqlite"             # "sqlite", "postgres", or "vault"
   dsn: "ghp.db"
+  # vault_addr: ""             # Vault server address (vault driver only)
+  # vault_mount: "secret"      # KV v2 mount path
+  # vault_path: "ghp"          # key prefix within the mount
+  # vault_role_id: ""          # AppRole role ID
+  # vault_secret_id: ""        # AppRole secret ID
 
 server:
   listen: ":8080"              # plain HTTP mode (development or behind reverse proxy)
@@ -216,6 +227,11 @@ This key encrypts GitHub tokens at rest. Store it securely — if lost, stored
 tokens cannot be decrypted. Use an environment variable or secrets manager
 rather than putting it in the config file.
 
+!!! note "Not required for Vault backend"
+    When using `driver: vault`, the encryption key is not needed. Vault
+    provides encryption at rest natively, so GHP uses a passthrough encryptor
+    and the `GHP_ENCRYPTION_KEY` setting is ignored.
+
 ## Hot Reloading
 
 The following settings can be changed without restarting the server by sending
@@ -232,6 +248,11 @@ TLS certificates, the encryption key, logging configuration, metrics
 enable/disable, OAuth broker enable/disable and signing key
 (`auth.jwt_private_key` / `auth.jwt_private_key_file`), and `tokens.max_duration`
 (captured at server startup).
+
+!!! note "App changes are live without reload"
+    GitHub Apps created, updated, or deleted via the admin UI or API take effect
+    immediately — the app registry is reloaded automatically after each change.
+    No `SIGUSR1` or restart is required.
 
 ```bash
 # Reload configuration

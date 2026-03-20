@@ -41,6 +41,7 @@ go.work.sum
 # Local database
 /ghp.db
 
+
 # Generated man pages
 doc/man1/
 
@@ -51,6 +52,10 @@ internal/docs/site/*
 
 # Git worktrees
 .worktrees/
+
+# Playwright
+.playwright-mcp/
+test-results/
 
 # Editor/IDE
 # .idea/

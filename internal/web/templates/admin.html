@@ -49,21 +49,66 @@
             <div class="user-info">
                 <span>{{ .Username }} ({{ .Role }})</span>
                 <a href="/" class="btn btn-secondary">Dashboard</a>
-                <button class="btn btn-secondary" onclick="logout()">Sign out</button>
+                <button class="btn btn-secondary" id="logout-btn">Sign out</button>
             </div>
         </header>
+
+        <div class="section">
+            <h2>Apps</h2>
+            <div id="apps-list"></div>
+            <details style="margin-top:1rem">
+                <summary class="btn btn-secondary" style="cursor:pointer">Add App</summary>
+                <div class="create-form" style="margin-top:0.5rem">
+                    <div class="form-group">
+                        <label for="app-name">Name</label>
+                        <input type="text" id="app-name" placeholder="My GitHub App">
+                    </div>
+                    <div class="form-group">
+                        <label for="app-github-id">GitHub App ID</label>
+                        <input type="number" id="app-github-id" placeholder="12345">
+                    </div>
+                    <div class="form-group">
+                        <label for="app-client-id">Client ID</label>
+                        <input type="text" id="app-client-id" placeholder="Iv1.xxx">
+                    </div>
+                    <div class="form-group">
+                        <label for="app-client-secret">Client Secret</label>
+                        <input type="password" id="app-client-secret" placeholder="secret">
+                    </div>
+                    <div class="form-group">
+                        <label for="app-private-key">Private Key (PEM)</label>
+                        <textarea id="app-private-key" rows="6" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.75rem;font-family:monospace;" placeholder="-----BEGIN RSA PRIVATE KEY-----"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="app-base-url">Base URL (optional, for GHES)</label>
+                        <input type="text" id="app-base-url" placeholder="https://api.github.com">
+                    </div>
+                    <div style="margin-bottom:1rem">
+                        <label style="display:inline-flex;align-items:center;gap:0.5rem;font-size:0.875rem;color:#8b949e;cursor:pointer"><input type="checkbox" id="app-is-default"> Default app</label>
+                    </div>
+                    <button class="btn" id="create-app-btn">Create App</button>
+                </div>
+            </details>
+        </div>
 
         <div class="section">
             <h2>Users</h2>
             <div id="users-list"></div>
         </div>
 
-        <div class="section">
+        <div class="section" id="agent-token-section"{{ if not .HasApps }} style="display:none"{{ end }}>
             <h2>Create Agent Token</h2>
             <div class="create-form">
                 <div class="form-group">
+                    <label for="app-select">App</label>
+                    <select id="app-select">
+                        <option value="">Loading apps...</option>
+                    </select>
+                </div>
+                <div id="agent-token-fields">
+                <div class="form-group">
                     <label for="installation-id">Installation</label>
-                    <select id="installation-id" onchange="onInstallationChange()">
+                    <select id="installation-id">
                         <option value="">Loading installations...</option>
                     </select>
                 </div>
@@ -88,15 +133,16 @@
                     <label for="session">Session identifier (optional)</label>
                     <input type="text" id="session" placeholder="ci-agent-run-42">
                 </div>
-                <button class="btn" id="create-btn" onclick="createAgentToken()">Create Agent Token</button>
+                <button class="btn" id="create-btn">Create Agent Token</button>
                 <div id="new-token" style="display:none">
                     <div class="token-display" id="token-value"></div>
                     <p style="color:#f0883e;margin-top:0.5rem;font-size:0.8rem">This token will only be shown once. Copy it now.</p>
                 </div>
+                </div>
             </div>
         </div>
 
-        <div class="section">
+        <div class="section" id="all-tokens-section"{{ if not .HasApps }} style="display:none"{{ end }}>
             <h2>All Tokens</h2>
             <div id="all-tokens"></div>
         </div>
@@ -109,20 +155,349 @@
             const opts = { method, headers: { 'Content-Type': 'application/json' } };
             if (body) opts.body = JSON.stringify(body);
             const resp = await fetch(path, opts);
-            return resp.json();
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                const err = new Error(data.message || `HTTP ${resp.status}`);
+                err.status = resp.status;
+                err.data = data;
+                throw err;
+            }
+            return data;
         }
 
         // ── State ───────────────────────────────────────────────────
         let installations = [];
+        let apps = [];
 
         const repoSelect = document.getElementById('repo-select');
         const permSelect = document.getElementById('perm-select');
 
+        // ── Apps ────────────────────────────────────────────────────
+        async function loadApps() {
+            try {
+                const data = await api('GET', '/api/apps');
+                apps = Array.isArray(data) ? data : [];
+                renderAppsList();
+                populateAppSelect();
+            } catch (err) {
+                console.error('Failed to load apps:', err);
+                apps = [];
+                renderAppsList();
+                populateAppSelect();
+            }
+        }
+
+        function renderAppsList() {
+            const container = document.getElementById('apps-list');
+            if (apps.length === 0) {
+                container.innerHTML = '<div class="empty">No apps configured</div>';
+                return;
+            }
+            let html = '<table><tr><th>Record ID</th><th>Name</th><th>GitHub App ID</th><th>Client ID</th><th>Base URL</th><th>Default</th><th>Created</th><th></th></tr>';
+            for (const app of apps) {
+                const created = new Date(app.created_at).toLocaleString();
+                const isDefault = app.is_default ? '<span class="badge badge-active">Default</span>' : '';
+                html += '<tr>';
+                html += '<td><code data-copy-id="' + esc(app.id) + '" title="' + esc(app.id) + '" style="cursor:pointer;user-select:all">' + esc(app.id.substring(0, 8)) + '&hellip;</code></td>';
+                html += '<td>' + esc(app.name) + '</td>';
+                html += '<td>' + esc(String(app.app_id)) + '</td>';
+                html += '<td>' + esc(app.client_id || '-') + '</td>';
+                html += '<td>' + esc(app.base_url || 'https://api.github.com') + '</td>';
+                html += '<td>' + isDefault + '</td>';
+                html += '<td>' + created + '</td>';
+                html += '<td><button class="btn btn-secondary" data-edit-app="' + esc(app.id) + '">Edit</button> <button class="btn btn-danger" data-delete-app="' + esc(app.id) + '">Delete</button></td>';
+                html += '</tr>';
+            }
+            html += '</table>';
+            container.innerHTML = html;
+
+            // Attach event listeners programmatically instead of inline JS
+            // to avoid HTML-escaping in JavaScript string contexts.
+            container.querySelectorAll('[data-copy-id]').forEach(el => {
+                el.addEventListener('click', () => navigator.clipboard?.writeText(el.dataset.copyId).catch(() => {}));
+            });
+            container.querySelectorAll('[data-edit-app]').forEach(el => {
+                el.addEventListener('click', () => editApp(el.dataset.editApp));
+            });
+            container.querySelectorAll('[data-delete-app]').forEach(el => {
+                el.addEventListener('click', () => deleteApp(el.dataset.deleteApp));
+            });
+        }
+
+        function editApp(id) {
+            // Remove any existing edit row.
+            const existing = document.getElementById('edit-app-row');
+            if (existing) existing.remove();
+
+            const app = apps.find(a => a.id === id);
+            if (!app) return;
+
+            // Find the row with the matching edit button.
+            const btn = document.querySelector('[data-edit-app="' + CSS.escape(id) + '"]');
+            if (!btn) return;
+            const appRow = btn.closest('tr');
+
+            // Create the edit form row.
+            const editRow = document.createElement('tr');
+            editRow.id = 'edit-app-row';
+            const editCell = document.createElement('td');
+            editCell.colSpan = 8;
+            editCell.style.background = '#161b22';
+            editCell.style.padding = '1rem';
+
+            const form = document.createElement('div');
+            form.style.display = 'grid';
+            form.style.gridTemplateColumns = '1fr 1fr';
+            form.style.gap = '0.75rem';
+
+            function makeField(labelText, type, value, placeholder) {
+                const group = document.createElement('div');
+                group.className = 'form-group';
+                group.style.marginBottom = '0';
+                const label = document.createElement('label');
+                label.textContent = labelText;
+                label.style.display = 'block';
+                label.style.marginBottom = '0.25rem';
+                label.style.fontSize = '0.875rem';
+                label.style.color = '#8b949e';
+                group.appendChild(label);
+                if (type === 'textarea') {
+                    const textarea = document.createElement('textarea');
+                    textarea.rows = 4;
+                    textarea.value = value || '';
+                    textarea.placeholder = placeholder || '';
+                    textarea.style.cssText = 'width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.75rem;font-family:monospace;';
+                    group.appendChild(textarea);
+                    return group;
+                }
+                const input = document.createElement('input');
+                input.type = type;
+                input.value = value || '';
+                input.placeholder = placeholder || '';
+                input.style.cssText = 'width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.875rem;';
+                group.appendChild(input);
+                return group;
+            }
+
+            const nameField = makeField('Name', 'text', app.name, 'App name');
+            const appIdField = makeField('GitHub App ID', 'number', String(app.app_id), 'GitHub App ID');
+            const clientIdField = makeField('Client ID', 'text', app.client_id || '', 'Client ID');
+            const clientSecretField = makeField('Client Secret', 'password', '', 'Leave empty to keep unchanged');
+            const privateKeyField = makeField('Private Key (PEM)', 'textarea', '', 'Leave empty to keep unchanged');
+            const baseUrlField = makeField('Base URL', 'text', app.base_url || '', 'https://api.github.com');
+
+            // Checkbox for is_default.
+            const defaultGroup = document.createElement('div');
+            defaultGroup.className = 'form-group';
+            defaultGroup.style.marginBottom = '0';
+            defaultGroup.style.display = 'flex';
+            defaultGroup.style.alignItems = 'center';
+            defaultGroup.style.gap = '0.5rem';
+            const defaultCheckbox = document.createElement('input');
+            defaultCheckbox.type = 'checkbox';
+            defaultCheckbox.checked = !!app.is_default;
+            const defaultLabel = document.createElement('label');
+            defaultLabel.textContent = 'Default app';
+            defaultLabel.style.fontSize = '0.875rem';
+            defaultLabel.style.color = '#8b949e';
+            defaultLabel.style.marginBottom = '0';
+            defaultGroup.appendChild(defaultCheckbox);
+            defaultGroup.appendChild(defaultLabel);
+
+            form.appendChild(nameField);
+            form.appendChild(appIdField);
+            form.appendChild(clientIdField);
+            form.appendChild(clientSecretField);
+            form.appendChild(privateKeyField);
+            form.appendChild(baseUrlField);
+
+            editCell.appendChild(form);
+
+            // Default checkbox and buttons row.
+            const actionsDiv = document.createElement('div');
+            actionsDiv.style.cssText = 'display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;';
+            actionsDiv.appendChild(defaultGroup);
+
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'btn';
+            saveBtn.textContent = 'Save';
+            saveBtn.style.marginLeft = 'auto';
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'btn btn-secondary';
+            cancelBtn.textContent = 'Cancel';
+
+            actionsDiv.appendChild(saveBtn);
+            actionsDiv.appendChild(cancelBtn);
+            editCell.appendChild(actionsDiv);
+
+            editRow.appendChild(editCell);
+            appRow.after(editRow);
+
+            cancelBtn.addEventListener('click', function() {
+                editRow.remove();
+            });
+
+            saveBtn.addEventListener('click', async function() {
+                const body = {};
+                const newName = nameField.querySelector('input').value;
+                if (newName !== app.name) body.name = newName;
+
+                const newAppId = parseInt(appIdField.querySelector('input').value) || 0;
+                if (newAppId !== app.app_id) body.app_id = newAppId;
+
+                const newClientId = clientIdField.querySelector('input').value;
+                if (newClientId !== (app.client_id || '')) body.client_id = newClientId;
+
+                const newClientSecret = clientSecretField.querySelector('input').value;
+                if (newClientSecret) body.client_secret = newClientSecret;
+
+                const newPrivateKey = privateKeyField.querySelector('textarea').value;
+                if (newPrivateKey) body.private_key = newPrivateKey;
+
+                const newBaseUrl = baseUrlField.querySelector('input').value;
+                if (newBaseUrl !== (app.base_url || '')) body.base_url = newBaseUrl;
+
+                const newIsDefault = defaultCheckbox.checked;
+                if (newIsDefault !== !!app.is_default) body.is_default = newIsDefault;
+
+                if (Object.keys(body).length === 0) {
+                    editRow.remove();
+                    return;
+                }
+
+                saveBtn.disabled = true;
+                saveBtn.textContent = 'Saving...';
+                try {
+                    await api('PUT', '/api/apps/' + id, body);
+                    loadApps();
+                } catch (err) {
+                    alert(err.message || 'Failed to update app');
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = 'Save';
+                }
+            });
+        }
+
+        function populateAppSelect() {
+            const sel = document.getElementById('app-select');
+            const tokenSection = document.getElementById('agent-token-section');
+            const allTokensSection = document.getElementById('all-tokens-section');
+            const agentTokenFields = document.getElementById('agent-token-fields');
+            if (apps.length === 0) {
+                // No apps configured — hide token sections since tokens
+                // are associated with apps.
+                tokenSection.style.display = 'none';
+                allTokensSection.style.display = 'none';
+                sel.innerHTML = '';
+                sel.value = '';
+                return;
+            }
+            tokenSection.style.display = '';
+            allTokensSection.style.display = '';
+            if (apps.length === 1) {
+                // Single app — hide selector and auto-select.
+                sel.parentElement.style.display = 'none';
+                sel.innerHTML = '<option value="' + esc(apps[0].id) + '">' + esc(apps[0].name) + '</option>';
+                sel.value = apps[0].id;  // programmatic assignment, no escaping needed
+                agentTokenFields.style.display = '';
+                loadInstallations();
+                return;
+            }
+            sel.parentElement.style.display = '';
+            sel.innerHTML = '<option value="">Select an app...</option>';
+            for (const app of apps) {
+                const opt = document.createElement('option');
+                opt.value = app.id;
+                opt.textContent = app.name + (app.is_default ? ' (default)' : '');
+                sel.appendChild(opt);
+            }
+            // Auto-select the default app if one exists and load installations.
+            const defaultApp = apps.find(a => a.is_default);
+            if (defaultApp) {
+                sel.value = defaultApp.id;
+                agentTokenFields.style.display = '';
+                loadInstallations();
+            } else {
+                // No default — hide fields and wait for user selection.
+                agentTokenFields.style.display = 'none';
+                const sel2 = document.getElementById('installation-id');
+                sel2.innerHTML = '<option value="">Select an app first...</option>';
+            }
+        }
+
+        async function createApp() {
+            const body = {
+                name: document.getElementById('app-name').value,
+                app_id: parseInt(document.getElementById('app-github-id').value) || 0,
+                client_id: document.getElementById('app-client-id').value,
+                client_secret: document.getElementById('app-client-secret').value,
+                private_key: document.getElementById('app-private-key').value,
+                base_url: document.getElementById('app-base-url').value,
+                is_default: document.getElementById('app-is-default').checked,
+            };
+            if (!body.name || !body.app_id || !body.private_key) {
+                alert('Name, GitHub App ID, and Private Key are required.');
+                return;
+            }
+            try {
+                await api('POST', '/api/apps', body);
+                // Clear form fields.
+                document.getElementById('app-name').value = '';
+                document.getElementById('app-github-id').value = '';
+                document.getElementById('app-client-id').value = '';
+                document.getElementById('app-client-secret').value = '';
+                document.getElementById('app-private-key').value = '';
+                document.getElementById('app-base-url').value = '';
+                document.getElementById('app-is-default').checked = false;
+                document.querySelector('details').removeAttribute('open');
+                loadApps();
+            } catch (err) {
+                alert(err.message || 'Failed to create app');
+            }
+        }
+
+        async function deleteApp(id) {
+            if (!confirm('Delete this app? Tokens associated with it will stop working.')) return;
+            try {
+                await api('DELETE', '/api/apps/' + id);
+            } catch (err) {
+                alert(err.message || 'Failed to delete app');
+            }
+            loadApps();
+        }
+
+        async function onAppChange() {
+            // Reset installation and repo selectors when app changes.
+            const sel = document.getElementById('installation-id');
+            sel.innerHTML = '<option value="">Loading installations...</option>';
+            repoSelect.clear();
+            repoSelect.disabled = true;
+            permSelect.permissions = {};
+            document.getElementById('new-token').style.display = 'none';
+
+            const agentTokenFields = document.getElementById('agent-token-fields');
+            const appSelect = document.getElementById('app-select');
+            if (!appSelect.value) {
+                agentTokenFields.style.display = 'none';
+                return;
+            }
+            agentTokenFields.style.display = '';
+            loadInstallations();
+        }
+
         // ── Installation select ────────────────────────────────────
         async function loadInstallations() {
             const sel = document.getElementById('installation-id');
+            const appId = document.getElementById('app-select').value;
+            let url;
+            if (appId) {
+                url = '/api/apps/' + appId + '/installations';
+            } else {
+                url = '/api/github/installations';
+            }
             try {
-                const data = await api('GET', '/api/github/installations');
+                const data = await api('GET', url);
                 if (!Array.isArray(data) || data.length === 0) {
                     sel.innerHTML = '<option value="">No installations found</option>';
                     return;
@@ -156,12 +531,20 @@
             const inst = installations.find(i => i.id === id);
             permSelect.permissions = inst ? (inst.permissions || {}) : {};
 
-            // Load repos.
+            // Load repos — use app-specific endpoint if an app is selected.
             repoSelect.disabled = true;
             repoSelect.setAttribute('placeholder', 'Loading repositories...');
 
+            const appId = document.getElementById('app-select').value;
+            let url;
+            if (appId) {
+                url = '/api/apps/' + appId + '/installations/' + id + '/repositories';
+            } else {
+                url = '/api/github/installations/' + id + '/repositories';
+            }
+
             try {
-                const data = await api('GET', '/api/github/installations/' + id + '/repositories');
+                const data = await api('GET', url);
                 repoSelect.repos = Array.isArray(data) ? data : [];
                 repoSelect.disabled = false;
                 repoSelect.setAttribute('placeholder', 'Search repositories...');
@@ -187,11 +570,13 @@
             // Build scope string (empty means open-scoped).
             const scopeStr = Object.entries(scopes).map(([k, v]) => k + ':' + v).join(',');
 
+            const appId = document.getElementById('app-select').value;
             const body = {
                 type: 'agent',
                 installation_id: installationId,
                 duration: duration,
             };
+            if (appId) body.app_record_id = appId;
             if (selectedRepos.length > 0) body.repositories = selectedRepos;
             if (scopeStr) body.scopes = scopeStr;
             if (session) body.session_id = session;
@@ -200,23 +585,28 @@
             btn.disabled = true;
             btn.textContent = 'Creating...';
 
-            const data = await api('POST', '/api/tokens', body);
-
-            btn.disabled = false;
-            btn.textContent = 'Create Agent Token';
-
-            if (data.token) {
+            try {
+                const data = await api('POST', '/api/tokens', body);
                 document.getElementById('token-value').textContent = data.token;
                 document.getElementById('new-token').style.display = 'block';
                 loadAllTokens();
-            } else {
-                alert(data.message || 'Failed to create agent token');
+            } catch (err) {
+                alert(err.message || 'Failed to create agent token');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Create Agent Token';
             }
         }
 
         // ── Users / Tokens ─────────────────────────────────────────
         async function loadUsers() {
-            const users = await api('GET', '/api/users');
+            let users;
+            try {
+                users = await api('GET', '/api/users');
+            } catch (e) {
+                document.getElementById('users-list').innerHTML = '<div class="empty">Failed to load users</div>';
+                return;
+            }
             const container = document.getElementById('users-list');
 
             if (!Array.isArray(users) || users.length === 0) {
@@ -232,15 +622,28 @@
                 html += '<td>' + (u.github_id || '-') + '</td>';
                 html += '<td>' + esc(u.role) + '</td>';
                 html += '<td>' + created + '</td>';
-                html += '<td><a class="link" href="#" onclick="loadUserTokens(\'' + u.id + '\', \'' + esc(u.username) + '\'); return false;">View tokens</a></td>';
+                html += '<td><a class="link" href="#" data-view-tokens="' + esc(u.id) + '" data-username="' + esc(u.username) + '">View tokens</a></td>';
                 html += '</tr>';
             }
             html += '</table>';
             container.innerHTML = html;
+
+            container.querySelectorAll('[data-view-tokens]').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    loadUserTokens(el.dataset.viewTokens, el.dataset.username);
+                });
+            });
         }
 
         async function loadUserTokens(userId, username) {
-            const tokens = await api('GET', '/api/users/' + userId + '/tokens');
+            let tokens;
+            try {
+                tokens = await api('GET', '/api/users/' + userId + '/tokens');
+            } catch (e) {
+                document.getElementById('all-tokens').innerHTML = '<div class="empty">Failed to load tokens</div>';
+                return;
+            }
             const container = document.getElementById('all-tokens');
 
             if (!Array.isArray(tokens) || tokens.length === 0) {
@@ -249,10 +652,17 @@
             }
 
             container.innerHTML = '<p style="color:#8b949e;margin-bottom:0.5rem">Showing tokens for <strong>' + esc(username) + '</strong></p>' + renderTokenTable(tokens);
+            bindRevokeButtons(container);
         }
 
         async function loadAllTokens() {
-            const tokens = await api('GET', '/api/tokens?all=true');
+            let tokens;
+            try {
+                tokens = await api('GET', '/api/tokens?all=true');
+            } catch (e) {
+                document.getElementById('all-tokens').innerHTML = '<div class="empty">Failed to load tokens</div>';
+                return;
+            }
             const container = document.getElementById('all-tokens');
 
             if (!Array.isArray(tokens) || tokens.length === 0) {
@@ -261,10 +671,17 @@
             }
 
             container.innerHTML = renderTokenTable(tokens);
+            bindRevokeButtons(container);
+        }
+
+        function bindRevokeButtons(container) {
+            container.querySelectorAll('[data-revoke-token]').forEach(el => {
+                el.addEventListener('click', () => revokeToken(el.dataset.revokeToken));
+            });
         }
 
         function renderTokenTable(tokens) {
-            let html = '<table><tr><th>Prefix</th><th>Type</th><th>Repositories</th><th>Scopes</th><th>Session</th><th>Status</th><th>Requests</th><th>Expires</th><th></th></tr>';
+            let html = '<table><tr><th>Prefix</th><th>Type</th><th>Repositories</th><th>Scopes</th><th>Session</th><th>Status</th><th>Expires</th><th></th></tr>';
             for (const t of tokens) {
                 const now = new Date();
                 const expires = new Date(t.expires_at);
@@ -282,9 +699,8 @@
                 html += '<td>' + esc(scopes) + '</td>';
                 html += '<td>' + esc(t.session_id || '-') + '</td>';
                 html += '<td><span class="badge ' + badge + '">' + status + '</span></td>';
-                html += '<td>' + (t.request_count || 0) + '</td>';
                 html += '<td>' + expires.toLocaleString() + '</td>';
-                html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" onclick="revokeToken(\'' + t.id + '\')">Revoke</button>' : '') + '</td>';
+                html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" data-revoke-token="' + esc(t.id) + '">Revoke</button>' : '') + '</td>';
                 html += '</tr>';
             }
             html += '</table>';
@@ -293,7 +709,12 @@
 
         async function revokeToken(id) {
             if (!confirm('Revoke this token?')) return;
-            await api('DELETE', '/api/tokens/' + id);
+            try {
+                await api('DELETE', '/api/tokens/' + id);
+            } catch (e) {
+                alert('Failed to revoke token: ' + e.message);
+                return;
+            }
             loadAllTokens();
         }
 
@@ -304,12 +725,25 @@
         }
 
         async function logout() {
-            await api('POST', '/auth/logout');
+            try {
+                await api('POST', '/auth/logout');
+            } catch (e) {
+                // Best-effort — redirect to login regardless.
+            }
             window.location.href = '/login';
         }
 
         // ── Init ───────────────────────────────────────────────────
-        loadInstallations();
+        // Attach event listeners programmatically instead of inline handlers.
+        document.getElementById('logout-btn').addEventListener('click', logout);
+        document.getElementById('create-app-btn').addEventListener('click', createApp);
+        document.getElementById('app-select').addEventListener('change', onAppChange);
+        document.getElementById('installation-id').addEventListener('change', onInstallationChange);
+        document.getElementById('create-btn').addEventListener('click', createAgentToken);
+
+        // loadInstallations() is called from populateAppSelect() once an app
+        // is selected (or auto-selected), so it is not called unconditionally here.
+        loadApps();
         loadUsers();
         loadAllTokens();
     </script>

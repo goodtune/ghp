@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/token"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
@@ -410,6 +411,30 @@ func isResolvableGitHubToken(t string) bool {
 		}
 	}
 	return false
+}
+
+// resolveUsernameAfterRoundtrip re-checks the username cache after an upstream
+// round-trip (when the async GraphQL viewer lookup may have completed) and
+// falls back to a database lookup for proxy tokens. It updates the request
+// context and returns the resolved username, or the unchanged input if no
+// resolution was possible. Skipped for gha_ agent tokens to avoid
+// misattributing bot requests to the human token creator.
+func resolveUsernameAfterRoundtrip(r *http.Request, githubToken string, username string, ur *UsernameResolver, pt *database.ProxyToken) string {
+	if username != "" || ur == nil {
+		return username
+	}
+	if u := ur.CheckCache(githubToken); u != "" {
+		SetUsername(r, u)
+		return u
+	}
+	// Fallback for ghx_ proxy tokens only.
+	if pt != nil && pt.UserID != nil && token.TokenType(pt.TokenType) != token.TokenTypeAgent {
+		if u := ur.ResolveFromUserID(r.Context(), *pt.UserID); u != "" {
+			SetUsername(r, u)
+			return u
+		}
+	}
+	return username
 }
 
 // passthroughTokenType returns the token type prefix (without the trailing

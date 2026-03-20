@@ -211,17 +211,6 @@ func TestProxyTokenCRUD(t *testing.T) {
 		t.Errorf("installation_id = %v, want 12345", gotAgent.InstallationID)
 	}
 
-	// Update usage.
-	if err := store.UpdateProxyTokenUsage(ctx, pt.ID); err != nil {
-		t.Fatal(err)
-	}
-	got2, _ := store.GetProxyTokenByID(ctx, pt.ID)
-	if got2.RequestCount != 1 {
-		t.Errorf("request_count = %d, want 1", got2.RequestCount)
-	}
-	if got2.LastUsedAt == nil {
-		t.Error("last_used_at should be set")
-	}
 
 	// List.
 	tokens, err := store.ListProxyTokens(ctx, user.ID)
@@ -296,6 +285,12 @@ func TestMigrations(t *testing.T) {
 	if len(pending2) != 0 {
 		t.Errorf("expected 0 pending, got %d", len(pending2))
 	}
+}
+
+// TestSQLiteStoreContract runs the shared store contract tests against SQLite.
+func TestSQLiteStoreContract(t *testing.T) {
+	store := newTestStore(t)
+	testStoreContract(t, store)
 }
 
 // Ensure temporary files are cleaned up.

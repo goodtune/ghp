@@ -124,8 +124,13 @@ type GitHubConfig struct {
 }
 
 type DatabaseConfig struct {
-	Driver string `koanf:"driver"`
-	DSN    string `koanf:"dsn"`
+	Driver        string `koanf:"driver"`
+	DSN           string `koanf:"dsn"`
+	VaultAddr     string `koanf:"vault_addr"`
+	VaultMount    string `koanf:"vault_mount"`
+	VaultPath     string `koanf:"vault_path"`
+	VaultRoleID   string `koanf:"vault_role_id"`
+	VaultSecretID string `koanf:"vault_secret_id"`
 }
 
 type ServerConfig struct {

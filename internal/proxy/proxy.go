@@ -224,7 +224,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Open-scoped tokens (no repos AND no scopes) skip all filtering — forward directly to GitHub.
 	if si.isOpenScoped() {
 		ghTokenStart := time.Now()
-		githubToken, err := h.getGitHubToken(r, pt)
+		githubToken, err := h.getGitHubToken(r, pt, &si)
 		metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 		if err != nil {
 			h.logger.Error("failed to get GitHub token", "error", err)
@@ -246,9 +246,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Re-check the cache after the roundtrip; the async lookup triggered
 		// by resolveTokenUsername may have completed during the upstream wait.
 		h.checkCacheAfterRoundtrip(r, githubToken, pt)
-		if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
-			h.logger.Error("failed to record token usage", "error", err)
-		}
 		h.logRequest(pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
 		return
 	}
@@ -286,7 +283,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Get the real GitHub access token.
 	ghTokenStart := time.Now()
-	githubToken, err := h.getGitHubToken(r, pt)
+	githubToken, err := h.getGitHubToken(r, pt, &si)
 	metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 	if err != nil {
 		h.logger.Error("failed to get GitHub token", "error", err)
@@ -326,11 +323,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// by resolveTokenUsername may have completed during the upstream wait.
 	h.checkCacheAfterRoundtrip(r, githubToken, pt)
 
-	// Record usage.
-	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
-		h.logger.Error("failed to record token usage", "error", err)
-	}
-
 	h.logRequest(pt, r, apiPath, repo, status, time.Since(start), "proxy_request")
 }
 
@@ -356,7 +348,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	// to GitHub. Full GraphQL query parsing to enforce per-operation permission
 	// checks is not implemented; the underlying GitHub token enforces actual access.
 	ghTokenStart := time.Now()
-	githubToken, err := h.getGitHubToken(r, pt)
+	githubToken, err := h.getGitHubToken(r, pt, &si)
 	metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 	if err != nil {
 		h.logger.Error("failed to get GitHub token for GraphQL", "error", err)
@@ -382,10 +374,6 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	// Re-check the cache after the roundtrip; the async lookup triggered
 	// by resolveTokenUsername may have completed during the upstream wait.
 	h.checkCacheAfterRoundtrip(r, githubToken, pt)
-
-	if err := h.tokenService.RecordUsage(r.Context(), pt.ID); err != nil {
-		h.logger.Error("failed to record token usage", "error", err)
-	}
 
 	h.logRequest(pt, r, "/graphql", "", status, time.Since(start), "proxy_request")
 }
@@ -415,34 +403,19 @@ func (h *Handler) resolveTokenUsername(r *http.Request, githubToken string) {
 // skipped for gha_ agent tokens to avoid misattributing the bot request to
 // the human who created the token.
 func (h *Handler) checkCacheAfterRoundtrip(r *http.Request, githubToken string, pt *database.ProxyToken) {
-	if GetUsername(r) != "" {
-		return
-	}
-	if h.usernameResolver == nil {
-		return
-	}
-	if username := h.usernameResolver.CheckCache(githubToken); username != "" {
-		SetUsername(r, username)
-		return
-	}
-	// Fallback for ghx_ proxy tokens only.
-	if pt != nil && pt.UserID != nil && token.TokenType(pt.TokenType) != token.TokenTypeAgent {
-		if username := h.usernameResolver.ResolveFromUserID(r.Context(), *pt.UserID); username != "" {
-			SetUsername(r, username)
-		}
-	}
+	resolveUsernameAfterRoundtrip(r, githubToken, GetUsername(r), h.usernameResolver, pt)
 }
 
-func (h *Handler) getGitHubToken(r *http.Request, pt *database.ProxyToken) (string, error) {
+func (h *Handler) getGitHubToken(r *http.Request, pt *database.ProxyToken, si *tokenScopeInfo) (string, error) {
 	switch token.TokenType(pt.TokenType) {
 	case token.TokenTypeAgent:
-		return h.getAgentGitHubToken(r.Context(), pt)
+		return h.getAgentGitHubToken(r.Context(), pt, si)
 	default:
 		return h.getProxyGitHubToken(r, pt)
 	}
 }
 
-func (h *Handler) getAgentGitHubToken(ctx context.Context, pt *database.ProxyToken) (string, error) {
+func (h *Handler) getAgentGitHubToken(ctx context.Context, pt *database.ProxyToken, si *tokenScopeInfo) (string, error) {
 	if h.appTokenProvider == nil {
 		return "", fmt.Errorf("agent tokens require GitHub App configuration")
 	}
@@ -450,9 +423,9 @@ func (h *Handler) getAgentGitHubToken(ctx context.Context, pt *database.ProxyTok
 		return "", fmt.Errorf("agent token missing installation_id")
 	}
 
-	si, err := parseScopeInfo(pt)
-	if err != nil {
-		return "", fmt.Errorf("parsing agent token scope: %w", err)
+	// If the provider supports multi-app dispatch and the token has an app_id, use it.
+	if multi, ok := h.appTokenProvider.(MultiAppTokenProvider); ok && pt.AppID != nil {
+		return multi.GetInstallationTokenForApp(ctx, *pt.AppID, *pt.InstallationID, si.Repos, si.Scopes)
 	}
 
 	return h.appTokenProvider.GetInstallationToken(ctx, *pt.InstallationID, si.Repos, si.Scopes)

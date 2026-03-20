@@ -1,0 +1,84 @@
+services:
+  vault:
+    image: hashicorp/vault:1.21
+    container_name: ghp-vault
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      VAULT_ADDR: "http://127.0.0.1:8200"
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  vault-init:
+    image: hashicorp/vault:1.21
+    container_name: ghp-vault-init
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+
+        echo "==> Enabling AppRole auth method..."
+        vault auth enable approle 2>/dev/null || true
+
+        echo "==> Writing GHP policy..."
+        vault policy write ghp - <<'POLICY'
+        path "secret/data/ghp/*" {
+          capabilities = ["create", "read", "update", "delete", "list"]
+        }
+        path "secret/metadata/ghp/*" {
+          capabilities = ["read", "list", "delete"]
+        }
+        POLICY
+
+        echo "==> Creating GHP AppRole role..."
+        vault write auth/approle/role/ghp \
+          policies="ghp" \
+          token_ttl=1h \
+          token_max_ttl=4h
+
+        echo "==> Setting fixed role-id..."
+        vault write auth/approle/role/ghp/role-id \
+          role_id="ghp-dev-role-id"
+
+        echo "==> Setting fixed secret-id..."
+        vault write auth/approle/role/ghp/custom-secret-id \
+          secret_id="ghp-dev-secret-id" 2>/dev/null || true
+
+        echo "==> Vault ready for GHP"
+
+  ghp:
+    image: ghcr.io/goodtune/ghp:latest-arm64
+    container_name: ghp
+    command: ["serve"]
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+      - "9136:9136"
+    environment:
+      GHP_DEV_MODE: "true"
+      GHP_DATABASE_DRIVER: vault
+      GHP_DATABASE_VAULT_ADDR: http://vault:8200
+      GHP_DATABASE_VAULT_MOUNT: secret
+      GHP_DATABASE_VAULT_PATH: ghp
+      GHP_DATABASE_VAULT_ROLE_ID: ghp-dev-role-id
+      GHP_DATABASE_VAULT_SECRET_ID: ghp-dev-secret-id
+      GHP_SERVER_LISTEN: ":8080"
+      GHP_METRICS_ENABLED: "true"
+      GHP_METRICS_LISTEN: ":9136"
+      GHP_LOGGING_LEVEL: debug
