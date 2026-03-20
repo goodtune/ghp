@@ -718,5 +718,126 @@ func (s *VaultStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID
 	return s.writeProxyToken(ctx, token)
 }
 
+// --- Cached Repositories ---
+
+func (s *VaultStore) CreateCachedRepository(ctx context.Context, repo *CachedRepository) error {
+	if repo.ID == "" {
+		repo.ID = uuid.New().String()
+	}
+	now := time.Now().UTC()
+	repo.CreatedAt = now
+	repo.UpdatedAt = now
+
+	data, err := marshalToMap(repo)
+	if err != nil {
+		return fmt.Errorf("marshaling cached repository: %w", err)
+	}
+	if err := s.kvWrite(ctx, "cached-repos/"+repo.ID, data); err != nil {
+		return err
+	}
+	// Write owner/name index for lookups.
+	return s.kvWrite(ctx, fmt.Sprintf("cached-repos/by-owner-name/%s/%s", repo.Owner, repo.Name), map[string]interface{}{
+		"id": repo.ID,
+	})
+}
+
+func (s *VaultStore) GetCachedRepositoryByID(ctx context.Context, id string) (*CachedRepository, error) {
+	data, err := s.kvRead(ctx, "cached-repos/"+id)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, nil
+	}
+	var repo CachedRepository
+	if err := unmarshalFromMap(data, &repo); err != nil {
+		return nil, err
+	}
+	return &repo, nil
+}
+
+func (s *VaultStore) GetCachedRepositoryByOwnerName(ctx context.Context, owner, name string) (*CachedRepository, error) {
+	indexData, err := s.kvRead(ctx, fmt.Sprintf("cached-repos/by-owner-name/%s/%s", owner, name))
+	if err != nil {
+		return nil, err
+	}
+	if indexData == nil {
+		return nil, nil
+	}
+	id, ok := indexData["id"].(string)
+	if !ok {
+		return nil, nil
+	}
+	return s.GetCachedRepositoryByID(ctx, id)
+}
+
+func (s *VaultStore) ListCachedRepositories(ctx context.Context) ([]*CachedRepository, error) {
+	keys, err := s.kvList(ctx, "cached-repos")
+	if err != nil {
+		return nil, err
+	}
+	var repos []*CachedRepository
+	for _, key := range keys {
+		// Skip index paths.
+		if key == "by-owner-name" {
+			continue
+		}
+		repo, err := s.GetCachedRepositoryByID(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if repo != nil {
+			repos = append(repos, repo)
+		}
+	}
+	return repos, nil
+}
+
+func (s *VaultStore) UpdateCachedRepository(ctx context.Context, repo *CachedRepository) error {
+	existing, err := s.GetCachedRepositoryByID(ctx, repo.ID)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return fmt.Errorf("cached repository %s: %w", repo.ID, ErrNotFound)
+	}
+
+	// If owner/name changed, update the index.
+	ownerNameChanged := existing.Owner != repo.Owner || existing.Name != repo.Name
+
+	repo.CreatedAt = existing.CreatedAt // preserve immutable field
+	repo.UpdatedAt = time.Now().UTC()
+	data, err := marshalToMap(repo)
+	if err != nil {
+		return fmt.Errorf("marshaling cached repository: %w", err)
+	}
+	if err := s.kvWrite(ctx, "cached-repos/"+repo.ID, data); err != nil {
+		return err
+	}
+
+	if ownerNameChanged {
+		// Delete old index entry.
+		_ = s.kvDelete(ctx, fmt.Sprintf("cached-repos/by-owner-name/%s/%s", existing.Owner, existing.Name))
+		// Write new index entry.
+		return s.kvWrite(ctx, fmt.Sprintf("cached-repos/by-owner-name/%s/%s", repo.Owner, repo.Name), map[string]interface{}{
+			"id": repo.ID,
+		})
+	}
+	return nil
+}
+
+func (s *VaultStore) DeleteCachedRepository(ctx context.Context, id string) error {
+	existing, err := s.GetCachedRepositoryByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return fmt.Errorf("cached repository %s: %w", id, ErrNotFound)
+	}
+	// Delete the owner/name index entry.
+	_ = s.kvDelete(ctx, fmt.Sprintf("cached-repos/by-owner-name/%s/%s", existing.Owner, existing.Name))
+	return s.kvDelete(ctx, "cached-repos/"+id)
+}
+
 // Ensure VaultStore implements Store.
 var _ Store = (*VaultStore)(nil)

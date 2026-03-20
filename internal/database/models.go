@@ -108,6 +108,17 @@ func (s Scopes) HasPermission(permission, level string) bool {
 	return granted == level
 }
 
+// CachedRepository represents a repository whose git clone/fetch operations
+// are cached locally by the proxy.
+type CachedRepository struct {
+	ID        string    `json:"id"`
+	Owner     string    `json:"owner"`
+	Name      string    `json:"name"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // Store defines the database operations for ghp.
 type Store interface {
 	// Apps
@@ -145,6 +156,14 @@ type Store interface {
 	ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error)
 	RevokeProxyToken(ctx context.Context, id string) error
 	UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error
+
+	// Cached repositories
+	CreateCachedRepository(ctx context.Context, repo *CachedRepository) error
+	GetCachedRepositoryByID(ctx context.Context, id string) (*CachedRepository, error)
+	GetCachedRepositoryByOwnerName(ctx context.Context, owner, name string) (*CachedRepository, error)
+	ListCachedRepositories(ctx context.Context) ([]*CachedRepository, error)
+	UpdateCachedRepository(ctx context.Context, repo *CachedRepository) error
+	DeleteCachedRepository(ctx context.Context, id string) error
 
 	// Lifecycle
 	Close() error

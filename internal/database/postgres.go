@@ -533,6 +533,104 @@ func (s *PostgresStore) DeleteApp(ctx context.Context, id string) error {
 	return nil
 }
 
+// --- Cached repositories ---
+
+func (s *PostgresStore) CreateCachedRepository(ctx context.Context, repo *CachedRepository) error {
+	if repo.ID == "" {
+		repo.ID = uuid.New().String()
+	}
+	now := time.Now().UTC()
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO cached_repositories (id, owner, name, enabled, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING created_at, updated_at
+	`, repo.ID, repo.Owner, repo.Name, repo.Enabled, now, now,
+	).Scan(&repo.CreatedAt, &repo.UpdatedAt)
+	return err
+}
+
+func (s *PostgresStore) GetCachedRepositoryByID(ctx context.Context, id string) (*CachedRepository, error) {
+	r := &CachedRepository{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, owner, name, enabled, created_at, updated_at FROM cached_repositories WHERE id = $1`, id,
+	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.CreatedAt, &r.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (s *PostgresStore) GetCachedRepositoryByOwnerName(ctx context.Context, owner, name string) (*CachedRepository, error) {
+	r := &CachedRepository{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, owner, name, enabled, created_at, updated_at FROM cached_repositories WHERE owner = $1 AND name = $2`, owner, name,
+	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.CreatedAt, &r.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (s *PostgresStore) ListCachedRepositories(ctx context.Context) ([]*CachedRepository, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, owner, name, enabled, created_at, updated_at FROM cached_repositories ORDER BY owner, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var repos []*CachedRepository
+	for rows.Next() {
+		r := &CachedRepository{}
+		if err := rows.Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		repos = append(repos, r)
+	}
+	return repos, rows.Err()
+}
+
+func (s *PostgresStore) UpdateCachedRepository(ctx context.Context, repo *CachedRepository) error {
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE cached_repositories SET owner = $1, name = $2, enabled = $3, updated_at = $4
+		WHERE id = $5
+	`, repo.Owner, repo.Name, repo.Enabled, now, repo.ID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("cached repository %s: %w", repo.ID, ErrNotFound)
+	}
+	repo.UpdatedAt = now
+	return nil
+}
+
+func (s *PostgresStore) DeleteCachedRepository(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM cached_repositories WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("cached repository %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // Ensure PostgresStore implements all required interfaces.
 var (
 	_ Store             = (*PostgresStore)(nil)

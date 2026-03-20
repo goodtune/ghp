@@ -642,6 +642,116 @@ func (s *SQLiteStore) DeleteApp(ctx context.Context, id string) error {
 	return nil
 }
 
+// --- Cached repositories ---
+
+func (s *SQLiteStore) CreateCachedRepository(ctx context.Context, repo *CachedRepository) error {
+	if repo.ID == "" {
+		repo.ID = uuid.New().String()
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO cached_repositories (id, owner, name, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, repo.ID, repo.Owner, repo.Name, repo.Enabled, now, now)
+	if err != nil {
+		return err
+	}
+	repo.CreatedAt = parseTime(now)
+	repo.UpdatedAt = parseTime(now)
+	return nil
+}
+
+func (s *SQLiteStore) GetCachedRepositoryByID(ctx context.Context, id string) (*CachedRepository, error) {
+	r := &CachedRepository{}
+	var createdStr, updatedStr string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, owner, name, enabled, created_at, updated_at FROM cached_repositories WHERE id = ?`, id,
+	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &createdStr, &updatedStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.CreatedAt = parseTime(createdStr)
+	r.UpdatedAt = parseTime(updatedStr)
+	return r, nil
+}
+
+func (s *SQLiteStore) GetCachedRepositoryByOwnerName(ctx context.Context, owner, name string) (*CachedRepository, error) {
+	r := &CachedRepository{}
+	var createdStr, updatedStr string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, owner, name, enabled, created_at, updated_at FROM cached_repositories WHERE owner = ? AND name = ?`, owner, name,
+	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &createdStr, &updatedStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.CreatedAt = parseTime(createdStr)
+	r.UpdatedAt = parseTime(updatedStr)
+	return r, nil
+}
+
+func (s *SQLiteStore) ListCachedRepositories(ctx context.Context) ([]*CachedRepository, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, owner, name, enabled, created_at, updated_at FROM cached_repositories ORDER BY owner, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var repos []*CachedRepository
+	for rows.Next() {
+		r := &CachedRepository{}
+		var createdStr, updatedStr string
+		if err := rows.Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &createdStr, &updatedStr); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = parseTime(createdStr)
+		r.UpdatedAt = parseTime(updatedStr)
+		repos = append(repos, r)
+	}
+	return repos, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateCachedRepository(ctx context.Context, repo *CachedRepository) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE cached_repositories SET owner = ?, name = ?, enabled = ?, updated_at = ?
+		WHERE id = ?
+	`, repo.Owner, repo.Name, repo.Enabled, now, repo.ID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("cached repository %s: %w", repo.ID, ErrNotFound)
+	}
+	repo.UpdatedAt = parseTime(now)
+	return nil
+}
+
+func (s *SQLiteStore) DeleteCachedRepository(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM cached_repositories WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("cached repository %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // Ensure SQLiteStore implements all required interfaces.
 var (
 	_ Store             = (*SQLiteStore)(nil)

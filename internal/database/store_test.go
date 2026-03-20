@@ -19,6 +19,7 @@ func testStoreContract(t *testing.T, store Store) {
 	t.Run("UpdateProxyTokenAppID", func(t *testing.T) { testUpdateProxyTokenAppID(t, store) })
 	t.Run("GitHubTokenAppID", func(t *testing.T) { testGitHubTokenAppID(t, store) })
 	t.Run("SyncAdminRoles", func(t *testing.T) { testSyncAdminRoles(t, store) })
+	t.Run("CachedRepositoryCRUD", func(t *testing.T) { testCachedRepositoryCRUD(t, store) })
 }
 
 func testAppCRUD(t *testing.T, store Store) {
@@ -661,6 +662,161 @@ func testGitHubTokenAppID(t *testing.T, store Store) {
 	}
 	if got3.AppID != nil {
 		t.Errorf("expected nil AppID for token without app, got %q", *got3.AppID)
+	}
+}
+
+func testCachedRepositoryCRUD(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	// Create.
+	repo := &CachedRepository{
+		Owner:   "myorg",
+		Name:    "myrepo",
+		Enabled: true,
+	}
+	if err := store.CreateCachedRepository(ctx, repo); err != nil {
+		t.Fatalf("CreateCachedRepository: %v", err)
+	}
+	if repo.ID == "" {
+		t.Fatal("expected ID to be set")
+	}
+	if repo.CreatedAt.IsZero() {
+		t.Fatal("expected CreatedAt to be set")
+	}
+	if repo.UpdatedAt.IsZero() {
+		t.Fatal("expected UpdatedAt to be set")
+	}
+
+	// Get by ID.
+	got, err := store.GetCachedRepositoryByID(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("GetCachedRepositoryByID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected repo, got nil")
+	}
+	if got.Owner != "myorg" {
+		t.Errorf("owner = %q, want myorg", got.Owner)
+	}
+	if got.Name != "myrepo" {
+		t.Errorf("name = %q, want myrepo", got.Name)
+	}
+	if !got.Enabled {
+		t.Error("expected enabled = true")
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be set on retrieved repo")
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt to be set on retrieved repo")
+	}
+
+	// Get by owner/name.
+	got2, err := store.GetCachedRepositoryByOwnerName(ctx, "myorg", "myrepo")
+	if err != nil {
+		t.Fatalf("GetCachedRepositoryByOwnerName: %v", err)
+	}
+	if got2 == nil {
+		t.Fatal("expected repo by owner/name, got nil")
+	}
+	if got2.ID != repo.ID {
+		t.Errorf("ID = %q, want %q", got2.ID, repo.ID)
+	}
+
+	// Get by owner/name — not found.
+	got3, err := store.GetCachedRepositoryByOwnerName(ctx, "myorg", "nonexistent")
+	if err != nil {
+		t.Fatalf("GetCachedRepositoryByOwnerName (missing): %v", err)
+	}
+	if got3 != nil {
+		t.Errorf("expected nil for missing repo, got %+v", got3)
+	}
+
+	// List.
+	repos, err := store.ListCachedRepositories(ctx)
+	if err != nil {
+		t.Fatalf("ListCachedRepositories: %v", err)
+	}
+	if len(repos) < 1 {
+		t.Errorf("ListCachedRepositories returned %d, want >= 1", len(repos))
+	}
+
+	// Update — disable.
+	repo.Enabled = false
+	if err := store.UpdateCachedRepository(ctx, repo); err != nil {
+		t.Fatalf("UpdateCachedRepository: %v", err)
+	}
+	got4, err := store.GetCachedRepositoryByID(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("GetCachedRepositoryByID after update: %v", err)
+	}
+	if got4.Enabled {
+		t.Error("expected enabled = false after update")
+	}
+	if got4.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt preserved after update")
+	}
+	if got4.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt set after update")
+	}
+
+	// Update non-existent should return ErrNotFound.
+	err = store.UpdateCachedRepository(ctx, &CachedRepository{
+		ID:    "00000000-0000-0000-0000-000000000000",
+		Owner: "x",
+		Name:  "y",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound updating non-existent repo, got: %v", err)
+	}
+
+	// Create a second repo.
+	repo2 := &CachedRepository{
+		Owner:   "otherorg",
+		Name:    "otherrepo",
+		Enabled: true,
+	}
+	if err := store.CreateCachedRepository(ctx, repo2); err != nil {
+		t.Fatalf("CreateCachedRepository (second): %v", err)
+	}
+
+	repos2, err := store.ListCachedRepositories(ctx)
+	if err != nil {
+		t.Fatalf("ListCachedRepositories: %v", err)
+	}
+	if len(repos2) < 2 {
+		t.Errorf("ListCachedRepositories returned %d, want >= 2", len(repos2))
+	}
+
+	// Delete.
+	if err := store.DeleteCachedRepository(ctx, repo.ID); err != nil {
+		t.Fatalf("DeleteCachedRepository: %v", err)
+	}
+	got5, err := store.GetCachedRepositoryByID(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("GetCachedRepositoryByID after delete: %v", err)
+	}
+	if got5 != nil {
+		t.Error("expected nil after delete")
+	}
+
+	// Verify owner/name index is cleaned up after delete.
+	got6, err := store.GetCachedRepositoryByOwnerName(ctx, "myorg", "myrepo")
+	if err != nil {
+		t.Fatalf("GetCachedRepositoryByOwnerName after delete: %v", err)
+	}
+	if got6 != nil {
+		t.Error("expected nil from owner/name lookup after delete")
+	}
+
+	// Delete non-existent returns ErrNotFound.
+	if err := store.DeleteCachedRepository(ctx, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound deleting non-existent repo, got: %v", err)
+	}
+
+	// Cleanup second repo.
+	if err := store.DeleteCachedRepository(ctx, repo2.ID); err != nil {
+		t.Errorf("cleanup DeleteCachedRepository (second): %v", err)
 	}
 }
 
