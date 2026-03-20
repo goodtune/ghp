@@ -16,8 +16,10 @@ The cache operates at the Git smart HTTP protocol level (protocol v2):
 
 2. **`fetch` is served from cache when possible.** If all requested objects
    (wants) are present in the local cache, the packfile is generated locally
-   using pure Go (no `git` binary required). If objects are missing, a cache
-   miss triggers an upstream fetch first.
+   using pure Go (no `git` binary required). On a cache miss, GHP fetches
+   from upstream using the per-request credential and then serves from cache.
+   When a GitHub App service token is configured, async cache warming keeps
+   the cache hot so most requests are served as hits.
 
 3. **Async cache warming.** When `ls-refs` detects that upstream refs have
    changed since the last fetch, a background goroutine fetches the latest

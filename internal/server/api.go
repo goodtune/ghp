@@ -1186,6 +1186,14 @@ func (a *API) handleCreateCachedRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "name is required"})
 		return
 	}
+	if !gitcache.ValidNameRe.MatchString(req.Owner) || req.Owner == "." || req.Owner == ".." {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "owner contains invalid characters (alphanumeric, hyphens, underscores, and dots only)"})
+		return
+	}
+	if !gitcache.ValidNameRe.MatchString(req.Name) || req.Name == "." || req.Name == ".." {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "name contains invalid characters (alphanumeric, hyphens, underscores, and dots only)"})
+		return
+	}
 
 	// Check for duplicates.
 	existing, err := a.store.GetCachedRepositoryByOwnerName(r.Context(), req.Owner, req.Name)
@@ -1210,6 +1218,11 @@ func (a *API) handleCreateCachedRepo(w http.ResponseWriter, r *http.Request) {
 		Enabled: enabled,
 	}
 	if err := a.store.CreateCachedRepository(r.Context(), repo); err != nil {
+		// Handle race condition: concurrent create may hit unique constraint.
+		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+			writeJSON(w, http.StatusConflict, map[string]string{"message": "Cached repository already exists for this owner/name"})
+			return
+		}
 		a.logger.Error("failed to create cached repo", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to create cached repository"})
 		return

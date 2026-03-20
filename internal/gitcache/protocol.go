@@ -113,11 +113,17 @@ func ParseLsRefsResponse(chunks []*gitprotocolio.ProtocolV2ResponseChunk) (map[s
 		if ch.Response == nil {
 			continue
 		}
-		parts := strings.SplitN(string(ch.Response), " ", 2)
-		if len(parts) < 2 {
-			return nil, fmt.Errorf("malformed ls-refs response line: %q", string(ch.Response))
+		line := string(ch.Response)
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("malformed ls-refs response line: %q", line)
 		}
-		refs[strings.TrimSpace(parts[1])] = plumbing.NewHash(parts[0])
+		refName := fields[1]
+		// Strip NUL-separated attributes (e.g. symref-target:, peeled:).
+		if i := strings.IndexByte(refName, 0); i >= 0 {
+			refName = refName[:i]
+		}
+		refs[refName] = plumbing.NewHash(fields[0])
 	}
 	return refs, nil
 }

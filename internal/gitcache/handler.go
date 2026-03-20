@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"time"
 
+	"strings"
+
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/google/gitprotocolio"
@@ -125,7 +127,10 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 				metrics.CacheFetchTotal.WithLabelValues(string(CacheRejected)).Inc()
 				return
 			}
-			result, err := h.handleFetch(r.Context(), managed, cmd, w)
+			// Extract the auth token from the request for use as a fallback
+			// when no service token function is configured.
+			authToken := extractBearerToken(r.Header.Get("Authorization"))
+			result, err := h.handleFetch(r.Context(), managed, cmd, w, authToken)
 			proxy.SetCacheState(r, string(result))
 			metrics.CacheFetchTotal.WithLabelValues(string(result)).Inc()
 			if err != nil {
@@ -160,7 +165,8 @@ func (h *Handler) handleLsRefs(r *http.Request, repo *ManagedRepository, cmd Com
 		req.Header.Set("Authorization", authHeader)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		WriteError(w, "ERR upstream unavailable")
 		return fmt.Errorf("upstream request: %w", err)
@@ -215,7 +221,7 @@ func (h *Handler) handleLsRefs(r *http.Request, repo *ManagedRepository, cmd Com
 
 // handleFetch processes a fetch command, serving from local cache if all
 // requested objects are available, or fetching from upstream first.
-func (h *Handler) handleFetch(ctx context.Context, repo *ManagedRepository, cmd Command, w io.Writer) (CacheResult, error) {
+func (h *Handler) handleFetch(ctx context.Context, repo *ManagedRepository, cmd Command, w io.Writer, authToken string) (CacheResult, error) {
 	wantHashes, wantRefs, err := ParseFetchWants(cmd)
 	if err != nil {
 		WriteError(w, "ERR malformed fetch request")
@@ -232,9 +238,9 @@ func (h *Handler) handleFetch(ctx context.Context, repo *ManagedRepository, cmd 
 
 	if !hasAll {
 		// Cache miss — need to fetch from upstream first.
-		if err := h.fetchAndWait(ctx, repo, wantHashes, wantRefs); err != nil {
+		if err := h.fetchAndWait(ctx, repo, wantHashes, wantRefs, authToken); err != nil {
 			WriteError(w, "ERR upstream fetch failed")
-			return CacheMiss, err
+			return CacheError, err
 		}
 	}
 
@@ -270,14 +276,20 @@ func (h *Handler) handleFetch(ctx context.Context, repo *ManagedRepository, cmd 
 }
 
 // fetchAndWait triggers an upstream fetch and polls until the requested
-// objects are available, or the context is cancelled.
-func (h *Handler) fetchAndWait(ctx context.Context, repo *ManagedRepository, wantHashes []plumbing.Hash, wantRefs []string) error {
-	if h.serviceTokenFn == nil {
-		return fmt.Errorf("cache miss handling unavailable: no service token function configured")
-	}
-	svcToken, err := h.serviceTokenFn(ctx)
-	if err != nil {
-		return fmt.Errorf("get service token: %w", err)
+// objects are available, or the context is cancelled. When serviceTokenFn
+// is nil, authToken (the per-request credential) is used as a fallback.
+func (h *Handler) fetchAndWait(ctx context.Context, repo *ManagedRepository, wantHashes []plumbing.Hash, wantRefs []string, authToken string) error {
+	var svcToken string
+	if h.serviceTokenFn != nil {
+		var err error
+		svcToken, err = h.serviceTokenFn(ctx)
+		if err != nil {
+			return fmt.Errorf("get service token: %w", err)
+		}
+	} else if authToken != "" {
+		svcToken = authToken
+	} else {
+		return fmt.Errorf("cache miss handling unavailable: no token available")
 	}
 
 	fetchDone := make(chan error, 1)
@@ -317,4 +329,20 @@ func (h *Handler) fetchAndWait(ctx context.Context, repo *ManagedRepository, wan
 			timer.Reset(h.checkFrequency)
 		}
 	}
+}
+
+// extractBearerToken returns the token from a "Bearer <token>" or
+// "Basic <token>" Authorization header value, or the raw value if no
+// known scheme prefix is found.
+func extractBearerToken(authHeader string) string {
+	authHeader = strings.TrimSpace(authHeader)
+	if authHeader == "" {
+		return ""
+	}
+	for _, prefix := range []string{"Bearer ", "bearer ", "Basic ", "basic "} {
+		if strings.HasPrefix(authHeader, prefix) {
+			return strings.TrimSpace(authHeader[len(prefix):])
+		}
+	}
+	return authHeader
 }

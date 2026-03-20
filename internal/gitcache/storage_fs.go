@@ -12,10 +12,10 @@ import (
 	"github.com/go-git/go-git/v5/storage/filesystem"
 )
 
-// validNameRe matches valid GitHub owner and repository names: alphanumeric,
+// ValidNameRe matches valid GitHub owner and repository names: alphanumeric,
 // hyphens, underscores, and dots. Rejects path separators, "..", and other
 // characters that could escape the cache root directory.
-var validNameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+var ValidNameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 // FilesystemStorageFactory stores cached bare repos on local disk under a
 // root directory. Each repository gets its own subdirectory at
@@ -34,10 +34,10 @@ func NewFilesystemStorageFactory(root string) (*FilesystemStorageFactory, error)
 }
 
 func (f *FilesystemStorageFactory) repoPath(owner, repo string) (string, error) {
-	if !validNameRe.MatchString(owner) || owner == "." || owner == ".." {
+	if !ValidNameRe.MatchString(owner) || owner == "." || owner == ".." {
 		return "", fmt.Errorf("invalid owner name: %q", owner)
 	}
-	if !validNameRe.MatchString(repo) || repo == "." || repo == ".." {
+	if !ValidNameRe.MatchString(repo) || repo == "." || repo == ".." {
 		return "", fmt.Errorf("invalid repo name: %q", repo)
 	}
 	return filepath.Join(f.root, owner, repo), nil
