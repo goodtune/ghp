@@ -126,6 +126,18 @@ See [Token Type Border Policy](../features/border-policy.md) for details.
 
 See [Release Download Controls](../features/release-controls.md) for details.
 
+### Git Cache
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GHP_CACHE_ENABLED` | Enable the git clone/fetch caching feature | `false` |
+| `GHP_CACHE_STORAGE_PATH` | Local filesystem path for cached bare repos | `cache` |
+| `GHP_CACHE_S3_BUCKET` | S3 bucket name for shared cache storage (optional) | |
+| `GHP_CACHE_S3_REGION` | AWS region for the S3 bucket | |
+| `GHP_CACHE_S3_ENDPOINT` | Custom S3-compatible endpoint URL (for MinIO, etc) | |
+
+See [Git Cache](../features/git-cache.md) for details.
+
 ## Full YAML Reference
 
 ```yaml
@@ -208,6 +220,13 @@ releases:
     - "myorg"
     - "trusted/tool"
 
+cache:
+  enabled: false               # enable git clone/fetch caching
+  storage_path: "cache"        # local path for cached bare repos
+  # s3_bucket: ""              # S3 bucket for shared cache storage (optional)
+  # s3_region: ""              # AWS region
+  # s3_endpoint: ""            # custom S3-compatible endpoint (MinIO, etc)
+
 admins:
   - "alice"
   - "bob"
@@ -242,6 +261,7 @@ The following settings can be changed without restarting the server by sending
 - `auth.allowed_redirects` — OAuth broker allowed redirects
 - `block` — border policy settings (anonymous git, token type blocking)
 - `releases` — release download policy and allow list (`mode`, `redirect_to`, `redirect_head_check`, `allow`); note that `redirect_head_check_netrc` and `redirect_not_found_template` are loaded once at startup and require a restart to change
+- `cache` — git cache settings (enable/disable, storage path)
 
 Settings that require a restart: database driver/DSN, server listen addresses,
 TLS certificates, the encryption key, logging configuration, metrics

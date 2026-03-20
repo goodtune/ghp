@@ -96,6 +96,28 @@
             <div id="users-list"></div>
         </div>
 
+        <div class="section">
+            <h2>Cached Repositories</h2>
+            <div id="cached-repos-list"></div>
+            <details style="margin-top:1rem">
+                <summary class="btn btn-secondary" style="cursor:pointer">Add Cached Repository</summary>
+                <div class="create-form" style="margin-top:0.5rem">
+                    <div class="form-group">
+                        <label for="cache-owner">Owner</label>
+                        <input type="text" id="cache-owner" placeholder="organization or user">
+                    </div>
+                    <div class="form-group">
+                        <label for="cache-name">Repository</label>
+                        <input type="text" id="cache-name" placeholder="repository-name">
+                    </div>
+                    <div style="margin-bottom:1rem">
+                        <label style="display:inline-flex;align-items:center;gap:0.5rem;font-size:0.875rem;color:#8b949e;cursor:pointer"><input type="checkbox" id="cache-enabled" checked> Enabled</label>
+                    </div>
+                    <button class="btn" id="create-cached-repo-btn">Add Cached Repository</button>
+                </div>
+            </details>
+        </div>
+
         <div class="section" id="agent-token-section"{{ if not .HasApps }} style="display:none"{{ end }}>
             <h2>Create Agent Token</h2>
             <div class="create-form">
@@ -718,6 +740,98 @@
             loadAllTokens();
         }
 
+        // ── Cached Repositories ─────────────────────────────────────
+        let cachedRepos = [];
+
+        async function loadCachedRepos() {
+            try {
+                const data = await api('GET', '/api/cached-repos');
+                cachedRepos = Array.isArray(data) ? data : [];
+            } catch (err) {
+                console.error('Failed to load cached repos:', err);
+                cachedRepos = [];
+            }
+            renderCachedRepos();
+        }
+
+        function renderCachedRepos() {
+            const container = document.getElementById('cached-repos-list');
+            if (cachedRepos.length === 0) {
+                container.innerHTML = '<div class="empty">No cached repositories configured</div>';
+                return;
+            }
+            let html = '<table><tr><th>Owner</th><th>Repository</th><th>Status</th><th>Created</th><th></th></tr>';
+            for (const repo of cachedRepos) {
+                const created = new Date(repo.created_at).toLocaleString();
+                const statusBadge = repo.enabled
+                    ? '<span class="badge badge-active">Enabled</span>'
+                    : '<span class="badge badge-revoked">Disabled</span>';
+                html += '<tr>';
+                html += '<td>' + esc(repo.owner) + '</td>';
+                html += '<td>' + esc(repo.name) + '</td>';
+                html += '<td>' + statusBadge + '</td>';
+                html += '<td>' + created + '</td>';
+                html += '<td>';
+                if (repo.enabled) {
+                    html += '<button class="btn btn-secondary" data-disable-cached-repo="' + esc(repo.id) + '">Disable</button> ';
+                } else {
+                    html += '<button class="btn btn-secondary" data-enable-cached-repo="' + esc(repo.id) + '">Enable</button> ';
+                }
+                html += '<button class="btn btn-danger" data-delete-cached-repo="' + esc(repo.id) + '">Delete</button>';
+                html += '</td></tr>';
+            }
+            html += '</table>';
+            container.innerHTML = html;
+
+            container.querySelectorAll('[data-enable-cached-repo]').forEach(el => {
+                el.addEventListener('click', () => toggleCachedRepo(el.dataset.enableCachedRepo, true));
+            });
+            container.querySelectorAll('[data-disable-cached-repo]').forEach(el => {
+                el.addEventListener('click', () => toggleCachedRepo(el.dataset.disableCachedRepo, false));
+            });
+            container.querySelectorAll('[data-delete-cached-repo]').forEach(el => {
+                el.addEventListener('click', () => deleteCachedRepo(el.dataset.deleteCachedRepo));
+            });
+        }
+
+        async function createCachedRepo() {
+            const owner = document.getElementById('cache-owner').value.trim();
+            const name = document.getElementById('cache-name').value.trim();
+            const enabled = document.getElementById('cache-enabled').checked;
+            if (!owner || !name) {
+                alert('Owner and repository name are required');
+                return;
+            }
+            try {
+                await api('POST', '/api/cached-repos', { owner, name, enabled });
+                document.getElementById('cache-owner').value = '';
+                document.getElementById('cache-name').value = '';
+                document.getElementById('cache-enabled').checked = true;
+                loadCachedRepos();
+            } catch (e) {
+                alert('Failed to add cached repository: ' + e.message);
+            }
+        }
+
+        async function toggleCachedRepo(id, enabled) {
+            try {
+                await api('PATCH', '/api/cached-repos/' + id, { enabled });
+                loadCachedRepos();
+            } catch (e) {
+                alert('Failed to update cached repository: ' + e.message);
+            }
+        }
+
+        async function deleteCachedRepo(id) {
+            if (!confirm('Remove this repository from the cache list?')) return;
+            try {
+                await api('DELETE', '/api/cached-repos/' + id);
+                loadCachedRepos();
+            } catch (e) {
+                alert('Failed to delete cached repository: ' + e.message);
+            }
+        }
+
         function esc(s) {
             const d = document.createElement('div');
             d.textContent = s;
@@ -741,10 +855,13 @@
         document.getElementById('installation-id').addEventListener('change', onInstallationChange);
         document.getElementById('create-btn').addEventListener('click', createAgentToken);
 
+        document.getElementById('create-cached-repo-btn').addEventListener('click', createCachedRepo);
+
         // loadInstallations() is called from populateAppSelect() once an app
         // is selected (or auto-selected), so it is not called unconditionally here.
         loadApps();
         loadUsers();
+        loadCachedRepos();
         loadAllTokens();
     </script>
 </body>

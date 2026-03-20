@@ -53,6 +53,22 @@ The stages are:
 | `github_token_resolution` | Loading, decrypting (or refreshing) the real GitHub credential |
 | `upstream_roundtrip` | Proxying the request to GitHub and streaming the response |
 | `redirect_head_check` | HEAD request to the release redirect target to verify asset availability (releases handler only) |
+| `cache_lookup` | Checking whether a request targets a cache-enabled repository |
+
+#### Git Cache Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `ghp_cache_fetch_total` | Counter | Git fetch requests to cached repos (labels: `result`, `owner`, `repo`) |
+| `ghp_cache_lsrefs_total` | Counter | ls-refs commands forwarded upstream for cached repos (labels: `owner`, `repo`) |
+| `ghp_cache_warm_total` | Counter | Async cache warming operations (labels: `result`, `owner`, `repo`) |
+| `ghp_cache_repos_active` | Gauge | Number of repositories with caching enabled |
+
+The `result` label on `ghp_cache_fetch_total` has four values: `hit` (served
+from cache), `miss` (fetched from upstream first), `rejected` (access denied
+or fetch-before-ls-refs), and `error` (cache or upstream failure).
+
+See [Git Cache](../features/git-cache.md) for configuration details.
 
 #### Token Metrics
 
