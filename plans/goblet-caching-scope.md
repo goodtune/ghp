@@ -100,6 +100,90 @@ This is the most critical piece. `git upload-pack --stateless-rpc` reads a proto
 
 The library is archived (Jan 2023) but stable and trivially small. We can either import it directly (zero transitive deps) or vendor the ~500 lines of parsing code.
 
+## Access Control: Preserving GitHub's Authorization
+
+### The problem
+
+GHP currently relies on **two layers** of access control:
+
+1. **GHP scope check** — does the `ghx_`/`gha_` token's declared scope include this repo? (narrowing filter)
+2. **GitHub's own check** — does the underlying GitHub token actually have access? (authoritative)
+
+Layer 2 happens because the real GitHub credential is forwarded to GitHub on every request. GitHub returns 403/404 if the user lacks access. This is the definitive authorization — GHP never needs to track GitHub's permission model.
+
+With caching, a **cache hit skips the upstream roundtrip**, which would eliminate layer 2. A user whose GitHub access was revoked could still read cached objects. This is an authorization bypass.
+
+### Solution: ls-refs as mandatory authorization gate
+
+Goblet's design already solves this, and we must preserve the invariant:
+
+**Rule: `ls-refs` is ALWAYS forwarded to GitHub with the per-request token. No cached data is served unless ls-refs succeeds first.**
+
+Normal Git protocol v2 flow:
+1. Client sends `POST /git-upload-pack` with `ls-refs` command followed by `fetch` command
+2. `ls-refs` is forwarded to GitHub using the caller's resolved GitHub token
+3. GitHub verifies the token has access → returns refs (success) or 403/404 (failure)
+4. Only if `ls-refs` succeeds does the `fetch` command execute (potentially from cache)
+
+This means every cached response is preceded by a live GitHub access check. The cost is one HTTP roundtrip to GitHub per git operation — but this is the `ls-refs` call which is lightweight (returns ref names + SHAs, no object data), and is the exact call that goblet makes on every request too.
+
+### Hardening: fetch-without-ls-refs
+
+A malicious client could craft a protocol v2 request containing only a `fetch` command (no `ls-refs`), bypassing the authorization gate. Normal git clients never do this, but we must defend against it.
+
+**Policy: Reject `fetch` commands that are not preceded by a successful `ls-refs` in the same request.**
+
+Implementation:
+```go
+func (h *handler) uploadPackHandler(w http.ResponseWriter, r *http.Request) {
+    commands := parseAllCommands(r.Body)
+    lsRefsSucceeded := false
+
+    for _, cmd := range commands {
+        switch cmd[0].Command {
+        case "ls-refs":
+            // Forward to GitHub — this IS the access check
+            if err := h.handleLsRefs(ctx, cmd, w); err != nil {
+                return // GitHub rejected — stop processing
+            }
+            lsRefsSucceeded = true
+        case "fetch":
+            if !lsRefsSucceeded {
+                // No ls-refs preceded this fetch — deny
+                writeError(w, "fetch requires ls-refs first")
+                return
+            }
+            h.handleFetch(ctx, cmd, w) // safe to serve from cache
+        }
+    }
+}
+```
+
+### Access control summary
+
+| Request type | Access verified by | Cache can serve? |
+|---|---|---|
+| `/info/refs` | N/A (synthetic capabilities, no repo data) | Always (no objects exposed) |
+| `ls-refs` command | GitHub (forwarded with user's token) | Never (always upstream) |
+| `fetch` after successful `ls-refs` | GitHub (via preceding ls-refs) | Yes — cache hit serves locally |
+| `fetch` without preceding `ls-refs` | **Rejected by ghp** | No — request denied |
+| Any request for non-cached repo | GitHub (normal passthrough) | N/A — passthrough unchanged |
+
+### What this means for revoked access
+
+- User loses GitHub access to a cached repo
+- Next `git fetch` sends `ls-refs` → forwarded to GitHub → GitHub returns 403
+- ghp returns error to client, no cached data served
+- Latency: access revocation takes effect on the **next request** — no stale window beyond a single operation
+
+### Private repo considerations
+
+The cache stores git objects on local disk. For private repos, this means:
+- Source code exists in the cache directory in cleartext (bare git repo)
+- Disk-level encryption (LUKS, encrypted EBS, etc.) is the operator's responsibility
+- The `cached_repositories` admin API should warn when adding private repos
+- Docs should state: "the cache directory contains a full mirror of cached repositories; protect it accordingly"
+
 ## Integration Architecture
 
 ### Request flow in ghp
@@ -116,15 +200,19 @@ git clone https://ghp.example.com/owner/repo.git
         → YES: delegate to git cache handler
           → /info/refs: return synthetic capabilities
           → /git-upload-pack:
-            → ls-refs command: proxy to GitHub, trigger async cache refresh
-            → fetch command: check local objects → serve from cache or fetch-then-serve
+            → ls-refs: forward to GitHub WITH USER'S TOKEN (access check)
+              → GitHub 403/404? → return error, stop
+              → GitHub 200? → return refs, continue
+            → fetch (only after ls-refs succeeded):
+              → check local objects → serve from cache or fetch-then-serve
 ```
 
 The insertion point is **after** scope enforcement but **before** the upstream roundtrip. This ensures:
 1. Token validation and scope checks still happen for every request
 2. Only authorized, scope-allowed repos can be cached
-3. The resolved GitHub credential is available for upstream requests
+3. The resolved GitHub credential is available for upstream ls-refs verification
 4. The cache layer is invisible to the auth pipeline
+5. **GitHub verifies access on every operation via the mandatory ls-refs call**
 
 ### New package: `internal/gitcache/`
 
