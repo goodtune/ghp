@@ -1,6 +1,10 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,6 +16,7 @@ import (
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/database"
 	ghpgithub "github.com/goodtune/ghp/internal/github"
 )
 
@@ -431,5 +436,124 @@ func TestHandleUpdateCachedRepo_InvalidUUID(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+}
+
+func newTestAPIWithStore(t *testing.T) *API {
+	t.Helper()
+	store, err := database.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create test store: %v", err)
+	}
+	migrator := database.NewMigrator(store, "sqlite")
+	if err := migrator.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return &API{
+		store:  store,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+}
+
+func TestCachedReposCRUD(t *testing.T) {
+	a := newTestAPIWithStore(t)
+
+	// Create
+	ctx := auth.NewContextWithSession(context.Background(), &auth.Session{Username: "admin"})
+	req := httptest.NewRequest("POST", "/api/cached-repos",
+		strings.NewReader(`{"owner":"MyOrg","name":"MyRepo"}`)).WithContext(ctx)
+	w := httptest.NewRecorder()
+	a.handleCreateCachedRepo(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected %d, got %d: %s", http.StatusCreated, w.Code, w.Body.String())
+	}
+	var created map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	id := created["id"].(string)
+	// Verify case normalization.
+	if created["owner"].(string) != "myorg" {
+		t.Errorf("owner not normalized: got %q", created["owner"])
+	}
+	if created["name"].(string) != "myrepo" {
+		t.Errorf("name not normalized: got %q", created["name"])
+	}
+
+	// List
+	req = httptest.NewRequest("GET", "/api/cached-repos", nil)
+	w = httptest.NewRecorder()
+	a.handleListCachedRepos(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: expected %d, got %d", http.StatusOK, w.Code)
+	}
+	var list []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list: expected 1 item, got %d", len(list))
+	}
+
+	// Get
+	req = httptest.NewRequest("GET", "/api/cached-repos/"+id, nil)
+	req.SetPathValue("id", id)
+	w = httptest.NewRecorder()
+	a.handleGetCachedRepo(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get: expected %d, got %d", http.StatusOK, w.Code)
+	}
+
+	// Update (disable)
+	req = httptest.NewRequest("PATCH", "/api/cached-repos/"+id,
+		strings.NewReader(`{"enabled":false}`)).WithContext(ctx)
+	req.SetPathValue("id", id)
+	w = httptest.NewRecorder()
+	a.handleUpdateCachedRepo(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: expected %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	// Delete
+	req = httptest.NewRequest("DELETE", "/api/cached-repos/"+id, nil).WithContext(ctx)
+	req.SetPathValue("id", id)
+	w = httptest.NewRecorder()
+	a.handleDeleteCachedRepo(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete: expected %d, got %d", http.StatusOK, w.Code)
+	}
+
+	// Verify deleted
+	req = httptest.NewRequest("GET", "/api/cached-repos", nil)
+	w = httptest.NewRecorder()
+	a.handleListCachedRepos(w, req)
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("list after delete: expected 0 items, got %d", len(list))
+	}
+}
+
+func TestCachedRepos_DuplicateCreate409(t *testing.T) {
+	a := newTestAPIWithStore(t)
+	ctx := auth.NewContextWithSession(context.Background(), &auth.Session{Username: "admin"})
+
+	// First create succeeds.
+	req := httptest.NewRequest("POST", "/api/cached-repos",
+		strings.NewReader(`{"owner":"org","name":"repo"}`)).WithContext(ctx)
+	w := httptest.NewRecorder()
+	a.handleCreateCachedRepo(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("first create: expected %d, got %d", http.StatusCreated, w.Code)
+	}
+
+	// Duplicate create returns 409.
+	req = httptest.NewRequest("POST", "/api/cached-repos",
+		strings.NewReader(`{"owner":"org","name":"repo"}`)).WithContext(ctx)
+	w = httptest.NewRecorder()
+	a.handleCreateCachedRepo(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("duplicate create: expected %d, got %d: %s", http.StatusConflict, w.Code, w.Body.String())
 	}
 }

@@ -25,7 +25,7 @@ type ManagedRepository struct {
 	store       storage.Storer
 	repo        *git.Repository
 
-	mu         sync.Mutex // serialises fetchUpstream
+	mu         sync.RWMutex // serialises all storer access (write-lock for fetch, read-lock for reads)
 	lastUpdate time.Time
 }
 
@@ -74,6 +74,8 @@ func (m *ManagedRepository) LastUpdateTime() time.Time {
 // HasAllWants checks whether all requested objects and refs exist in the
 // local cache. Returns true only if every want is satisfied locally.
 func (m *ManagedRepository) HasAllWants(hashes []plumbing.Hash, refs []string) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	storer := m.repo.Storer
 
 	for _, h := range hashes {
@@ -101,6 +103,8 @@ func (m *ManagedRepository) HasAllWants(hashes []plumbing.Hash, refs []string) (
 // HasAnyUpdate compares upstream refs (from an ls-refs response) against
 // the local cache. Returns true if any ref is new or has a different hash.
 func (m *ManagedRepository) HasAnyUpdate(upstreamRefs map[string]plumbing.Hash) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	storer := m.repo.Storer
 	for refName, hash := range upstreamRefs {
 		ref, err := storer.Reference(plumbing.ReferenceName(refName))

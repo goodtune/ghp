@@ -36,11 +36,15 @@ func NewCacheLookup(inner http.Handler, cache *Handler, store database.Store, lo
 // ServeHTTP checks if the request targets a cached repository's git
 // endpoints and routes accordingly.
 func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	owner, repo, gitPath := parseGitPath(r.URL.Path)
-	if owner == "" || repo == "" || gitPath == "" {
+	rawOwner, rawRepo, gitPath := parseGitPath(r.URL.Path)
+	if rawOwner == "" || rawRepo == "" || gitPath == "" {
 		cl.inner.ServeHTTP(w, r)
 		return
 	}
+
+	// Normalize to lowercase for case-insensitive matching (GitHub is case-insensitive).
+	owner := strings.ToLower(rawOwner)
+	repo := strings.ToLower(rawRepo)
 
 	// Check if this repository has caching enabled.
 	lookupStart := time.Now()

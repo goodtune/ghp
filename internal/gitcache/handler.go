@@ -3,6 +3,7 @@ package gitcache
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,6 +29,25 @@ const (
 	CacheRejected CacheResult = "rejected"
 	CacheError    CacheResult = "error"
 )
+
+// upstreamError indicates an HTTP error response from upstream GitHub.
+type upstreamError struct {
+	StatusCode int
+}
+
+func (e *upstreamError) Error() string {
+	return fmt.Sprintf("upstream returned %d", e.StatusCode)
+}
+
+// isUpstreamRejection returns true if the error represents an access-denied
+// response (401, 403, 404) from upstream, as opposed to a server/network error.
+func isUpstreamRejection(err error) bool {
+	var ue *upstreamError
+	if errors.As(err, &ue) {
+		return ue.StatusCode == 401 || ue.StatusCode == 403 || ue.StatusCode == 404
+	}
+	return false
+}
 
 // ServiceTokenFunc returns a GitHub App installation token for async
 // cache warming. Unlike per-request tokens, this is not tied to a specific
@@ -112,9 +132,14 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 		case "ls-refs":
 			metrics.CacheLsRefsTotal.Inc()
 			if err := h.handleLsRefs(r, managed, cmd, w); err != nil {
-				slog.Error("ls-refs failed", "repo", owner+"/"+repo, "err", err)
-				proxy.SetCacheState(r, string(CacheRejected))
-				return // upstream rejected — stop, no cached data exposed
+				if isUpstreamRejection(err) {
+					slog.Info("ls-refs rejected", "repo", owner+"/"+repo, "err", err)
+					proxy.SetCacheState(r, string(CacheRejected))
+				} else {
+					slog.Error("ls-refs failed", "repo", owner+"/"+repo, "err", err)
+					proxy.SetCacheState(r, string(CacheError))
+				}
+				return // stop — no cached data exposed
 			}
 			lsRefsSucceeded = true
 
@@ -175,7 +200,7 @@ func (h *Handler) handleLsRefs(r *http.Request, repo *ManagedRepository, cmd Com
 		// Forward the upstream error to the client.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		WriteError(w, fmt.Sprintf("ERR upstream: %d %s", resp.StatusCode, string(body)))
-		return fmt.Errorf("upstream returned %d", resp.StatusCode)
+		return &upstreamError{StatusCode: resp.StatusCode}
 	}
 
 	// Parse response to check for ref changes.
@@ -269,7 +294,7 @@ func (h *Handler) handleFetch(ctx context.Context, repo *ManagedRepository, cmd 
 
 	// Generate and stream the packfile.
 	if err := ServeFetchLocal(w, objStorer, allWants, haves); err != nil {
-		return result, fmt.Errorf("serve pack: %w", err)
+		return CacheError, fmt.Errorf("serve pack: %w", err)
 	}
 
 	return result, nil

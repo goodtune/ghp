@@ -1195,6 +1195,10 @@ func (a *API) handleCreateCachedRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Normalize to lowercase for case-insensitive matching (GitHub is case-insensitive).
+	req.Owner = strings.ToLower(req.Owner)
+	req.Name = strings.ToLower(req.Name)
+
 	// Check for duplicates.
 	existing, err := a.store.GetCachedRepositoryByOwnerName(r.Context(), req.Owner, req.Name)
 	if err != nil {
