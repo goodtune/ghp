@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
@@ -42,16 +43,20 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if this repository has caching enabled.
+	lookupStart := time.Now()
 	cached, err := cl.store.GetCachedRepositoryByOwnerName(r.Context(), owner, repo)
 	if err != nil {
+		metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
 		cl.logger.Error("cache lookup failed", "error", err, "owner", owner, "repo", repo)
 		cl.inner.ServeHTTP(w, r)
 		return
 	}
 	if cached == nil || !cached.Enabled {
+		metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
 		cl.inner.ServeHTTP(w, r)
 		return
 	}
+	metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
 
 	// Set access log context for cache tracking.
 	proxy.SetCacheRepo(r, owner+"/"+repo)
@@ -59,7 +64,6 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case gitPath == "info/refs" && r.Method == "GET":
 		proxy.SetCacheState(r, "hit")
-		metrics.ObserveDecision(metrics.StageCacheLookup, "", 0)
 		cl.cache.ServeInfoRefs(w, r)
 
 	case gitPath == "git-upload-pack" && r.Method == "POST":

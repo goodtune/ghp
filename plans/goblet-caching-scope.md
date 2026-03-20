@@ -318,23 +318,24 @@ The existing access log (`accessLogEntry` in `internal/server/accesslog.go`) wri
 ```go
 type accessLogEntry struct {
     // ... existing fields ...
-    CacheState string `json:"cache_state,omitempty"` // "hit", "miss", "bypass", or "" (non-git)
-    CacheRepo  bool   `json:"cache_repo,omitempty"`  // true if repo is in the cached set
+    CacheState string `json:"cache_state,omitempty"` // "hit", "miss", "rejected", "error", or "" (non-git)
+    CacheRepo  string `json:"cache_repo,omitempty"`  // "owner/repo" when request targets a cached repo
 }
 ```
 
 **`cache_state`** values:
 - `"hit"` — fetch command served entirely from local cache
 - `"miss"` — fetch command required upstream fetch before serving
-- `"bypass"` — repo is cache-enabled but request was passthrough (e.g., git-receive-pack push, or cache disabled globally)
+- `"rejected"` — access denied or fetch-before-ls-refs violation
+- `"error"` — cache or upstream failure
 - `""` (omitted) — request is not a git smart HTTP operation, or repo is not in the cached set
 
-**`cache_repo`** — `true` when the target repository is in the `cached_repositories` table (regardless of whether caching was used for this specific request). This lets operators filter logs to see all traffic to cached repos, including pushes and API calls that bypass caching.
+**`cache_repo`** — the `owner/repo` identifier when the target repository is in the `cached_repositories` table (regardless of whether caching was used for this specific request). This lets operators filter logs to see all traffic to cached repos, including pushes and API calls that bypass caching.
 
 **Implementation:** The cache handler sets these values via new context slots (same pattern as `SetUsername`/`SetUserID`):
 ```go
 proxy.SetCacheState(r, "hit")
-proxy.SetCacheRepo(r, true)
+proxy.SetCacheRepo(r, "owner/repo")
 ```
 
 The access log middleware reads them after the request completes, alongside the existing username/userID slots.

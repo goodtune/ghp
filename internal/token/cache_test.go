@@ -67,6 +67,18 @@ func (m *mockStore) GetAppByID(_ context.Context, _ string) (*database.App, erro
 func (m *mockStore) ListApps(_ context.Context) ([]*database.App, error)                           { return nil, nil }
 func (m *mockStore) UpdateApp(_ context.Context, _ *database.App) error                            { return nil }
 func (m *mockStore) DeleteApp(_ context.Context, _ string) error                                   { return nil }
+func (m *mockStore) CreateCachedRepository(_ context.Context, _ *database.CachedRepository) error  { return nil }
+func (m *mockStore) GetCachedRepositoryByID(_ context.Context, _ string) (*database.CachedRepository, error) {
+	return nil, nil
+}
+func (m *mockStore) GetCachedRepositoryByOwnerName(_ context.Context, _, _ string) (*database.CachedRepository, error) {
+	return nil, nil
+}
+func (m *mockStore) ListCachedRepositories(_ context.Context) ([]*database.CachedRepository, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdateCachedRepository(_ context.Context, _ *database.CachedRepository) error { return nil }
+func (m *mockStore) DeleteCachedRepository(_ context.Context, _ string) error                     { return nil }
 func (m *mockStore) Close() error                                                                  { return nil }
 
 // newTestToken creates a valid proxy token for testing with the given hash, ID,

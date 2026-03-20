@@ -160,24 +160,26 @@ var (
 	// CacheFetchTotal counts git fetch requests to cache-enabled repositories,
 	// labeled by result: "hit" (served from cache), "miss" (fetched from upstream
 	// first), "rejected" (access denied), "error" (cache or upstream failure).
+	// Per-repo breakdown is available via access logs to avoid unbounded label
+	// cardinality.
 	CacheFetchTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ghp_cache_fetch_total",
 		Help: "Total git fetch requests to cache-enabled repositories, by result.",
-	}, []string{"result", "owner", "repo"})
+	}, []string{"result"})
 
 	// CacheLsRefsTotal counts ls-refs commands forwarded to upstream for
 	// cache-enabled repositories.
-	CacheLsRefsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	CacheLsRefsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ghp_cache_lsrefs_total",
 		Help: "Total ls-refs commands forwarded to upstream for cached repos.",
-	}, []string{"owner", "repo"})
+	})
 
 	// CacheWarmTotal counts async cache warming operations triggered when
 	// refs change, labeled by result ("success" or "error").
 	CacheWarmTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ghp_cache_warm_total",
 		Help: "Total cache warming operations triggered by ref changes, by result.",
-	}, []string{"result", "owner", "repo"})
+	}, []string{"result"})
 
 	// CacheReposActive is a gauge reflecting how many repositories currently
 	// have caching enabled in the database.

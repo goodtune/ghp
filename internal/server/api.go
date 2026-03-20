@@ -21,6 +21,7 @@ import (
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/gitcache"
 	ghpgithub "github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/proxy"
@@ -1216,6 +1217,7 @@ func (a *API) handleCreateCachedRepo(w http.ResponseWriter, r *http.Request) {
 
 	session := auth.SessionFromContext(r.Context())
 	a.logger.Info("cached_repo_created", "user", session.Username, "owner", repo.Owner, "name", repo.Name)
+	gitcache.SyncCacheReposMetric(r.Context(), a.store)
 
 	writeJSON(w, http.StatusCreated, cachedRepoToResponse(repo))
 }
@@ -1282,6 +1284,7 @@ func (a *API) handleUpdateCachedRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to update cached repository"})
 		return
 	}
+	gitcache.SyncCacheReposMetric(r.Context(), a.store)
 
 	writeJSON(w, http.StatusOK, cachedRepoToResponse(existing))
 }
@@ -1304,6 +1307,7 @@ func (a *API) handleDeleteCachedRepo(w http.ResponseWriter, r *http.Request) {
 
 	session := auth.SessionFromContext(r.Context())
 	a.logger.Info("cached_repo_deleted", "user", session.Username, "cached_repo_id", id)
+	gitcache.SyncCacheReposMetric(r.Context(), a.store)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Cached repository deleted"})
 }
 

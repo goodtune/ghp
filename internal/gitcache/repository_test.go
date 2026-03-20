@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/memory"
 )
 
@@ -183,7 +182,3 @@ func TestHasAnyUpdate(t *testing.T) {
 		t.Error("expected update for new ref")
 	}
 }
-
-// Ensure the unused import doesn't cause issues — object is used
-// indirectly via go-git's type system.
-var _ = (*object.Blob)(nil)

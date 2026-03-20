@@ -32,11 +32,16 @@ func ParseCommands(r io.Reader) ([]Command, error) {
 		for scanner.Scan() {
 			c := copyRequestChunk(scanner.Chunk())
 			if c.EndRequest || c.EndArgument {
+				// Include the terminating chunk so that
+				// EncodeCommandsToReader produces a well-formed request
+				// with the required flush/delimiter pkt-lines.
+				chunks = append(chunks, c)
 				break
 			}
 			chunks = append(chunks, c)
 		}
-		if len(chunks) == 0 || scanner.Err() != nil {
+		// A command must have at least a command chunk plus a terminator.
+		if len(chunks) <= 1 || scanner.Err() != nil {
 			break
 		}
 
@@ -162,7 +167,9 @@ func EncodeCommandsToReader(cmd Command) io.Reader {
 
 // MaybeGunzip returns a reader that decompresses gzip content if the
 // Content-Encoding header indicates gzip, or the original body otherwise.
-func MaybeGunzip(r *http.Request) (io.Reader, error) {
+// The returned io.ReadCloser must be closed by the caller to release
+// resources (for non-gzip bodies, Close is delegated to the original body).
+func MaybeGunzip(r *http.Request) (io.ReadCloser, error) {
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		return gzip.NewReader(r.Body)
 	}

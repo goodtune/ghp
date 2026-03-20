@@ -402,36 +402,34 @@ func (s *Server) Run(ctx context.Context) error {
 	// Reuse proxyTokenResolver created above for cache warming to avoid duplication.
 	githubInner := proxy.NewPassthroughHandler(
 		"https://github.com", proxyTokenResolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
-	githubPassthrough := proxy.NewScopedPassthroughHandler(
-		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, s.logger, s.cfg)
-	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger)
 
-	// Wrap with git cache handler if enabled.
+	// Wrap with git cache handler if enabled. The cache middleware wraps
+	// githubInner (the raw passthrough) so that it runs AFTER the scoped
+	// passthrough handler has performed token resolution and scope enforcement.
+	// By the time the cache handler sees the request, the Authorization header
+	// already contains the resolved GitHub token.
 	if s.cfg.Cache.Enabled {
-		var storageFactory gitcache.CacheStorageFactory
 		if s.cfg.Cache.S3Bucket != "" {
-			storageFactory = gitcache.NewS3StorageFactory(
-				s.cfg.Cache.S3Bucket, s.cfg.Cache.S3Region,
-				s.cfg.Cache.S3Endpoint, s.cfg.Cache.StoragePath)
-		} else {
-			storageFactory = gitcache.NewFilesystemStorageFactory(s.cfg.Cache.StoragePath)
+			return fmt.Errorf("S3 cache storage backend is not yet implemented; remove cache.s3_bucket from config and use local filesystem storage (cache.storage_path) instead")
+		}
+		storageFactory, fsErr := gitcache.NewFilesystemStorageFactory(s.cfg.Cache.StoragePath)
+		if fsErr != nil {
+			return fmt.Errorf("create filesystem cache storage: %w", fsErr)
 		}
 		cacheRegistry := gitcache.NewRegistry(storageFactory, mustParseURL("https://github.com"))
 		cacheHandler := gitcache.NewHandler(
 			cacheRegistry,
-			func(ctx context.Context) string {
-				// The cache handler is called after scope enforcement, so the
-				// real GitHub token is already set in the Authorization header.
-				// We extract it from the downstream request context.
-				return "" // Token is injected by the scoped passthrough handler.
-			},
 			nil, // Service token is optional for initial implementation.
 			"https://github.com",
 		)
-		githubPassthrough = gitcache.NewCacheLookup(githubPassthrough, cacheHandler, store, s.logger)
+		githubInner = gitcache.NewCacheLookup(githubInner, cacheHandler, store, s.logger)
 		gitcache.SyncCacheReposMetric(lifecycleCtx, store)
 		s.logger.Info("git cache enabled", "storage_path", s.cfg.Cache.StoragePath)
 	}
+
+	githubPassthrough := proxy.NewScopedPassthroughHandler(
+		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, s.logger, s.cfg)
+	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger)
 
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)

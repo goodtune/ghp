@@ -81,14 +81,17 @@ The cache exposes Prometheus metrics at the `/metrics` endpoint:
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `ghp_cache_fetch_total` | Counter | `result`, `owner`, `repo` | Git fetch requests by result (`hit`, `miss`, `rejected`, `error`) |
-| `ghp_cache_lsrefs_total` | Counter | `owner`, `repo` | ls-refs commands forwarded to upstream |
-| `ghp_cache_warm_total` | Counter | `result`, `owner`, `repo` | Cache warming operations (`success`, `error`) |
+| `ghp_cache_fetch_total` | Counter | `result` | Git fetch requests by result (`hit`, `miss`, `rejected`, `error`) |
+| `ghp_cache_lsrefs_total` | Counter | — | ls-refs commands forwarded to upstream |
+| `ghp_cache_warm_total` | Counter | `result` | Cache warming operations by result (`success`, `error`) |
 | `ghp_cache_repos_active` | Gauge | — | Number of repositories with caching enabled |
 
 The `ghp_proxy_decision_duration_seconds` histogram includes a `cache_lookup`
 stage measuring the time spent checking whether a request targets a cached
 repository.
+
+Per-repository cache behavior should be analyzed via access logs (see below),
+not metric labels, to avoid unbounded time-series cardinality.
 
 ## Access Logs
 
@@ -114,8 +117,8 @@ The cache maintains GitHub's access control invariant:
   access.
 
 - **Cached objects are content-addressed.** Git objects are immutable and
-  identified by SHA-256 hash. A cache hit serves the same bytes GitHub would
-  return.
+  identified by a content hash (SHA-1 by default, or SHA-256 in SHA-256-mode
+  repositories). A cache hit serves the same bytes GitHub would return.
 
 ## Limitations
 

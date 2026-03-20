@@ -59,14 +59,17 @@ The stages are:
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ghp_cache_fetch_total` | Counter | Git fetch requests to cached repos (labels: `result`, `owner`, `repo`) |
-| `ghp_cache_lsrefs_total` | Counter | ls-refs commands forwarded upstream for cached repos (labels: `owner`, `repo`) |
-| `ghp_cache_warm_total` | Counter | Async cache warming operations (labels: `result`, `owner`, `repo`) |
+| `ghp_cache_fetch_total` | Counter | Git fetch requests to cached repos (label: `result`) |
+| `ghp_cache_lsrefs_total` | Counter | ls-refs commands forwarded upstream for cached repos |
+| `ghp_cache_warm_total` | Counter | Async cache warming operations (label: `result`) |
 | `ghp_cache_repos_active` | Gauge | Number of repositories with caching enabled |
 
 The `result` label on `ghp_cache_fetch_total` has four values: `hit` (served
 from cache), `miss` (fetched from upstream first), `rejected` (access denied
 or fetch-before-ls-refs), and `error` (cache or upstream failure).
+
+Per-repository cache behavior should be analyzed via access logs, not metric
+labels, to avoid unbounded time-series cardinality.
 
 See [Git Cache](../features/git-cache.md) for configuration details.
 

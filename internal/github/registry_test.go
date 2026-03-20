@@ -70,6 +70,24 @@ func (m *mockStore) RevokeProxyToken(ctx context.Context, id string) error { pan
 func (m *mockStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error {
 	panic("unexpected")
 }
+func (m *mockStore) CreateCachedRepository(_ context.Context, _ *database.CachedRepository) error {
+	panic("unexpected")
+}
+func (m *mockStore) GetCachedRepositoryByID(_ context.Context, _ string) (*database.CachedRepository, error) {
+	panic("unexpected")
+}
+func (m *mockStore) GetCachedRepositoryByOwnerName(_ context.Context, _, _ string) (*database.CachedRepository, error) {
+	panic("unexpected")
+}
+func (m *mockStore) ListCachedRepositories(_ context.Context) ([]*database.CachedRepository, error) {
+	panic("unexpected")
+}
+func (m *mockStore) UpdateCachedRepository(_ context.Context, _ *database.CachedRepository) error {
+	panic("unexpected")
+}
+func (m *mockStore) DeleteCachedRepository(_ context.Context, _ string) error {
+	panic("unexpected")
+}
 func (m *mockStore) Close() error { return nil }
 
 // makeApp creates a minimal App record with a valid private key for testing.

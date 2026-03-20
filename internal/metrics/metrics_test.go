@@ -330,9 +330,9 @@ func TestCacheFetchTotal(t *testing.T) {
 	results := []string{"hit", "miss", "rejected", "error"}
 	for _, result := range results {
 		t.Run(result, func(t *testing.T) {
-			labels := prometheus.Labels{"result": result, "owner": "testorg", "repo": "testrepo"}
+			labels := prometheus.Labels{"result": result}
 			before := getCounterValue(t, CacheFetchTotal, labels)
-			CacheFetchTotal.WithLabelValues(result, "testorg", "testrepo").Inc()
+			CacheFetchTotal.WithLabelValues(result).Inc()
 			after := getCounterValue(t, CacheFetchTotal, labels)
 			if after-before != 1 {
 				t.Errorf("expected counter to increment by 1, got %f", after-before)
@@ -342,10 +342,9 @@ func TestCacheFetchTotal(t *testing.T) {
 }
 
 func TestCacheLsRefsTotal(t *testing.T) {
-	labels := prometheus.Labels{"owner": "testorg", "repo": "testrepo"}
-	before := getCounterValue(t, CacheLsRefsTotal, labels)
-	CacheLsRefsTotal.WithLabelValues("testorg", "testrepo").Inc()
-	after := getCounterValue(t, CacheLsRefsTotal, labels)
+	before := getCounterValueSimple(t, CacheLsRefsTotal)
+	CacheLsRefsTotal.Inc()
+	after := getCounterValueSimple(t, CacheLsRefsTotal)
 	if after-before != 1 {
 		t.Errorf("expected counter to increment by 1, got %f", after-before)
 	}
@@ -354,9 +353,9 @@ func TestCacheLsRefsTotal(t *testing.T) {
 func TestCacheWarmTotal(t *testing.T) {
 	for _, result := range []string{"success", "error"} {
 		t.Run(result, func(t *testing.T) {
-			labels := prometheus.Labels{"result": result, "owner": "testorg", "repo": "testrepo"}
+			labels := prometheus.Labels{"result": result}
 			before := getCounterValue(t, CacheWarmTotal, labels)
-			CacheWarmTotal.WithLabelValues(result, "testorg", "testrepo").Inc()
+			CacheWarmTotal.WithLabelValues(result).Inc()
 			after := getCounterValue(t, CacheWarmTotal, labels)
 			if after-before != 1 {
 				t.Errorf("expected counter to increment by 1, got %f", after-before)

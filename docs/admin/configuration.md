@@ -261,9 +261,8 @@ The following settings can be changed without restarting the server by sending
 - `auth.allowed_redirects` — OAuth broker allowed redirects
 - `block` — border policy settings (anonymous git, token type blocking)
 - `releases` — release download policy and allow list (`mode`, `redirect_to`, `redirect_head_check`, `allow`); note that `redirect_head_check_netrc` and `redirect_not_found_template` are loaded once at startup and require a restart to change
-- `cache` — git cache settings (enable/disable, storage path)
-
 Settings that require a restart: database driver/DSN, server listen addresses,
+`cache` (enable/disable, storage path),
 TLS certificates, the encryption key, logging configuration, metrics
 enable/disable, OAuth broker enable/disable and signing key
 (`auth.jwt_private_key` / `auth.jwt_private_key_file`), and `tokens.max_duration`
