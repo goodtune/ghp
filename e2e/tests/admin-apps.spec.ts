@@ -47,9 +47,11 @@ test.describe("Admin - Multi-App Management", () => {
     await page.goto("/admin");
     await page.waitForLoadState("networkidle");
 
+    const addAppDetails = page.locator('details:has(summary:has-text("Add App"))');
+
     // Expand the "Add App" collapsible.
     await page.click('summary:has-text("Add App")');
-    await expect(page.locator("details")).toHaveAttribute("open", "");
+    await expect(addAppDetails).toHaveAttribute("open", "");
 
     // Fill in the form fields.
     await page.fill("#app-name", "E2E Test App");
@@ -70,7 +72,7 @@ test.describe("Admin - Multi-App Management", () => {
     await expect(page.locator("#apps-list")).toContainText("Default");
 
     // The Add App form should have collapsed.
-    await expect(page.locator("details")).not.toHaveAttribute("open", "");
+    await expect(addAppDetails).not.toHaveAttribute("open", "");
 
     await testInfo.attach("app-created-form-collapsed", {
       body: await page.screenshot({ fullPage: true }),
