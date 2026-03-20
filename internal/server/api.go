@@ -147,6 +147,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/apps/{id}/installations", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListAppInstallations)))
 	mux.Handle("GET /api/apps/{id}/installations/{iid}/repositories", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListAppInstallationRepos)))
 
+	// Cached repository management routes.
+	mux.Handle("GET /api/cached-repos", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListCachedRepos)))
+	mux.Handle("POST /api/cached-repos", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleCreateCachedRepo)))
+	mux.Handle("GET /api/cached-repos/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleGetCachedRepo)))
+	mux.Handle("PATCH /api/cached-repos/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleUpdateCachedRepo)))
+	mux.Handle("DELETE /api/cached-repos/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleDeleteCachedRepo)))
 }
 
 type createTokenRequest struct {
@@ -1114,6 +1120,191 @@ func (a *API) handleListAppInstallationRepos(w http.ResponseWriter, r *http.Requ
 	}
 
 	writeJSON(w, http.StatusOK, repos)
+}
+
+// --- Cached Repository Handlers ---
+
+type cachedRepoResponse struct {
+	ID        string `json:"id"`
+	Owner     string `json:"owner"`
+	Name      string `json:"name"`
+	Enabled   bool   `json:"enabled"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+func cachedRepoToResponse(r *database.CachedRepository) cachedRepoResponse {
+	return cachedRepoResponse{
+		ID:        r.ID,
+		Owner:     r.Owner,
+		Name:      r.Name,
+		Enabled:   r.Enabled,
+		CreatedAt: r.CreatedAt.Format(time.RFC3339),
+		UpdatedAt: r.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func (a *API) handleListCachedRepos(w http.ResponseWriter, r *http.Request) {
+	repos, err := a.store.ListCachedRepositories(r.Context())
+	if err != nil {
+		a.logger.Error("failed to list cached repos", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+	result := make([]cachedRepoResponse, 0, len(repos))
+	for _, repo := range repos {
+		result = append(result, cachedRepoToResponse(repo))
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+type createCachedRepoRequest struct {
+	Owner   string `json:"owner"`
+	Name    string `json:"name"`
+	Enabled *bool  `json:"enabled"`
+}
+
+func (a *API) handleCreateCachedRepo(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	var req createCachedRepoRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"message": "Request body too large"})
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		}
+		return
+	}
+
+	if req.Owner == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "owner is required"})
+		return
+	}
+	if req.Name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "name is required"})
+		return
+	}
+
+	// Check for duplicates.
+	existing, err := a.store.GetCachedRepositoryByOwnerName(r.Context(), req.Owner, req.Name)
+	if err != nil {
+		a.logger.Error("failed to check cached repo", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+	if existing != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"message": "Cached repository already exists for this owner/name"})
+		return
+	}
+
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+
+	repo := &database.CachedRepository{
+		Owner:   req.Owner,
+		Name:    req.Name,
+		Enabled: enabled,
+	}
+	if err := a.store.CreateCachedRepository(r.Context(), repo); err != nil {
+		a.logger.Error("failed to create cached repo", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to create cached repository"})
+		return
+	}
+
+	session := auth.SessionFromContext(r.Context())
+	a.logger.Info("cached_repo_created", "user", session.Username, "owner", repo.Owner, "name", repo.Name)
+
+	writeJSON(w, http.StatusCreated, cachedRepoToResponse(repo))
+}
+
+func (a *API) handleGetCachedRepo(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !isValidUUID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid cached repository ID format"})
+		return
+	}
+	repo, err := a.store.GetCachedRepositoryByID(r.Context(), id)
+	if err != nil {
+		a.logger.Error("failed to get cached repo", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+	if repo == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Cached repository not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, cachedRepoToResponse(repo))
+}
+
+type updateCachedRepoRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+func (a *API) handleUpdateCachedRepo(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	var req updateCachedRepoRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"message": "Request body too large"})
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		}
+		return
+	}
+
+	id := r.PathValue("id")
+	if !isValidUUID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid cached repository ID format"})
+		return
+	}
+
+	existing, err := a.store.GetCachedRepositoryByID(r.Context(), id)
+	if err != nil {
+		a.logger.Error("failed to get cached repo", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+	if existing == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Cached repository not found"})
+		return
+	}
+
+	if req.Enabled != nil {
+		existing.Enabled = *req.Enabled
+	}
+
+	if err := a.store.UpdateCachedRepository(r.Context(), existing); err != nil {
+		a.logger.Error("failed to update cached repo", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to update cached repository"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, cachedRepoToResponse(existing))
+}
+
+func (a *API) handleDeleteCachedRepo(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !isValidUUID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid cached repository ID format"})
+		return
+	}
+	if err := a.store.DeleteCachedRepository(r.Context(), id); err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "Cached repository not found"})
+		} else {
+			a.logger.Error("failed to delete cached repo", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to delete cached repository"})
+		}
+		return
+	}
+
+	session := auth.SessionFromContext(r.Context())
+	a.logger.Info("cached_repo_deleted", "user", session.Username, "cached_repo_id", id)
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Cached repository deleted"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

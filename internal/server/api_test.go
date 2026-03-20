@@ -326,3 +326,110 @@ func TestHandleUpdateApp_BodyTooLarge(t *testing.T) {
 		t.Errorf("expected %d, got %d", http.StatusRequestEntityTooLarge, w.Code)
 	}
 }
+
+func TestHandleCreateCachedRepo_BodyTooLarge(t *testing.T) {
+	a := &API{}
+
+	body := strings.NewReader(`{"owner":"` + strings.Repeat("x", maxRequestBodySize) + `"}`)
+	req := httptest.NewRequest("POST", "/api/cached-repos", body)
+	w := httptest.NewRecorder()
+	a.handleCreateCachedRepo(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected %d, got %d", http.StatusRequestEntityTooLarge, w.Code)
+	}
+}
+
+func TestHandleCreateCachedRepo_InvalidJSON(t *testing.T) {
+	a := &API{}
+
+	req := httptest.NewRequest("POST", "/api/cached-repos", strings.NewReader("not json"))
+	w := httptest.NewRecorder()
+	a.handleCreateCachedRepo(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+}
+
+func TestHandleCreateCachedRepo_RequiredFields(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int
+		msg  string
+	}{
+		{"missing owner", `{"name":"myrepo"}`, http.StatusBadRequest, "owner is required"},
+		{"missing name", `{"owner":"myorg"}`, http.StatusBadRequest, "name is required"},
+		{"missing both", `{}`, http.StatusBadRequest, "owner is required"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &API{}
+			req := httptest.NewRequest("POST", "/api/cached-repos", strings.NewReader(tc.body))
+			w := httptest.NewRecorder()
+			a.handleCreateCachedRepo(w, req)
+			if w.Code != tc.want {
+				t.Errorf("expected %d, got %d", tc.want, w.Code)
+			}
+			if !strings.Contains(w.Body.String(), tc.msg) {
+				t.Errorf("expected %q in body, got: %s", tc.msg, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleGetCachedRepo_InvalidUUID(t *testing.T) {
+	a := &API{}
+
+	req := httptest.NewRequest("GET", "/api/cached-repos/not-a-uuid", nil)
+	req.SetPathValue("id", "not-a-uuid")
+	w := httptest.NewRecorder()
+	a.handleGetCachedRepo(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Invalid cached repository ID format") {
+		t.Errorf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestHandleDeleteCachedRepo_InvalidUUID(t *testing.T) {
+	a := &API{}
+
+	req := httptest.NewRequest("DELETE", "/api/cached-repos/bad-id", nil)
+	req.SetPathValue("id", "bad-id")
+	w := httptest.NewRecorder()
+	a.handleDeleteCachedRepo(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+}
+
+func TestHandleUpdateCachedRepo_BodyTooLarge(t *testing.T) {
+	a := &API{}
+
+	body := strings.NewReader(`{"enabled":` + strings.Repeat(" ", maxRequestBodySize) + `true}`)
+	req := httptest.NewRequest("PATCH", "/api/cached-repos/some-id", body)
+	w := httptest.NewRecorder()
+	a.handleUpdateCachedRepo(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected %d, got %d", http.StatusRequestEntityTooLarge, w.Code)
+	}
+}
+
+func TestHandleUpdateCachedRepo_InvalidUUID(t *testing.T) {
+	a := &API{}
+
+	req := httptest.NewRequest("PATCH", "/api/cached-repos/bad-id", strings.NewReader(`{"enabled":false}`))
+	req.SetPathValue("id", "bad-id")
+	w := httptest.NewRecorder()
+	a.handleUpdateCachedRepo(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+}
