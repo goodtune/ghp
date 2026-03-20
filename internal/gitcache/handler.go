@@ -2,13 +2,13 @@ package gitcache
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"time"
-
 	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/storer"
@@ -43,7 +43,6 @@ type Handler struct {
 	registry        *Registry
 	serviceTokenFn  ServiceTokenFunc
 	upstreamBaseURL string // e.g. "https://github.com"
-	checkFrequency  time.Duration
 }
 
 // NewHandler creates a cache handler.
@@ -57,7 +56,6 @@ func NewHandler(registry *Registry, serviceTokenFn ServiceTokenFunc, upstreamBas
 		registry:        registry,
 		serviceTokenFn:  serviceTokenFn,
 		upstreamBaseURL: upstreamBaseURL,
-		checkFrequency:  1 * time.Second,
 	}
 }
 
@@ -129,7 +127,7 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 			}
 			// Extract the auth token from the request for use as a fallback
 			// when no service token function is configured.
-			authToken := extractBearerToken(r.Header.Get("Authorization"))
+			authToken := extractGitHubToken(r.Header.Get("Authorization"))
 			result, err := h.handleFetch(r.Context(), managed, cmd, w, authToken)
 			proxy.SetCacheState(r, string(result))
 			metrics.CacheFetchTotal.WithLabelValues(string(result)).Inc()
@@ -198,13 +196,15 @@ func (h *Handler) handleLsRefs(r *http.Request, repo *ManagedRepository, cmd Com
 		if parseErr == nil {
 			if hasUpdate, checkErr := repo.HasAnyUpdate(refs); checkErr == nil && hasUpdate {
 				go func() {
-					svcToken, tokenErr := h.serviceTokenFn(context.Background())
+					warmCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+					defer cancel()
+					svcToken, tokenErr := h.serviceTokenFn(warmCtx)
 					if tokenErr != nil {
 						slog.Error("get service token for cache warming", "repo", repo.owner+"/"+repo.name, "err", tokenErr)
 						metrics.CacheWarmTotal.WithLabelValues("error").Inc()
 						return
 					}
-					if fetchErr := repo.FetchUpstream(context.Background(), svcToken); fetchErr != nil {
+					if fetchErr := repo.FetchUpstream(warmCtx, svcToken); fetchErr != nil {
 						slog.Error("async cache warming failed", "repo", repo.owner+"/"+repo.name, "err", fetchErr)
 						metrics.CacheWarmTotal.WithLabelValues("error").Inc()
 					} else {
@@ -292,57 +292,57 @@ func (h *Handler) fetchAndWait(ctx context.Context, repo *ManagedRepository, wan
 		return fmt.Errorf("cache miss handling unavailable: no token available")
 	}
 
-	fetchDone := make(chan error, 1)
-	go func() {
-		fetchDone <- repo.FetchUpstream(ctx, svcToken)
-	}()
-
-	timer := time.NewTimer(h.checkFrequency)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case err := <-fetchDone:
-			if err != nil {
-				return err
-			}
-			// Verify objects are now available.
-			hasAll, checkErr := repo.HasAllWants(wantHashes, wantRefs)
-			if checkErr != nil {
-				return checkErr
-			}
-			if !hasAll {
-				return fmt.Errorf("objects still missing after fetch")
-			}
-			return nil
-		case <-timer.C:
-			// Check early — objects may appear before fetch completes.
-			hasAll, err := repo.HasAllWants(wantHashes, wantRefs)
-			if err != nil {
-				return err
-			}
-			if hasAll {
-				return nil
-			}
-			timer.Reset(h.checkFrequency)
-		}
+	// Fetch synchronously — no concurrent storer access to avoid data races
+	// with go-git storers that are not safe for concurrent reads/writes.
+	if err := repo.FetchUpstream(ctx, svcToken); err != nil {
+		return err
 	}
+
+	// Verify objects are now available.
+	hasAll, checkErr := repo.HasAllWants(wantHashes, wantRefs)
+	if checkErr != nil {
+		return checkErr
+	}
+	if !hasAll {
+		return fmt.Errorf("objects still missing after fetch")
+	}
+	return nil
 }
 
-// extractBearerToken returns the token from a "Bearer <token>" or
-// "Basic <token>" Authorization header value, or the raw value if no
-// known scheme prefix is found.
-func extractBearerToken(authHeader string) string {
+// extractGitHubToken extracts the raw GitHub token from an Authorization
+// header, handling the schemes git clients use:
+//   - "Bearer <token>" / "token <token>" → token
+//   - "Basic <base64(x-access-token:token)>" → token (password portion)
+//   - raw value → returned as-is
+func extractGitHubToken(authHeader string) string {
 	authHeader = strings.TrimSpace(authHeader)
 	if authHeader == "" {
 		return ""
 	}
-	for _, prefix := range []string{"Bearer ", "bearer ", "Basic ", "basic "} {
-		if strings.HasPrefix(authHeader, prefix) {
+	lower := strings.ToLower(authHeader)
+	// Bearer and token schemes: value after the scheme is the token.
+	for _, prefix := range []string{"bearer ", "token "} {
+		if strings.HasPrefix(lower, prefix) {
 			return strings.TrimSpace(authHeader[len(prefix):])
 		}
 	}
+	// Basic auth: base64-decode and take the password portion.
+	if strings.HasPrefix(lower, "basic ") {
+		encoded := strings.TrimSpace(authHeader[len("basic "):])
+		decoded, err := base64Decode(encoded)
+		if err == nil {
+			if _, pass, ok := strings.Cut(decoded, ":"); ok {
+				return pass
+			}
+		}
+	}
 	return authHeader
+}
+
+func base64Decode(s string) (string, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }

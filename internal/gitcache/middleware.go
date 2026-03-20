@@ -63,12 +63,23 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case gitPath == "info/refs" && r.Method == "GET":
-		proxy.SetCacheState(r, "hit")
-		cl.cache.ServeInfoRefs(w, r)
+		// Only intercept protocol v2 upload-pack discovery requests;
+		// v1/dumb HTTP passes through to GitHub unchanged.
+		if r.URL.Query().Get("service") == "git-upload-pack" && r.Header.Get("Git-Protocol") == "version=2" {
+			proxy.SetCacheState(r, "hit")
+			cl.cache.ServeInfoRefs(w, r)
+		} else {
+			cl.inner.ServeHTTP(w, r)
+		}
 
 	case gitPath == "git-upload-pack" && r.Method == "POST":
-		cl.cache.ServeUploadPack(w, r, owner, repo)
-		// CacheState is set by the handler based on hit/miss/error
+		// Only intercept protocol v2 upload-pack requests.
+		if r.Header.Get("Git-Protocol") == "version=2" {
+			cl.cache.ServeUploadPack(w, r, owner, repo)
+			// CacheState is set by the handler based on hit/miss/error
+		} else {
+			cl.inner.ServeHTTP(w, r)
+		}
 
 	default:
 		// Other git paths (e.g. git-receive-pack) pass through.
