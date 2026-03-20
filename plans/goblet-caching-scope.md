@@ -262,18 +262,6 @@ IsCacheEnabled(ctx context.Context, owner, name string) (bool, error)  // hot-pa
 
 `IsCacheEnabled` should be backed by an in-memory cache (LRU or sync.Map) with short TTL, since it's called on every git request. The database is the source of truth; the memory cache avoids a DB round-trip on the hot path.
 
-### Static config additions
-
-```yaml
-cache:
-  enabled: true                    # master switch (hot-reloadable)
-  directory: /var/cache/ghp/git    # local disk path for bare repos
-```
-
-Environment variables: `GHP_CACHE_ENABLED`, `GHP_CACHE_DIRECTORY`
-
-Hot-reloadable: `enabled`. Not hot-reloadable: `directory`.
-
 ### Admin API endpoints
 
 ```
@@ -286,14 +274,70 @@ DELETE /api/cached-repos/{id}     — Remove + purge local cache
 
 ### Metrics
 
-| Metric | Type | Labels |
-|--------|------|--------|
-| `ghp_cache_request_total` | Counter | `result` (hit/miss/bypass/error) |
-| `ghp_cache_request_duration_seconds` | Histogram | `result` |
-| `ghp_cache_fetch_upstream_duration_seconds` | Histogram | (none) |
-| `ghp_proxy_decision_duration_seconds` | Histogram | stage=`cache_policy_check` |
+#### What goblet tracked (OpenCensus → our Prometheus equivalents)
 
-Note: no `owner`/`repo` labels on counters — unbounded cardinality per CLAUDE.md guidelines.
+Goblet instrumented six metrics with OpenCensus, using tag keys for `command_type` (ls-refs, fetch), `cache_state` (locally-served, queried-upstream), and `canonical_status` (OK, Internal, etc.):
+
+| Goblet metric (OpenCensus) | What it measured | Our equivalent |
+|---|---|---|
+| `InboundCommandCount` | Commands received, by type + status | `ghp_cache_command_total` |
+| `InboundCommandProcessingTime` | Per-command processing latency | `ghp_cache_command_duration_seconds` |
+| `OutboundCommandCount` | Upstream commands sent (ls-refs, fetch) | Captured by existing `ghp_proxy_decision_duration_seconds` stage=`upstream_roundtrip` |
+| `OutboundCommandProcessingTime` | Upstream command latency | Same as above |
+| `UpstreamFetchWaitingTime` | Time blocked waiting for upstream fetch to complete (polling loop) | `ghp_cache_fetch_wait_duration_seconds` |
+| `CommandCacheState` tag | "locally-served" vs "queried-upstream" per command | Label `cache_state` on command metrics |
+
+#### New Prometheus metrics
+
+| Metric | Type | Labels | Buckets | Description |
+|--------|------|--------|---------|-------------|
+| `ghp_cache_command_total` | Counter | `command` (ls-refs, fetch), `cache_state` (hit, miss, rejected), `status` (ok, error) | — | Git protocol v2 commands processed by the cache layer |
+| `ghp_cache_command_duration_seconds` | Histogram | `command`, `cache_state` | Fine-grained (50µs–1s) for locally-served; extended (2.5s–10s) for upstream | Per-command processing time |
+| `ghp_cache_fetch_wait_duration_seconds` | Histogram | — | Extended (100ms–30s) | Time spent waiting for async upstream fetch before serving |
+| `ghp_cache_upstream_fetch_duration_seconds` | Histogram | — | Extended (1s–60s) | Duration of `fetchUpstream()` background operations |
+| `ghp_cache_objects_total` | Gauge | — | — | Total cached git objects across all repos (periodic scan) |
+
+**Decision pipeline additions** (recorded via existing `ObserveDecision()` helper):
+
+| Stage | What it measures |
+|---|---|
+| `cache_policy_check` | `IsCacheEnabled()` lookup (memory cache + DB fallback) |
+| `cache_object_check` | `hasAllWants()` — checking if requested objects exist locally |
+| `cache_pack_serve` | Time to generate and stream packfile from local objects |
+
+**Existing metrics that apply unchanged:**
+- `ghp_proxy_request_duration_seconds` / `ghp_proxy_request_total` — the cache handler still records these with `type=git` and the new `cache_state` label value
+- `ghp_http_request_duration_seconds` / `ghp_http_request_total` — recorded by access log middleware, unaffected by cache
+
+Note: no `owner`/`repo` labels on any counter — unbounded cardinality per CLAUDE.md guidelines.
+
+### Access logging
+
+The existing access log (`accessLogEntry` in `internal/server/accesslog.go`) writes Caddy-compatible JSON with fields for `user_id`, `status`, `duration`, `size`, request/response headers, etc. The cache feature adds two new fields to the access log entry:
+
+```go
+type accessLogEntry struct {
+    // ... existing fields ...
+    CacheState string `json:"cache_state,omitempty"` // "hit", "miss", "bypass", or "" (non-git)
+    CacheRepo  bool   `json:"cache_repo,omitempty"`  // true if repo is in the cached set
+}
+```
+
+**`cache_state`** values:
+- `"hit"` — fetch command served entirely from local cache
+- `"miss"` — fetch command required upstream fetch before serving
+- `"bypass"` — repo is cache-enabled but request was passthrough (e.g., git-receive-pack push, or cache disabled globally)
+- `""` (omitted) — request is not a git smart HTTP operation, or repo is not in the cached set
+
+**`cache_repo`** — `true` when the target repository is in the `cached_repositories` table (regardless of whether caching was used for this specific request). This lets operators filter logs to see all traffic to cached repos, including pushes and API calls that bypass caching.
+
+**Implementation:** The cache handler sets these values via new context slots (same pattern as `SetUsername`/`SetUserID`):
+```go
+proxy.SetCacheState(r, "hit")
+proxy.SetCacheRepo(r, true)
+```
+
+The access log middleware reads them after the request completes, alongside the existing username/userID slots.
 
 ### Database migrations
 
@@ -310,14 +354,109 @@ CREATE TABLE cached_repositories (
 CREATE UNIQUE INDEX idx_cached_repos_owner_name ON cached_repositories (owner, name);
 ```
 
+## Storage Backend: Local Filesystem vs S3
+
+### The scalability concern
+
+ghp is designed as a stateless, horizontally-scalable proxy. Adding a local disk cache breaks this: each instance has its own cache, cache hit rates depend on request routing stickiness, and local disk introduces a capacity/provisioning concern.
+
+### Storage abstraction via go-git's `Storer` interface
+
+go-git already defines a `storage.Storer` interface that abstracts where git objects, references, and config live. It ships with `filesystem` and `memory` implementations. We can plug in an S3-backed implementation:
+
+```go
+// internal/gitcache/storage.go
+
+// CacheStorage abstracts where cached git objects are stored.
+// go-git's Storer interface is the foundation — our S3 backend
+// implements the same interface, making it transparent to the
+// rest of the cache layer.
+type CacheStorageFactory interface {
+    // Open returns a go-git Storer for the given repository.
+    // Creates the backing storage if it doesn't exist.
+    Open(owner, repo string) (storage.Storer, error)
+
+    // Delete removes all cached data for a repository.
+    Delete(owner, repo string) error
+}
+```
+
+**Implementations:**
+
+| Backend | Config value | Description |
+|---|---|---|
+| `filesystem` (default) | `cache.storage: filesystem` | Bare repos on local disk under `cache.directory`. Simple, fast, single-instance. |
+| `s3` | `cache.storage: s3` | Git objects stored in S3 keyed by SHA. All instances share the cache. |
+
+### S3 backend design
+
+```yaml
+cache:
+  enabled: true
+  storage: s3
+  s3:
+    bucket: my-ghp-cache
+    prefix: git-objects/      # optional key prefix
+    region: us-east-1
+```
+
+**Object layout in S3:**
+```
+s3://my-ghp-cache/git-objects/{owner}/{repo}/objects/{sha[0:2]}/{sha[2:]}
+s3://my-ghp-cache/git-objects/{owner}/{repo}/refs/{refname}
+s3://my-ghp-cache/git-objects/{owner}/{repo}/pack/pack-{sha}.{idx,pack}
+```
+
+This maps directly to git's loose object and packfile layout. The go-git `Storer` interface reads/writes at this level, so the rest of the cache handler is unchanged.
+
+**Benefits:**
+- All ghp instances share a single cache — no stickiness required
+- No local disk provisioning — S3 is effectively unlimited
+- Objects are durable (S3 replication) — a restarted instance doesn't cold-start
+- S3 lifecycle rules can handle eviction (e.g., expire objects untouched for 30 days)
+
+### Why redirect-to-S3 doesn't cleanly work (and what does)
+
+The idea of returning an HTTP redirect to an S3 URL for the packfile response hits a protocol constraint:
+
+1. **Packfiles are client-specific.** The `fetch` response is a packfile containing exactly the objects the client needs (wants minus haves). Different clients get different packfiles. You can't pre-generate a single S3 object to redirect to.
+
+2. **POST redirects lose the body.** Git's `/git-upload-pack` is a POST. HTTP redirects (301/302) cause clients to resend as GET, losing the request body containing wants/haves. Git does handle some redirects, but not for the upload-pack POST.
+
+3. **The response is pkt-line framed.** Even if we pre-generated a packfile, the HTTP response wraps it in Git protocol v2 pkt-line framing. An S3 object would need to contain the exact framed response.
+
+**What DOES work with S3:**
+
+- **S3 as shared object store** (described above) — all instances read/write objects to S3. Pack generation still happens on the ghp instance (CPU work), but object data comes from S3. This is the right horizontal scaling approach.
+
+- **Pre-generated clone packs (future optimization):** For the narrow case of initial clones (client has zero objects), the packfile IS deterministic for a given set of refs. We could pre-generate a full clone pack after each `fetchUpstream()`, store it in S3, and serve it directly for clone requests. This would be detected by an empty `have` set in the fetch command. This is a meaningful optimization since the most common agent workflow is "clone the repo" — but it's additive and can come later.
+
+### Configuration
+
+```yaml
+cache:
+  enabled: true                    # master switch (hot-reloadable)
+  storage: filesystem              # "filesystem" or "s3"
+  directory: /var/cache/ghp/git    # for filesystem backend
+  s3:                              # for s3 backend
+    bucket: my-ghp-cache
+    prefix: git-objects/
+    region: us-east-1
+```
+
+Environment variables: `GHP_CACHE_ENABLED`, `GHP_CACHE_STORAGE`, `GHP_CACHE_DIRECTORY`, `GHP_CACHE_S3_BUCKET`, `GHP_CACHE_S3_PREFIX`, `GHP_CACHE_S3_REGION`
+
+Hot-reloadable: `enabled`. Not hot-reloadable: `storage`, `directory`, `s3.*`.
+
 ## Implementation Plan (Phased)
 
 ### Phase 1: Protocol layer + local repo management
 1. Add `gitprotocolio` dependency (zero transitive deps) or vendor the parsing code
-2. Implement `internal/gitcache/repository.go` — bare repo init, fetch via go-git, object/ref queries
-3. Implement `internal/gitcache/protocol.go` — parse v2 requests, write v2 responses, capability advertisement
-4. Implement `internal/gitcache/packserve.go` — pure Go pack generation using go-git plumbing
-5. Unit tests with in-memory/temp-dir repos
+2. Implement `internal/gitcache/storage.go` — `CacheStorageFactory` interface + filesystem implementation
+3. Implement `internal/gitcache/repository.go` — managed bare repo: init, fetch via go-git, object/ref queries
+4. Implement `internal/gitcache/protocol.go` — parse v2 requests, write v2 responses, capability advertisement
+5. Implement `internal/gitcache/packserve.go` — pure Go pack generation using go-git plumbing
+6. Unit tests with in-memory/temp-dir repos
 
 ### Phase 2: Data model + API
 1. Database migration for `cached_repositories` (postgres + sqlite)
@@ -330,13 +469,20 @@ CREATE UNIQUE INDEX idx_cached_repos_owner_name ON cached_repositories (owner, n
 1. `internal/gitcache/handler.go` — the `http.Handler` wiring protocol parsing to repo operations
 2. Configuration additions (`cache.*` fields)
 3. Intercept in scoped passthrough — route cache-enabled repos to git cache handler
-4. Decision pipeline metrics
-5. Integration tests
+4. Cache metrics (command counters, durations, decision pipeline stages)
+5. Access log fields (`cache_state`, `cache_repo`) via new context slots
+6. Integration tests
 
 ### Phase 4: Admin UI + docs
 1. Web UI section for managing cached repositories
 2. Documentation updates (configuration.md, how-it-works.md)
 3. E2E test coverage
+
+### Phase 5: S3 storage backend
+1. Implement S3-backed `CacheStorageFactory` using go-git `Storer` interface
+2. S3 configuration fields + environment variables
+3. Integration tests against localstack/minio
+4. (Future) Pre-generated clone packs in S3 for initial clone optimization
 
 ## Risk Assessment
 
@@ -345,8 +491,10 @@ CREATE UNIQUE INDEX idx_cached_repos_owner_name ON cached_repositories (owner, n
 | go-git `Fetch()` doesn't support all GitHub edge cases (LFS, shallow, partial clone) | Start with basic clone/fetch; LFS and partial clone are passthrough-only initially |
 | Pure Go pack serving produces suboptimal delta compression vs C git | Acceptable — network savings from local serving outweigh compression delta |
 | go-git protocol v2 server-side gaps | We handle protocol v2 ourselves via gitprotocolio; go-git is only used for object storage and enumeration |
-| Large repos exhaust disk | Operator responsibility initially; can add eviction later |
+| Large repos exhaust disk (filesystem backend) | S3 backend avoids this; filesystem backend is operator responsibility; can add eviction later |
 | Concurrent fetch storms (many clients trigger fetchUpstream simultaneously) | Goblet uses a mutex per repo — same pattern. Only one fetch runs at a time per cached repo. |
+| S3 latency for object reads during pack generation | S3 reads are typically 5-50ms per object; for large packs, use packfile index to batch reads. Local filesystem is always faster for single-instance deployments. |
+| Authorization bypass via crafted fetch-without-ls-refs | Explicitly rejected — fetch commands require a preceding successful ls-refs in the same request |
 
 ## Open Questions
 
