@@ -87,13 +87,32 @@ The cache exposes Prometheus metrics at the `/metrics` endpoint:
 | `ghp_cache_lsrefs_total` | Counter | — | ls-refs commands forwarded to upstream |
 | `ghp_cache_warm_total` | Counter | `result` | Cache warming operations by result (`success`, `error`) |
 | `ghp_cache_repos_active` | Gauge | — | Number of repositories with caching enabled |
+| `ghp_cache_request_total` | Counter | `owner`, `repo`, `result` | Per-repository git requests with cache outcome |
 
 The `ghp_proxy_decision_duration_seconds` histogram includes a `cache_lookup`
 stage measuring the time spent checking whether a request targets a cached
 repository.
 
-Per-repository cache behavior should be analyzed via access logs (see below),
-not metric labels, to avoid unbounded time-series cardinality.
+### Identifying cache candidates
+
+The `ghp_cache_request_total` metric tracks every git smart HTTP request with
+per-repository labels and a `result` indicating the cache outcome: `hit`,
+`miss`, `nocache` (not configured), `bypass` (configured but disabled),
+`error`, `rejected`, or `passthrough`.
+
+Use these queries to find repositories that would benefit from caching:
+
+```promql
+# Top uncached repos by request volume
+topk(10, sum by (owner, repo) (ghp_cache_request_total{result="nocache"}))
+
+# Cache hit rate per repo
+sum by (owner, repo) (ghp_cache_request_total{result="hit"})
+/ sum by (owner, repo) (ghp_cache_request_total)
+```
+
+See [Monitoring](../admin/monitoring.md#identifying-cache-candidates) for the
+full set of example queries.
 
 ## Access Logs
 
@@ -101,7 +120,7 @@ When the cache feature is active, two additional fields appear in access log
 entries:
 
 - `cache_state` — the cache result for the request: `hit`, `miss`, `rejected`,
-  `error`, or empty for non-cached requests
+  `error`, `passthrough`, or empty for non-cached requests
 - `cache_repo` — the `owner/repo` identifier when the request targets a
   cache-enabled repository
 

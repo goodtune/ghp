@@ -99,6 +99,15 @@ func SetCacheState(r *http.Request, state string) {
 	}
 }
 
+// GetCacheState returns the cache result state from the request's context slot,
+// or "" if no state was set.
+func GetCacheState(r *http.Request) string {
+	if slot, ok := r.Context().Value(cacheStateCtxKey).(*string); ok {
+		return *slot
+	}
+	return ""
+}
+
 // SetCacheRepo stores the cached repository identifier (owner/repo) in the
 // request's context slot. It is a no-op if no slot was prepared.
 func SetCacheRepo(r *http.Request, repo string) {

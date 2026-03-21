@@ -58,13 +58,9 @@ func ServeFetchLocal(w io.Writer, store storer.EncodedObjectStorer, wants []plum
 //	sideband data (band 1 = packfile data)
 //	flush
 func writeFetchResponse(w io.Writer, packData []byte) error {
-	// Delimiter packet signals start of response data.
-	delim := &gitprotocolio.ProtocolV2ResponseChunk{Delimiter: true}
-	if _, err := w.Write(delim.EncodeToPktLine()); err != nil {
-		return err
-	}
-
 	// Write "packfile" section header as a response line.
+	// Note: NO delimiter before the first (and only) section. In protocol v2,
+	// delimiters separate sections, they don't precede the first one.
 	sectionHeader := &gitprotocolio.ProtocolV2ResponseChunk{
 		Response: []byte("packfile\n"),
 	}

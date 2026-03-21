@@ -7,6 +7,7 @@
 package gitcache
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -30,10 +31,11 @@ import (
 type CacheResult string
 
 const (
-	CacheHit      CacheResult = "hit"
-	CacheMiss     CacheResult = "miss"
-	CacheRejected CacheResult = "rejected"
-	CacheError    CacheResult = "error"
+	CacheHit         CacheResult = "hit"
+	CacheMiss        CacheResult = "miss"
+	CacheRejected    CacheResult = "rejected"
+	CacheError       CacheResult = "error"
+	CachePassthrough CacheResult = "passthrough" // delegate to inner handler
 )
 
 // upstreamError indicates an HTTP error response from upstream GitHub.
@@ -44,6 +46,9 @@ type upstreamError struct {
 func (e *upstreamError) Error() string {
 	return fmt.Sprintf("upstream returned %d", e.StatusCode)
 }
+
+// errNoToken indicates no token is available for upstream fetch on cache miss.
+var errNoToken = errors.New("cache miss handling unavailable: no token available")
 
 // isUpstreamRejection returns true if the error represents an access-denied
 // response (401, 403, 404) from upstream, as opposed to a server/network error.
@@ -132,6 +137,52 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 		return
 	}
 
+	// In protocol v2 over HTTP, git may send ls-refs + fetch bundled in a
+	// single POST, or send a standalone fetch in a subsequent POST (e.g., for
+	// additional objects after the initial clone negotiation). Standalone
+	// fetch requests are safe because the scoped passthrough handler has
+	// already verified the user's token and enforced scope — the Authorization
+	// header contains a resolved GitHub credential by this point.
+	hasLsRefs := false
+	for _, cmd := range commands {
+		if cmd.Name == "ls-refs" {
+			hasLsRefs = true
+			break
+		}
+	}
+
+	// For standalone fetch (no ls-refs in this request), check if we can
+	// handle a cache miss before writing any response headers. If all wants
+	// are already cached we can serve locally; otherwise we need a token for
+	// upstream fetch. If neither is available, proxy to upstream directly
+	// using the parsed commands (since the original body has been consumed).
+	if !hasLsRefs {
+		authToken := extractGitHubToken(r.Header.Get("Authorization"))
+		if authToken == "" && h.serviceTokenFn == nil {
+			// Check if all wants are cached — if so we can serve without a token.
+			needsUpstream := false
+			for _, cmd := range commands {
+				if cmd.Name == "fetch" {
+					wantHashes, wantRefs, parseErr := ParseFetchWants(cmd)
+					if parseErr != nil {
+						needsUpstream = true
+						break
+					}
+					hasAll, checkErr := managed.HasAllWants(wantHashes, wantRefs)
+					if checkErr != nil || !hasAll {
+						needsUpstream = true
+						break
+					}
+				}
+			}
+			if needsUpstream {
+				// Cache miss with no token — proxy directly to upstream.
+				h.proxyUploadPackToUpstream(w, r, owner, repo, commands)
+				return
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
 
 	lsRefsSucceeded := false
@@ -152,7 +203,9 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 			lsRefsSucceeded = true
 
 		case "fetch":
-			if !lsRefsSucceeded {
+			if hasLsRefs && !lsRefsSucceeded {
+				// Request contains both ls-refs and fetch, but ls-refs
+				// hasn't succeeded yet — reject.
 				WriteError(w, "ERR fetch requires ls-refs first for access verification")
 				proxy.SetCacheState(r, string(CacheRejected))
 				metrics.CacheFetchTotal.WithLabelValues(string(CacheRejected)).Inc()
@@ -171,6 +224,47 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 			slog.Info("fetch served", "repo", owner+"/"+repo, "result", result)
 		}
 	}
+}
+
+// proxyUploadPackToUpstream forwards a git-upload-pack request directly to
+// upstream GitHub, re-encoding the parsed commands into the request body
+// (since the original body has already been consumed). This is used when
+// the cache can't serve the request (e.g., cache miss with no token).
+func (h *Handler) proxyUploadPackToUpstream(w http.ResponseWriter, r *http.Request, owner, repo string, commands []Command) {
+	upstreamURL := h.upstreamBaseURL + "/" + owner + "/" + repo + ".git/git-upload-pack"
+
+	// Re-encode all commands into a single body.
+	var buf bytes.Buffer
+	for _, cmd := range commands {
+		for _, c := range cmd.Chunks {
+			buf.Write(c.EncodeToPktLine())
+		}
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), "POST", upstreamURL, &buf)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Content-Type", "application/x-git-upload-pack-request")
+	req.Header.Set("Accept", "application/x-git-upload-pack-result")
+	req.Header.Set("Git-Protocol", "version=2")
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		slog.Error("upstream proxy failed", "repo", owner+"/"+repo, "err", err)
+		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+	proxy.SetCacheState(r, string(CachePassthrough))
 }
 
 // handleLsRefs forwards the ls-refs command to upstream GitHub and returns
@@ -271,6 +365,10 @@ func (h *Handler) handleFetch(ctx context.Context, repo *ManagedRepository, cmd 
 	if !hasAll {
 		// Cache miss — need to fetch from upstream first.
 		if err := h.fetchAndWait(ctx, repo, wantHashes, wantRefs, authToken); err != nil {
+			if errors.Is(err, errNoToken) {
+				// No token available — delegate to passthrough proxy.
+				return CachePassthrough, err
+			}
 			WriteError(w, "ERR upstream fetch failed")
 			return CacheError, err
 		}
@@ -326,7 +424,7 @@ func (h *Handler) fetchAndWait(ctx context.Context, repo *ManagedRepository, wan
 	} else if authToken != "" {
 		svcToken = authToken
 	} else {
-		return fmt.Errorf("cache miss handling unavailable: no token available")
+		return errNoToken
 	}
 
 	// Fetch synchronously — no concurrent storer access to avoid data races

@@ -375,6 +375,25 @@ func TestCacheReposActive(t *testing.T) {
 	}
 }
 
+func TestCacheRequestTotal(t *testing.T) {
+	labels := prometheus.Labels{"owner": "testorg", "repo": "testrepo", "result": "nocache"}
+	before := getCounterValue(t, CacheRequestTotal, labels)
+	CacheRequestTotal.WithLabelValues("testorg", "testrepo", "nocache").Inc()
+	after := getCounterValue(t, CacheRequestTotal, labels)
+	if after-before != 1 {
+		t.Errorf("expected counter to increment by 1, got %f", after-before)
+	}
+
+	// Verify bypass label works too.
+	bypassLabels := prometheus.Labels{"owner": "testorg", "repo": "testrepo", "result": "bypass"}
+	beforeBypass := getCounterValue(t, CacheRequestTotal, bypassLabels)
+	CacheRequestTotal.WithLabelValues("testorg", "testrepo", "bypass").Inc()
+	afterBypass := getCounterValue(t, CacheRequestTotal, bypassLabels)
+	if afterBypass-beforeBypass != 1 {
+		t.Errorf("expected bypass counter to increment by 1, got %f", afterBypass-beforeBypass)
+	}
+}
+
 func TestObserveDecision_CacheLookup(t *testing.T) {
 	labels := prometheus.Labels{
 		"stage":      StageCacheLookup,

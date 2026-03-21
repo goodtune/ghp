@@ -188,6 +188,24 @@ var (
 		Help: "Number of repositories with caching currently enabled.",
 	})
 
+	// CacheRequestTotal counts git smart HTTP requests per repository with
+	// cache outcome. Labels: owner, repo, result. Result values:
+	//   "hit"     — served from local cache
+	//   "miss"    — cache miss, fetched upstream then served
+	//   "nocache" — repository not configured for caching
+	//   "bypass"  — repository configured but caching disabled
+	//   "error"   — cache operation failed
+	//   "rejected"    — upstream rejected access
+	//   "passthrough" — delegated to upstream proxy
+	//
+	// Cardinality note: bounded by the number of distinct repositories
+	// accessed through the proxy (typically hundreds). Intended for
+	// identifying cache candidate repositories via PromQL.
+	CacheRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_cache_request_total",
+		Help: "Git smart HTTP requests per repository with cache outcome.",
+	}, []string{"owner", "repo", "result"})
+
 	// BuildInfo is a gauge with a constant value of 1 labeled by build
 	// metadata. It follows the node_exporter_build_info convention.
 	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{

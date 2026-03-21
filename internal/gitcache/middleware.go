@@ -60,8 +60,15 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		cl.inner.ServeHTTP(w, r)
 		return
 	}
-	if cached == nil || !cached.Enabled {
+	if cached == nil {
 		metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
+		metrics.CacheRequestTotal.WithLabelValues(owner, repo, "nocache").Inc()
+		cl.inner.ServeHTTP(w, r)
+		return
+	}
+	if !cached.Enabled {
+		metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
+		metrics.CacheRequestTotal.WithLabelValues(owner, repo, "bypass").Inc()
 		cl.inner.ServeHTTP(w, r)
 		return
 	}
@@ -69,6 +76,15 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Set access log context for cache tracking.
 	proxy.SetCacheRepo(r, owner+"/"+repo)
+
+	// Emit per-repo cache metric after the handler sets cache_state.
+	defer func() {
+		result := proxy.GetCacheState(r)
+		if result == "" {
+			result = "hit" // info/refs and other synthetic responses
+		}
+		metrics.CacheRequestTotal.WithLabelValues(owner, repo, result).Inc()
+	}()
 
 	switch {
 	case gitPath == "info/refs" && r.Method == "GET":
