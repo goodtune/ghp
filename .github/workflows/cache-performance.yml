@@ -1,0 +1,47 @@
+name: Cache Performance
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Weekly Monday 6am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Git clone cache benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build and start GHP
+        working-directory: bench
+        run: docker compose up -d --build
+
+      - name: Run benchmark
+        run: bash bench/scripts/benchmark.sh
+
+      - name: Capture Docker logs
+        if: always()
+        run: |
+          mkdir -p bench/results/logs
+          docker compose -f bench/docker-compose.yml logs --no-color > bench/results/logs/docker-compose.log 2>&1
+
+      - name: Generate report
+        if: always()
+        run: python3 bench/scripts/report.py
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cache-performance-results
+          path: bench/results/
+          retention-days: 90
+
+      - name: Teardown
+        if: always()
+        working-directory: bench
+        run: docker compose down -v

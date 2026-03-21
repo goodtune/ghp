@@ -1,0 +1,23 @@
+services:
+  ghp:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "${GHP_PORT:-8080}:8080"
+      - "${GHP_METRICS_PORT:-9136}:9136"
+    environment:
+      GHP_DEV_MODE: "true"
+      GHP_DATABASE_DRIVER: sqlite
+      GHP_DATABASE_DSN: /data/ghp.db
+      GHP_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      GHP_SERVER_LISTEN: ":8080"
+      GHP_METRICS_LISTEN: ":9136"
+      GHP_LOGGING_LEVEL: debug
+      GHP_GITHUB_CLIENT_ID: "unused"
+      GHP_GITHUB_CLIENT_SECRET: "unused"
+    volumes:
+      - ghp-data:/data
+
+volumes:
+  ghp-data:

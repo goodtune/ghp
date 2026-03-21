@@ -52,6 +52,9 @@ internal/docs/site/*
 # Git worktrees
 .worktrees/
 
+# Benchmark results
+bench/results/
+
 # Editor/IDE
 # .idea/
 # .vscode/
