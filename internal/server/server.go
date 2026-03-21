@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -37,6 +38,7 @@ import (
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/docs"
+	"github.com/goodtune/ghp/internal/gitcache"
 	"github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/proxy"
@@ -61,6 +63,15 @@ func New(cfg *config.Config, configPath string, version string, logger *slog.Log
 		logWriter = io.Discard
 	}
 	return &Server{cfg: cfg, configPath: configPath, version: version, logger: logger, logWriter: logWriter, migrate: migrate}
+}
+
+// mustParseURL parses a URL and panics on failure. Only for compile-time constants.
+func mustParseURL(rawURL string) *url.URL {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		panic(fmt.Sprintf("invalid URL %q: %v", rawURL, err))
+	}
+	return u
 }
 
 // syncBlockMetrics updates Prometheus gauges for block.* feature flags
@@ -391,9 +402,35 @@ func (s *Server) Run(ctx context.Context) error {
 	// Reuse proxyTokenResolver created above for cache warming to avoid duplication.
 	githubInner := proxy.NewPassthroughHandler(
 		"https://github.com", proxyTokenResolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
+
+	// Wrap with git cache handler if enabled. The cache middleware wraps
+	// githubInner (the raw passthrough) so that it runs AFTER the scoped
+	// passthrough handler has performed token resolution and scope enforcement.
+	// By the time the cache handler sees the request, the Authorization header
+	// already contains the resolved GitHub token.
+	if s.cfg.Cache.Enabled {
+		if s.cfg.Cache.S3Bucket != "" {
+			return fmt.Errorf("S3 cache storage backend is not yet implemented; remove cache.s3_bucket from config and use local filesystem storage (cache.storage_path) instead")
+		}
+		storageFactory, fsErr := gitcache.NewFilesystemStorageFactory(s.cfg.Cache.StoragePath)
+		if fsErr != nil {
+			return fmt.Errorf("create filesystem cache storage: %w", fsErr)
+		}
+		cacheRegistry := gitcache.NewRegistry(storageFactory, mustParseURL("https://github.com"))
+		cacheHandler := gitcache.NewHandler(
+			cacheRegistry,
+			nil, // Service token is optional for initial implementation.
+			"https://github.com",
+		)
+		githubInner = gitcache.NewCacheLookup(githubInner, cacheHandler, store, s.logger)
+		gitcache.SyncCacheReposMetric(lifecycleCtx, store)
+		s.logger.Info("git cache enabled", "storage_path", s.cfg.Cache.StoragePath)
+	}
+
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
 		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, s.logger, s.cfg)
 	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger)
+
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 

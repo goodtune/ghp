@@ -81,4 +81,11 @@ services:
       GHP_SERVER_LISTEN: ":8080"
       GHP_METRICS_ENABLED: "true"
       GHP_METRICS_LISTEN: ":9136"
+      GHP_CACHE_ENABLED: "true"
+      GHP_CACHE_STORAGE_PATH: /var/lib/ghp/cache
       GHP_LOGGING_LEVEL: debug
+    volumes:
+      - ghp-cache:/var/lib/ghp/cache
+
+volumes:
+  ghp-cache:

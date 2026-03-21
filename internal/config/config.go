@@ -37,6 +37,8 @@ type Config struct {
 	Block    BlockConfig    `koanf:"block"`
 	Releases ReleasesConfig `koanf:"releases"`
 
+	Cache CacheConfig `koanf:"cache"`
+
 	EncryptionKey string `koanf:"encryption_key"`
 
 	// DevMode enables test-only endpoints (e.g. /auth/test-login).
@@ -168,6 +170,26 @@ type OTELConfig struct {
 	Protocol string `koanf:"protocol"`
 }
 
+// CacheConfig holds settings for the Git clone/fetch caching feature.
+// When enabled, repositories listed in the database as cached will have
+// their git objects stored locally and served from cache on subsequent
+// fetch requests, reducing load on GitHub and improving clone performance.
+type CacheConfig struct {
+	// Enabled activates the git cache feature. When false, all git operations
+	// pass through to GitHub as normal.
+	Enabled bool `koanf:"enabled"`
+	// StoragePath is the local filesystem path where cached bare repos are stored.
+	// Defaults to "cache" in the current working directory.
+	StoragePath string `koanf:"storage_path"`
+	// S3Bucket, when set, uses S3-compatible object storage instead of local
+	// filesystem. The StoragePath is used as the key prefix within the bucket.
+	S3Bucket string `koanf:"s3_bucket"`
+	// S3Region is the AWS region for the S3 bucket.
+	S3Region string `koanf:"s3_region"`
+	// S3Endpoint is a custom S3-compatible endpoint URL (for MinIO, etc).
+	S3Endpoint string `koanf:"s3_endpoint"`
+}
+
 // AuthConfig holds settings for the OAuth broker feature.
 type AuthConfig struct {
 	// JWTPrivateKey is the PEM-encoded RSA private key used to sign broker JWTs
@@ -209,6 +231,9 @@ func Defaults() *Config {
 		OTEL: OTELConfig{
 			Protocol: "grpc",
 		},
+		Cache: CacheConfig{
+			StoragePath: "cache",
+		},
 	}
 }
 
@@ -236,7 +261,7 @@ func Load(path string) (*Config, error) {
 			if i := strings.Index(s, "_"); i > 0 {
 				section, field := s[:i], s[i+1:]
 				switch section {
-				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases":
+				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases", "cache":
 					// Handle 3-level nesting for logging.file.*
 					if section == "logging" && strings.HasPrefix(field, "file_") {
 						return "logging.file." + field[len("file_"):], v
@@ -316,6 +341,7 @@ func (c *Config) ReloadFrom(path string) error {
 	c.Auth = fresh.Auth
 	c.Block = fresh.Block
 	c.Releases = fresh.Releases
+	c.Cache = fresh.Cache
 	return nil
 }
 

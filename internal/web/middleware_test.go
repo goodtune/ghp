@@ -220,6 +220,18 @@ func (noopStore) ListAllProxyTokens(_ context.Context) ([]*database.ProxyToken, 
 func (noopStore) ListActiveProxyTokens(_ context.Context) ([]*database.ProxyToken, error)       { return nil, nil }
 func (noopStore) RevokeProxyToken(_ context.Context, _ string) error                            { return nil }
 func (noopStore) UpdateProxyTokenAppID(_ context.Context, _ string, _ string) error             { return nil }
+func (noopStore) CreateCachedRepository(_ context.Context, _ *database.CachedRepository) error  { return nil }
+func (noopStore) GetCachedRepositoryByID(_ context.Context, _ string) (*database.CachedRepository, error) {
+	return nil, nil
+}
+func (noopStore) GetCachedRepositoryByOwnerName(_ context.Context, _, _ string) (*database.CachedRepository, error) {
+	return nil, nil
+}
+func (noopStore) ListCachedRepositories(_ context.Context) ([]*database.CachedRepository, error) {
+	return nil, nil
+}
+func (noopStore) UpdateCachedRepository(_ context.Context, _ *database.CachedRepository) error { return nil }
+func (noopStore) DeleteCachedRepository(_ context.Context, _ string) error                     { return nil }
 func (noopStore) Close() error { return nil }
 
 // stubStore is a minimal database.Store that overrides UpsertUser and

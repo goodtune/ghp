@@ -100,6 +100,15 @@ manage their own credentials, so ghp does not intercept tokens or enforce
 scopes on this traffic. All Copilot requests are still logged and counted
 in metrics for full visibility.
 
+### Git Cache
+
+For frequently-cloned repositories, ghp can cache git objects locally and serve
+subsequent clone/fetch requests from cache. This reduces load on GitHub and
+improves clone performance. Caching is opt-in per repository and always
+verifies GitHub access before serving cached data.
+
+See [Git Cache](features/git-cache.md) for configuration and details.
+
 ### Multi-App Support
 
 ghp supports multiple GitHub Apps simultaneously. Each app can have its own
