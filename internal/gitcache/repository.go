@@ -66,8 +66,8 @@ func openManagedRepository(owner, name string, upstream *url.URL, store storage.
 
 // LastUpdateTime returns the time of the most recent successful upstream fetch.
 func (m *ManagedRepository) LastUpdateTime() time.Time {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.lastUpdate
 }
 
@@ -161,3 +161,10 @@ func (m *ManagedRepository) FetchUpstream(ctx context.Context, token string) err
 func (m *ManagedRepository) Storer() storage.Storer {
 	return m.store
 }
+
+// RLock acquires the read lock, preventing concurrent writes (FetchUpstream)
+// from modifying the storer while reads are in progress.
+func (m *ManagedRepository) RLock() { m.mu.RLock() }
+
+// RUnlock releases the read lock.
+func (m *ManagedRepository) RUnlock() { m.mu.RUnlock() }

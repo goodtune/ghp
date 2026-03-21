@@ -274,6 +274,11 @@ func (h *Handler) handleFetch(ctx context.Context, repo *ManagedRepository, cmd 
 		result = CacheMiss
 	}
 
+	// Hold the read lock for resolve + pack generation to prevent
+	// concurrent FetchUpstream writes from racing with storer reads.
+	repo.RLock()
+	defer repo.RUnlock()
+
 	// Resolve want-refs to hashes.
 	s := repo.Storer()
 	objStorer, ok := s.(storer.EncodedObjectStorer)

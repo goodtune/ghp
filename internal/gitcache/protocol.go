@@ -45,6 +45,14 @@ func ParseCommands(r io.Reader) ([]Command, error) {
 			break
 		}
 
+		// Verify the last chunk is a proper terminator (EndArgument or EndRequest).
+		// A truncated request body (EOF without flush pkt-line) would produce
+		// chunks without a terminator, which we must reject.
+		last := chunks[len(chunks)-1]
+		if !last.EndArgument && !last.EndRequest {
+			return nil, fmt.Errorf("truncated command: missing terminator")
+		}
+
 		name := chunks[0].Command
 		switch name {
 		case "ls-refs", "fetch":
