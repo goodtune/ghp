@@ -47,6 +47,11 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	repo := strings.ToLower(rawRepo)
 
 	// Check if this repository has caching enabled.
+	// NOTE: This deliberately queries the database on every request rather than
+	// using an in-memory cache. The cache-enabled repo set is small (admin-configured),
+	// the lookup is indexed, and the StageCacheLookup metric provides latency visibility.
+	// An in-memory TTL cache would add invalidation complexity without meaningful benefit
+	// at current traffic levels. Revisit if monitoring shows this becomes a bottleneck.
 	lookupStart := time.Now()
 	cached, err := cl.store.GetCachedRepositoryByOwnerName(r.Context(), owner, repo)
 	if err != nil {

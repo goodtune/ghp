@@ -151,7 +151,7 @@ func (m *ManagedRepository) FetchUpstream(ctx context.Context, token string) err
 		return fmt.Errorf("fetch %s/%s: %w", m.owner, m.name, err)
 	}
 
-	m.lastUpdate = start
+	m.lastUpdate = time.Now().UTC()
 	slog.Info("fetch upstream complete", "repo", m.owner+"/"+m.name, "duration", time.Since(start))
 	return nil
 }

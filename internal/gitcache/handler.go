@@ -63,6 +63,7 @@ type Handler struct {
 	registry        *Registry
 	serviceTokenFn  ServiceTokenFunc
 	upstreamBaseURL string // e.g. "https://github.com"
+	httpClient      *http.Client
 }
 
 // NewHandler creates a cache handler.
@@ -76,6 +77,7 @@ func NewHandler(registry *Registry, serviceTokenFn ServiceTokenFunc, upstreamBas
 		registry:        registry,
 		serviceTokenFn:  serviceTokenFn,
 		upstreamBaseURL: upstreamBaseURL,
+		httpClient:      &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -188,8 +190,7 @@ func (h *Handler) handleLsRefs(r *http.Request, repo *ManagedRepository, cmd Com
 		req.Header.Set("Authorization", authHeader)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		WriteError(w, "ERR upstream unavailable")
 		return fmt.Errorf("upstream request: %w", err)
@@ -305,9 +306,9 @@ func (h *Handler) handleFetch(ctx context.Context, repo *ManagedRepository, cmd 
 	return result, nil
 }
 
-// fetchAndWait triggers an upstream fetch and polls until the requested
-// objects are available, or the context is cancelled. When serviceTokenFn
-// is nil, authToken (the per-request credential) is used as a fallback.
+// fetchAndWait fetches from upstream and verifies the requested objects are
+// available. When serviceTokenFn is nil, authToken (the per-request
+// credential) is used as a fallback.
 func (h *Handler) fetchAndWait(ctx context.Context, repo *ManagedRepository, wantHashes []plumbing.Hash, wantRefs []string, authToken string) error {
 	var svcToken string
 	if h.serviceTokenFn != nil {

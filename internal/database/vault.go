@@ -735,8 +735,16 @@ func (s *VaultStore) CreateCachedRepository(ctx context.Context, repo *CachedRep
 	if err := s.kvWrite(ctx, "cached-repos/"+repo.ID, data); err != nil {
 		return err
 	}
-	// Write owner/name index for lookups.
-	return s.kvWrite(ctx, fmt.Sprintf("cached-repos/by-owner-name/%s/%s", repo.Owner, repo.Name), map[string]interface{}{
+	// Check for existing owner/name index before writing to enforce uniqueness.
+	indexPath := fmt.Sprintf("cached-repos/by-owner-name/%s/%s", repo.Owner, repo.Name)
+	existing, err := s.kvRead(ctx, indexPath)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		return fmt.Errorf("cached repository %s/%s already exists", repo.Owner, repo.Name)
+	}
+	return s.kvWrite(ctx, indexPath, map[string]interface{}{
 		"id": repo.ID,
 	})
 }
@@ -816,10 +824,19 @@ func (s *VaultStore) UpdateCachedRepository(ctx context.Context, repo *CachedRep
 	}
 
 	if ownerNameChanged {
+		// Check that the new owner/name doesn't conflict with another repo.
+		newIndexPath := fmt.Sprintf("cached-repos/by-owner-name/%s/%s", repo.Owner, repo.Name)
+		conflicting, err := s.kvRead(ctx, newIndexPath)
+		if err != nil {
+			return err
+		}
+		if conflicting != nil {
+			return fmt.Errorf("cached repository %s/%s already exists", repo.Owner, repo.Name)
+		}
 		// Delete old index entry.
 		_ = s.kvDelete(ctx, fmt.Sprintf("cached-repos/by-owner-name/%s/%s", existing.Owner, existing.Name))
 		// Write new index entry.
-		return s.kvWrite(ctx, fmt.Sprintf("cached-repos/by-owner-name/%s/%s", repo.Owner, repo.Name), map[string]interface{}{
+		return s.kvWrite(ctx, newIndexPath, map[string]interface{}{
 			"id": repo.ID,
 		})
 	}
