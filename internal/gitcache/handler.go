@@ -365,10 +365,6 @@ func (h *Handler) handleFetch(ctx context.Context, repo *ManagedRepository, cmd 
 	if !hasAll {
 		// Cache miss — need to fetch from upstream first.
 		if err := h.fetchAndWait(ctx, repo, wantHashes, wantRefs, authToken); err != nil {
-			if errors.Is(err, errNoToken) {
-				// No token available — delegate to passthrough proxy.
-				return CachePassthrough, err
-			}
 			WriteError(w, "ERR upstream fetch failed")
 			return CacheError, err
 		}

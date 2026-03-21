@@ -22,8 +22,7 @@ const (
 // needs (wants minus haves) and writes the Git protocol v2 response.
 //
 // The response format is:
-//   - A delimiter packet
-//   - "packfile" section header
+//   - "packfile" section header (no leading delimiter — delimiters only separate sections)
 //   - Sideband-encoded packfile data (band 1)
 //   - Flush packet
 func ServeFetchLocal(w io.Writer, store storer.EncodedObjectStorer, wants []plumbing.Hash, haves []plumbing.Hash) error {

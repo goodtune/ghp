@@ -94,6 +94,7 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			proxy.SetCacheState(r, "hit")
 			cl.cache.ServeInfoRefs(w, r)
 		} else {
+			proxy.SetCacheState(r, string(CachePassthrough))
 			cl.inner.ServeHTTP(w, r)
 		}
 
@@ -103,11 +104,13 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			cl.cache.ServeUploadPack(w, r, owner, repo)
 			// CacheState is set by the handler based on hit/miss/error
 		} else {
+			proxy.SetCacheState(r, string(CachePassthrough))
 			cl.inner.ServeHTTP(w, r)
 		}
 
 	default:
 		// Other git paths (e.g. git-receive-pack) pass through.
+		proxy.SetCacheState(r, string(CachePassthrough))
 		cl.inner.ServeHTTP(w, r)
 	}
 }
