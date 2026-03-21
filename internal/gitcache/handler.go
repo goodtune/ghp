@@ -1,3 +1,9 @@
+// Package gitcache implements a Git protocol v2 caching proxy.
+//
+// NOTE: This package uses the global slog logger rather than accepting an
+// injected *slog.Logger. The server configures the default slog handler at
+// startup, so package-level slog calls inherit that configuration. This is
+// idiomatic Go for packages that don't need per-instance log routing.
 package gitcache
 
 import (

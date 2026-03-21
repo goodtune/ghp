@@ -182,12 +182,34 @@ func EncodeCommandsToReader(cmd Command) io.Reader {
 // MaybeGunzip returns a reader that decompresses gzip content if the
 // Content-Encoding header indicates gzip, or the original body otherwise.
 // The returned io.ReadCloser must be closed by the caller to release
-// resources (for non-gzip bodies, Close is delegated to the original body).
+// resources. Closing the returned reader closes both the gzip layer and
+// the underlying request body.
 func MaybeGunzip(r *http.Request) (io.ReadCloser, error) {
 	if r.Header.Get("Content-Encoding") == "gzip" {
-		return gzip.NewReader(r.Body)
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		return &gzipReadCloser{gz: gz, body: r.Body}, nil
 	}
 	return r.Body, nil
+}
+
+// gzipReadCloser wraps a gzip.Reader so that Close closes both the gzip
+// layer and the underlying body.
+type gzipReadCloser struct {
+	gz   *gzip.Reader
+	body io.ReadCloser
+}
+
+func (g *gzipReadCloser) Read(p []byte) (int, error) { return g.gz.Read(p) }
+func (g *gzipReadCloser) Close() error {
+	gzErr := g.gz.Close()
+	bodyErr := g.body.Close()
+	if gzErr != nil {
+		return gzErr
+	}
+	return bodyErr
 }
 
 func copyRequestChunk(c *gitprotocolio.ProtocolV2RequestChunk) *gitprotocolio.ProtocolV2RequestChunk {

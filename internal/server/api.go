@@ -1223,7 +1223,7 @@ func (a *API) handleCreateCachedRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.store.CreateCachedRepository(r.Context(), repo); err != nil {
 		// Handle race condition: concurrent create may hit unique constraint.
-		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "already exists") {
 			writeJSON(w, http.StatusConflict, map[string]string{"message": "Cached repository already exists for this owner/name"})
 			return
 		}
