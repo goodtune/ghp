@@ -93,7 +93,6 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Inject per-repo upstream timeout into request context if configured.
 	if cached.TimeoutSeconds != nil {
-		cl.logger.Info("cache_repo_timeout", "repo", owner+"/"+repo, "timeout_seconds", *cached.TimeoutSeconds)
 		ctx := withUpstreamTimeout(r.Context(), time.Duration(*cached.TimeoutSeconds)*time.Second)
 		r = r.WithContext(ctx)
 	}

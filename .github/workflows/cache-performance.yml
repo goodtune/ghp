@@ -17,20 +17,13 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
       - name: Build GHP image
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          args: release --snapshot --clean --skip=publish
+        run: docker build -t ghcr.io/goodtune/ghp:latest .
 
       - name: Run benchmark
         run: go test -tags bench -v -timeout 120m ./bench/

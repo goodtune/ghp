@@ -246,9 +246,7 @@ func (h *Handler) proxyUploadPackToUpstream(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Apply per-repo or default upstream timeout.
-	timeout := upstreamTimeout(r.Context(), defaultUpstreamTimeout)
-	slog.Info("upstream proxy timeout", "repo", owner+"/"+repo, "timeout", timeout)
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout(r.Context(), defaultUpstreamTimeout))
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", upstreamURL, &buf)
@@ -273,12 +271,7 @@ func (h *Handler) proxyUploadPackToUpstream(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
-	n, copyErr := io.Copy(w, resp.Body)
-	if copyErr != nil {
-		slog.Error("upstream proxy copy failed", "repo", owner+"/"+repo, "bytes_copied", n, "err", copyErr)
-	} else {
-		slog.Info("upstream proxy copy done", "repo", owner+"/"+repo, "bytes_copied", n)
-	}
+	io.Copy(w, resp.Body)
 	proxy.SetCacheState(r, string(CachePassthrough))
 }
 
