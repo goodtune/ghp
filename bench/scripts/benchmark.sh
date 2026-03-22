@@ -86,6 +86,38 @@ echo ""
 wait_for_ghp
 echo ""
 
+# ── 0. Register the target repository for caching ────────────────────────────
+COOKIE_JAR="$WORK_DIR/cookies.txt"
+GHP_BASE="http://${GHP_HOST}:${GHP_PORT}"
+
+# Split REPO into owner/name.
+REPO_OWNER="${REPO%%/*}"
+REPO_NAME="${REPO##*/}"
+
+echo "--- Registering ${REPO} for caching ---"
+
+# Log in as admin via dev-mode test-login.
+curl -sf -c "$COOKIE_JAR" \
+    -H "Content-Type: application/json" \
+    -d '{"username":"bench","role":"admin"}' \
+    "${GHP_BASE}/auth/test-login" > /dev/null
+
+# Create cached repository record.
+cache_resp=$(curl -sf -b "$COOKIE_JAR" \
+    -H "Content-Type: application/json" \
+    -d "{\"owner\":\"${REPO_OWNER}\",\"name\":\"${REPO_NAME}\",\"enabled\":true}" \
+    -w "\n%{http_code}" \
+    "${GHP_BASE}/api/cached-repos")
+
+cache_status=$(echo "$cache_resp" | tail -1)
+if [ "$cache_status" = "201" ] || [ "$cache_status" = "409" ]; then
+    echo "  Cache registration: OK (HTTP ${cache_status})"
+else
+    echo "  WARNING: Cache registration returned HTTP ${cache_status}"
+    echo "$cache_resp" | head -1
+fi
+echo ""
+
 # ── 1. Direct clone (baseline) ────────────────────────────────────────────────
 echo "--- Direct clone ---"
 direct_time=$(measure_clone "direct" "https://github.com/${REPO}.git")

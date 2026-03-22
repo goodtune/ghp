@@ -16,8 +16,12 @@ services:
       GHP_LOGGING_LEVEL: debug
       GHP_GITHUB_CLIENT_ID: "unused"
       GHP_GITHUB_CLIENT_SECRET: "unused"
+      GHP_CACHE_ENABLED: "true"
+      GHP_CACHE_STORAGE_PATH: /var/lib/ghp/cache
     volumes:
       - ghp-data:/data
+      - ghp-cache:/var/lib/ghp/cache
 
 volumes:
   ghp-data:
+  ghp-cache:

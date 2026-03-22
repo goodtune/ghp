@@ -32,6 +32,11 @@ def main() -> None:
     results_dir = os.environ.get("RESULTS_DIR", os.path.join(bench_dir, "results"))
     results_file = os.path.join(results_dir, "results.json")
 
+    if not os.path.exists(results_file):
+        print(f"Results file not found: {results_file}", file=sys.stderr)
+        print("Benchmark may not have run — skipping report.", file=sys.stderr)
+        sys.exit(0)
+
     with open(results_file) as f:
         data = json.load(f)
 
