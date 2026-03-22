@@ -9,7 +9,7 @@ services:
     environment:
       GHP_DEV_MODE: "true"
       GHP_DATABASE_DRIVER: sqlite
-      GHP_DATABASE_DSN: /data/ghp.db
+      GHP_DATABASE_DSN: /tmp/ghp.db
       GHP_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       GHP_SERVER_LISTEN: ":8080"
       GHP_METRICS_LISTEN: ":9136"
@@ -17,11 +17,4 @@ services:
       GHP_GITHUB_CLIENT_ID: "unused"
       GHP_GITHUB_CLIENT_SECRET: "unused"
       GHP_CACHE_ENABLED: "true"
-      GHP_CACHE_STORAGE_PATH: /var/lib/ghp/cache
-    volumes:
-      - ghp-data:/data
-      - ghp-cache:/var/lib/ghp/cache
-
-volumes:
-  ghp-data:
-  ghp-cache:
+      GHP_CACHE_STORAGE_PATH: /tmp/cache
