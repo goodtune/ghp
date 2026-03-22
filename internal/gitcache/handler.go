@@ -83,12 +83,16 @@ type Handler struct {
 //   - serviceTokenFn: returns a service-level token for async cache warming
 //     (may be nil to disable async warming)
 //   - upstreamBaseURL: the upstream Git server (e.g. "https://github.com")
+// defaultUpstreamTimeout is the timeout applied to upstream HTTP requests when
+// the cached repository has no per-repo timeout configured.
+const defaultUpstreamTimeout = 30 * time.Second
+
 func NewHandler(registry *Registry, serviceTokenFn ServiceTokenFunc, upstreamBaseURL string) *Handler {
 	return &Handler{
 		registry:        registry,
 		serviceTokenFn:  serviceTokenFn,
 		upstreamBaseURL: upstreamBaseURL,
-		httpClient:      &http.Client{Timeout: 30 * time.Second},
+		httpClient:      &http.Client{}, // no client-level timeout; per-request context controls it
 	}
 }
 
@@ -241,7 +245,11 @@ func (h *Handler) proxyUploadPackToUpstream(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), "POST", upstreamURL, &buf)
+	// Apply per-repo or default upstream timeout.
+	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout(r.Context(), defaultUpstreamTimeout))
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", upstreamURL, &buf)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -278,7 +286,10 @@ func (h *Handler) handleLsRefs(r *http.Request, repo *ManagedRepository, cmd Com
 	authHeader := r.Header.Get("Authorization")
 	upstreamURL := h.upstreamBaseURL + "/" + repo.owner + "/" + repo.name + ".git/git-upload-pack"
 
-	req, err := http.NewRequestWithContext(r.Context(), "POST", upstreamURL, EncodeCommandsToReader(cmd))
+	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout(r.Context(), defaultUpstreamTimeout))
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", upstreamURL, EncodeCommandsToReader(cmd))
 	if err != nil {
 		WriteError(w, "ERR internal error")
 		return fmt.Errorf("create upstream request: %w", err)

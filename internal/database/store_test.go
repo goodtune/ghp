@@ -704,6 +704,9 @@ func testCachedRepositoryCRUD(t *testing.T, store Store) {
 	if !got.Enabled {
 		t.Error("expected enabled = true")
 	}
+	if got.TimeoutSeconds != nil {
+		t.Errorf("expected nil TimeoutSeconds, got %d", *got.TimeoutSeconds)
+	}
 	if got.CreatedAt.IsZero() {
 		t.Error("expected CreatedAt to be set on retrieved repo")
 	}
@@ -760,6 +763,20 @@ func testCachedRepositoryCRUD(t *testing.T, store Store) {
 		t.Error("expected UpdatedAt set after update")
 	}
 
+	// Update — set timeout.
+	timeout := 600
+	repo.TimeoutSeconds = &timeout
+	if err := store.UpdateCachedRepository(ctx, repo); err != nil {
+		t.Fatalf("UpdateCachedRepository (timeout): %v", err)
+	}
+	got4b, err := store.GetCachedRepositoryByID(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("GetCachedRepositoryByID after timeout update: %v", err)
+	}
+	if got4b.TimeoutSeconds == nil || *got4b.TimeoutSeconds != 600 {
+		t.Errorf("TimeoutSeconds = %v, want 600", got4b.TimeoutSeconds)
+	}
+
 	// Update non-existent should return ErrNotFound.
 	err = store.UpdateCachedRepository(ctx, &CachedRepository{
 		ID:    "00000000-0000-0000-0000-000000000000",
@@ -770,14 +787,23 @@ func testCachedRepositoryCRUD(t *testing.T, store Store) {
 		t.Errorf("expected ErrNotFound updating non-existent repo, got: %v", err)
 	}
 
-	// Create a second repo.
+	// Create a second repo with timeout set.
+	timeout2 := 120
 	repo2 := &CachedRepository{
-		Owner:   "otherorg",
-		Name:    "otherrepo",
-		Enabled: true,
+		Owner:          "otherorg",
+		Name:           "otherrepo",
+		Enabled:        true,
+		TimeoutSeconds: &timeout2,
 	}
 	if err := store.CreateCachedRepository(ctx, repo2); err != nil {
 		t.Fatalf("CreateCachedRepository (second): %v", err)
+	}
+	got7, err := store.GetCachedRepositoryByID(ctx, repo2.ID)
+	if err != nil {
+		t.Fatalf("GetCachedRepositoryByID (second): %v", err)
+	}
+	if got7.TimeoutSeconds == nil || *got7.TimeoutSeconds != 120 {
+		t.Errorf("second repo TimeoutSeconds = %v, want 120", got7.TimeoutSeconds)
 	}
 
 	repos2, err := store.ListCachedRepositories(ctx)

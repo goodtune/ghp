@@ -1126,22 +1126,24 @@ func (a *API) handleListAppInstallationRepos(w http.ResponseWriter, r *http.Requ
 // --- Cached Repository Handlers ---
 
 type cachedRepoResponse struct {
-	ID        string `json:"id"`
-	Owner     string `json:"owner"`
-	Name      string `json:"name"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID             string `json:"id"`
+	Owner          string `json:"owner"`
+	Name           string `json:"name"`
+	Enabled        bool   `json:"enabled"`
+	TimeoutSeconds *int   `json:"timeout_seconds,omitempty"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 func cachedRepoToResponse(r *database.CachedRepository) cachedRepoResponse {
 	return cachedRepoResponse{
-		ID:        r.ID,
-		Owner:     r.Owner,
-		Name:      r.Name,
-		Enabled:   r.Enabled,
-		CreatedAt: r.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: r.UpdatedAt.Format(time.RFC3339),
+		ID:             r.ID,
+		Owner:          r.Owner,
+		Name:           r.Name,
+		Enabled:        r.Enabled,
+		TimeoutSeconds: r.TimeoutSeconds,
+		CreatedAt:      r.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:      r.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -1160,9 +1162,10 @@ func (a *API) handleListCachedRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 type createCachedRepoRequest struct {
-	Owner   string `json:"owner"`
-	Name    string `json:"name"`
-	Enabled *bool  `json:"enabled"`
+	Owner          string `json:"owner"`
+	Name           string `json:"name"`
+	Enabled        *bool  `json:"enabled"`
+	TimeoutSeconds *int   `json:"timeout_seconds"`
 }
 
 func (a *API) handleCreateCachedRepo(w http.ResponseWriter, r *http.Request) {
@@ -1216,10 +1219,16 @@ func (a *API) handleCreateCachedRepo(w http.ResponseWriter, r *http.Request) {
 		enabled = *req.Enabled
 	}
 
+	if req.TimeoutSeconds != nil && (*req.TimeoutSeconds < 1 || *req.TimeoutSeconds > 3600) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "timeout_seconds must be between 1 and 3600"})
+		return
+	}
+
 	repo := &database.CachedRepository{
-		Owner:   req.Owner,
-		Name:    req.Name,
-		Enabled: enabled,
+		Owner:          req.Owner,
+		Name:           req.Name,
+		Enabled:        enabled,
+		TimeoutSeconds: req.TimeoutSeconds,
 	}
 	if err := a.store.CreateCachedRepository(r.Context(), repo); err != nil {
 		// Handle race condition: concurrent create may hit unique constraint.
@@ -1259,7 +1268,8 @@ func (a *API) handleGetCachedRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateCachedRepoRequest struct {
-	Enabled *bool `json:"enabled"`
+	Enabled        *bool `json:"enabled"`
+	TimeoutSeconds *int  `json:"timeout_seconds"`
 }
 
 func (a *API) handleUpdateCachedRepo(w http.ResponseWriter, r *http.Request) {
@@ -1294,6 +1304,13 @@ func (a *API) handleUpdateCachedRepo(w http.ResponseWriter, r *http.Request) {
 
 	if req.Enabled != nil {
 		existing.Enabled = *req.Enabled
+	}
+	if req.TimeoutSeconds != nil {
+		if *req.TimeoutSeconds < 1 || *req.TimeoutSeconds > 3600 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "timeout_seconds must be between 1 and 3600"})
+			return
+		}
+		existing.TimeoutSeconds = req.TimeoutSeconds
 	}
 
 	if err := a.store.UpdateCachedRepository(r.Context(), existing); err != nil {

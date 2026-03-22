@@ -28,16 +28,17 @@ import (
 // iterations to run. Larger repos use fewer runs to keep total wall time
 // reasonable.
 type repoConfig struct {
-	Repo     string
-	WarmRuns int
+	Repo           string
+	WarmRuns       int
+	TimeoutSeconds int // 0 = use server default (30s)
 }
 
 // defaultRepos is the standard set of repositories exercised by the benchmark.
 // django/django is a medium repo (~450 MB, 20 years of history).
 // torvalds/linux is a huge repo (~4.5 GB, the largest public repo on GitHub).
 var defaultRepos = []repoConfig{
-	{"django/django", 10},
-	{"torvalds/linux", 3},
+	{"django/django", 10, 0},
+	{"torvalds/linux", 3, 600},
 }
 
 func envOr(key, fallback string) string {
@@ -146,7 +147,8 @@ func adminClient(t *testing.T, baseURL string) *http.Client {
 }
 
 // registerCachedRepo registers a repository for git caching via the admin API.
-func registerCachedRepo(t *testing.T, client *http.Client, baseURL, repo string) {
+// timeoutSeconds of 0 means use the server default.
+func registerCachedRepo(t *testing.T, client *http.Client, baseURL, repo string, timeoutSeconds int) {
 	t.Helper()
 
 	parts := strings.SplitN(repo, "/", 2)
@@ -154,7 +156,12 @@ func registerCachedRepo(t *testing.T, client *http.Client, baseURL, repo string)
 		t.Fatalf("invalid repo %q, expected owner/name", repo)
 	}
 
-	body := fmt.Sprintf(`{"owner":%q,"name":%q,"enabled":true}`, parts[0], parts[1])
+	var body string
+	if timeoutSeconds > 0 {
+		body = fmt.Sprintf(`{"owner":%q,"name":%q,"enabled":true,"timeout_seconds":%d}`, parts[0], parts[1], timeoutSeconds)
+	} else {
+		body = fmt.Sprintf(`{"owner":%q,"name":%q,"enabled":true}`, parts[0], parts[1])
+	}
 	resp, err := client.Post(baseURL+"/api/cached-repos", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("register cached repo %s: %v", repo, err)
@@ -296,7 +303,7 @@ func TestCachePerformance(t *testing.T) {
 	// Allow single-repo override via REPO env var.
 	repos := defaultRepos
 	if r := os.Getenv("REPO"); r != "" {
-		repos = []repoConfig{{r, envInt("WARM_RUNS", 10)}}
+		repos = []repoConfig{{r, envInt("WARM_RUNS", 10), envInt("TIMEOUT_SECONDS", 0)}}
 	}
 
 	if err := os.MkdirAll(filepath.Join(resultsDir, "logs"), 0o755); err != nil {
@@ -360,7 +367,7 @@ func TestCachePerformance(t *testing.T) {
 	// Authenticate once and register all repos for caching.
 	client := adminClient(t, baseURL)
 	for _, rc := range repos {
-		registerCachedRepo(t, client, baseURL, rc.Repo)
+		registerCachedRepo(t, client, baseURL, rc.Repo, rc.TimeoutSeconds)
 	}
 
 	// Run per-repo benchmarks as subtests.

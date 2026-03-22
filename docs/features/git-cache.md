@@ -51,7 +51,9 @@ Use the admin UI or API to specify which repositories should be cached.
 Repositories not listed pass through to GitHub as normal.
 
 **Admin UI:** Navigate to the admin panel and use the "Cached Repositories"
-section to add repositories by owner and name.
+section to add repositories by owner and name. An optional **Timeout** field
+controls how long the proxy waits for upstream GitHub responses (default: 30
+seconds). Large repositories like `torvalds/linux` may need 600 seconds or more.
 
 **API:**
 
@@ -62,6 +64,12 @@ curl -X POST https://ghp.example.com/api/cached-repos \
   -H "Content-Type: application/json" \
   -d '{"owner": "myorg", "name": "myrepo"}'
 
+# Add a large repository with a custom timeout (seconds, max 3600)
+curl -X POST https://ghp.example.com/api/cached-repos \
+  -H "Authorization: Bearer ghpr_..." \
+  -H "Content-Type: application/json" \
+  -d '{"owner": "torvalds", "name": "linux", "timeout_seconds": 600}'
+
 # List cached repositories
 curl https://ghp.example.com/api/cached-repos \
   -H "Authorization: Bearer ghpr_..."
@@ -71,6 +79,12 @@ curl -X PATCH https://ghp.example.com/api/cached-repos/{id} \
   -H "Authorization: Bearer ghpr_..." \
   -H "Content-Type: application/json" \
   -d '{"enabled": false}'
+
+# Update the timeout for a repository
+curl -X PATCH https://ghp.example.com/api/cached-repos/{id} \
+  -H "Authorization: Bearer ghpr_..." \
+  -H "Content-Type: application/json" \
+  -d '{"timeout_seconds": 300}'
 
 # Remove a repository from the cache list
 curl -X DELETE https://ghp.example.com/api/cached-repos/{id} \
