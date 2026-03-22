@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -19,11 +18,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/google/gitprotocolio"
 
 	"github.com/goodtune/ghp/internal/metrics"
@@ -51,7 +47,6 @@ func (e *upstreamError) Error() string {
 	return fmt.Sprintf("upstream returned %d", e.StatusCode)
 }
 
-
 // isUpstreamRejection returns true if the error represents an access-denied
 // response (401, 403, 404) from upstream, as opposed to a server/network error.
 func isUpstreamRejection(err error) bool {
@@ -67,11 +62,29 @@ func isUpstreamRejection(err error) bool {
 // user's credential. May be nil if async warming is not configured.
 type ServiceTokenFunc func(ctx context.Context) (string, error)
 
-// Handler implements the Git protocol v2 caching proxy as an http.Handler.
-// It is intended to be mounted for requests to cache-enabled repositories
-// after token resolution and scope enforcement have already occurred.
-// The upstream GitHub token is extracted from the request's Authorization
-// header, which is set by the scoped passthrough handler.
+// Handler implements the Git protocol v2 caching proxy.
+//
+// Request flow: the Handler sits inside a middleware chain where token
+// resolution has already occurred before the request arrives here:
+//
+//	ScopedPassthroughHandler (resolves ghx_/gha_ proxy tokens → real GitHub tokens)
+//	  → CacheLookup middleware (checks if repo is cache-enabled)
+//	    → Handler (this code)
+//
+// By the time a request reaches Handler, the Authorization header contains
+// a resolved GitHub credential (e.g. ghs_*, gho_*), not the original proxy
+// token. Methods like handleLsRefs and handleFetch forward this header
+// verbatim to upstream GitHub — this is safe because the token has already
+// been validated and scoped by the outer handler.
+//
+// TODO(cache-ttl): Add a background goroutine that periodically scans
+// responseCacheDir for stale entries and removes them. The cleanup loop
+// should run on a configurable interval (e.g. every 10 minutes), walk
+// _protocol_responses/<owner>/<repo>/<hash> files, and remove any file
+// whose mtime is older than a configurable TTL (e.g. 1 hour). This
+// prevents unbounded disk growth as refs change and old cache keys
+// become unreachable. Consider exposing a metric for cache directory
+// size and eviction count.
 type Handler struct {
 	registry         *Registry
 	serviceTokenFn   ServiceTokenFunc
@@ -86,6 +99,7 @@ type Handler struct {
 //   - serviceTokenFn: returns a service-level token for async cache warming
 //     (may be nil to disable async warming)
 //   - upstreamBaseURL: the upstream Git server (e.g. "https://github.com")
+//
 // defaultUpstreamTimeout is the timeout applied to upstream HTTP requests when
 // the cached repository has no per-repo timeout configured.
 const defaultUpstreamTimeout = 30 * time.Second
@@ -159,35 +173,6 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 		}
 	}
 
-	// For standalone fetch (no ls-refs in this request), check if we can
-	// handle a cache miss before writing any response headers. If all wants
-	// are already in the response cache or local object store we can serve
-	// locally; otherwise proxy to upstream and cache the response for next time.
-	if !hasLsRefs {
-		authToken := extractGitHubToken(r.Header.Get("Authorization"))
-		if authToken == "" && h.serviceTokenFn == nil {
-			needsUpstream := false
-			for _, cmd := range commands {
-				if cmd.Name == "fetch" {
-					wantHashes, wantRefs, parseErr := ParseFetchWants(cmd)
-					if parseErr != nil {
-						needsUpstream = true
-						break
-					}
-					hasAll, checkErr := managed.HasAllWants(wantHashes, wantRefs)
-					if checkErr != nil || !hasAll {
-						needsUpstream = true
-						break
-					}
-				}
-			}
-			if needsUpstream {
-				h.proxyUploadPackToUpstream(w, r, owner, repo, commands)
-				return
-			}
-		}
-	}
-
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
 
 	lsRefsSucceeded := false
@@ -216,10 +201,7 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 				metrics.CacheFetchTotal.WithLabelValues(string(CacheRejected)).Inc()
 				return
 			}
-			// Extract the auth token from the request for use as a fallback
-			// when no service token function is configured.
-			authToken := extractGitHubToken(r.Header.Get("Authorization"))
-			result, err := h.handleFetch(r.Context(), managed, cmd, w, authToken)
+			result, err := h.handleFetch(r, managed, cmd, w)
 			proxy.SetCacheState(r, string(result))
 			metrics.CacheFetchTotal.WithLabelValues(string(result)).Inc()
 			if err != nil {
@@ -229,97 +211,6 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 			slog.Info("fetch served", "repo", owner+"/"+repo, "result", result)
 		}
 	}
-}
-
-// proxyUploadPackToUpstream forwards a git-upload-pack request directly to
-// upstream GitHub, re-encoding the parsed commands into the request body
-// (since the original body has already been consumed). This is used when
-// the cache can't serve the request (e.g., cache miss with no token).
-func (h *Handler) proxyUploadPackToUpstream(w http.ResponseWriter, r *http.Request, owner, repo string, commands []Command) {
-	// Re-encode all commands into a single body.
-	var buf bytes.Buffer
-	for _, cmd := range commands {
-		for _, c := range cmd.Chunks {
-			buf.Write(c.EncodeToPktLine())
-		}
-	}
-
-	// Cache key: SHA-256 of owner/repo + request body. For full clones the
-	// body encodes the wanted refs, so the key changes when refs update.
-	cacheKey := responseCacheKey(owner, repo, buf.Bytes())
-	cacheDir := filepath.Join(h.responseCacheDir, "_protocol_responses", owner, repo)
-	cachePath := filepath.Join(cacheDir, cacheKey)
-
-	// Try serving from response cache.
-	if f, err := os.Open(cachePath); err == nil {
-		defer f.Close()
-		w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
-		w.WriteHeader(http.StatusOK)
-		n, _ := io.Copy(w, f)
-		slog.Info("served from response cache", "repo", owner+"/"+repo, "bytes", n)
-		proxy.SetCacheState(r, string(CacheHit))
-		return
-	}
-
-	// Cache miss — proxy to upstream and tee the response to disk.
-	upstreamURL := h.upstreamBaseURL + "/" + owner + "/" + repo + ".git/git-upload-pack"
-
-	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout(r.Context(), defaultUpstreamTimeout))
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", upstreamURL, &buf)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	req.Header.Set("Content-Type", "application/x-git-upload-pack-request")
-	req.Header.Set("Accept", "application/x-git-upload-pack-result")
-	req.Header.Set("Git-Protocol", "version=2")
-	if auth := r.Header.Get("Authorization"); auth != "" {
-		req.Header.Set("Authorization", auth)
-	}
-
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		slog.Error("upstream proxy failed", "repo", owner+"/"+repo, "err", err)
-		http.Error(w, "upstream unavailable", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-	w.WriteHeader(resp.StatusCode)
-
-	// Only cache successful responses.
-	if resp.StatusCode == http.StatusOK {
-		if mkErr := os.MkdirAll(cacheDir, 0o750); mkErr == nil {
-			tmpFile, tmpErr := os.CreateTemp(cacheDir, ".tmp-*")
-			if tmpErr == nil {
-				// Tee: stream to client while writing to temp file.
-				tee := io.TeeReader(resp.Body, tmpFile)
-				_, copyErr := io.Copy(w, tee)
-				tmpFile.Close()
-				if copyErr != nil {
-					slog.Error("failed to stream and cache upstream response", "repo", owner+"/"+repo, "err", copyErr)
-					os.Remove(tmpFile.Name())
-					proxy.SetCacheState(r, string(CachePassthrough))
-					return
-				}
-				if renameErr := os.Rename(tmpFile.Name(), cachePath); renameErr != nil {
-					slog.Error("failed to finalize cached response", "repo", owner+"/"+repo, "err", renameErr)
-					os.Remove(tmpFile.Name())
-				} else {
-					slog.Info("cached upstream response", "repo", owner+"/"+repo, "path", cachePath)
-				}
-				proxy.SetCacheState(r, string(CacheMiss))
-				return
-			}
-		}
-	}
-
-	// Fallback: stream without caching.
-	io.Copy(w, resp.Body)
-	proxy.SetCacheState(r, string(CachePassthrough))
 }
 
 // responseCacheKey computes a cache key from the repo identity and request body.
@@ -352,6 +243,7 @@ func (h *Handler) handleLsRefs(r *http.Request, repo *ManagedRepository, cmd Com
 	req.Header.Set("Content-Type", "application/x-git-upload-pack-request")
 	req.Header.Set("Accept", "application/x-git-upload-pack-result")
 	req.Header.Set("Git-Protocol", "version=2")
+	// Forward the resolved GitHub credential — see Handler doc comment.
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
@@ -411,137 +303,102 @@ func (h *Handler) handleLsRefs(r *http.Request, repo *ManagedRepository, cmd Com
 	return WriteResponseChunks(w, chunks)
 }
 
-// handleFetch processes a fetch command, serving from local cache if all
-// requested objects are available, or fetching from upstream first.
-func (h *Handler) handleFetch(ctx context.Context, repo *ManagedRepository, cmd Command, w io.Writer, authToken string) (CacheResult, error) {
-	wantHashes, wantRefs, err := ParseFetchWants(cmd)
-	if err != nil {
-		WriteError(w, "ERR malformed fetch request")
-		return CacheError, err
+// handleFetch processes a fetch command by checking the response cache first,
+// then proxying to upstream GitHub on cache miss. The upstream response is
+// tee'd to disk so subsequent identical requests are served locally without
+// any go-git pack generation or upstream round-trip.
+//
+// This is an optimistic cache: on miss, the cost is identical to the uncached
+// path (proxy to upstream). On hit, the response is served from disk at
+// near-zero CPU cost.
+func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Command, w io.Writer) (CacheResult, error) {
+	// Re-encode the fetch command for cache key computation and upstream proxy.
+	var cmdBuf bytes.Buffer
+	for _, c := range cmd.Chunks {
+		cmdBuf.Write(c.EncodeToPktLine())
 	}
-	haves := ParseFetchHaves(cmd)
+	cmdBytes := cmdBuf.Bytes()
 
-	// Check if all wants are satisfied locally.
-	hasAll, err := repo.HasAllWants(wantHashes, wantRefs)
-	if err != nil {
-		WriteError(w, "ERR cache lookup error")
-		return CacheError, err
-	}
+	cacheKey := responseCacheKey(repo.owner, repo.name, cmdBytes)
+	cacheDir := filepath.Join(h.responseCacheDir, "_protocol_responses", repo.owner, repo.name)
+	cachePath := filepath.Join(cacheDir, cacheKey)
 
-	if !hasAll {
-		// Cache miss — need to fetch from upstream first.
-		if err := h.fetchAndWait(ctx, repo, wantHashes, wantRefs, authToken); err != nil {
-			WriteError(w, "ERR upstream fetch failed")
-			return CacheError, err
+	// Try serving from response cache.
+	// TODO(cache-ttl): Touch the file mtime on cache hit so the TTL cleanup
+	// goroutine can distinguish recently-accessed entries from stale ones.
+	// Use os.Chtimes(cachePath, now, now) after opening successfully.
+	if f, err := os.Open(cachePath); err == nil {
+		defer f.Close()
+		n, copyErr := io.Copy(w, f)
+		if copyErr != nil {
+			return CacheError, fmt.Errorf("serve cached fetch response: %w", copyErr)
 		}
+		slog.Info("fetch served from response cache", "repo", repo.owner+"/"+repo.name, "bytes", n)
+		return CacheHit, nil
 	}
 
-	result := CacheHit
-	if !hasAll {
-		result = CacheMiss
-	}
+	// Cache miss — proxy fetch command to upstream and tee response to disk.
+	upstreamURL := h.upstreamBaseURL + "/" + repo.owner + "/" + repo.name + ".git/git-upload-pack"
 
-	// Hold the read lock for resolve + pack generation to prevent
-	// concurrent FetchUpstream writes from racing with storer reads.
-	repo.RLock()
-	defer repo.RUnlock()
+	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout(r.Context(), defaultUpstreamTimeout))
+	defer cancel()
 
-	// Resolve want-refs to hashes.
-	s := repo.Storer()
-	objStorer, ok := s.(storer.EncodedObjectStorer)
-	if !ok {
-		WriteError(w, "ERR internal cache error")
-		return CacheError, fmt.Errorf("repository storer does not implement storer.EncodedObjectStorer")
-	}
-	refStorer, ok := s.(storer.ReferenceStorer)
-	if !ok {
-		WriteError(w, "ERR internal cache error")
-		return CacheError, fmt.Errorf("repository storer does not implement storer.ReferenceStorer")
-	}
-	allWants, err := ResolveWantHashes(objStorer, refStorer, wantHashes, wantRefs)
+	req, err := http.NewRequestWithContext(ctx, "POST", upstreamURL, bytes.NewReader(cmdBytes))
 	if err != nil {
-		WriteError(w, "ERR cannot resolve refs")
-		return result, err
+		WriteError(w, "ERR internal error")
+		return CacheError, fmt.Errorf("create upstream fetch request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-git-upload-pack-request")
+	req.Header.Set("Accept", "application/x-git-upload-pack-result")
+	req.Header.Set("Git-Protocol", "version=2")
+	// Forward the resolved GitHub credential. By this point in the middleware
+	// chain the Authorization header contains a real GitHub token (ghs_*, gho_*),
+	// not the client's proxy token — see Handler doc comment for the full flow.
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		req.Header.Set("Authorization", auth)
 	}
 
-	// Generate and stream the packfile.
-	if err := ServeFetchLocal(w, objStorer, allWants, haves); err != nil {
-		return CacheError, fmt.Errorf("serve pack: %w", err)
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		WriteError(w, "ERR upstream unavailable")
+		return CacheError, fmt.Errorf("upstream fetch: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		WriteError(w, fmt.Sprintf("ERR upstream: %d %s", resp.StatusCode, string(body)))
+		return CacheError, &upstreamError{StatusCode: resp.StatusCode}
 	}
 
-	return result, nil
-}
-
-// fetchAndWait fetches from upstream and verifies the requested objects are
-// available. When serviceTokenFn is nil, authToken (the per-request
-// credential) is used as a fallback.
-func (h *Handler) fetchAndWait(ctx context.Context, repo *ManagedRepository, wantHashes []plumbing.Hash, wantRefs []string, authToken string) error {
-	// Determine the best available token: service token > request token > anonymous.
-	// Anonymous fetch (empty token) works for public repositories and allows
-	// cache warming without a configured service token or user credential.
-	var fetchToken string
-	if h.serviceTokenFn != nil {
-		var err error
-		fetchToken, err = h.serviceTokenFn(ctx)
-		if err != nil {
-			return fmt.Errorf("get service token: %w", err)
-		}
-	} else if authToken != "" {
-		fetchToken = authToken
-	}
-	// fetchToken may be empty — FetchUpstream handles anonymous fetch.
-
-	// Fetch synchronously — no concurrent storer access to avoid data races
-	// with go-git storers that are not safe for concurrent reads/writes.
-	if err := repo.FetchUpstream(ctx, fetchToken); err != nil {
-		return err
-	}
-
-	// Verify objects are now available.
-	hasAll, checkErr := repo.HasAllWants(wantHashes, wantRefs)
-	if checkErr != nil {
-		return checkErr
-	}
-	if !hasAll {
-		return fmt.Errorf("objects still missing after fetch")
-	}
-	return nil
-}
-
-// extractGitHubToken extracts the raw GitHub token from an Authorization
-// header, handling the schemes git clients use:
-//   - "Bearer <token>" / "token <token>" → token
-//   - "Basic <base64(x-access-token:token)>" → token (password portion)
-//   - raw value → returned as-is
-func extractGitHubToken(authHeader string) string {
-	authHeader = strings.TrimSpace(authHeader)
-	if authHeader == "" {
-		return ""
-	}
-	lower := strings.ToLower(authHeader)
-	// Bearer and token schemes: value after the scheme is the token.
-	for _, prefix := range []string{"bearer ", "token "} {
-		if strings.HasPrefix(lower, prefix) {
-			return strings.TrimSpace(authHeader[len(prefix):])
-		}
-	}
-	// Basic auth: base64-decode and take the password portion.
-	if strings.HasPrefix(lower, "basic ") {
-		encoded := strings.TrimSpace(authHeader[len("basic "):])
-		decoded, err := base64Decode(encoded)
-		if err == nil {
-			if _, pass, ok := strings.Cut(decoded, ":"); ok {
-				return pass
+	// Stream upstream response to client and cache to disk.
+	// TODO(cache-ttl): The file's mtime at creation time serves as the
+	// cache entry timestamp. The TTL cleanup goroutine should remove
+	// files older than the configured TTL based on this mtime.
+	if mkErr := os.MkdirAll(cacheDir, 0o750); mkErr == nil {
+		tmpFile, tmpErr := os.CreateTemp(cacheDir, ".tmp-*")
+		if tmpErr == nil {
+			tee := io.TeeReader(resp.Body, tmpFile)
+			_, copyErr := io.Copy(w, tee)
+			tmpFile.Close()
+			if copyErr != nil {
+				slog.Error("failed to stream and cache fetch response", "repo", repo.owner+"/"+repo.name, "err", copyErr)
+				os.Remove(tmpFile.Name())
+				return CacheError, copyErr
 			}
+			if renameErr := os.Rename(tmpFile.Name(), cachePath); renameErr != nil {
+				slog.Error("failed to finalize cached fetch response", "repo", repo.owner+"/"+repo.name, "err", renameErr)
+				os.Remove(tmpFile.Name())
+			} else {
+				slog.Info("cached fetch response", "repo", repo.owner+"/"+repo.name, "path", cachePath)
+			}
+			return CacheMiss, nil
 		}
 	}
-	return authHeader
-}
 
-func base64Decode(s string) (string, error) {
-	b, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return "", err
+	// Fallback: stream without caching.
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		return CacheError, err
 	}
-	return string(b), nil
+	return CacheMiss, nil
 }
