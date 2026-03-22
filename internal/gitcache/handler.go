@@ -323,6 +323,13 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 	cacheDir := filepath.Join(h.responseCacheDir, "_protocol_responses", repo.owner, repo.name)
 	cachePath := filepath.Join(cacheDir, cacheKey)
 
+	// Resolve the GitHub username for metric labels. May be empty for
+	// anonymous requests; normalise to "anonymous" for metric consistency.
+	user := proxy.GetUsername(r)
+	if user == "" {
+		user = "anonymous"
+	}
+
 	// Try serving from response cache.
 	// TODO(cache-ttl): Touch the file mtime on cache hit so the TTL cleanup
 	// goroutine can distinguish recently-accessed entries from stale ones.
@@ -333,8 +340,8 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 		if copyErr != nil {
 			return CacheError, fmt.Errorf("serve cached fetch response: %w", copyErr)
 		}
-		metrics.CachePackfileTotal.WithLabelValues("hit").Inc()
-		metrics.CachePackfileBytesTotal.WithLabelValues("hit").Add(float64(n))
+		metrics.CachePackfileTotal.WithLabelValues(repo.owner, repo.name, user, "hit").Inc()
+		metrics.CachePackfileBytesTotal.WithLabelValues(repo.owner, repo.name, user, "hit").Add(float64(n))
 		slog.Info("fetch served from response cache", "repo", repo.owner+"/"+repo.name, "bytes", n)
 		return CacheHit, nil
 	}
@@ -394,8 +401,8 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 			} else {
 				slog.Info("cached fetch response", "repo", repo.owner+"/"+repo.name, "path", cachePath)
 			}
-			metrics.CachePackfileTotal.WithLabelValues("miss").Inc()
-			metrics.CachePackfileBytesTotal.WithLabelValues("miss").Add(float64(n))
+			metrics.CachePackfileTotal.WithLabelValues(repo.owner, repo.name, user, "miss").Inc()
+			metrics.CachePackfileBytesTotal.WithLabelValues(repo.owner, repo.name, user, "miss").Add(float64(n))
 			return CacheMiss, nil
 		}
 	}
@@ -405,7 +412,7 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 	if err != nil {
 		return CacheError, err
 	}
-	metrics.CachePackfileTotal.WithLabelValues("miss").Inc()
-	metrics.CachePackfileBytesTotal.WithLabelValues("miss").Add(float64(n))
+	metrics.CachePackfileTotal.WithLabelValues(repo.owner, repo.name, user, "miss").Inc()
+	metrics.CachePackfileBytesTotal.WithLabelValues(repo.owner, repo.name, user, "miss").Add(float64(n))
 	return CacheMiss, nil
 }

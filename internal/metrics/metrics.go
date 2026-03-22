@@ -211,18 +211,23 @@ var (
 	// This is distinct from CacheFetchTotal which tracks the broader fetch flow
 	// including rejections and errors. Use this metric to measure the disk cache
 	// effectiveness and inform TTL eviction tuning.
+	//
+	// Labels: owner, repo, user (GitHub username), result.
+	// Cardinality: bounded by (cached repos × active users × 2 results).
 	CachePackfileTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ghp_cache_packfile_total",
 		Help: "Packfile response cache operations by result (hit = served from disk, miss = proxied upstream).",
-	}, []string{"result"})
+	}, []string{"owner", "repo", "user", "result"})
 
 	// CachePackfileBytesTotal counts the total bytes served from the packfile
 	// response cache, labeled by result. Comparing hit vs miss bytes shows the
 	// upstream bandwidth saved by caching.
+	//
+	// Labels: owner, repo, user (GitHub username), result.
 	CachePackfileBytesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ghp_cache_packfile_bytes_total",
 		Help: "Total bytes served from packfile response cache by result.",
-	}, []string{"result"})
+	}, []string{"owner", "repo", "user", "result"})
 
 	// BuildInfo is a gauge with a constant value of 1 labeled by build
 	// metadata. It follows the node_exporter_build_info convention.

@@ -396,9 +396,9 @@ func TestCacheRequestTotal(t *testing.T) {
 
 func TestCachePackfileTotal(t *testing.T) {
 	for _, result := range []string{"hit", "miss"} {
-		labels := prometheus.Labels{"result": result}
+		labels := prometheus.Labels{"owner": "testorg", "repo": "testrepo", "user": "testuser", "result": result}
 		before := getCounterValue(t, CachePackfileTotal, labels)
-		CachePackfileTotal.WithLabelValues(result).Inc()
+		CachePackfileTotal.WithLabelValues("testorg", "testrepo", "testuser", result).Inc()
 		after := getCounterValue(t, CachePackfileTotal, labels)
 		if after-before != 1 {
 			t.Errorf("expected %s counter to increment by 1, got %f", result, after-before)
@@ -408,9 +408,9 @@ func TestCachePackfileTotal(t *testing.T) {
 
 func TestCachePackfileBytesTotal(t *testing.T) {
 	for _, result := range []string{"hit", "miss"} {
-		labels := prometheus.Labels{"result": result}
+		labels := prometheus.Labels{"owner": "testorg", "repo": "testrepo", "user": "testuser", "result": result}
 		before := getCounterValue(t, CachePackfileBytesTotal, labels)
-		CachePackfileBytesTotal.WithLabelValues(result).Add(1024)
+		CachePackfileBytesTotal.WithLabelValues("testorg", "testrepo", "testuser", result).Add(1024)
 		after := getCounterValue(t, CachePackfileBytesTotal, labels)
 		if after-before != 1024 {
 			t.Errorf("expected %s bytes counter to increment by 1024, got %f", result, after-before)
