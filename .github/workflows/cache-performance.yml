@@ -17,23 +17,23 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-      - name: Build and start GHP
-        working-directory: bench
-        run: docker compose up -d --build
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Build GHP image
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          args: release --snapshot --clean --skip=publish
 
       - name: Run benchmark
-        run: bash bench/scripts/benchmark.sh
-
-      - name: Capture Docker logs
-        if: always()
-        run: |
-          mkdir -p bench/results/logs
-          docker compose -f bench/docker-compose.yml logs --no-color > bench/results/logs/docker-compose.log 2>&1
-
-      - name: Generate report
-        if: always()
-        run: python3 bench/scripts/report.py
+        run: go test -tags bench -v -timeout 45m ./bench/
 
       - name: Upload results
         if: always()
@@ -42,8 +42,3 @@ jobs:
           name: cache-performance-results
           path: bench/results/
           retention-days: 90
-
-      - name: Teardown
-        if: always()
-        working-directory: bench
-        run: docker compose down -v
