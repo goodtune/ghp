@@ -47,8 +47,6 @@ func (e *upstreamError) Error() string {
 	return fmt.Sprintf("upstream returned %d", e.StatusCode)
 }
 
-// errNoToken indicates no token is available for upstream fetch on cache miss.
-var errNoToken = errors.New("cache miss handling unavailable: no token available")
 
 // isUpstreamRejection returns true if the error represents an access-denied
 // response (401, 403, 404) from upstream, as opposed to a server/network error.
@@ -155,37 +153,10 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 		}
 	}
 
-	// For standalone fetch (no ls-refs in this request), check if we can
-	// handle a cache miss before writing any response headers. If all wants
-	// are already cached we can serve locally; otherwise we need a token for
-	// upstream fetch. If neither is available, proxy to upstream directly
-	// using the parsed commands (since the original body has been consumed).
-	if !hasLsRefs {
-		authToken := extractGitHubToken(r.Header.Get("Authorization"))
-		if authToken == "" && h.serviceTokenFn == nil {
-			// Check if all wants are cached — if so we can serve without a token.
-			needsUpstream := false
-			for _, cmd := range commands {
-				if cmd.Name == "fetch" {
-					wantHashes, wantRefs, parseErr := ParseFetchWants(cmd)
-					if parseErr != nil {
-						needsUpstream = true
-						break
-					}
-					hasAll, checkErr := managed.HasAllWants(wantHashes, wantRefs)
-					if checkErr != nil || !hasAll {
-						needsUpstream = true
-						break
-					}
-				}
-			}
-			if needsUpstream {
-				// Cache miss with no token — proxy directly to upstream.
-				h.proxyUploadPackToUpstream(w, r, owner, repo, commands)
-				return
-			}
-		}
-	}
+	// Note: standalone fetch requests (no ls-refs) always go through the
+	// handleFetch path below, which fetches from upstream on cache miss
+	// and populates the local cache. Anonymous fetch (no token) is supported
+	// for public repositories — FetchUpstream works without authentication.
 
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
 
@@ -421,22 +392,24 @@ func (h *Handler) handleFetch(ctx context.Context, repo *ManagedRepository, cmd 
 // available. When serviceTokenFn is nil, authToken (the per-request
 // credential) is used as a fallback.
 func (h *Handler) fetchAndWait(ctx context.Context, repo *ManagedRepository, wantHashes []plumbing.Hash, wantRefs []string, authToken string) error {
-	var svcToken string
+	// Determine the best available token: service token > request token > anonymous.
+	// Anonymous fetch (empty token) works for public repositories and allows
+	// cache warming without a configured service token or user credential.
+	var fetchToken string
 	if h.serviceTokenFn != nil {
 		var err error
-		svcToken, err = h.serviceTokenFn(ctx)
+		fetchToken, err = h.serviceTokenFn(ctx)
 		if err != nil {
 			return fmt.Errorf("get service token: %w", err)
 		}
 	} else if authToken != "" {
-		svcToken = authToken
-	} else {
-		return errNoToken
+		fetchToken = authToken
 	}
+	// fetchToken may be empty — FetchUpstream handles anonymous fetch.
 
 	// Fetch synchronously — no concurrent storer access to avoid data races
 	// with go-git storers that are not safe for concurrent reads/writes.
-	if err := repo.FetchUpstream(ctx, svcToken); err != nil {
+	if err := repo.FetchUpstream(ctx, fetchToken); err != nil {
 		return err
 	}
 
