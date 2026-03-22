@@ -82,8 +82,7 @@ The `httpClient` on the handler keeps `Timeout: 30 * time.Second` as the default
 
 ### Documentation
 
-- `docs/features/git-cache.md`: document per-repo timeout in the "Adding repositories" section, note the default is 30s, mention that large repos may need higher values
-- `docs/admin/configuration.md`: add timeout_seconds to the cached repos API reference
+- `docs/features/git-cache.md`: document per-repo timeout in the "Adding repositories" section, note the default is 30s, mention that large repos may need higher values (done — includes API examples for create, update, and clearing via `timeout_seconds: 0`)
 
 ## Validation
 

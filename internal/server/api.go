@@ -1307,11 +1307,13 @@ func (a *API) handleUpdateCachedRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.TimeoutSeconds != nil {
 		if *req.TimeoutSeconds == 0 {
-			// Interpret timeout_seconds: 0 as a request to clear the timeout (revert to default).
+			// PATCH semantics: timeout_seconds: 0 clears any previously-set timeout
+			// and reverts to the server default (30s). This differs from POST, where
+			// 0 is rejected — on create, simply omit the field for the default.
 			existing.TimeoutSeconds = nil
 		} else {
 			if *req.TimeoutSeconds < 1 || *req.TimeoutSeconds > 3600 {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "timeout_seconds must be between 1 and 3600"})
+				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "timeout_seconds must be between 1 and 3600, or 0 to clear"})
 				return
 			}
 			existing.TimeoutSeconds = req.TimeoutSeconds
