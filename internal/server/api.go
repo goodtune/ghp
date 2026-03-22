@@ -1306,11 +1306,16 @@ func (a *API) handleUpdateCachedRepo(w http.ResponseWriter, r *http.Request) {
 		existing.Enabled = *req.Enabled
 	}
 	if req.TimeoutSeconds != nil {
-		if *req.TimeoutSeconds < 1 || *req.TimeoutSeconds > 3600 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "timeout_seconds must be between 1 and 3600"})
-			return
+		if *req.TimeoutSeconds == 0 {
+			// Interpret timeout_seconds: 0 as a request to clear the timeout (revert to default).
+			existing.TimeoutSeconds = nil
+		} else {
+			if *req.TimeoutSeconds < 1 || *req.TimeoutSeconds > 3600 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "timeout_seconds must be between 1 and 3600"})
+				return
+			}
+			existing.TimeoutSeconds = req.TimeoutSeconds
 		}
-		existing.TimeoutSeconds = req.TimeoutSeconds
 	}
 
 	if err := a.store.UpdateCachedRepository(r.Context(), existing); err != nil {

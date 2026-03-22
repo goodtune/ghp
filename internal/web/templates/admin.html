@@ -770,7 +770,7 @@
                 const statusBadge = repo.enabled
                     ? '<span class="badge badge-active">Enabled</span>'
                     : '<span class="badge badge-revoked">Disabled</span>';
-                const timeout = repo.timeout_seconds ? repo.timeout_seconds + 's' : 'default';
+                const timeout = (repo.timeout_seconds != null) ? repo.timeout_seconds + 's' : 'default';
                 html += '<tr>';
                 html += '<td>' + esc(repo.owner) + '</td>';
                 html += '<td>' + esc(repo.name) + '</td>';
@@ -810,8 +810,13 @@
                 return;
             }
             const body = { owner, name, enabled };
-            if (timeoutStr) {
-                body.timeout_seconds = parseInt(timeoutStr, 10);
+            if (timeoutStr !== '') {
+                const timeout = Number(timeoutStr);
+                if (!Number.isFinite(timeout) || !Number.isInteger(timeout) || timeout < 1 || timeout > 3600) {
+                    alert('Timeout must be an integer between 1 and 3600 seconds.');
+                    return;
+                }
+                body.timeout_seconds = timeout;
             }
             try {
                 await api('POST', '/api/cached-repos', body);

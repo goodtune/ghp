@@ -60,7 +60,7 @@ Store contract test (`store_test.go`) gains assertions that `TimeoutSeconds` rou
 
 The `CacheLookup` middleware already queries `CachedRepository` from the database. The timeout value is passed through request context to the handler.
 
-In `proxyUploadPackToUpstream()` and the upstream fetch path in `handleFetch()`, if the cached repo has a non-nil timeout, a `context.WithTimeout` wraps the request using that value. Otherwise the client's existing 30-second timeout applies.
+In `proxyUploadPackToUpstream()`, if the cached repo has a non-nil timeout, a `context.WithTimeout` wraps the upstream request using that value. Otherwise the default 30-second timeout applies. The timeout is injected by `CacheLookup` middleware via request context and consumed by the handler when building the upstream HTTP request.
 
 The `httpClient` on the handler keeps `Timeout: 30 * time.Second` as the default safety net. Per-repo context timeouts override it when set to a higher value (context cancellation fires first when the context deadline is shorter than the client timeout; when the context deadline is longer, the client timeout would fire first — so the client timeout is effectively removed for requests that set a per-repo override by using `Timeout: 0` on the cloned request's client, or more simply, the handler uses a client without a timeout and relies entirely on context).
 

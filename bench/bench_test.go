@@ -224,6 +224,7 @@ func benchmarkRepo(t *testing.T, rc repoConfig, baseURL, resultsDir string) *rep
 		"-c", "http.extraHeader=Host: github.com", cloneURL)
 	if err != nil {
 		t.Logf("WARNING: cold cache clone failed (check stderr log): %v", err)
+		coldTime = 0 // Ensure failed runs report as FAILED, not a partial duration.
 	} else {
 		t.Logf("  Duration: %.3fs", coldTime.Seconds())
 	}
