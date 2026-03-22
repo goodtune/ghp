@@ -49,8 +49,8 @@ header alone.
 
 - **Token isolation** — agents never see real GitHub credentials; they only hold short-lived ghp tokens
 - **Scope enforcement** — tokens can be restricted to specific repositories and permission levels
-- **Encryption at rest** — all stored GitHub credentials are encrypted with AES-256-GCM
-- **Audit trail** — all requests produce structured access logs (method, path, status, duration); API proxy requests are additionally recorded as audit log entries in the database with token, user, and repository details
+- **Encryption at rest** — for SQLite and PostgreSQL backends, all stored GitHub credentials are encrypted with AES-256-GCM using a server-managed key. For the Vault backend, Vault provides encryption at rest natively, so no application-level encryption key is required
+- **Audit trail** — all requests produce structured JSON access logs (method, path, status, duration). API proxy requests additionally produce structured JSON audit log entries (`"logger":"audit"`) that include token, user, session, repository details, and request context. Token lifecycle events (creation, revocation) also emit audit log entries but may omit repository and request-related fields. Audit logs are written to the same output stream as access logs. Capturing and indexing these logs is the responsibility of the deployment environment (e.g. Splunk, Elastic, Datadog)
 - **Expiration** — tokens have a configurable lifetime (default 24 hours, up to a server-configured maximum; default maximum 7 days)
 - **Revocation** — tokens can be revoked immediately from the CLI or web dashboard
 - **Border policy** — administrators can block specific GitHub token types from passing through the proxy (see [Token Type Border Policy](features/border-policy.md))
@@ -99,6 +99,59 @@ Traffic to `*.githubcopilot.com` is forwarded transparently. Copilot clients
 manage their own credentials, so ghp does not intercept tokens or enforce
 scopes on this traffic. All Copilot requests are still logged and counted
 in metrics for full visibility.
+
+### Git Cache
+
+For frequently-cloned repositories, ghp can cache git objects locally and serve
+subsequent clone/fetch requests from cache. This reduces load on GitHub and
+improves clone performance. Caching is opt-in per repository and always
+verifies GitHub access before serving cached data.
+
+See [Git Cache](features/git-cache.md) for configuration and details.
+
+### Multi-App Support
+
+ghp supports multiple GitHub Apps simultaneously. Each app can have its own
+set of installations, and agent tokens (`gha_`) can be scoped to a specific
+app. This is useful for organizations that need to separate concerns across
+different GitHub Apps (e.g., CI vs. code review vs. deployment).
+
+Apps are managed dynamically via the admin UI or API (`/api/apps`). Changes
+take effect immediately — no restart or config reload is needed.
+
+On first startup, if no apps exist in the database, the config-based GitHub App
+(`github.app_id`, `github.private_key`, etc.) is automatically seeded as a
+default App record in the store. Any existing agent tokens that have no app
+association are backfilled to point to the newly created default app. After
+seeding, all app management goes through the store — the config-based values
+are not used as an independent provider in parallel with store apps.
+
+If apps exist in the store but none can be loaded (e.g. all private keys are
+invalid), agent token creation returns HTTP 503 rather than creating tokens
+that would fail at use-time.
+
+### Storage Backends
+
+ghp supports three storage backends:
+
+- **SQLite** — single-file database, ideal for development and small deployments
+- **PostgreSQL** — production-grade relational database
+- **HashiCorp Vault** — secrets-native storage using KV v2 secrets engine with AppRole authentication
+
+All backends implement the same `Store` interface and provide identical
+feature parity. The Vault backend stores all data (users, tokens, apps) as
+KV v2 secrets and uses index entries for lookups. It does not require SQL
+migrations and does not need an `encryption_key` (Vault encrypts at rest).
+
+!!! note "Vault concurrency limitation"
+    Vault KV does not support atomic increments. Token usage counters use a
+    read-modify-write pattern protected by an in-process mutex. In
+    multi-instance deployments sharing the same Vault backend, concurrent
+    usage counter updates may be lost. The counters are best-effort in this
+    configuration.
+
+See [Configuration](admin/configuration.md) for backend-specific settings and
+[Vault Backend](admin/vault.md) for a complete Vault setup guide.
 
 ### OAuth Broker
 

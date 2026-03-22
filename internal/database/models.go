@@ -1,7 +1,7 @@
 // Package database provides the data access layer for ghp, abstracting over
 // PostgreSQL (production) and SQLite (development) backends. It defines the
 // Store interface for all database operations, the data models (User,
-// GitHubToken, ProxyToken, AuditEntry), and the migration system. Both
+// GitHubToken, ProxyToken), and the migration system. Both
 // drivers are pure Go (no CGO) — SQLite via modernc.org/sqlite and PostgreSQL
 // via pgx.
 package database
@@ -9,8 +9,36 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// ErrNotFound is returned by DeleteApp, UpdateApp, and UpdateProxyTokenAppID
+// when the target record does not exist. Other mutating operations
+// (RevokeProxyToken) and all read operations (Get*,
+// List*) do not wrap ErrNotFound — reads return (nil, nil) for missing
+// records. Callers can distinguish "not found" from other errors using
+// errors.Is(err, ErrNotFound).
+var ErrNotFound = errors.New("not found")
+
+// DefaultTokenType is the default ProxyToken.TokenType used when none is
+// specified at creation time. This mirrors token.TokenTypeProxy but is
+// defined here to avoid a circular import (token → database).
+const DefaultTokenType = "proxy"
+
+// App represents a GitHub App configured in the proxy.
+type App struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	AppID        int64     `json:"app_id"`
+	ClientID     string    `json:"client_id"`
+	ClientSecret string    `json:"client_secret"`
+	PrivateKey   string    `json:"private_key"`
+	BaseURL      string    `json:"base_url"`
+	IsDefault    bool      `json:"is_default"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
 
 // User represents a ghp user authenticated via GitHub OAuth.
 type User struct {
@@ -27,6 +55,7 @@ type User struct {
 type GitHubToken struct {
 	ID                    string    `json:"id"`
 	UserID                string    `json:"user_id"`
+	AppID                 *string   `json:"app_id,omitempty"`
 	AccessToken           string    `json:"access_token"`
 	RefreshToken          string    `json:"refresh_token"`
 	AccessTokenExpiresAt  time.Time `json:"access_token_expires_at"`
@@ -42,33 +71,16 @@ type ProxyToken struct {
 	TokenHash      string          `json:"-"`
 	TokenPrefix    string          `json:"token_prefix"`
 	TokenType      string          `json:"token_type"`
+	AppID          *string         `json:"app_id,omitempty"`
 	UserID         *string         `json:"user_id,omitempty"`
 	GitHubTokenID  *string         `json:"github_token_id,omitempty"`
 	InstallationID *int64          `json:"installation_id,omitempty"`
 	Repositories   json.RawMessage `json:"repositories"`
 	Scopes         json.RawMessage `json:"scopes"`
 	SessionID      string          `json:"session_id"`
-	ExpiresAt      time.Time       `json:"expires_at"`
-	RevokedAt      *time.Time      `json:"revoked_at,omitempty"`
-	LastUsedAt     *time.Time      `json:"last_used_at,omitempty"`
-	RequestCount   int64           `json:"request_count"`
-	CreatedAt      time.Time       `json:"created_at"`
-}
-
-// AuditEntry represents an entry in the audit log.
-type AuditEntry struct {
-	ID           string          `json:"id"`
-	Timestamp    time.Time       `json:"timestamp"`
-	UserID       string          `json:"user_id"`
-	ProxyTokenID *string         `json:"proxy_token_id,omitempty"`
-	Action       string          `json:"action"`
-	Method       string          `json:"method,omitempty"`
-	Path         string          `json:"path,omitempty"`
-	Repository   string          `json:"repository,omitempty"`
-	StatusCode   int             `json:"status_code,omitempty"`
-	DurationMS   int             `json:"duration_ms,omitempty"`
-	SessionID    string          `json:"session_id,omitempty"`
-	Metadata     json.RawMessage `json:"metadata,omitempty"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // Scopes represents a map of permission to access level.
@@ -96,8 +108,33 @@ func (s Scopes) HasPermission(permission, level string) bool {
 	return granted == level
 }
 
+// CachedRepository represents a repository whose git clone/fetch operations
+// are cached locally by the proxy.
+type CachedRepository struct {
+	ID        string    `json:"id"`
+	Owner     string    `json:"owner"`
+	Name      string    `json:"name"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // Store defines the database operations for ghp.
 type Store interface {
+	// Apps
+	CreateApp(ctx context.Context, app *App) error
+	GetAppByID(ctx context.Context, id string) (*App, error)
+	GetDefaultApp(ctx context.Context) (*App, error)
+	ListApps(ctx context.Context) ([]*App, error)
+	UpdateApp(ctx context.Context, app *App) error
+	DeleteApp(ctx context.Context, id string) error
+	// SetDefaultApp atomically marks appID as the default and clears the
+	// default flag on all other apps. For SQL backends this runs inside a
+	// transaction; for Vault the new default is set before clearing the old
+	// one so that a partial failure never leaves the system with no default.
+	// Returns ErrNotFound if appID does not exist.
+	SetDefaultApp(ctx context.Context, appID string) error
+
 	// Users
 	UpsertUser(ctx context.Context, user *User) error
 	GetUserByGitHubID(ctx context.Context, githubID int64) (*User, error)
@@ -116,24 +153,19 @@ type Store interface {
 	GetProxyTokenByID(ctx context.Context, id string) (*ProxyToken, error)
 	ListProxyTokens(ctx context.Context, userID string) ([]*ProxyToken, error)
 	ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, error)
+	ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error)
 	RevokeProxyToken(ctx context.Context, id string) error
-	UpdateProxyTokenUsage(ctx context.Context, id string) error
+	UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error
 
-	// Audit log
-	CreateAuditEntry(ctx context.Context, entry *AuditEntry) error
-	ListAuditEntries(ctx context.Context, filter AuditFilter) ([]*AuditEntry, error)
+	// Cached repositories
+	CreateCachedRepository(ctx context.Context, repo *CachedRepository) error
+	GetCachedRepositoryByID(ctx context.Context, id string) (*CachedRepository, error)
+	GetCachedRepositoryByOwnerName(ctx context.Context, owner, name string) (*CachedRepository, error)
+	ListCachedRepositories(ctx context.Context) ([]*CachedRepository, error)
+	UpdateCachedRepository(ctx context.Context, repo *CachedRepository) error
+	DeleteCachedRepository(ctx context.Context, id string) error
 
 	// Lifecycle
 	Close() error
 }
 
-// AuditFilter defines criteria for querying the audit log.
-type AuditFilter struct {
-	UserID     string
-	Repository string
-	TokenID    string
-	Action     string
-	StatusCode int
-	Limit      int
-	Offset     int
-}

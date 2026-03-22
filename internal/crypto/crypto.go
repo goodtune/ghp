@@ -46,7 +46,11 @@ func NewEncryptor(hexKey string) (*Encryptor, error) {
 }
 
 // Encrypt encrypts plaintext and returns a base64-encoded ciphertext (nonce prepended).
+// In passthrough mode (Vault backend), it returns the plaintext unchanged.
 func (e *Encryptor) Encrypt(plaintext string) (string, error) {
+	if e.aead == nil {
+		return plaintext, nil
+	}
 	nonce := make([]byte, e.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", fmt.Errorf("generating nonce: %w", err)
@@ -57,7 +61,11 @@ func (e *Encryptor) Encrypt(plaintext string) (string, error) {
 }
 
 // Decrypt decrypts a base64-encoded ciphertext (nonce prepended).
+// In passthrough mode (Vault backend), it returns the value unchanged.
 func (e *Encryptor) Decrypt(encoded string) (string, error) {
+	if e.aead == nil {
+		return encoded, nil
+	}
 	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return "", fmt.Errorf("decoding ciphertext: %w", err)
@@ -75,6 +83,13 @@ func (e *Encryptor) Decrypt(encoded string) (string, error) {
 	}
 
 	return string(plaintext), nil
+}
+
+// NewPassthroughEncryptor creates an Encryptor that stores values as plaintext.
+// This is used when the storage backend (e.g. Vault) already provides
+// encryption at rest, making application-level encryption redundant.
+func NewPassthroughEncryptor() *Encryptor {
+	return &Encryptor{aead: nil}
 }
 
 // GenerateKey generates a new random 32-byte key and returns it hex-encoded.

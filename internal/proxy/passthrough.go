@@ -120,19 +120,27 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 				return
 			}
 			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
-			// Not a client token — try to resolve the GitHub username
-			// from the raw token for access-log / metrics visibility.
-			if ur != nil {
-				if raw := extractRawGitHubToken(r); raw != "" {
-					if username := ur.ResolveFromGitHubToken(r.Context(), raw); username != "" {
-						SetUsername(r, username)
-					}
-				}
+			// Extract the raw GitHub token and trigger an async username
+			// lookup before the upstream roundtrip so the background
+			// goroutine can run concurrently with the upstream request.
+			raw := extractRawGitHubToken(r)
+			if ur != nil && raw != "" {
+				ur.ResolveFromGitHubToken(r.Context(), raw)
 			}
 			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			upstreamStart := time.Now()
-			inner.ServeHTTP(w, r)
+			inner.ServeHTTP(rec, r)
 			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
+			// Check the username cache after the roundtrip; the async
+			// lookup may have completed during the upstream wait.
+			if ur != nil && raw != "" && GetUsername(r) == "" {
+				if u := ur.CheckCache(raw); u != "" {
+					SetUsername(r, u)
+				}
+			}
+			// Emit proxy-level metrics for passthrough traffic (token type may be "unknown").
+			metrics.ObservePassthroughRequest(backend.GitHub, r.Method, rec.status, time.Since(decisionStart), "git", passthroughTokenType(raw), GetUsername(r))
 			return
 		}
 
@@ -189,19 +197,14 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 
 		tokenType := pt.TokenType
 
-		// Resolve the GitHub username for metrics and access-log use.
-		usernameStart := time.Now()
+		// Inject the token creator's user ID for auditing. The actual GitHub
+		// username is resolved later via the GraphQL viewer endpoint, after the
+		// real GitHub token is obtained — giving the authenticated identity
+		// (bot account for gha_ tokens, human for ghx_ tokens).
 		username := ""
 		if pt.UserID != nil {
 			SetUserID(r, *pt.UserID)
-			if ur != nil {
-				username = ur.ResolveFromUserID(r.Context(), *pt.UserID)
-				if username != "" {
-					SetUsername(r, username)
-				}
-			}
 		}
-		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 		// Wrap response writer to capture status code for metrics.
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -235,11 +238,20 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 				writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 				return
 			}
+			usernameStart := time.Now()
+			if ur != nil {
+				if u := ur.ResolveFromGitHubToken(r.Context(), realToken); u != "" {
+					username = u
+					SetUsername(r, username)
+				}
+			}
+			metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 			r.Header.Set("Authorization", rewriteAuth(realToken))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			upstreamStart := time.Now()
 			inner.ServeHTTP(rec, r)
 			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+			username = resolveUsernameAfterRoundtrip(r, realToken, username, ur, pt)
 			return
 		}
 
@@ -277,11 +289,20 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 			return
 		}
+		usernameStart := time.Now()
+		if ur != nil {
+			if u := ur.ResolveFromGitHubToken(r.Context(), realToken); u != "" {
+				username = u
+				SetUsername(r, username)
+			}
+		}
+		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 		r.Header.Set("Authorization", rewriteAuth(realToken))
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 		upstreamStart := time.Now()
 		inner.ServeHTTP(rec, r)
 		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+		username = resolveUsernameAfterRoundtrip(r, realToken, username, ur, pt)
 	})
 }
 

@@ -11,12 +11,16 @@ type contextKey struct{ name string }
 
 var usernameCtxKey = &contextKey{"github-username"}
 var userIDCtxKey = &contextKey{"user-id"}
+var cacheStateCtxKey = &contextKey{"cache-state"}
+var cacheRepoCtxKey = &contextKey{"cache-repo"}
 
 // AccessLogSlots holds the mutable string slots that downstream handlers
 // populate so the access-log middleware can read them after the request.
 type AccessLogSlots struct {
-	Username *string
-	UserID   *string
+	Username   *string
+	UserID     *string
+	CacheState *string // "hit", "miss", "rejected", "error", or "" for non-cached
+	CacheRepo  *string // "owner/repo" if request hit a cached repository
 }
 
 // PrepareAccessLogSlots returns a new request whose context carries mutable
@@ -26,9 +30,18 @@ type AccessLogSlots struct {
 func PrepareAccessLogSlots(r *http.Request) (*http.Request, *AccessLogSlots) {
 	usernameSlot := new(string)
 	userIDSlot := new(string)
+	cacheStateSlot := new(string)
+	cacheRepoSlot := new(string)
 	ctx := context.WithValue(r.Context(), usernameCtxKey, usernameSlot)
 	ctx = context.WithValue(ctx, userIDCtxKey, userIDSlot)
-	return r.WithContext(ctx), &AccessLogSlots{Username: usernameSlot, UserID: userIDSlot}
+	ctx = context.WithValue(ctx, cacheStateCtxKey, cacheStateSlot)
+	ctx = context.WithValue(ctx, cacheRepoCtxKey, cacheRepoSlot)
+	return r.WithContext(ctx), &AccessLogSlots{
+		Username:   usernameSlot,
+		UserID:     userIDSlot,
+		CacheState: cacheStateSlot,
+		CacheRepo:  cacheRepoSlot,
+	}
 }
 
 // PrepareUsernameSlot returns a new request whose context carries a mutable
@@ -75,4 +88,30 @@ func GetUserID(r *http.Request) string {
 		return *slot
 	}
 	return ""
+}
+
+// SetCacheState stores the cache result state in the request's context slot.
+// Valid values: "hit", "miss", "rejected", "error". It is a no-op if no slot
+// was prepared.
+func SetCacheState(r *http.Request, state string) {
+	if slot, ok := r.Context().Value(cacheStateCtxKey).(*string); ok {
+		*slot = state
+	}
+}
+
+// GetCacheState returns the cache result state from the request's context slot,
+// or "" if no state was set.
+func GetCacheState(r *http.Request) string {
+	if slot, ok := r.Context().Value(cacheStateCtxKey).(*string); ok {
+		return *slot
+	}
+	return ""
+}
+
+// SetCacheRepo stores the cached repository identifier (owner/repo) in the
+// request's context slot. It is a no-op if no slot was prepared.
+func SetCacheRepo(r *http.Request, repo string) {
+	if slot, ok := r.Context().Value(cacheRepoCtxKey).(*string); ok {
+		*slot = repo
+	}
 }

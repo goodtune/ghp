@@ -67,6 +67,8 @@ type accessLogEntry struct {
 	Size        int                 `json:"size"`
 	Status      int                 `json:"status"`
 	RespHeaders map[string][]string `json:"resp_headers"`
+	CacheState  string              `json:"cache_state,omitempty"`
+	CacheRepo   string              `json:"cache_repo,omitempty"`
 }
 
 type requestEntry struct {
@@ -180,6 +182,8 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) ht
 			Size:        rec.size,
 			Status:      rec.status,
 			RespHeaders: respHeaders,
+			CacheState:  *slots.CacheState,
+			CacheRepo:   *slots.CacheRepo,
 		}
 
 		aw.writeEntry(entry)

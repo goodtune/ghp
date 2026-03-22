@@ -44,10 +44,10 @@ func newTestPostgresStore(t *testing.T) *PostgresStore {
 
 	// Drop and recreate tables for a clean slate.
 	for _, stmt := range []string{
-		"DROP TABLE IF EXISTS audit_log",
 		"DROP TABLE IF EXISTS proxy_tokens",
 		"DROP TYPE IF EXISTS token_type",
 		"DROP TABLE IF EXISTS github_tokens",
+		"DROP TABLE IF EXISTS apps",
 		"DROP TABLE IF EXISTS users",
 		"DROP TABLE IF EXISTS schema_migrations",
 	} {
@@ -65,6 +65,12 @@ func newTestPostgresStore(t *testing.T) *PostgresStore {
 		t.Fatalf("Migrate: %v", err)
 	}
 	return store
+}
+
+// TestPostgresStoreContract runs the shared store contract tests against PostgreSQL.
+func TestPostgresStoreContract(t *testing.T) {
+	store := newTestPostgresStore(t)
+	testStoreContract(t, store)
 }
 
 func TestPostgresUserCRUD(t *testing.T) {
@@ -221,18 +227,6 @@ func TestPostgresProxyTokenCRUD(t *testing.T) {
 		t.Errorf("installation_id = %v, want 12345", gotAgent.InstallationID)
 	}
 
-	// Update usage.
-	if err := store.UpdateProxyTokenUsage(ctx, pt.ID); err != nil {
-		t.Fatal(err)
-	}
-	got2, _ := store.GetProxyTokenByID(ctx, pt.ID)
-	if got2.RequestCount != 1 {
-		t.Errorf("request_count = %d, want 1", got2.RequestCount)
-	}
-	if got2.LastUsedAt == nil {
-		t.Error("last_used_at should be set")
-	}
-
 	// List.
 	tokens, err := store.ListProxyTokens(ctx, user.ID)
 	if err != nil {
@@ -284,37 +278,3 @@ func TestPostgresMigrations(t *testing.T) {
 	}
 }
 
-func TestPostgresAuditLog(t *testing.T) {
-	store := newTestPostgresStore(t)
-	ctx := context.Background()
-
-	user := &User{GitHubID: 1, GitHubUsername: "charlie", Role: "user"}
-	if err := store.UpsertUser(ctx, user); err != nil {
-		t.Fatal(err)
-	}
-
-	entry := &AuditEntry{
-		UserID:     user.ID,
-		Action:     "proxy_request",
-		Method:     "GET",
-		Path:       "/repos/org/repo/pulls",
-		Repository: "org/repo",
-		StatusCode: 200,
-		DurationMS: 42,
-		SessionID:  "test",
-	}
-	if err := store.CreateAuditEntry(ctx, entry); err != nil {
-		t.Fatal(err)
-	}
-
-	entries, err := store.ListAuditEntries(ctx, AuditFilter{UserID: user.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("ListAuditEntries = %d, want 1", len(entries))
-	}
-	if entries[0].Action != "proxy_request" {
-		t.Errorf("action = %q, want proxy_request", entries[0].Action)
-	}
-}

@@ -160,6 +160,7 @@ func TestObserveDecision_AllStages(t *testing.T) {
 		StageGitHubTokenResolution,
 		StageUpstreamRoundtrip,
 		StageRedirectHeadCheck,
+		StageCacheLookup,
 	}
 
 	for _, stage := range stages {
@@ -251,6 +252,155 @@ func TestObserveDecision_RedirectHeadCheck(t *testing.T) {
 	}
 	before := getHistogramCount(t, ProxyDecisionDuration, labels)
 	ObserveDecision(StageRedirectHeadCheck, "", 10*time.Millisecond)
+	after := getHistogramCount(t, ProxyDecisionDuration, labels)
+	if after-before != 1 {
+		t.Errorf("expected histogram sample count to increment by 1, got %d", after-before)
+	}
+}
+
+func TestObservePassthroughRequest(t *testing.T) {
+	tests := []struct {
+		name      string
+		tokenType string
+		wantType  string
+	}{
+		{"gho", "gho", "gho"},
+		{"ghp", "ghp", "ghp"},
+		{"ghu", "ghu", "ghu"},
+		{"ghs", "ghs", "ghs"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			labels := prometheus.Labels{
+				"backend":    "api.github.com",
+				"method":     "GET",
+				"status":     "200",
+				"token_type": tt.wantType,
+				"type":       "rest",
+				"user":       "testuser",
+				"app":        "",
+			}
+			before := getCounterValue(t, ProxyRequestTotal, labels)
+			ObservePassthroughRequest("api.github.com", "GET", 200, 100*time.Millisecond, "rest", tt.tokenType, "testuser")
+			after := getCounterValue(t, ProxyRequestTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
+	}
+}
+
+func TestObservePassthroughRequest_UnknownUser(t *testing.T) {
+	labels := prometheus.Labels{
+		"backend":    "github.com",
+		"method":     "POST",
+		"status":     "200",
+		"token_type": "gho",
+		"type":       "git",
+		"user":       "unknown",
+		"app":        "",
+	}
+	before := getCounterValue(t, ProxyRequestTotal, labels)
+	ObservePassthroughRequest("github.com", "POST", 200, 100*time.Millisecond, "git", "gho", "")
+	after := getCounterValue(t, ProxyRequestTotal, labels)
+	if after-before != 1 {
+		t.Errorf("expected counter to increment by 1, got %f", after-before)
+	}
+}
+
+func TestObservePassthroughRequest_UnknownTokenType(t *testing.T) {
+	labels := prometheus.Labels{
+		"backend":    "api.github.com",
+		"method":     "GET",
+		"status":     "200",
+		"token_type": "unknown",
+		"type":       "rest",
+		"user":       "unknown",
+		"app":        "",
+	}
+	before := getCounterValue(t, ProxyRequestTotal, labels)
+	ObservePassthroughRequest("api.github.com", "GET", 200, 100*time.Millisecond, "rest", "", "")
+	after := getCounterValue(t, ProxyRequestTotal, labels)
+	if after-before != 1 {
+		t.Errorf("expected counter to increment by 1, got %f", after-before)
+	}
+}
+
+func TestCacheFetchTotal(t *testing.T) {
+	results := []string{"hit", "miss", "rejected", "error"}
+	for _, result := range results {
+		t.Run(result, func(t *testing.T) {
+			labels := prometheus.Labels{"result": result}
+			before := getCounterValue(t, CacheFetchTotal, labels)
+			CacheFetchTotal.WithLabelValues(result).Inc()
+			after := getCounterValue(t, CacheFetchTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
+	}
+}
+
+func TestCacheLsRefsTotal(t *testing.T) {
+	before := getCounterValueSimple(t, CacheLsRefsTotal)
+	CacheLsRefsTotal.Inc()
+	after := getCounterValueSimple(t, CacheLsRefsTotal)
+	if after-before != 1 {
+		t.Errorf("expected counter to increment by 1, got %f", after-before)
+	}
+}
+
+func TestCacheWarmTotal(t *testing.T) {
+	for _, result := range []string{"success", "error"} {
+		t.Run(result, func(t *testing.T) {
+			labels := prometheus.Labels{"result": result}
+			before := getCounterValue(t, CacheWarmTotal, labels)
+			CacheWarmTotal.WithLabelValues(result).Inc()
+			after := getCounterValue(t, CacheWarmTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
+	}
+}
+
+func TestCacheReposActive(t *testing.T) {
+	CacheReposActive.Set(5)
+	if got := getGaugeValue(t, CacheReposActive); got != 5 {
+		t.Errorf("expected gauge value 5, got %f", got)
+	}
+	CacheReposActive.Set(0)
+	if got := getGaugeValue(t, CacheReposActive); got != 0 {
+		t.Errorf("expected gauge value 0, got %f", got)
+	}
+}
+
+func TestCacheRequestTotal(t *testing.T) {
+	labels := prometheus.Labels{"owner": "testorg", "repo": "testrepo", "result": "nocache"}
+	before := getCounterValue(t, CacheRequestTotal, labels)
+	CacheRequestTotal.WithLabelValues("testorg", "testrepo", "nocache").Inc()
+	after := getCounterValue(t, CacheRequestTotal, labels)
+	if after-before != 1 {
+		t.Errorf("expected counter to increment by 1, got %f", after-before)
+	}
+
+	// Verify bypass label works too.
+	bypassLabels := prometheus.Labels{"owner": "testorg", "repo": "testrepo", "result": "bypass"}
+	beforeBypass := getCounterValue(t, CacheRequestTotal, bypassLabels)
+	CacheRequestTotal.WithLabelValues("testorg", "testrepo", "bypass").Inc()
+	afterBypass := getCounterValue(t, CacheRequestTotal, bypassLabels)
+	if afterBypass-beforeBypass != 1 {
+		t.Errorf("expected bypass counter to increment by 1, got %f", afterBypass-beforeBypass)
+	}
+}
+
+func TestObserveDecision_CacheLookup(t *testing.T) {
+	labels := prometheus.Labels{
+		"stage":      StageCacheLookup,
+		"token_type": "proxy",
+	}
+	before := getHistogramCount(t, ProxyDecisionDuration, labels)
+	ObserveDecision(StageCacheLookup, "proxy", 5*time.Millisecond)
 	after := getHistogramCount(t, ProxyDecisionDuration, labels)
 	if after-before != 1 {
 		t.Errorf("expected histogram sample count to increment by 1, got %d", after-before)

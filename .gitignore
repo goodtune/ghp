@@ -41,6 +41,7 @@ go.work.sum
 # Local database
 /ghp.db
 
+
 # Generated man pages
 doc/man1/
 
@@ -54,6 +55,10 @@ internal/docs/site/*
 
 # Benchmark results
 bench/results/
+
+# Playwright
+.playwright-mcp/
+test-results/
 
 # Editor/IDE
 # .idea/

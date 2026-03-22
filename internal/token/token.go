@@ -16,12 +16,29 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goodtune/ghp/internal/database"
 )
+
+const (
+	// tokenCacheTTL is how long a resolved token is kept in the in-memory
+	// cache before being re-fetched from the database. A short TTL ensures
+	// that revocations and expiry propagate promptly even in multi-instance
+	// deployments where one instance's Revoke() call doesn't reach others.
+	tokenCacheTTL = 30 * time.Second
+)
+
+// cachedToken pairs a resolved proxy token with the wall-clock time it was
+// stored so that stale entries can be evicted on read.
+type cachedToken struct {
+	token    *database.ProxyToken
+	cachedAt time.Time
+}
 
 // TokenType distinguishes proxy tokens from agent tokens.
 type TokenType string
@@ -63,6 +80,7 @@ func PrefixForType(tt TokenType) string {
 // CreateRequest contains the parameters for creating a new token.
 type CreateRequest struct {
 	TokenType      TokenType
+	AppRecordID    string            // App record ID for agent tokens (empty = default app).
 	UserID         string
 	GitHubTokenID  string            // Required for proxy tokens.
 	InstallationID int64             // Required for agent tokens.
@@ -88,6 +106,20 @@ type CreateResult struct {
 type Service struct {
 	store       database.Store
 	maxDuration time.Duration
+
+	// tokenCache is an in-memory cache of resolved proxy tokens keyed by
+	// SHA-256 hex digest (the same key used for database lookups). Entries
+	// expire after tokenCacheTTL to bound staleness from revocations that
+	// happen on other instances.
+	tokenCache sync.Map // map[string]cachedToken
+
+	// idToHash maps token ID → token hash so that Revoke (which receives an
+	// ID) can invalidate the corresponding cache entry without a DB lookup.
+	idToHash sync.Map // map[string]string
+
+	// nowFunc is the time source used for TTL checks. It defaults to
+	// time.Now and can be overridden in tests.
+	nowFunc func() time.Time
 }
 
 // NewService creates a new token Service.
@@ -95,6 +127,7 @@ func NewService(store database.Store, maxDuration time.Duration) *Service {
 	return &Service{
 		store:       store,
 		maxDuration: maxDuration,
+		nowFunc:     time.Now,
 	}
 }
 
@@ -186,6 +219,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 	if req.InstallationID != 0 {
 		pt.InstallationID = &req.InstallationID
 	}
+	// AppRecordID only applies to agent tokens; proxy tokens resolve
+	// credentials via the linked GitHubToken, not an app record.
+	if req.AppRecordID != "" && tt == TokenTypeAgent {
+		pt.AppID = &req.AppRecordID
+	}
 
 	if err := s.store.CreateProxyToken(ctx, pt); err != nil {
 		return nil, fmt.Errorf("storing token: %w", err)
@@ -204,12 +242,35 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 
 // Resolve looks up a proxy token by its plaintext value.
 // Returns nil if the token is not found, expired, or revoked.
+//
+// An in-memory cache keyed by the token's SHA-256 hash avoids a database
+// round-trip on every proxied request. Cached entries are evicted after
+// tokenCacheTTL (30 s) so that revocations and expiry propagate promptly.
 func (s *Service) Resolve(ctx context.Context, plaintext string) (*database.ProxyToken, error) {
 	if _, ok := TokenTypeFromPrefix(plaintext); !ok {
 		return nil, fmt.Errorf("invalid token prefix")
 	}
 
 	hash := Hash(plaintext)
+	now := s.nowFunc()
+
+	// Check the in-memory cache first.
+	if entry, ok := s.tokenCache.Load(hash); ok {
+		ct := entry.(cachedToken)
+		if now.Sub(ct.cachedAt) < tokenCacheTTL {
+			pt := ct.token
+			if pt.RevokedAt != nil {
+				return nil, fmt.Errorf("token has been revoked")
+			}
+			if now.After(pt.ExpiresAt) {
+				return nil, fmt.Errorf("token has expired")
+			}
+			return pt, nil
+		}
+		// TTL expired — evict and fall through to the database.
+		s.tokenCache.Delete(hash)
+	}
+
 	pt, err := s.store.GetProxyTokenByHash(ctx, hash)
 	if err != nil {
 		return nil, fmt.Errorf("looking up token: %w", err)
@@ -221,21 +282,63 @@ func (s *Service) Resolve(ctx context.Context, plaintext string) (*database.Prox
 	if pt.RevokedAt != nil {
 		return nil, fmt.Errorf("token has been revoked")
 	}
-	if time.Now().After(pt.ExpiresAt) {
+	if now.After(pt.ExpiresAt) {
 		return nil, fmt.Errorf("token has expired")
 	}
+
+	// Cache the valid token for subsequent requests.
+	s.cacheToken(hash, pt)
 
 	return pt, nil
 }
 
-// Revoke marks a token as revoked.
+// Revoke marks a token as revoked and removes it from the in-memory cache
+// so that subsequent Resolve calls see the revocation immediately on this
+// instance (other instances will see it when their cached entry expires).
 func (s *Service) Revoke(ctx context.Context, id string) error {
-	return s.store.RevokeProxyToken(ctx, id)
+	if err := s.store.RevokeProxyToken(ctx, id); err != nil {
+		return err
+	}
+	// Invalidate the cache entry. The id→hash secondary index lets us find
+	// the cache key without an extra database lookup.
+	if hashVal, ok := s.idToHash.LoadAndDelete(id); ok {
+		s.tokenCache.Delete(hashVal.(string))
+	}
+	return nil
 }
 
-// RecordUsage updates the last_used_at and request_count fields.
-func (s *Service) RecordUsage(ctx context.Context, id string) error {
-	return s.store.UpdateProxyTokenUsage(ctx, id)
+// cacheToken stores a proxy token in the in-memory cache and records the
+// id→hash mapping so Revoke can invalidate by ID.
+func (s *Service) cacheToken(hash string, pt *database.ProxyToken) {
+	s.tokenCache.Store(hash, cachedToken{
+		token:    pt,
+		cachedAt: s.nowFunc(),
+	})
+	s.idToHash.Store(pt.ID, hash)
+}
+
+// WarmTokenCache pre-loads all active (unexpired, non-revoked) proxy tokens
+// into the in-memory cache so the first request for each token avoids a
+// database round-trip. This is best-effort: errors are logged and skipped.
+func (s *Service) WarmTokenCache(ctx context.Context, logger *slog.Logger) {
+	tokens, err := s.store.ListActiveProxyTokens(ctx)
+	if err != nil {
+		if logger != nil {
+			logger.Error("token cache warm: failed to list active tokens", "error", err)
+		}
+		return
+	}
+	loaded := 0
+	for _, pt := range tokens {
+		if pt.TokenHash == "" {
+			continue
+		}
+		s.cacheToken(pt.TokenHash, pt)
+		loaded++
+	}
+	if logger != nil {
+		logger.Info("token cache warmed", "tokens", loaded)
+	}
 }
 
 // Hash returns the SHA-256 hex digest of a token string.

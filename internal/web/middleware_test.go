@@ -197,6 +197,13 @@ func TestServerHeaderMiddlewareFlusher(t *testing.T) {
 // noopStore implements database.Store with all methods returning zero values.
 type noopStore struct{}
 
+func (noopStore) CreateApp(_ context.Context, _ *database.App) error                            { return nil }
+func (noopStore) GetAppByID(_ context.Context, _ string) (*database.App, error)                 { return nil, nil }
+func (noopStore) GetDefaultApp(_ context.Context) (*database.App, error)                        { return nil, nil }
+func (noopStore) ListApps(_ context.Context) ([]*database.App, error)                           { return nil, nil }
+func (noopStore) UpdateApp(_ context.Context, _ *database.App) error                            { return nil }
+func (noopStore) DeleteApp(_ context.Context, _ string) error                                   { return nil }
+func (noopStore) SetDefaultApp(_ context.Context, _ string) error                               { return nil }
 func (noopStore) UpsertUser(_ context.Context, _ *database.User) error                          { return nil }
 func (noopStore) GetUserByGitHubID(_ context.Context, _ int64) (*database.User, error)         { return nil, nil }
 func (noopStore) GetUserByID(_ context.Context, _ string) (*database.User, error)               { return nil, nil }
@@ -210,12 +217,21 @@ func (noopStore) GetProxyTokenByHash(_ context.Context, _ string) (*database.Pro
 func (noopStore) GetProxyTokenByID(_ context.Context, _ string) (*database.ProxyToken, error)   { return nil, nil }
 func (noopStore) ListProxyTokens(_ context.Context, _ string) ([]*database.ProxyToken, error)   { return nil, nil }
 func (noopStore) ListAllProxyTokens(_ context.Context) ([]*database.ProxyToken, error)          { return nil, nil }
+func (noopStore) ListActiveProxyTokens(_ context.Context) ([]*database.ProxyToken, error)       { return nil, nil }
 func (noopStore) RevokeProxyToken(_ context.Context, _ string) error                            { return nil }
-func (noopStore) UpdateProxyTokenUsage(_ context.Context, _ string) error                       { return nil }
-func (noopStore) CreateAuditEntry(_ context.Context, _ *database.AuditEntry) error              { return nil }
-func (noopStore) ListAuditEntries(_ context.Context, _ database.AuditFilter) ([]*database.AuditEntry, error) {
+func (noopStore) UpdateProxyTokenAppID(_ context.Context, _ string, _ string) error             { return nil }
+func (noopStore) CreateCachedRepository(_ context.Context, _ *database.CachedRepository) error  { return nil }
+func (noopStore) GetCachedRepositoryByID(_ context.Context, _ string) (*database.CachedRepository, error) {
 	return nil, nil
 }
+func (noopStore) GetCachedRepositoryByOwnerName(_ context.Context, _, _ string) (*database.CachedRepository, error) {
+	return nil, nil
+}
+func (noopStore) ListCachedRepositories(_ context.Context) ([]*database.CachedRepository, error) {
+	return nil, nil
+}
+func (noopStore) UpdateCachedRepository(_ context.Context, _ *database.CachedRepository) error { return nil }
+func (noopStore) DeleteCachedRepository(_ context.Context, _ string) error                     { return nil }
 func (noopStore) Close() error { return nil }
 
 // stubStore is a minimal database.Store that overrides UpsertUser and

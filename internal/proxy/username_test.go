@@ -11,6 +11,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/goodtune/ghp/internal/crypto"
+	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/token"
 )
 
 func TestExtractRawGitHubToken_Bearer(t *testing.T) {
@@ -678,5 +682,201 @@ func TestUsernameResolver_GraphQL_BasicAuth_BotToken(t *testing.T) {
 	}
 	if cached != "deploy-bot[bot]" {
 		t.Errorf("expected 'deploy-bot[bot]' for ghs_ token via Basic auth, got %q", cached)
+	}
+}
+
+func TestUsernameResolver_WarmCache_ProxyTokens(t *testing.T) {
+	// WarmCache should resolve the GitHub credential for each unexpired proxy
+	// token and trigger an async GraphQL lookup to populate the cache.
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 500, GitHubUsername: "warmuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("gho_warm_test_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	if _, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Duration:      24 * time.Hour,
+		SessionID:     "warm-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	gqlSrv := newMockGraphQLServer(t, "warm-resolved-user", &callCount)
+	defer gqlSrv.Close()
+
+	resolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
+	ptr := NewProxyTokenResolver(tokenSvc, store, enc, nil)
+
+	// warmCacheSync blocks until all GraphQL lookups complete; read directly from cache.
+	resolver.warmCacheSync(ctx, ptr)
+
+	// warmCacheSync blocks until all workers finish so the cache is populated now.
+	cached := resolver.CheckCache("gho_warm_test_token")
+
+	if cached != "warm-resolved-user" {
+		t.Errorf("expected 'warm-resolved-user' after cache warm, got %q", cached)
+	}
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected 1 GraphQL API call from cache warm, got %d", n)
+	}
+}
+
+func TestUsernameResolver_WarmCache_SkipsExpiredAndRevoked(t *testing.T) {
+	// WarmCache must skip expired and revoked tokens.
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 501, GitHubUsername: "skipuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("gho_skip_test_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+
+	// Create a token with a very short duration so it expires immediately.
+	if _, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Duration:      1 * time.Millisecond,
+		SessionID:     "expired-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond) // ensure expiry
+
+	// Create a token and then revoke it.
+	revoked, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Duration:      24 * time.Hour,
+		SessionID:     "revoked-test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RevokeProxyToken(ctx, revoked.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	gqlSrv := newMockGraphQLServer(t, "should-not-resolve", &callCount)
+	defer gqlSrv.Close()
+
+	resolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
+	ptr := NewProxyTokenResolver(tokenSvc, store, enc, nil)
+	resolver.warmCacheSync(ctx, ptr)
+
+	if n := callCount.Load(); n != 0 {
+		t.Errorf("expected 0 GraphQL API calls for expired/revoked tokens, got %d", n)
+	}
+}
+
+func TestPassthroughTokenType(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+		want  string
+	}{
+		{"gho_prefix", "gho_abc123", "gho"},
+		{"ghp_prefix", "ghp_def456", "ghp"},
+		{"ghu_prefix", "ghu_xyz789", "ghu"},
+		{"ghs_prefix", "ghs_bot123", "ghs"},
+		{"ghx_unrecognized", "ghx_abc123", "unknown"},
+		{"gha_unrecognized", "gha_abc123", "unknown"},
+		{"random_token", "randomtoken", "unknown"},
+		{"empty_token", "", "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := passthroughTokenType(tt.token)
+			if got != tt.want {
+				t.Errorf("passthroughTokenType(%q) = %q, want %q", tt.token, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUsernameResolver_WarmCache_AgentTokens(t *testing.T) {
+	// WarmCache should also resolve agent tokens via the AppTokenProvider.
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	var installID int64 = 55
+	if _, err := tokenSvc.Create(ctx, token.CreateRequest{
+		TokenType:      token.TokenTypeAgent,
+		InstallationID: installID,
+		Duration:       24 * time.Hour,
+		SessionID:      "agent-warm-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	gqlSrv := newMockGraphQLServer(t, "warm-bot[bot]", &callCount)
+	defer gqlSrv.Close()
+
+	resolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
+	atp := &mockAppTokenProvider{token: "ghs_warm_agent_token"}
+	ptr := NewProxyTokenResolver(tokenSvc, store, enc, atp)
+
+	// warmCacheSync blocks until all workers finish so the cache is populated now.
+	resolver.warmCacheSync(ctx, ptr)
+
+	cached := resolver.CheckCache("ghs_warm_agent_token")
+
+	if cached != "warm-bot[bot]" {
+		t.Errorf("expected 'warm-bot[bot]' after cache warm, got %q", cached)
 	}
 }

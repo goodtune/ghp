@@ -14,6 +14,7 @@ import (
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
+	"github.com/prometheus/client_golang/prometheus"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
@@ -941,6 +942,178 @@ func TestServeHTTP_OpenScoped_AgentToken_RootEndpoint_NoOAuthScopes(t *testing.T
 	}
 }
 
+func TestServeHTTP_AgentToken_ResolvesBot_NotTokenCreator(t *testing.T) {
+	// When a gha_ agent token is used, the access log username must reflect
+	// the bot identity from the GitHub App installation token (e.g. "my-app[bot]"),
+	// NOT the human user who created the proxy token.
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a human user who will be the token creator.
+	user := &database.User{GitHubID: 200, GitHubUsername: "human-creator", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	var installID int64 = 42
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		TokenType:      token.TokenTypeAgent,
+		UserID:         user.ID,
+		InstallationID: installID,
+		Duration:       24 * time.Hour,
+		SessionID:      "agent-identity-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mock GraphQL server returns the bot identity for the installation token.
+	gqlSrv := newMockGraphQLServer(t, "my-app[bot]", nil)
+	defer gqlSrv.Close()
+
+	usernameResolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
+
+	// Pre-warm the cache so the username is available synchronously.
+	usernameResolver.ResolveFromGitHubToken(ctx, "ghs_fake_install_token")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if usernameResolver.ResolveFromGitHubToken(ctx, "ghs_fake_install_token") != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:              &config.Config{},
+		tokenService:     tokenSvc,
+		store:            store,
+		encryptor:        enc,
+		appTokenProvider: &mockAppTokenProvider{token: "ghs_fake_install_token"},
+		usernameResolver: usernameResolver,
+		logger:           slog.Default(),
+		client:           &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo/pulls", nil)
+	req.Header.Set("Authorization", "Bearer "+result.Token)
+	// Prepare access log slots so SetUsername/GetUsername work in tests.
+	req, slots := PrepareAccessLogSlots(req)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	// The username set in the request context must be the bot identity,
+	// not the human who created the token.
+	got := *slots.Username
+	if got == "human-creator" {
+		t.Errorf("username should be the bot identity, not the token creator 'human-creator'")
+	}
+	if got != "my-app[bot]" {
+		t.Errorf("expected username 'my-app[bot]', got %q", got)
+	}
+}
+
+func TestServeHTTP_ProxyToken_ResolvesViaGraphQL(t *testing.T) {
+	// Verify that ghx_ (proxy) tokens resolve the identity via the GraphQL
+	// viewer query on the underlying GitHub credential, just like agent tokens.
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 300, GitHubUsername: "scopeduser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use a gho_-prefixed token so isResolvableGitHubToken accepts it.
+	encAccess, err := enc.Encrypt("gho_real_user_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Repository:    "goodtune/ghp",
+		Scopes:        map[string]string{"contents": "read", "pull_requests": "read"},
+		Duration:      24 * time.Hour,
+		SessionID:     "proxy-identity-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gqlSrv := newMockGraphQLServer(t, "scopeduser", nil)
+	defer gqlSrv.Close()
+
+	usernameResolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
+
+	// Pre-warm the cache for the decrypted GitHub token.
+	usernameResolver.ResolveFromGitHubToken(ctx, "gho_real_user_token")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if usernameResolver.ResolveFromGitHubToken(ctx, "gho_real_user_token") != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:              &config.Config{},
+		tokenService:     tokenSvc,
+		store:            store,
+		encryptor:        enc,
+		usernameResolver: usernameResolver,
+		logger:           slog.Default(),
+		client:           &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/goodtune/ghp/pulls", nil)
+	req.Header.Set("Authorization", "Bearer "+result.Token)
+	// Prepare access log slots so SetUsername/GetUsername work in tests.
+	req, slots := PrepareAccessLogSlots(req)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	// The username should come from the GraphQL viewer query.
+	got := *slots.Username
+	if got != "scopeduser" {
+		t.Errorf("expected username 'scopeduser' for proxy token, got %q", got)
+	}
+}
+
 func TestSyntheticOAuthScopes(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1232,5 +1405,92 @@ func TestServeHTTP_Passthrough_UpstreamRedirect_PassedThrough(t *testing.T) {
 	}
 	if !strings.Contains(loc, "productionresultssa1.blob.core.windows.net") {
 		t.Errorf("expected Location to point to blob storage, got %q", loc)
+	}
+}
+
+func getCounterValue(t *testing.T, counter *prometheus.CounterVec, labels prometheus.Labels) float64 {
+	t.Helper()
+	var m io_prometheus_client.Metric
+	c, err := counter.GetMetricWith(labels)
+	if err != nil {
+		t.Fatalf("GetMetricWith: %v", err)
+	}
+	if err := c.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+func TestServeHTTP_NativeTokenPassthrough_RecordsMetrics(t *testing.T) {
+	// A native GitHub token (gho_) forwarded via passthrough must emit
+	// ProxyRequestTotal with token_type=gho and user=unknown.
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:    &config.Config{},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	labels := prometheus.Labels{
+		"backend":    "api.github.com",
+		"method":     "GET",
+		"status":     "200",
+		"token_type": "gho",
+		"type":       "rest",
+		"user":       "unknown",
+		"app":        "",
+	}
+
+	before := getCounterValue(t, metrics.ProxyRequestTotal, labels)
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo", nil)
+	req.Header.Set("Authorization", "Bearer gho_nativetoken")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	after := getCounterValue(t, metrics.ProxyRequestTotal, labels)
+	if after-before != 1 {
+		t.Errorf("expected ProxyRequestTotal to increment by 1, got %f", after-before)
+	}
+}
+
+func TestServeHTTP_NativeTokenPassthrough_GraphQL_RecordsMetrics(t *testing.T) {
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:    &config.Config{},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	labels := prometheus.Labels{
+		"backend":    "api.github.com",
+		"method":     "POST",
+		"status":     "200",
+		"token_type": "gho",
+		"type":       "graphql",
+		"user":       "unknown",
+		"app":        "",
+	}
+
+	before := getCounterValue(t, metrics.ProxyRequestTotal, labels)
+
+	req := httptest.NewRequest("POST", "http://api.github.com/graphql", nil)
+	req.Header.Set("Authorization", "Bearer gho_nativetoken")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	after := getCounterValue(t, metrics.ProxyRequestTotal, labels)
+	if after-before != 1 {
+		t.Errorf("expected ProxyRequestTotal to increment by 1 for graphql, got %f", after-before)
 	}
 }

@@ -1,12 +1,23 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/goodtune/ghp/internal/auth"
+	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/database"
+	ghpgithub "github.com/goodtune/ghp/internal/github"
 )
 
 func TestHandleCreateToken_BodyTooLarge(t *testing.T) {
@@ -33,6 +44,50 @@ func TestHandleCreateToken_InvalidJSON(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
 	}
+}
+
+func TestTruncateSessionID(t *testing.T) {
+	t.Run("short input unchanged", func(t *testing.T) {
+		in := "abc-123"
+		if got := truncateSessionID(in); got != in {
+			t.Errorf("expected %q, got %q", in, got)
+		}
+	})
+	t.Run("exact limit unchanged", func(t *testing.T) {
+		in := strings.Repeat("x", maxSessionIDLength)
+		if got := truncateSessionID(in); got != in {
+			t.Errorf("expected len %d, got len %d", len(in), len(got))
+		}
+	})
+	t.Run("over limit truncated", func(t *testing.T) {
+		in := strings.Repeat("x", maxSessionIDLength+50)
+		got := truncateSessionID(in)
+		if len(got) != maxSessionIDLength {
+			t.Errorf("expected len %d, got len %d", maxSessionIDLength, len(got))
+		}
+	})
+	t.Run("empty input unchanged", func(t *testing.T) {
+		if got := truncateSessionID(""); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+	t.Run("multi-byte rune not split", func(t *testing.T) {
+		// Build a string of 3-byte runes (e.g. '€') that exceeds the limit.
+		rune3 := "€" // 3 bytes
+		in := strings.Repeat(rune3, maxSessionIDLength)
+		got := truncateSessionID(in)
+		if len(got) > maxSessionIDLength {
+			t.Errorf("result exceeds limit: len %d > %d", len(got), maxSessionIDLength)
+		}
+		// Must be valid UTF-8 with no partial rune.
+		if !utf8.ValidString(got) {
+			t.Error("result is not valid UTF-8")
+		}
+		// Length should be a multiple of 3 (each rune is 3 bytes).
+		if len(got)%3 != 0 {
+			t.Errorf("expected length multiple of 3, got %d", len(got))
+		}
+	})
 }
 
 func TestOAuthScopesToPermissions(t *testing.T) {
@@ -171,4 +226,334 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// adminSession returns a minimal admin Session for injecting into test contexts.
+func adminSession() *auth.Session {
+	return &auth.Session{
+		UserID:    "user-1",
+		Username:  "admin",
+		Role:      "admin",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+}
+
+func TestHandleCreateToken_AppRecordIDRejectedForProxyToken(t *testing.T) {
+	a := &API{}
+
+	body := strings.NewReader(`{"type":"","app_record_id":"some-uuid"}`)
+	req := httptest.NewRequest("POST", "/api/tokens", body)
+	w := httptest.NewRecorder()
+	a.handleCreateToken(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "app_record_id is only valid for agent tokens") {
+		t.Errorf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestHandleCreateToken_MultiAppNoDefault_RequiresAppRecordID(t *testing.T) {
+	// Two apps loaded, neither is default → agent token without explicit
+	// app_record_id must be rejected with a clear 400.
+	registry := ghpgithub.NewRegistryWithState([]string{"app-1", "app-2"}, "")
+	a := &API{appRegistry: registry, cfg: &config.Config{}}
+
+	body := strings.NewReader(`{"type":"agent","installation_id":1}`)
+	req := httptest.NewRequest("POST", "/api/tokens", body)
+	req = req.WithContext(auth.NewContextWithSession(req.Context(), adminSession()))
+	w := httptest.NewRecorder()
+	a.handleCreateToken(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "app_record_id is required") {
+		t.Errorf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestHandleCreateApp_BodyTooLarge(t *testing.T) {
+	a := &API{}
+
+	body := strings.NewReader(`{"name":"` + strings.Repeat("x", maxRequestBodySize) + `"}`)
+	req := httptest.NewRequest("POST", "/api/apps", body)
+	w := httptest.NewRecorder()
+	a.handleCreateApp(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected %d, got %d", http.StatusRequestEntityTooLarge, w.Code)
+	}
+}
+
+func TestHandleCreateApp_RequiredFields(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int
+		msg  string
+	}{
+		{"missing name", `{"app_id":1,"private_key":"key"}`, http.StatusBadRequest, "name is required"},
+		{"missing app_id", `{"name":"myapp","private_key":"key"}`, http.StatusBadRequest, "app_id must be a positive integer"},
+		{"negative app_id", `{"name":"myapp","app_id":-1,"private_key":"key"}`, http.StatusBadRequest, "app_id must be a positive integer"},
+		{"missing private_key", `{"name":"myapp","app_id":1}`, http.StatusBadRequest, "private_key is required"},
+		{"http base_url", `{"name":"myapp","app_id":1,"private_key":"key","base_url":"http://example.com"}`, http.StatusBadRequest, "scheme must be https"},
+		{"base_url with query", `{"name":"myapp","app_id":1,"private_key":"key","base_url":"https://example.com?q=1"}`, http.StatusBadRequest, "query string is not allowed"},
+		{"base_url with fragment", `{"name":"myapp","app_id":1,"private_key":"key","base_url":"https://example.com#frag"}`, http.StatusBadRequest, "fragment is not allowed"},
+		{"base_url with userinfo", `{"name":"myapp","app_id":1,"private_key":"key","base_url":"https://user:pass@example.com"}`, http.StatusBadRequest, "userinfo is not allowed"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &API{}
+			req := httptest.NewRequest("POST", "/api/apps", strings.NewReader(tc.body))
+			w := httptest.NewRecorder()
+			a.handleCreateApp(w, req)
+			if w.Code != tc.want {
+				t.Errorf("expected %d, got %d", tc.want, w.Code)
+			}
+			if !strings.Contains(w.Body.String(), tc.msg) {
+				t.Errorf("expected %q in body, got: %s", tc.msg, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleUpdateApp_BodyTooLarge(t *testing.T) {
+	a := &API{}
+
+	body := strings.NewReader(`{"name":"` + strings.Repeat("x", maxRequestBodySize) + `"}`)
+	req := httptest.NewRequest("PUT", "/api/apps/some-id", body)
+	w := httptest.NewRecorder()
+	a.handleUpdateApp(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected %d, got %d", http.StatusRequestEntityTooLarge, w.Code)
+	}
+}
+
+func TestHandleCreateCachedRepo_BodyTooLarge(t *testing.T) {
+	a := &API{}
+
+	body := strings.NewReader(`{"owner":"` + strings.Repeat("x", maxRequestBodySize) + `"}`)
+	req := httptest.NewRequest("POST", "/api/cached-repos", body)
+	w := httptest.NewRecorder()
+	a.handleCreateCachedRepo(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected %d, got %d", http.StatusRequestEntityTooLarge, w.Code)
+	}
+}
+
+func TestHandleCreateCachedRepo_InvalidJSON(t *testing.T) {
+	a := &API{}
+
+	req := httptest.NewRequest("POST", "/api/cached-repos", strings.NewReader("not json"))
+	w := httptest.NewRecorder()
+	a.handleCreateCachedRepo(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+}
+
+func TestHandleCreateCachedRepo_RequiredFields(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int
+		msg  string
+	}{
+		{"missing owner", `{"name":"myrepo"}`, http.StatusBadRequest, "owner is required"},
+		{"missing name", `{"owner":"myorg"}`, http.StatusBadRequest, "name is required"},
+		{"missing both", `{}`, http.StatusBadRequest, "owner is required"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &API{}
+			req := httptest.NewRequest("POST", "/api/cached-repos", strings.NewReader(tc.body))
+			w := httptest.NewRecorder()
+			a.handleCreateCachedRepo(w, req)
+			if w.Code != tc.want {
+				t.Errorf("expected %d, got %d", tc.want, w.Code)
+			}
+			if !strings.Contains(w.Body.String(), tc.msg) {
+				t.Errorf("expected %q in body, got: %s", tc.msg, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleGetCachedRepo_InvalidUUID(t *testing.T) {
+	a := &API{}
+
+	req := httptest.NewRequest("GET", "/api/cached-repos/not-a-uuid", nil)
+	req.SetPathValue("id", "not-a-uuid")
+	w := httptest.NewRecorder()
+	a.handleGetCachedRepo(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Invalid cached repository ID format") {
+		t.Errorf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestHandleDeleteCachedRepo_InvalidUUID(t *testing.T) {
+	a := &API{}
+
+	req := httptest.NewRequest("DELETE", "/api/cached-repos/bad-id", nil)
+	req.SetPathValue("id", "bad-id")
+	w := httptest.NewRecorder()
+	a.handleDeleteCachedRepo(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+}
+
+func TestHandleUpdateCachedRepo_BodyTooLarge(t *testing.T) {
+	a := &API{}
+
+	body := strings.NewReader(`{"enabled":` + strings.Repeat(" ", maxRequestBodySize) + `true}`)
+	req := httptest.NewRequest("PATCH", "/api/cached-repos/some-id", body)
+	w := httptest.NewRecorder()
+	a.handleUpdateCachedRepo(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected %d, got %d", http.StatusRequestEntityTooLarge, w.Code)
+	}
+}
+
+func TestHandleUpdateCachedRepo_InvalidUUID(t *testing.T) {
+	a := &API{}
+
+	req := httptest.NewRequest("PATCH", "/api/cached-repos/bad-id", strings.NewReader(`{"enabled":false}`))
+	req.SetPathValue("id", "bad-id")
+	w := httptest.NewRecorder()
+	a.handleUpdateCachedRepo(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected %d, got %d", http.StatusBadRequest, w.Code)
+	}
+}
+
+func newTestAPIWithStore(t *testing.T) *API {
+	t.Helper()
+	store, err := database.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create test store: %v", err)
+	}
+	migrator := database.NewMigrator(store, "sqlite")
+	if err := migrator.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return &API{
+		store:  store,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+}
+
+func TestCachedReposCRUD(t *testing.T) {
+	a := newTestAPIWithStore(t)
+
+	// Create
+	ctx := auth.NewContextWithSession(context.Background(), &auth.Session{Username: "admin"})
+	req := httptest.NewRequest("POST", "/api/cached-repos",
+		strings.NewReader(`{"owner":"MyOrg","name":"MyRepo"}`)).WithContext(ctx)
+	w := httptest.NewRecorder()
+	a.handleCreateCachedRepo(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected %d, got %d: %s", http.StatusCreated, w.Code, w.Body.String())
+	}
+	var created map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	id := created["id"].(string)
+	// Verify case normalization.
+	if created["owner"].(string) != "myorg" {
+		t.Errorf("owner not normalized: got %q", created["owner"])
+	}
+	if created["name"].(string) != "myrepo" {
+		t.Errorf("name not normalized: got %q", created["name"])
+	}
+
+	// List
+	req = httptest.NewRequest("GET", "/api/cached-repos", nil)
+	w = httptest.NewRecorder()
+	a.handleListCachedRepos(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: expected %d, got %d", http.StatusOK, w.Code)
+	}
+	var list []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list: expected 1 item, got %d", len(list))
+	}
+
+	// Get
+	req = httptest.NewRequest("GET", "/api/cached-repos/"+id, nil)
+	req.SetPathValue("id", id)
+	w = httptest.NewRecorder()
+	a.handleGetCachedRepo(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get: expected %d, got %d", http.StatusOK, w.Code)
+	}
+
+	// Update (disable)
+	req = httptest.NewRequest("PATCH", "/api/cached-repos/"+id,
+		strings.NewReader(`{"enabled":false}`)).WithContext(ctx)
+	req.SetPathValue("id", id)
+	w = httptest.NewRecorder()
+	a.handleUpdateCachedRepo(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: expected %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	// Delete
+	req = httptest.NewRequest("DELETE", "/api/cached-repos/"+id, nil).WithContext(ctx)
+	req.SetPathValue("id", id)
+	w = httptest.NewRecorder()
+	a.handleDeleteCachedRepo(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete: expected %d, got %d", http.StatusOK, w.Code)
+	}
+
+	// Verify deleted
+	req = httptest.NewRequest("GET", "/api/cached-repos", nil)
+	w = httptest.NewRecorder()
+	a.handleListCachedRepos(w, req)
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("list after delete: expected 0 items, got %d", len(list))
+	}
+}
+
+func TestCachedRepos_DuplicateCreate409(t *testing.T) {
+	a := newTestAPIWithStore(t)
+	ctx := auth.NewContextWithSession(context.Background(), &auth.Session{Username: "admin"})
+
+	// First create succeeds.
+	req := httptest.NewRequest("POST", "/api/cached-repos",
+		strings.NewReader(`{"owner":"org","name":"repo"}`)).WithContext(ctx)
+	w := httptest.NewRecorder()
+	a.handleCreateCachedRepo(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("first create: expected %d, got %d", http.StatusCreated, w.Code)
+	}
+
+	// Duplicate create returns 409.
+	req = httptest.NewRequest("POST", "/api/cached-repos",
+		strings.NewReader(`{"owner":"org","name":"repo"}`)).WithContext(ctx)
+	w = httptest.NewRecorder()
+	a.handleCreateCachedRepo(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("duplicate create: expected %d, got %d: %s", http.StatusConflict, w.Code, w.Body.String())
+	}
 }

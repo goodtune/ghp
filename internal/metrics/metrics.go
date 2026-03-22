@@ -5,7 +5,7 @@
 //
 // The package covers four metric categories:
 //   - HTTP-level: request count and duration for all traffic by backend
-//   - Proxy-level: detailed metrics for ghx_/gha_ authenticated traffic (API and git smart-HTTP)
+//   - Proxy-level: detailed metrics for ghx_/gha_ authenticated and native GitHub token traffic (API and git smart-HTTP)
 //   - Token lifecycle: creation, revocation, and active token counts
 //   - Decision pipeline: per-stage latency breakdown of the proxy overhead
 package metrics
@@ -155,6 +155,57 @@ var (
 		Buckets: decisionBuckets,
 	}, []string{"stage", "token_type"})
 
+	// --- Git Cache Metrics ---
+
+	// CacheFetchTotal counts git fetch requests to cache-enabled repositories,
+	// labeled by result: "hit" (served from cache), "miss" (fetched from upstream
+	// first), "rejected" (access denied), "error" (cache or upstream failure).
+	// Per-repo breakdown is available via access logs to avoid unbounded label
+	// cardinality.
+	CacheFetchTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_cache_fetch_total",
+		Help: "Total git fetch requests to cache-enabled repositories, by result.",
+	}, []string{"result"})
+
+	// CacheLsRefsTotal counts ls-refs commands forwarded to upstream for
+	// cache-enabled repositories.
+	CacheLsRefsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ghp_cache_lsrefs_total",
+		Help: "Total ls-refs commands forwarded to upstream for cached repos.",
+	})
+
+	// CacheWarmTotal counts async cache warming operations triggered when
+	// refs change, labeled by result ("success" or "error").
+	CacheWarmTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_cache_warm_total",
+		Help: "Total cache warming operations triggered by ref changes, by result.",
+	}, []string{"result"})
+
+	// CacheReposActive is a gauge reflecting how many repositories currently
+	// have caching enabled in the database.
+	CacheReposActive = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ghp_cache_repos_active",
+		Help: "Number of repositories with caching currently enabled.",
+	})
+
+	// CacheRequestTotal counts git smart HTTP requests per repository with
+	// cache outcome. Labels: owner, repo, result. Result values:
+	//   "hit"     — served from local cache
+	//   "miss"    — cache miss, fetched upstream then served
+	//   "nocache" — repository not configured for caching
+	//   "bypass"  — repository configured but caching disabled
+	//   "error"   — cache operation failed
+	//   "rejected"    — upstream rejected access
+	//   "passthrough" — delegated to upstream proxy
+	//
+	// Cardinality note: bounded by the number of distinct repositories
+	// accessed through the proxy (typically hundreds). Intended for
+	// identifying cache candidate repositories via PromQL.
+	CacheRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_cache_request_total",
+		Help: "Git smart HTTP requests per repository with cache outcome.",
+	}, []string{"owner", "repo", "result"})
+
 	// BuildInfo is a gauge with a constant value of 1 labeled by build
 	// metadata. It follows the node_exporter_build_info convention.
 	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -175,6 +226,7 @@ const (
 	StageGitHubTokenResolution = "github_token_resolution"
 	StageUpstreamRoundtrip     = "upstream_roundtrip"
 	StageRedirectHeadCheck     = "redirect_head_check"
+	StageCacheLookup           = "cache_lookup"
 )
 
 // ObserveDecision records the duration of a single stage in the proxy
@@ -207,6 +259,23 @@ func ObserveProxyRequest(backend string, pt *database.ProxyToken, method string,
 
 	ProxyRequestDuration.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, username, app).Observe(dur.Seconds())
 	ProxyRequestTotal.WithLabelValues(backend, method, statusStr, pt.TokenType, apiType, username, app).Inc()
+}
+
+// ObservePassthroughRequest records proxy-level request metrics for passthrough
+// traffic forwarded without ghx_/gha_ token resolution. It uses the same
+// ProxyRequestDuration and ProxyRequestTotal vectors as managed tokens, with an
+// empty "app" label. Token type and username are best-effort: when no native
+// token is present they are recorded as "unknown".
+func ObservePassthroughRequest(backendName, method string, status int, dur time.Duration, apiType, tokenType, username string) {
+	if username == "" {
+		username = "unknown"
+	}
+	if tokenType == "" {
+		tokenType = "unknown"
+	}
+	statusStr := strconv.Itoa(status)
+	ProxyRequestDuration.WithLabelValues(backendName, method, statusStr, tokenType, apiType, username, "").Observe(dur.Seconds())
+	ProxyRequestTotal.WithLabelValues(backendName, method, statusStr, tokenType, apiType, username, "").Inc()
 }
 
 // SetBuildInfo records build metadata as a gauge with a constant value of 1.

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,15 @@ type SQLiteStore struct {
 
 // NewSQLiteStore opens a SQLite database at the given path.
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
+	// Check for in-memory databases before modifying the DSN.
+	inMemory := dsn == ":memory:" || dsn == "file::memory:"
+
+	// Append _pragma DSN parameters so that every connection created by the
+	// pool inherits these settings. Setting PRAGMAs via db.Exec() only
+	// affects the single connection that runs the statement; under concurrent
+	// load the pool creates additional connections that would miss them.
+	dsn = appendSQLitePragmas(dsn)
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening sqlite: %w", err)
@@ -25,23 +35,31 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 
 	// In-memory databases are per-connection, so restrict the pool to a
 	// single connection to ensure all operations share the same database.
-	if dsn == ":memory:" || dsn == "file::memory:" {
+	if inMemory {
 		db.SetMaxOpenConns(1)
 	}
 
-	// Enable WAL mode and foreign keys.
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("setting pragma %s: %w", pragma, err)
-		}
-	}
-
 	return &SQLiteStore{db: db}, nil
+}
+
+// appendSQLitePragmas adds _pragma query parameters to the DSN so that
+// modernc.org/sqlite applies them on every new connection. If the DSN
+// already contains a query string the parameters are appended; otherwise
+// a new query string is started.
+//
+// The bare ":memory:" shorthand is normalised to "file::memory:" (URI form)
+// before appending parameters, because ":memory:?key=val" is not recognised
+// as an in-memory database by SQLite — it would be treated as a literal
+// filename.
+func appendSQLitePragmas(dsn string) string {
+	if dsn == ":memory:" {
+		dsn = "file::memory:"
+	}
+	pragmas := "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	if strings.Contains(dsn, "?") {
+		return dsn + "&" + pragmas
+	}
+	return dsn + "?" + pragmas
 }
 
 func (s *SQLiteStore) Close() error {
@@ -238,34 +256,52 @@ func (s *SQLiteStore) UpsertGitHubToken(ctx context.Context, token *GitHubToken)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO github_tokens (id, user_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO github_tokens (id, user_id, app_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
 			access_token = excluded.access_token,
 			refresh_token = excluded.refresh_token,
 			access_token_expires_at = excluded.access_token_expires_at,
 			refresh_token_expires_at = excluded.refresh_token_expires_at,
 			scopes = excluded.scopes,
+			app_id = excluded.app_id,
 			updated_at = excluded.updated_at
-	`, token.ID, token.UserID, token.AccessToken, token.RefreshToken,
+	`, token.ID, token.UserID, token.AppID, token.AccessToken, token.RefreshToken,
 		token.AccessTokenExpiresAt.Format(time.RFC3339Nano),
 		token.RefreshTokenExpiresAt.Format(time.RFC3339Nano),
 		token.Scopes, now, now)
-	return err
+	if err != nil {
+		return err
+	}
+	// Re-read to get the actual ID and timestamps (on conflict, the existing row's ID is kept).
+	var createdStr, updatedStr string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT id, created_at, updated_at FROM github_tokens WHERE user_id = ?`, token.UserID,
+	).Scan(&token.ID, &createdStr, &updatedStr)
+	if err != nil {
+		return err
+	}
+	token.CreatedAt = parseTime(createdStr)
+	token.UpdatedAt = parseTime(updatedStr)
+	return nil
 }
 
 func (s *SQLiteStore) GetGitHubToken(ctx context.Context, userID string) (*GitHubToken, error) {
 	t := &GitHubToken{}
 	var atExp, rtExp, createdStr, updatedStr string
+	var appID sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
+		`SELECT id, user_id, app_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
 		 FROM github_tokens WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1`, userID,
-	).Scan(&t.ID, &t.UserID, &t.AccessToken, &t.RefreshToken, &atExp, &rtExp, &t.Scopes, &createdStr, &updatedStr)
+	).Scan(&t.ID, &t.UserID, &appID, &t.AccessToken, &t.RefreshToken, &atExp, &rtExp, &t.Scopes, &createdStr, &updatedStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if appID.Valid {
+		t.AppID = &appID.String
 	}
 	t.AccessTokenExpiresAt = parseTime(atExp)
 	t.RefreshTokenExpiresAt = parseTime(rtExp)
@@ -277,15 +313,19 @@ func (s *SQLiteStore) GetGitHubToken(ctx context.Context, userID string) (*GitHu
 func (s *SQLiteStore) GetGitHubTokenByID(ctx context.Context, id string) (*GitHubToken, error) {
 	t := &GitHubToken{}
 	var atExp, rtExp, createdStr, updatedStr string
+	var appID sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
+		`SELECT id, user_id, app_id, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at, scopes, created_at, updated_at
 		 FROM github_tokens WHERE id = ?`, id,
-	).Scan(&t.ID, &t.UserID, &t.AccessToken, &t.RefreshToken, &atExp, &rtExp, &t.Scopes, &createdStr, &updatedStr)
+	).Scan(&t.ID, &t.UserID, &appID, &t.AccessToken, &t.RefreshToken, &atExp, &rtExp, &t.Scopes, &createdStr, &updatedStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if appID.Valid {
+		t.AppID = &appID.String
 	}
 	t.AccessTokenExpiresAt = parseTime(atExp)
 	t.RefreshTokenExpiresAt = parseTime(rtExp)
@@ -311,12 +351,12 @@ func (s *SQLiteStore) CreateProxyToken(ctx context.Context, token *ProxyToken) e
 	}
 	tokenType := token.TokenType
 	if tokenType == "" {
-		tokenType = "proxy"
+		tokenType = DefaultTokenType
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO proxy_tokens (id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, request_count, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-	`, token.ID, token.TokenHash, token.TokenPrefix, tokenType, token.UserID, token.GitHubTokenID,
+		INSERT INTO proxy_tokens (id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, token.ID, token.TokenHash, token.TokenPrefix, tokenType, token.AppID, token.UserID, token.GitHubTokenID,
 		token.InstallationID, string(reposJSON), string(scopesJSON), token.SessionID,
 		token.ExpiresAt.Format(time.RFC3339Nano), now)
 	return err
@@ -325,17 +365,20 @@ func (s *SQLiteStore) CreateProxyToken(ctx context.Context, token *ProxyToken) e
 func scanProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, error) {
 	t := &ProxyToken{}
 	var scopesStr, reposStr string
-	var revokedAt, lastUsedAt sql.NullString
+	var revokedAt sql.NullString
 	var expiresStr, createdStr string
-	var userID, githubTokenID sql.NullString
+	var appID, userID, githubTokenID sql.NullString
 	var installationID sql.NullInt64
-	err := scan(&t.ID, &t.TokenHash, &t.TokenPrefix, &t.TokenType, &userID, &githubTokenID, &installationID, &reposStr, &scopesStr,
-		&t.SessionID, &expiresStr, &revokedAt, &lastUsedAt, &t.RequestCount, &createdStr)
+	err := scan(&t.ID, &t.TokenHash, &t.TokenPrefix, &t.TokenType, &appID, &userID, &githubTokenID, &installationID, &reposStr, &scopesStr,
+		&t.SessionID, &expiresStr, &revokedAt, &createdStr)
 	if err != nil {
 		return nil, err
 	}
 	t.Scopes = json.RawMessage(scopesStr)
 	t.Repositories = json.RawMessage(reposStr)
+	if appID.Valid {
+		t.AppID = &appID.String
+	}
 	if userID.Valid {
 		t.UserID = &userID.String
 	}
@@ -351,16 +394,12 @@ func scanProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, error) {
 		ts := parseTime(revokedAt.String)
 		t.RevokedAt = &ts
 	}
-	if lastUsedAt.Valid {
-		ts := parseTime(lastUsedAt.String)
-		t.LastUsedAt = &ts
-	}
 	return t, nil
 }
 
 func (s *SQLiteStore) GetProxyTokenByHash(ctx context.Context, hash string) (*ProxyToken, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
+		SELECT id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, created_at
 		FROM proxy_tokens WHERE token_hash = ?`, hash)
 	t, err := scanProxyToken(row.Scan)
 	if err == sql.ErrNoRows {
@@ -371,7 +410,7 @@ func (s *SQLiteStore) GetProxyTokenByHash(ctx context.Context, hash string) (*Pr
 
 func (s *SQLiteStore) GetProxyTokenByID(ctx context.Context, id string) (*ProxyToken, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
+		SELECT id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, created_at
 		FROM proxy_tokens WHERE id = ?`, id)
 	t, err := scanProxyToken(row.Scan)
 	if err == sql.ErrNoRows {
@@ -382,7 +421,7 @@ func (s *SQLiteStore) GetProxyTokenByID(ctx context.Context, id string) (*ProxyT
 
 func (s *SQLiteStore) ListProxyTokens(ctx context.Context, userID string) ([]*ProxyToken, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
+		SELECT id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, created_at
 		FROM proxy_tokens WHERE user_id = ? ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -393,8 +432,20 @@ func (s *SQLiteStore) ListProxyTokens(ctx context.Context, userID string) ([]*Pr
 
 func (s *SQLiteStore) ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, token_hash, token_prefix, token_type, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, last_used_at, request_count, created_at
+		SELECT id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, created_at
 		FROM proxy_tokens ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanProxyTokenRows(rows)
+}
+
+func (s *SQLiteStore) ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, created_at
+		FROM proxy_tokens WHERE revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC`,
+		time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
 	}
@@ -430,94 +481,275 @@ func (s *SQLiteStore) RevokeProxyToken(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *SQLiteStore) UpdateProxyTokenUsage(ctx context.Context, id string) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE proxy_tokens SET last_used_at = ?, request_count = request_count + 1 WHERE id = ?`, now, id)
-	return err
+func (s *SQLiteStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE proxy_tokens SET app_id = ? WHERE id = ?`, appID, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("proxy token %s: %w", id, ErrNotFound)
+	}
+	return nil
 }
 
-// --- Audit Log ---
+// --- Apps ---
 
-func (s *SQLiteStore) CreateAuditEntry(ctx context.Context, entry *AuditEntry) error {
-	if entry.ID == "" {
-		entry.ID = uuid.New().String()
+func (s *SQLiteStore) CreateApp(ctx context.Context, app *App) error {
+	if app.ID == "" {
+		app.ID = uuid.New().String()
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	metadataStr := "{}"
-	if entry.Metadata != nil {
-		metadataStr = string(entry.Metadata)
-	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO audit_log (id, timestamp, user_id, proxy_token_id, action, method, path, repository, status_code, duration_ms, session_id, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, entry.ID, now, entry.UserID, entry.ProxyTokenID, entry.Action, entry.Method, entry.Path,
-		entry.Repository, entry.StatusCode, entry.DurationMS, entry.SessionID, metadataStr)
-	return err
+		INSERT INTO apps (id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, app.ID, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, now, now)
+	if err != nil {
+		return err
+	}
+	app.CreatedAt = parseTime(now)
+	app.UpdatedAt = parseTime(now)
+	return nil
 }
 
-func (s *SQLiteStore) ListAuditEntries(ctx context.Context, filter AuditFilter) ([]*AuditEntry, error) {
-	query := `SELECT id, timestamp, user_id, proxy_token_id, action, method, path, repository, status_code, duration_ms, session_id, metadata FROM audit_log WHERE 1=1`
-	var args []interface{}
+func (s *SQLiteStore) GetAppByID(ctx context.Context, id string) (*App, error) {
+	a := &App{}
+	var createdStr, updatedStr string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps WHERE id = ?`, id,
+	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &createdStr, &updatedStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	a.CreatedAt = parseTime(createdStr)
+	a.UpdatedAt = parseTime(updatedStr)
+	return a, nil
+}
 
-	if filter.UserID != "" {
-		query += ` AND user_id = ?`
-		args = append(args, filter.UserID)
+func (s *SQLiteStore) GetDefaultApp(ctx context.Context) (*App, error) {
+	a := &App{}
+	var createdStr, updatedStr string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps WHERE is_default = 1 LIMIT 1`,
+	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &createdStr, &updatedStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
 	}
-	if filter.Repository != "" {
-		query += ` AND repository = ?`
-		args = append(args, filter.Repository)
+	if err != nil {
+		return nil, err
 	}
-	if filter.TokenID != "" {
-		query += ` AND proxy_token_id = ?`
-		args = append(args, filter.TokenID)
-	}
-	if filter.Action != "" {
-		query += ` AND action = ?`
-		args = append(args, filter.Action)
-	}
-	if filter.StatusCode != 0 {
-		query += ` AND status_code = ?`
-		args = append(args, filter.StatusCode)
-	}
+	a.CreatedAt = parseTime(createdStr)
+	a.UpdatedAt = parseTime(updatedStr)
+	return a, nil
+}
 
-	query += ` ORDER BY timestamp DESC`
-
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-	query += fmt.Sprintf(` LIMIT %d`, limit)
-	if filter.Offset > 0 {
-		query += fmt.Sprintf(` OFFSET %d`, filter.Offset)
-	}
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
+func (s *SQLiteStore) ListApps(ctx context.Context) ([]*App, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var entries []*AuditEntry
+	var apps []*App
 	for rows.Next() {
-		e := &AuditEntry{}
-		var proxyTokenID sql.NullString
-		var metadataStr sql.NullString
-		var timestampStr string
-		if err := rows.Scan(&e.ID, &timestampStr, &e.UserID, &proxyTokenID, &e.Action, &e.Method,
-			&e.Path, &e.Repository, &e.StatusCode, &e.DurationMS, &e.SessionID, &metadataStr); err != nil {
+		a := &App{}
+		var createdStr, updatedStr string
+		if err := rows.Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &createdStr, &updatedStr); err != nil {
 			return nil, err
 		}
-		e.Timestamp = parseTime(timestampStr)
-		if proxyTokenID.Valid {
-			e.ProxyTokenID = &proxyTokenID.String
-		}
-		if metadataStr.Valid {
-			e.Metadata = json.RawMessage(metadataStr.String)
-		}
-		entries = append(entries, e)
+		a.CreatedAt = parseTime(createdStr)
+		a.UpdatedAt = parseTime(updatedStr)
+		apps = append(apps, a)
 	}
-	return entries, rows.Err()
+	return apps, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateApp(ctx context.Context, app *App) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE apps SET name = ?, app_id = ?, client_id = ?, client_secret = ?, private_key = ?, base_url = ?, is_default = ?, updated_at = ?
+		WHERE id = ?
+	`, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, now, app.ID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("app %s: %w", app.ID, ErrNotFound)
+	}
+	app.UpdatedAt = parseTime(now)
+	return nil
+}
+
+func (s *SQLiteStore) SetDefaultApp(ctx context.Context, appID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Verify the target app exists.
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM apps WHERE id = ?`, appID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return fmt.Errorf("app %s: %w", appID, ErrNotFound)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	// Clear default flag on all other apps.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE apps SET is_default = 0, updated_at = ? WHERE is_default = 1 AND id != ?`, now, appID,
+	); err != nil {
+		return err
+	}
+
+	// Set the target app as default.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE apps SET is_default = 1, updated_at = ? WHERE id = ?`, now, appID,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) DeleteApp(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM apps WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("app %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
+// --- Cached repositories ---
+
+func (s *SQLiteStore) CreateCachedRepository(ctx context.Context, repo *CachedRepository) error {
+	if repo.ID == "" {
+		repo.ID = uuid.New().String()
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO cached_repositories (id, owner, name, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, repo.ID, repo.Owner, repo.Name, repo.Enabled, now, now)
+	if err != nil {
+		return err
+	}
+	repo.CreatedAt = parseTime(now)
+	repo.UpdatedAt = parseTime(now)
+	return nil
+}
+
+func (s *SQLiteStore) GetCachedRepositoryByID(ctx context.Context, id string) (*CachedRepository, error) {
+	r := &CachedRepository{}
+	var createdStr, updatedStr string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, owner, name, enabled, created_at, updated_at FROM cached_repositories WHERE id = ?`, id,
+	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &createdStr, &updatedStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.CreatedAt = parseTime(createdStr)
+	r.UpdatedAt = parseTime(updatedStr)
+	return r, nil
+}
+
+func (s *SQLiteStore) GetCachedRepositoryByOwnerName(ctx context.Context, owner, name string) (*CachedRepository, error) {
+	r := &CachedRepository{}
+	var createdStr, updatedStr string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, owner, name, enabled, created_at, updated_at FROM cached_repositories WHERE owner = ? AND name = ?`, owner, name,
+	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &createdStr, &updatedStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.CreatedAt = parseTime(createdStr)
+	r.UpdatedAt = parseTime(updatedStr)
+	return r, nil
+}
+
+func (s *SQLiteStore) ListCachedRepositories(ctx context.Context) ([]*CachedRepository, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, owner, name, enabled, created_at, updated_at FROM cached_repositories ORDER BY owner, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var repos []*CachedRepository
+	for rows.Next() {
+		r := &CachedRepository{}
+		var createdStr, updatedStr string
+		if err := rows.Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &createdStr, &updatedStr); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = parseTime(createdStr)
+		r.UpdatedAt = parseTime(updatedStr)
+		repos = append(repos, r)
+	}
+	return repos, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateCachedRepository(ctx context.Context, repo *CachedRepository) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE cached_repositories SET owner = ?, name = ?, enabled = ?, updated_at = ?
+		WHERE id = ?
+	`, repo.Owner, repo.Name, repo.Enabled, now, repo.ID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("cached repository %s: %w", repo.ID, ErrNotFound)
+	}
+	repo.UpdatedAt = parseTime(now)
+	return nil
+}
+
+func (s *SQLiteStore) DeleteCachedRepository(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM cached_repositories WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("cached repository %s: %w", id, ErrNotFound)
+	}
+	return nil
 }
 
 // Ensure SQLiteStore implements all required interfaces.

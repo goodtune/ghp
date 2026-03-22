@@ -53,6 +53,67 @@ The stages are:
 | `github_token_resolution` | Loading, decrypting (or refreshing) the real GitHub credential |
 | `upstream_roundtrip` | Proxying the request to GitHub and streaming the response |
 | `redirect_head_check` | HEAD request to the release redirect target to verify asset availability (releases handler only) |
+| `cache_lookup` | Checking whether a request targets a cache-enabled repository |
+
+#### Git Cache Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `ghp_cache_fetch_total` | Counter | `result` | Git fetch requests to cached repos |
+| `ghp_cache_lsrefs_total` | Counter | — | ls-refs commands forwarded upstream for cached repos |
+| `ghp_cache_warm_total` | Counter | `result` | Async cache warming operations |
+| `ghp_cache_repos_active` | Gauge | — | Number of repositories with caching enabled |
+| `ghp_cache_request_total` | Counter | `owner`, `repo`, `result` | Per-repository git smart HTTP requests with cache outcome |
+
+**`ghp_cache_fetch_total` result values:**
+
+| Value | Meaning |
+|-------|---------|
+| `hit` | Served from local cache |
+| `miss` | Cache miss — fetched from upstream, then served from cache |
+| `rejected` | Access denied by upstream (401/403/404) |
+| `error` | Cache or upstream failure |
+
+**`ghp_cache_request_total` result values:**
+
+| Value | Meaning |
+|-------|---------|
+| `hit` | Served from local cache |
+| `miss` | Cache miss — fetched from upstream, then served from cache |
+| `nocache` | Repository not configured for caching |
+| `bypass` | Repository configured but caching is disabled |
+| `rejected` | Access denied by upstream |
+| `error` | Cache or upstream failure |
+| `passthrough` | Delegated to upstream proxy (e.g., cache miss with no token) |
+
+##### Identifying cache candidates
+
+The `ghp_cache_request_total` metric includes `owner` and `repo` labels,
+enabling per-repository analysis. Use it to identify repositories that would
+benefit from caching:
+
+```promql
+# Top 10 uncached repos by request volume — candidates for adding to cache
+topk(10, sum by (owner, repo) (ghp_cache_request_total{result="nocache"}))
+
+# Repos configured but disabled — consider re-enabling
+sum by (owner, repo) (ghp_cache_request_total{result="bypass"})
+
+# Cache hit rate per repo — verify caching is effective
+sum by (owner, repo) (ghp_cache_request_total{result="hit"})
+/ sum by (owner, repo) (ghp_cache_request_total)
+
+# Repos with high miss rates — may need cache warming or service token
+sum by (owner, repo) (ghp_cache_request_total{result="miss"})
+/ sum by (owner, repo) (ghp_cache_request_total{result=~"hit|miss"})
+```
+
+!!! note "Label cardinality"
+    The `owner` and `repo` labels on `ghp_cache_request_total` are bounded by
+    the number of distinct repositories accessed through the proxy. For typical
+    deployments (hundreds of repos), this is well within Prometheus limits.
+
+See [Git Cache](../features/git-cache.md) for configuration details.
 
 #### Token Metrics
 
