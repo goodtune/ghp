@@ -333,6 +333,8 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 		if copyErr != nil {
 			return CacheError, fmt.Errorf("serve cached fetch response: %w", copyErr)
 		}
+		metrics.CachePackfileTotal.WithLabelValues("hit").Inc()
+		metrics.CachePackfileBytesTotal.WithLabelValues("hit").Add(float64(n))
 		slog.Info("fetch served from response cache", "repo", repo.owner+"/"+repo.name, "bytes", n)
 		return CacheHit, nil
 	}
@@ -379,7 +381,7 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 		tmpFile, tmpErr := os.CreateTemp(cacheDir, ".tmp-*")
 		if tmpErr == nil {
 			tee := io.TeeReader(resp.Body, tmpFile)
-			_, copyErr := io.Copy(w, tee)
+			n, copyErr := io.Copy(w, tee)
 			tmpFile.Close()
 			if copyErr != nil {
 				slog.Error("failed to stream and cache fetch response", "repo", repo.owner+"/"+repo.name, "err", copyErr)
@@ -392,13 +394,18 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 			} else {
 				slog.Info("cached fetch response", "repo", repo.owner+"/"+repo.name, "path", cachePath)
 			}
+			metrics.CachePackfileTotal.WithLabelValues("miss").Inc()
+			metrics.CachePackfileBytesTotal.WithLabelValues("miss").Add(float64(n))
 			return CacheMiss, nil
 		}
 	}
 
 	// Fallback: stream without caching.
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	n, err := io.Copy(w, resp.Body)
+	if err != nil {
 		return CacheError, err
 	}
+	metrics.CachePackfileTotal.WithLabelValues("miss").Inc()
+	metrics.CachePackfileBytesTotal.WithLabelValues("miss").Add(float64(n))
 	return CacheMiss, nil
 }
