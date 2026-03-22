@@ -404,10 +404,17 @@ func (s *Server) Run(ctx context.Context) error {
 		"https://github.com", proxyTokenResolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 
 	// Wrap with git cache handler if enabled. The cache middleware wraps
-	// githubInner (the raw passthrough) so that it runs AFTER the scoped
-	// passthrough handler has performed token resolution and scope enforcement.
-	// By the time the cache handler sees the request, the Authorization header
-	// already contains the resolved GitHub token.
+	// githubInner (the raw passthrough). The resulting handler is then wrapped
+	// by NewScopedPassthroughHandler below, which resolves ghx_/gha_ proxy
+	// tokens to real GitHub credentials before the request reaches the cache.
+	// The full chain is:
+	//   ScopedPassthroughHandler → CacheLookup → (cache handler | raw passthrough)
+	// CacheLookup routes to the cache handler for cache-enabled repos, or
+	// falls through to the raw passthrough for everything else. By the time
+	// the cache handler sees a request, any ghx_/gha_ proxy tokens have
+	// already been resolved; if present, the Authorization header contains
+	// the resolved GitHub credential (ghs_*, gho_*). Anonymous requests
+	// and raw GitHub tokens pass through without resolution.
 	if s.cfg.Cache.Enabled {
 		if s.cfg.Cache.S3Bucket != "" {
 			return fmt.Errorf("S3 cache storage backend is not yet implemented; remove cache.s3_bucket from config and use local filesystem storage (cache.storage_path) instead")

@@ -112,6 +112,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_auth_rate_limit_total` — rate limiter rejections
 - `ghp_releases_redirect_head_check_total` — HEAD check outcomes (`found`, `not_found`, `error`) for release redirect targets
 - `ghp_cache_fetch_total` / `ghp_cache_lsrefs_total` / `ghp_cache_warm_total` — cache operation counters
+- `ghp_cache_packfile_total` / `ghp_cache_packfile_bytes_total` — packfile response cache hit/miss counts and bytes served
 - `ghp_cache_repos_active` — gauge of cache-enabled repositories
 - `ghp_cache_request_total` — per-repository git requests with cache outcome (`owner`, `repo`, `result` labels)
 
