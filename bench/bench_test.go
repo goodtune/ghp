@@ -195,7 +195,10 @@ func TestCachePerformance(t *testing.T) {
 			},
 			WaitingFor: wait.ForHTTP("/auth/status").
 				WithPort("8080/tcp").
-				WithStartupTimeout(60 * time.Second),
+				WithStartupTimeout(60 * time.Second).
+				WithStatusCodeMatcher(func(status int) bool {
+					return status < 500 // 401 is expected (no session); any non-5xx means the server is up.
+				}),
 		},
 		Started: true,
 	})
