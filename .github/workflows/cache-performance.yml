@@ -1,0 +1,37 @@
+name: Cache Performance
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1" # Weekly Monday 6am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Git clone cache benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build GHP image
+        run: docker build -t ghcr.io/goodtune/ghp:latest .
+
+      - name: Run benchmark
+        run: go test -tags bench -v -timeout 120m ./bench/
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cache-performance-results
+          path: bench/results/
+          retention-days: 90

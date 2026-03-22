@@ -53,6 +53,9 @@ internal/docs/site/*
 # Git worktrees
 .worktrees/
 
+# Benchmark results
+bench/results/
+
 # Playwright
 .playwright-mcp/
 test-results/

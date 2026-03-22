@@ -12,6 +12,23 @@ import (
 	"github.com/goodtune/ghp/internal/proxy"
 )
 
+type ctxKey int
+
+const ctxKeyUpstreamTimeout ctxKey = iota
+
+// withUpstreamTimeout stores a per-repo upstream timeout in the request context.
+func withUpstreamTimeout(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, ctxKeyUpstreamTimeout, d)
+}
+
+// upstreamTimeout returns the per-repo timeout from context, or the fallback if unset.
+func upstreamTimeout(ctx context.Context, fallback time.Duration) time.Duration {
+	if d, ok := ctx.Value(ctxKeyUpstreamTimeout).(time.Duration); ok {
+		return d
+	}
+	return fallback
+}
+
 // CacheLookup checks whether a git smart HTTP request targets a
 // cache-enabled repository and routes it to the cache handler if so.
 // Non-git paths and uncached repos pass through to the inner handler.
@@ -73,6 +90,12 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
+
+	// Inject per-repo upstream timeout into request context if configured.
+	if cached.TimeoutSeconds != nil {
+		ctx := withUpstreamTimeout(r.Context(), time.Duration(*cached.TimeoutSeconds)*time.Second)
+		r = r.WithContext(ctx)
+	}
 
 	// Set access log context for cache tracking.
 	proxy.SetCacheRepo(r, owner+"/"+repo)

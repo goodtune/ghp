@@ -134,15 +134,22 @@ func (m *ManagedRepository) FetchUpstream(ctx context.Context, token string) err
 	start := time.Now()
 	slog.Info("fetching upstream", "repo", m.owner+"/"+m.name)
 
-	err := m.repo.FetchContext(ctx, &git.FetchOptions{
+	opts := &git.FetchOptions{
 		RemoteName: "origin",
 		Force:      true,
-		Auth: &http.BasicAuth{
+		Tags:       git.AllTags,
+	}
+	// Use authentication when a token is available; anonymous fetch
+	// works for public repositories and allows cache warming without
+	// a configured service token.
+	if token != "" {
+		opts.Auth = &http.BasicAuth{
 			Username: "x-access-token",
 			Password: token,
-		},
-		Tags: git.AllTags,
-	})
+		}
+	}
+
+	err := m.repo.FetchContext(ctx, opts)
 	if err == git.NoErrAlreadyUpToDate {
 		err = nil
 	}

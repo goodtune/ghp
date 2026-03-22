@@ -421,6 +421,7 @@ func (s *Server) Run(ctx context.Context) error {
 			cacheRegistry,
 			nil, // Service token is optional for initial implementation.
 			"https://github.com",
+			s.cfg.Cache.StoragePath,
 		)
 		githubInner = gitcache.NewCacheLookup(githubInner, cacheHandler, store, s.logger)
 		gitcache.SyncCacheReposMetric(lifecycleCtx, store)
