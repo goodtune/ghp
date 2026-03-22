@@ -247,7 +247,7 @@ func (h *Handler) proxyUploadPackToUpstream(w http.ResponseWriter, r *http.Reque
 	// Cache key: SHA-256 of owner/repo + request body. For full clones the
 	// body encodes the wanted refs, so the key changes when refs update.
 	cacheKey := responseCacheKey(owner, repo, buf.Bytes())
-	cacheDir := filepath.Join(h.responseCacheDir, "responses", owner, repo)
+	cacheDir := filepath.Join(h.responseCacheDir, "_protocol_responses", owner, repo)
 	cachePath := filepath.Join(cacheDir, cacheKey)
 
 	// Try serving from response cache.
@@ -292,18 +292,24 @@ func (h *Handler) proxyUploadPackToUpstream(w http.ResponseWriter, r *http.Reque
 
 	// Only cache successful responses.
 	if resp.StatusCode == http.StatusOK {
-		if mkErr := os.MkdirAll(cacheDir, 0o755); mkErr == nil {
+		if mkErr := os.MkdirAll(cacheDir, 0o750); mkErr == nil {
 			tmpFile, tmpErr := os.CreateTemp(cacheDir, ".tmp-*")
 			if tmpErr == nil {
 				// Tee: stream to client while writing to temp file.
 				tee := io.TeeReader(resp.Body, tmpFile)
 				_, copyErr := io.Copy(w, tee)
 				tmpFile.Close()
-				if copyErr == nil {
-					os.Rename(tmpFile.Name(), cachePath)
-					slog.Info("cached upstream response", "repo", owner+"/"+repo, "path", cachePath)
-				} else {
+				if copyErr != nil {
+					slog.Error("failed to stream and cache upstream response", "repo", owner+"/"+repo, "err", copyErr)
 					os.Remove(tmpFile.Name())
+					proxy.SetCacheState(r, string(CachePassthrough))
+					return
+				}
+				if renameErr := os.Rename(tmpFile.Name(), cachePath); renameErr != nil {
+					slog.Error("failed to finalize cached response", "repo", owner+"/"+repo, "err", renameErr)
+					os.Remove(tmpFile.Name())
+				} else {
+					slog.Info("cached upstream response", "repo", owner+"/"+repo, "path", cachePath)
 				}
 				proxy.SetCacheState(r, string(CacheMiss))
 				return
