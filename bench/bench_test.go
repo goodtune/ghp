@@ -85,13 +85,14 @@ func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
 
 // measureClone runs git clone, captures stderr to a log file, and returns
 // the wall-clock duration. The cloned directory is removed immediately after
-// timing to conserve disk space.
-func measureClone(t *testing.T, label, logsDir string, verbose bool, args ...string) time.Duration {
+// timing to conserve disk space. Returns an error if the clone fails rather
+// than calling t.Fatal, so callers can report partial results.
+func measureClone(t *testing.T, label, logsDir string, verbose bool, args ...string) (time.Duration, error) {
 	t.Helper()
 
 	cloneDir, err := os.MkdirTemp("", "bench-clone-*")
 	if err != nil {
-		t.Fatalf("create temp dir for %s: %v", label, err)
+		return 0, fmt.Errorf("create temp dir for %s: %w", label, err)
 	}
 	defer os.RemoveAll(cloneDir)
 
@@ -106,16 +107,16 @@ func measureClone(t *testing.T, label, logsDir string, verbose bool, args ...str
 
 	logFile, err := os.Create(filepath.Join(logsDir, label+"-stderr.log"))
 	if err != nil {
-		t.Fatalf("create log for %s: %v", label, err)
+		return 0, fmt.Errorf("create log for %s: %w", label, err)
 	}
 	defer logFile.Close()
 	cmd.Stderr = logFile
 
 	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("git clone %s: %v", label, err)
+		return time.Since(start), fmt.Errorf("git clone %s: %w", label, err)
 	}
-	return time.Since(start)
+	return time.Since(start), nil
 }
 
 // adminClient logs in via the dev-mode test-login endpoint and returns
@@ -203,47 +204,67 @@ func benchmarkRepo(t *testing.T, rc repoConfig, baseURL, resultsDir string) *rep
 
 	// Direct clone (baseline).
 	t.Log("--- Direct clone ---")
-	directTime := measureClone(t, "direct", logsDir, false,
+	directTime, err := measureClone(t, "direct", logsDir, false,
 		fmt.Sprintf("https://github.com/%s.git", rc.Repo))
+	if err != nil {
+		t.Fatalf("direct clone failed, cannot continue: %v", err)
+	}
 	t.Logf("  Duration: %.3fs", directTime.Seconds())
 
 	// Cold cache clone (first request through GHP).
 	t.Log("--- GHP cold cache clone ---")
-	coldTime := measureClone(t, "cold-cache", logsDir, true,
+	coldTime, err := measureClone(t, "cold-cache", logsDir, true,
 		"-c", "http.extraHeader=Host: github.com", cloneURL)
-	t.Logf("  Duration: %.3fs", coldTime.Seconds())
+	if err != nil {
+		t.Errorf("cold cache clone failed (check stderr log): %v", err)
+	} else {
+		t.Logf("  Duration: %.3fs", coldTime.Seconds())
+	}
 
-	// Warm cache clones.
-	t.Logf("--- GHP warm cache clones (%d runs) ---", rc.WarmRuns)
-	warmTimes := make([]time.Duration, rc.WarmRuns)
-	for i := range rc.WarmRuns {
-		label := fmt.Sprintf("warm-cache-%02d", i+1)
-		warmTimes[i] = measureClone(t, label, logsDir, true,
-			"-c", "http.extraHeader=Host: github.com", cloneURL)
-		t.Logf("  Run %2d: %.3fs", i+1, warmTimes[i].Seconds())
+	// Warm cache clones — skip if cold cache failed (cache not populated).
+	var warmTimes []time.Duration
+	if err == nil {
+		t.Logf("--- GHP warm cache clones (%d runs) ---", rc.WarmRuns)
+		warmTimes = make([]time.Duration, 0, rc.WarmRuns)
+		for i := range rc.WarmRuns {
+			label := fmt.Sprintf("warm-cache-%02d", i+1)
+			d, werr := measureClone(t, label, logsDir, true,
+				"-c", "http.extraHeader=Host: github.com", cloneURL)
+			if werr != nil {
+				t.Errorf("warm cache run %d failed: %v", i+1, werr)
+				continue
+			}
+			warmTimes = append(warmTimes, d)
+			t.Logf("  Run %2d: %.3fs", i+1, d.Seconds())
+		}
+	} else {
+		t.Log("--- Skipping warm cache clones (cold cache failed) ---")
 	}
 
 	// Compute stats.
-	warmSec := make([]float64, len(warmTimes))
-	for i, d := range warmTimes {
-		warmSec[i] = d.Seconds()
-	}
-	sorted := make([]float64, len(warmSec))
-	copy(sorted, warmSec)
-	sort.Float64s(sorted)
-
-	var sum float64
-	for _, v := range sorted {
-		sum += v
-	}
-	mean := sum / float64(len(sorted))
-
 	res := &repoResults{
 		Repo:      rc.Repo,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Direct:    scenarioResult{DurationSeconds: round3(directTime.Seconds())},
 		ColdCache: scenarioResult{DurationSeconds: round3(coldTime.Seconds())},
-		WarmCache: warmResult{
+	}
+
+	if len(warmTimes) > 0 {
+		warmSec := make([]float64, len(warmTimes))
+		for i, d := range warmTimes {
+			warmSec[i] = d.Seconds()
+		}
+		sorted := make([]float64, len(warmSec))
+		copy(sorted, warmSec)
+		sort.Float64s(sorted)
+
+		var sum float64
+		for _, v := range sorted {
+			sum += v
+		}
+		mean := sum / float64(len(sorted))
+
+		res.WarmCache = warmResult{
 			Runs:  warmSec,
 			Count: len(warmSec),
 			Min:   round3(sorted[0]),
@@ -252,7 +273,7 @@ func benchmarkRepo(t *testing.T, rc repoConfig, baseURL, resultsDir string) *rep
 			P50:   round3(percentile(sorted, 50)),
 			P80:   round3(percentile(sorted, 80)),
 			P95:   round3(percentile(sorted, 95)),
-		},
+		}
 	}
 
 	// Write per-repo JSON.
@@ -387,21 +408,33 @@ func writeReport(t *testing.T, resultsDir string, all []*repoResults) {
 		fmt.Fprintf(&buf, "| Scenario | Duration | vs Direct |\n")
 		fmt.Fprintf(&buf, "|----------|----------|-----------|\n")
 		fmt.Fprintf(&buf, "| Direct clone | %.2fs | -- |\n", directSec)
-		fmt.Fprintf(&buf, "| GHP -- cold cache | %.2fs | %s |\n", coldSec, overheadPct(coldSec, directSec))
-		fmt.Fprintf(&buf, "| GHP -- warm cache (p50) | %.2fs | %s |\n", w.P50, overheadPct(w.P50, directSec))
-		fmt.Fprintf(&buf, "| GHP -- warm cache (p80) | %.2fs | %s |\n", w.P80, overheadPct(w.P80, directSec))
-		fmt.Fprintf(&buf, "| GHP -- warm cache (p95) | %.2fs | %s |\n\n", w.P95, overheadPct(w.P95, directSec))
-
-		fmt.Fprintf(&buf, "**Warm cache distribution** (%d runs): ", w.Count)
-		fmt.Fprintf(&buf, "min %.2fs, mean %.2fs, max %.2fs\n\n", w.Min, w.Mean, w.Max)
-
-		fmt.Fprintf(&buf, "<details>\n<summary>Individual runs</summary>\n\n")
-		fmt.Fprintf(&buf, "| Run | Duration | vs Direct |\n")
-		fmt.Fprintf(&buf, "|----:|----------|-----------|\n")
-		for i, v := range w.Runs {
-			fmt.Fprintf(&buf, "| %d | %.2fs | %s |\n", i+1, v, overheadPct(v, directSec))
+		if coldSec > 0 {
+			fmt.Fprintf(&buf, "| GHP -- cold cache | %.2fs | %s |\n", coldSec, overheadPct(coldSec, directSec))
+		} else {
+			fmt.Fprintf(&buf, "| GHP -- cold cache | FAILED | -- |\n")
 		}
-		fmt.Fprintf(&buf, "\n</details>\n\n---\n\n")
+		if w.Count > 0 {
+			fmt.Fprintf(&buf, "| GHP -- warm cache (p50) | %.2fs | %s |\n", w.P50, overheadPct(w.P50, directSec))
+			fmt.Fprintf(&buf, "| GHP -- warm cache (p80) | %.2fs | %s |\n", w.P80, overheadPct(w.P80, directSec))
+			fmt.Fprintf(&buf, "| GHP -- warm cache (p95) | %.2fs | %s |\n", w.P95, overheadPct(w.P95, directSec))
+		}
+		fmt.Fprintf(&buf, "\n")
+
+		if w.Count > 0 {
+			fmt.Fprintf(&buf, "**Warm cache distribution** (%d runs): ", w.Count)
+			fmt.Fprintf(&buf, "min %.2fs, mean %.2fs, max %.2fs\n\n", w.Min, w.Mean, w.Max)
+
+			fmt.Fprintf(&buf, "<details>\n<summary>Individual runs</summary>\n\n")
+			fmt.Fprintf(&buf, "| Run | Duration | vs Direct |\n")
+			fmt.Fprintf(&buf, "|----:|----------|-----------|\n")
+			for i, v := range w.Runs {
+				fmt.Fprintf(&buf, "| %d | %.2fs | %s |\n", i+1, v, overheadPct(v, directSec))
+			}
+			fmt.Fprintf(&buf, "\n</details>\n\n")
+		} else if coldSec == 0 {
+			fmt.Fprintf(&buf, "> Cold cache clone failed — warm cache runs skipped. Check stderr logs for details.\n\n")
+		}
+		fmt.Fprintf(&buf, "---\n\n")
 	}
 
 	report := buf.String()
