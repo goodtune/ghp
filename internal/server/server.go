@@ -408,9 +408,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// by NewScopedPassthroughHandler below, which resolves ghx_/gha_ proxy
 	// tokens to real GitHub credentials before the request reaches the cache.
 	// The full chain is:
-	//   ScopedPassthroughHandler → CacheLookup → raw passthrough
-	// So by the time the cache handler sees the request, the Authorization
-	// header already contains the resolved GitHub token (ghs_*, gho_*).
+	//   ScopedPassthroughHandler → CacheLookup → (cache handler | raw passthrough)
+	// CacheLookup routes to the cache handler for cache-enabled repos, or
+	// falls through to the raw passthrough for everything else. Either way,
+	// by the time the cache handler sees a request, the Authorization header
+	// already contains the resolved GitHub token (ghs_*, gho_*).
 	if s.cfg.Cache.Enabled {
 		if s.cfg.Cache.S3Bucket != "" {
 			return fmt.Errorf("S3 cache storage backend is not yet implemented; remove cache.s3_bucket from config and use local filesystem storage (cache.storage_path) instead")

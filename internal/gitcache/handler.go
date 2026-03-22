@@ -74,8 +74,14 @@ type ServiceTokenFunc func(ctx context.Context) (string, error)
 // By the time a request reaches Handler, the Authorization header contains
 // a resolved GitHub credential (e.g. ghs_*, gho_*), not the original proxy
 // token. Methods like handleLsRefs and handleFetch forward this header
-// verbatim to upstream GitHub — this is safe because the token has already
-// been validated and scoped by the outer handler.
+// verbatim to upstream GitHub.
+//
+// Access verification: for bundled requests (ls-refs + fetch), handleLsRefs
+// runs first and verifies access via upstream GitHub before any cached data
+// is served — the fetch command only executes after ls-refs succeeds
+// (enforced by the lsRefsSucceeded gate in ServeUploadPack). For standalone
+// fetch requests, the ScopedPassthroughHandler has already validated the
+// token and enforced scope before the request reaches this handler.
 //
 // TODO(cache-ttl): Add a background goroutine that periodically scans
 // responseCacheDir for stale entries and removes them. The cleanup loop
@@ -377,7 +383,11 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		WriteError(w, fmt.Sprintf("ERR upstream: %d %s", resp.StatusCode, string(body)))
-		return CacheError, &upstreamError{StatusCode: resp.StatusCode}
+		ue := &upstreamError{StatusCode: resp.StatusCode}
+		if isUpstreamRejection(ue) {
+			return CacheRejected, ue
+		}
+		return CacheError, ue
 	}
 
 	// Stream upstream response to client and cache to disk.
@@ -398,21 +408,24 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 			if renameErr := os.Rename(tmpFile.Name(), cachePath); renameErr != nil {
 				slog.Error("failed to finalize cached fetch response", "repo", repo.owner+"/"+repo.name, "err", renameErr)
 				os.Remove(tmpFile.Name())
+				// Served from upstream but not cached — count as passthrough.
+				metrics.CachePackfileTotal.WithLabelValues(repo.owner, repo.name, user, "passthrough").Inc()
+				metrics.CachePackfileBytesTotal.WithLabelValues(repo.owner, repo.name, user, "passthrough").Add(float64(n))
 			} else {
 				slog.Info("cached fetch response", "repo", repo.owner+"/"+repo.name, "path", cachePath)
+				metrics.CachePackfileTotal.WithLabelValues(repo.owner, repo.name, user, "miss").Inc()
+				metrics.CachePackfileBytesTotal.WithLabelValues(repo.owner, repo.name, user, "miss").Add(float64(n))
 			}
-			metrics.CachePackfileTotal.WithLabelValues(repo.owner, repo.name, user, "miss").Inc()
-			metrics.CachePackfileBytesTotal.WithLabelValues(repo.owner, repo.name, user, "miss").Add(float64(n))
 			return CacheMiss, nil
 		}
 	}
 
-	// Fallback: stream without caching.
+	// Fallback: stream without caching (mkdir or tmpfile creation failed).
 	n, err := io.Copy(w, resp.Body)
 	if err != nil {
 		return CacheError, err
 	}
-	metrics.CachePackfileTotal.WithLabelValues(repo.owner, repo.name, user, "miss").Inc()
-	metrics.CachePackfileBytesTotal.WithLabelValues(repo.owner, repo.name, user, "miss").Add(float64(n))
+	metrics.CachePackfileTotal.WithLabelValues(repo.owner, repo.name, user, "passthrough").Inc()
+	metrics.CachePackfileBytesTotal.WithLabelValues(repo.owner, repo.name, user, "passthrough").Add(float64(n))
 	return CacheMiss, nil
 }
