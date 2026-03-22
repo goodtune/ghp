@@ -14,7 +14,7 @@ jobs:
   benchmark:
     name: Git clone cache benchmark
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
         with:
@@ -33,7 +33,7 @@ jobs:
           args: release --snapshot --clean --skip=publish
 
       - name: Run benchmark
-        run: go test -tags bench -v -timeout 45m ./bench/
+        run: go test -tags bench -v -timeout 120m ./bench/
 
       - name: Upload results
         if: always()

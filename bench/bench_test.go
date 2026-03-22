@@ -24,6 +24,22 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+// repoConfig defines a repository to benchmark and how many warm-cache
+// iterations to run. Larger repos use fewer runs to keep total wall time
+// reasonable.
+type repoConfig struct {
+	Repo     string
+	WarmRuns int
+}
+
+// defaultRepos is the standard set of repositories exercised by the benchmark.
+// django/django is a medium repo (~450 MB, 20 years of history).
+// torvalds/linux is a huge repo (~4.5 GB, the largest public repo on GitHub).
+var defaultRepos = []repoConfig{
+	{"django/django", 10},
+	{"torvalds/linux", 3},
+}
+
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -38,6 +54,10 @@ func envInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func repoSlug(repo string) string {
+	return strings.ReplaceAll(repo, "/", "-")
 }
 
 // percentile returns the p-th percentile of a sorted slice using linear interpolation.
@@ -60,6 +80,8 @@ func overheadPct(value, baseline float64) string {
 	}
 	return fmt.Sprintf("%+.1f%%", (value-baseline)/baseline*100)
 }
+
+func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
 
 // measureClone runs git clone, captures stderr to a log file, and returns
 // the wall-clock duration. The cloned directory is removed immediately after
@@ -96,16 +118,10 @@ func measureClone(t *testing.T, label, logsDir string, verbose bool, args ...str
 	return time.Since(start)
 }
 
-// registerCachedRepo logs in via the dev-mode test-login endpoint and
-// registers the given repository for git caching.
-func registerCachedRepo(t *testing.T, baseURL, repo string) {
+// adminClient logs in via the dev-mode test-login endpoint and returns
+// an *http.Client with the session cookie set.
+func adminClient(t *testing.T, baseURL string) *http.Client {
 	t.Helper()
-
-	parts := strings.SplitN(repo, "/", 2)
-	if len(parts) != 2 {
-		t.Fatalf("invalid repo %q, expected owner/name", repo)
-	}
-	owner, name := parts[0], parts[1]
 
 	jar, err := cookiejar.New(nil)
 	if err != nil {
@@ -125,20 +141,31 @@ func registerCachedRepo(t *testing.T, baseURL, repo string) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("test-login returned %d", resp.StatusCode)
 	}
+	return client
+}
 
-	body := fmt.Sprintf(`{"owner":%q,"name":%q,"enabled":true}`, owner, name)
-	resp, err = client.Post(baseURL+"/api/cached-repos", "application/json", strings.NewReader(body))
+// registerCachedRepo registers a repository for git caching via the admin API.
+func registerCachedRepo(t *testing.T, client *http.Client, baseURL, repo string) {
+	t.Helper()
+
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) != 2 {
+		t.Fatalf("invalid repo %q, expected owner/name", repo)
+	}
+
+	body := fmt.Sprintf(`{"owner":%q,"name":%q,"enabled":true}`, parts[0], parts[1])
+	resp, err := client.Post(baseURL+"/api/cached-repos", "application/json", strings.NewReader(body))
 	if err != nil {
-		t.Fatalf("register cached repo: %v", err)
+		t.Fatalf("register cached repo %s: %v", repo, err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusConflict {
-		t.Fatalf("register cached repo returned %d", resp.StatusCode)
+		t.Fatalf("register cached repo %s returned %d", repo, resp.StatusCode)
 	}
-	t.Logf("Registered %s/%s for caching (HTTP %d)", owner, name, resp.StatusCode)
+	t.Logf("Registered %s for caching (HTTP %d)", repo, resp.StatusCode)
 }
 
-type results struct {
+type repoResults struct {
 	Repo      string         `json:"repo"`
 	Timestamp string         `json:"timestamp"`
 	Direct    scenarioResult `json:"direct"`
@@ -161,14 +188,97 @@ type warmResult struct {
 	P95   float64   `json:"p95"`
 }
 
+// benchmarkRepo runs the full direct/cold/warm benchmark for a single
+// repository and returns the computed results.
+func benchmarkRepo(t *testing.T, rc repoConfig, baseURL, resultsDir string) *repoResults {
+	t.Helper()
+
+	slug := repoSlug(rc.Repo)
+	logsDir := filepath.Join(resultsDir, "logs", slug)
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatalf("create logs dir: %v", err)
+	}
+
+	cloneURL := fmt.Sprintf("%s/%s.git", baseURL, rc.Repo)
+
+	// Direct clone (baseline).
+	t.Log("--- Direct clone ---")
+	directTime := measureClone(t, "direct", logsDir, false,
+		fmt.Sprintf("https://github.com/%s.git", rc.Repo))
+	t.Logf("  Duration: %.3fs", directTime.Seconds())
+
+	// Cold cache clone (first request through GHP).
+	t.Log("--- GHP cold cache clone ---")
+	coldTime := measureClone(t, "cold-cache", logsDir, true,
+		"-c", "http.extraHeader=Host: github.com", cloneURL)
+	t.Logf("  Duration: %.3fs", coldTime.Seconds())
+
+	// Warm cache clones.
+	t.Logf("--- GHP warm cache clones (%d runs) ---", rc.WarmRuns)
+	warmTimes := make([]time.Duration, rc.WarmRuns)
+	for i := range rc.WarmRuns {
+		label := fmt.Sprintf("warm-cache-%02d", i+1)
+		warmTimes[i] = measureClone(t, label, logsDir, true,
+			"-c", "http.extraHeader=Host: github.com", cloneURL)
+		t.Logf("  Run %2d: %.3fs", i+1, warmTimes[i].Seconds())
+	}
+
+	// Compute stats.
+	warmSec := make([]float64, len(warmTimes))
+	for i, d := range warmTimes {
+		warmSec[i] = d.Seconds()
+	}
+	sorted := make([]float64, len(warmSec))
+	copy(sorted, warmSec)
+	sort.Float64s(sorted)
+
+	var sum float64
+	for _, v := range sorted {
+		sum += v
+	}
+	mean := sum / float64(len(sorted))
+
+	res := &repoResults{
+		Repo:      rc.Repo,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Direct:    scenarioResult{DurationSeconds: round3(directTime.Seconds())},
+		ColdCache: scenarioResult{DurationSeconds: round3(coldTime.Seconds())},
+		WarmCache: warmResult{
+			Runs:  warmSec,
+			Count: len(warmSec),
+			Min:   round3(sorted[0]),
+			Max:   round3(sorted[len(sorted)-1]),
+			Mean:  round3(mean),
+			P50:   round3(percentile(sorted, 50)),
+			P80:   round3(percentile(sorted, 80)),
+			P95:   round3(percentile(sorted, 95)),
+		},
+	}
+
+	// Write per-repo JSON.
+	jsonData, err := json.MarshalIndent(res, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal results: %v", err)
+	}
+	jsonPath := filepath.Join(resultsDir, fmt.Sprintf("results-%s.json", slug))
+	if err := os.WriteFile(jsonPath, append(jsonData, '\n'), 0o644); err != nil {
+		t.Fatalf("write %s: %v", jsonPath, err)
+	}
+
+	return res
+}
+
 func TestCachePerformance(t *testing.T) {
 	image := envOr("GHP_IMAGE", "ghcr.io/goodtune/ghp:latest")
-	repo := envOr("REPO", "django/django")
-	warmRuns := envInt("WARM_RUNS", 10)
 	resultsDir := envOr("RESULTS_DIR", "results")
-	logsDir := filepath.Join(resultsDir, "logs")
 
-	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+	// Allow single-repo override via REPO env var.
+	repos := defaultRepos
+	if r := os.Getenv("REPO"); r != "" {
+		repos = []repoConfig{{r, envInt("WARM_RUNS", 10)}}
+	}
+
+	if err := os.MkdirAll(filepath.Join(resultsDir, "logs"), 0o755); err != nil {
 		t.Fatalf("create results dir: %v", err)
 	}
 
@@ -197,7 +307,7 @@ func TestCachePerformance(t *testing.T) {
 				WithPort("8080/tcp").
 				WithStartupTimeout(60 * time.Second).
 				WithStatusCodeMatcher(func(status int) bool {
-					return status < 500 // 401 is expected (no session); any non-5xx means the server is up.
+					return status < 500
 				}),
 		},
 		Started: true,
@@ -206,6 +316,7 @@ func TestCachePerformance(t *testing.T) {
 		t.Fatalf("start GHP container: %v", err)
 	}
 	t.Cleanup(func() {
+		logsDir := filepath.Join(resultsDir, "logs")
 		if logReader, err := container.Logs(ctx); err == nil {
 			logBytes, _ := io.ReadAll(logReader)
 			logReader.Close()
@@ -225,114 +336,73 @@ func TestCachePerformance(t *testing.T) {
 	baseURL := fmt.Sprintf("http://%s:%s", host, port.Port())
 	t.Logf("GHP available at %s", baseURL)
 
-	registerCachedRepo(t, baseURL, repo)
-
-	cloneURL := fmt.Sprintf("%s/%s.git", baseURL, repo)
-
-	// Direct clone (baseline).
-	t.Log("--- Direct clone ---")
-	directTime := measureClone(t, "direct", logsDir, false,
-		fmt.Sprintf("https://github.com/%s.git", repo))
-	t.Logf("  Duration: %.3fs", directTime.Seconds())
-
-	// Cold cache clone (first request through GHP).
-	t.Log("--- GHP cold cache clone ---")
-	coldTime := measureClone(t, "cold-cache", logsDir, true,
-		"-c", "http.extraHeader=Host: github.com", cloneURL)
-	t.Logf("  Duration: %.3fs", coldTime.Seconds())
-
-	// Warm cache clones.
-	t.Logf("--- GHP warm cache clones (%d runs) ---", warmRuns)
-	warmTimes := make([]time.Duration, warmRuns)
-	for i := range warmRuns {
-		label := fmt.Sprintf("warm-cache-%02d", i+1)
-		warmTimes[i] = measureClone(t, label, logsDir, true,
-			"-c", "http.extraHeader=Host: github.com", cloneURL)
-		t.Logf("  Run %2d: %.3fs", i+1, warmTimes[i].Seconds())
+	// Authenticate once and register all repos for caching.
+	client := adminClient(t, baseURL)
+	for _, rc := range repos {
+		registerCachedRepo(t, client, baseURL, rc.Repo)
 	}
 
-	writeResults(t, resultsDir, repo, directTime, coldTime, warmTimes)
+	// Run per-repo benchmarks as subtests.
+	allResults := make([]*repoResults, 0, len(repos))
+	for _, rc := range repos {
+		rc := rc
+		t.Run(repoSlug(rc.Repo), func(t *testing.T) {
+			res := benchmarkRepo(t, rc, baseURL, resultsDir)
+			allResults = append(allResults, res)
+		})
+	}
+
+	// Write combined report.
+	writeReport(t, resultsDir, allResults)
 }
 
-func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
-
-func writeResults(t *testing.T, resultsDir, repo string, direct, cold time.Duration, warm []time.Duration) {
+func writeReport(t *testing.T, resultsDir string, all []*repoResults) {
 	t.Helper()
 
-	warmSec := make([]float64, len(warm))
-	for i, d := range warm {
-		warmSec[i] = d.Seconds()
-	}
-	sorted := make([]float64, len(warmSec))
-	copy(sorted, warmSec)
-	sort.Float64s(sorted)
-
-	var sum float64
-	for _, v := range sorted {
-		sum += v
-	}
-	mean := sum / float64(len(sorted))
-	p50 := percentile(sorted, 50)
-	p80 := percentile(sorted, 80)
-	p95 := percentile(sorted, 95)
-
-	res := results{
-		Repo:      repo,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Direct:    scenarioResult{DurationSeconds: round3(direct.Seconds())},
-		ColdCache: scenarioResult{DurationSeconds: round3(cold.Seconds())},
-		WarmCache: warmResult{
-			Runs:  warmSec,
-			Count: len(warmSec),
-			Min:   round3(sorted[0]),
-			Max:   round3(sorted[len(sorted)-1]),
-			Mean:  round3(mean),
-			P50:   round3(p50),
-			P80:   round3(p80),
-			P95:   round3(p95),
-		},
+	if len(all) == 0 {
+		t.Log("No results to report.")
+		return
 	}
 
-	jsonData, err := json.MarshalIndent(res, "", "  ")
+	// Write combined JSON.
+	jsonData, err := json.MarshalIndent(all, "", "  ")
 	if err != nil {
-		t.Fatalf("marshal results: %v", err)
+		t.Fatalf("marshal combined results: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(resultsDir, "results.json"), append(jsonData, '\n'), 0o644); err != nil {
 		t.Fatalf("write results.json: %v", err)
 	}
 
 	// Build markdown report.
-	directSec := direct.Seconds()
-	coldSec := cold.Seconds()
-
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "## Git Clone Cache Performance Results\n\n")
-	fmt.Fprintf(&buf, "**Repository:** `%s`\n", repo)
-	fmt.Fprintf(&buf, "**Date:** %s\n\n", res.Timestamp)
-	fmt.Fprintf(&buf, "### Summary\n\n")
-	fmt.Fprintf(&buf, "| Scenario | Duration | vs Direct |\n")
-	fmt.Fprintf(&buf, "|----------|----------|-----------|\n")
-	fmt.Fprintf(&buf, "| Direct clone | %.2fs | -- |\n", directSec)
-	fmt.Fprintf(&buf, "| GHP -- cold cache | %.2fs | %s |\n", coldSec, overheadPct(coldSec, directSec))
-	fmt.Fprintf(&buf, "| GHP -- warm cache (p50) | %.2fs | %s |\n", p50, overheadPct(p50, directSec))
-	fmt.Fprintf(&buf, "| GHP -- warm cache (p80) | %.2fs | %s |\n", p80, overheadPct(p80, directSec))
-	fmt.Fprintf(&buf, "| GHP -- warm cache (p95) | %.2fs | %s |\n\n", p95, overheadPct(p95, directSec))
-	fmt.Fprintf(&buf, "### Warm Cache Distribution (%d runs)\n\n", len(warmSec))
-	fmt.Fprintf(&buf, "| Stat | Value |\n")
-	fmt.Fprintf(&buf, "|------|-------|\n")
-	fmt.Fprintf(&buf, "| Min | %.2fs |\n", sorted[0])
-	fmt.Fprintf(&buf, "| Mean | %.2fs |\n", mean)
-	fmt.Fprintf(&buf, "| p50 | %.2fs |\n", p50)
-	fmt.Fprintf(&buf, "| p80 | %.2fs |\n", p80)
-	fmt.Fprintf(&buf, "| p95 | %.2fs |\n", p95)
-	fmt.Fprintf(&buf, "| Max | %.2fs |\n\n", sorted[len(sorted)-1])
-	fmt.Fprintf(&buf, "<details>\n<summary>Individual Runs</summary>\n\n")
-	fmt.Fprintf(&buf, "| Run | Duration | vs Direct |\n")
-	fmt.Fprintf(&buf, "|----:|----------|-----------|\n")
-	for i, v := range warmSec {
-		fmt.Fprintf(&buf, "| %d | %.2fs | %s |\n", i+1, v, overheadPct(v, directSec))
+	fmt.Fprintf(&buf, "**Date:** %s\n\n", all[0].Timestamp)
+
+	for _, res := range all {
+		directSec := res.Direct.DurationSeconds
+		coldSec := res.ColdCache.DurationSeconds
+		w := res.WarmCache
+
+		fmt.Fprintf(&buf, "### `%s`\n\n", res.Repo)
+		fmt.Fprintf(&buf, "| Scenario | Duration | vs Direct |\n")
+		fmt.Fprintf(&buf, "|----------|----------|-----------|\n")
+		fmt.Fprintf(&buf, "| Direct clone | %.2fs | -- |\n", directSec)
+		fmt.Fprintf(&buf, "| GHP -- cold cache | %.2fs | %s |\n", coldSec, overheadPct(coldSec, directSec))
+		fmt.Fprintf(&buf, "| GHP -- warm cache (p50) | %.2fs | %s |\n", w.P50, overheadPct(w.P50, directSec))
+		fmt.Fprintf(&buf, "| GHP -- warm cache (p80) | %.2fs | %s |\n", w.P80, overheadPct(w.P80, directSec))
+		fmt.Fprintf(&buf, "| GHP -- warm cache (p95) | %.2fs | %s |\n\n", w.P95, overheadPct(w.P95, directSec))
+
+		fmt.Fprintf(&buf, "**Warm cache distribution** (%d runs): ", w.Count)
+		fmt.Fprintf(&buf, "min %.2fs, mean %.2fs, max %.2fs\n\n", w.Min, w.Mean, w.Max)
+
+		fmt.Fprintf(&buf, "<details>\n<summary>Individual runs</summary>\n\n")
+		fmt.Fprintf(&buf, "| Run | Duration | vs Direct |\n")
+		fmt.Fprintf(&buf, "|----:|----------|-----------|\n")
+		for i, v := range w.Runs {
+			fmt.Fprintf(&buf, "| %d | %.2fs | %s |\n", i+1, v, overheadPct(v, directSec))
+		}
+		fmt.Fprintf(&buf, "\n</details>\n\n---\n\n")
 	}
-	fmt.Fprintf(&buf, "\n</details>\n")
 
 	report := buf.String()
 
