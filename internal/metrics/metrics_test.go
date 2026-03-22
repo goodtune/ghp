@@ -395,7 +395,7 @@ func TestCacheRequestTotal(t *testing.T) {
 }
 
 func TestCachePackfileTotal(t *testing.T) {
-	for _, result := range []string{"hit", "miss"} {
+	for _, result := range []string{"hit", "miss", "passthrough"} {
 		labels := prometheus.Labels{"owner": "testorg", "repo": "testrepo", "user": "testuser", "result": result}
 		before := getCounterValue(t, CachePackfileTotal, labels)
 		CachePackfileTotal.WithLabelValues("testorg", "testrepo", "testuser", result).Inc()
@@ -407,7 +407,7 @@ func TestCachePackfileTotal(t *testing.T) {
 }
 
 func TestCachePackfileBytesTotal(t *testing.T) {
-	for _, result := range []string{"hit", "miss"} {
+	for _, result := range []string{"hit", "miss", "passthrough"} {
 		labels := prometheus.Labels{"owner": "testorg", "repo": "testrepo", "user": "testuser", "result": result}
 		before := getCounterValue(t, CachePackfileBytesTotal, labels)
 		CachePackfileBytesTotal.WithLabelValues("testorg", "testrepo", "testuser", result).Add(1024)
