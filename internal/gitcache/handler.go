@@ -9,12 +9,16 @@ package gitcache
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -69,10 +73,11 @@ type ServiceTokenFunc func(ctx context.Context) (string, error)
 // The upstream GitHub token is extracted from the request's Authorization
 // header, which is set by the scoped passthrough handler.
 type Handler struct {
-	registry        *Registry
-	serviceTokenFn  ServiceTokenFunc
-	upstreamBaseURL string // e.g. "https://github.com"
-	httpClient      *http.Client
+	registry         *Registry
+	serviceTokenFn   ServiceTokenFunc
+	upstreamBaseURL  string // e.g. "https://github.com"
+	httpClient       *http.Client
+	responseCacheDir string // directory for cached upstream protocol responses
 }
 
 // NewHandler creates a cache handler.
@@ -85,12 +90,13 @@ type Handler struct {
 // the cached repository has no per-repo timeout configured.
 const defaultUpstreamTimeout = 30 * time.Second
 
-func NewHandler(registry *Registry, serviceTokenFn ServiceTokenFunc, upstreamBaseURL string) *Handler {
+func NewHandler(registry *Registry, serviceTokenFn ServiceTokenFunc, upstreamBaseURL, responseCacheDir string) *Handler {
 	return &Handler{
-		registry:        registry,
-		serviceTokenFn:  serviceTokenFn,
-		upstreamBaseURL: upstreamBaseURL,
-		httpClient:      &http.Client{}, // no client-level timeout; per-request context controls it
+		registry:         registry,
+		serviceTokenFn:   serviceTokenFn,
+		upstreamBaseURL:  upstreamBaseURL,
+		httpClient:       &http.Client{}, // no client-level timeout; per-request context controls it
+		responseCacheDir: responseCacheDir,
 	}
 }
 
@@ -153,10 +159,34 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 		}
 	}
 
-	// Note: standalone fetch requests (no ls-refs) always go through the
-	// handleFetch path below, which fetches from upstream on cache miss
-	// and populates the local cache. Anonymous fetch (no token) is supported
-	// for public repositories — FetchUpstream works without authentication.
+	// For standalone fetch (no ls-refs in this request), check if we can
+	// handle a cache miss before writing any response headers. If all wants
+	// are already in the response cache or local object store we can serve
+	// locally; otherwise proxy to upstream and cache the response for next time.
+	if !hasLsRefs {
+		authToken := extractGitHubToken(r.Header.Get("Authorization"))
+		if authToken == "" && h.serviceTokenFn == nil {
+			needsUpstream := false
+			for _, cmd := range commands {
+				if cmd.Name == "fetch" {
+					wantHashes, wantRefs, parseErr := ParseFetchWants(cmd)
+					if parseErr != nil {
+						needsUpstream = true
+						break
+					}
+					hasAll, checkErr := managed.HasAllWants(wantHashes, wantRefs)
+					if checkErr != nil || !hasAll {
+						needsUpstream = true
+						break
+					}
+				}
+			}
+			if needsUpstream {
+				h.proxyUploadPackToUpstream(w, r, owner, repo, commands)
+				return
+			}
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
 
@@ -206,8 +236,6 @@ func (h *Handler) ServeUploadPack(w http.ResponseWriter, r *http.Request, owner,
 // (since the original body has already been consumed). This is used when
 // the cache can't serve the request (e.g., cache miss with no token).
 func (h *Handler) proxyUploadPackToUpstream(w http.ResponseWriter, r *http.Request, owner, repo string, commands []Command) {
-	upstreamURL := h.upstreamBaseURL + "/" + owner + "/" + repo + ".git/git-upload-pack"
-
 	// Re-encode all commands into a single body.
 	var buf bytes.Buffer
 	for _, cmd := range commands {
@@ -216,7 +244,26 @@ func (h *Handler) proxyUploadPackToUpstream(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// Apply per-repo or default upstream timeout.
+	// Cache key: SHA-256 of owner/repo + request body. For full clones the
+	// body encodes the wanted refs, so the key changes when refs update.
+	cacheKey := responseCacheKey(owner, repo, buf.Bytes())
+	cacheDir := filepath.Join(h.responseCacheDir, "responses", owner, repo)
+	cachePath := filepath.Join(cacheDir, cacheKey)
+
+	// Try serving from response cache.
+	if f, err := os.Open(cachePath); err == nil {
+		defer f.Close()
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
+		w.WriteHeader(http.StatusOK)
+		n, _ := io.Copy(w, f)
+		slog.Info("served from response cache", "repo", owner+"/"+repo, "bytes", n)
+		proxy.SetCacheState(r, string(CacheHit))
+		return
+	}
+
+	// Cache miss — proxy to upstream and tee the response to disk.
+	upstreamURL := h.upstreamBaseURL + "/" + owner + "/" + repo + ".git/git-upload-pack"
+
 	ctx, cancel := context.WithTimeout(r.Context(), upstreamTimeout(r.Context(), defaultUpstreamTimeout))
 	defer cancel()
 
@@ -242,8 +289,39 @@ func (h *Handler) proxyUploadPackToUpstream(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
+
+	// Only cache successful responses.
+	if resp.StatusCode == http.StatusOK {
+		if mkErr := os.MkdirAll(cacheDir, 0o755); mkErr == nil {
+			tmpFile, tmpErr := os.CreateTemp(cacheDir, ".tmp-*")
+			if tmpErr == nil {
+				// Tee: stream to client while writing to temp file.
+				tee := io.TeeReader(resp.Body, tmpFile)
+				_, copyErr := io.Copy(w, tee)
+				tmpFile.Close()
+				if copyErr == nil {
+					os.Rename(tmpFile.Name(), cachePath)
+					slog.Info("cached upstream response", "repo", owner+"/"+repo, "path", cachePath)
+				} else {
+					os.Remove(tmpFile.Name())
+				}
+				proxy.SetCacheState(r, string(CacheMiss))
+				return
+			}
+		}
+	}
+
+	// Fallback: stream without caching.
 	io.Copy(w, resp.Body)
 	proxy.SetCacheState(r, string(CachePassthrough))
+}
+
+// responseCacheKey computes a cache key from the repo identity and request body.
+func responseCacheKey(owner, repo string, body []byte) string {
+	h := sha256.New()
+	h.Write([]byte(owner + "/" + repo + "\x00"))
+	h.Write(body)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // handleLsRefs forwards the ls-refs command to upstream GitHub and returns
