@@ -39,12 +39,16 @@ func TestEnforceRepoSizeLimit_UnderLimit(t *testing.T) {
 func TestEnforceRepoSizeLimit_EvictsOldest(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create files with distinct mtimes.
+	// Create files and assign explicit, distinct mtimes to avoid
+	// flakiness on filesystems with coarse timestamp resolution.
 	oldest := writeFile(t, dir, "oldest", 600*1024) // 600 KB
-	time.Sleep(10 * time.Millisecond)
-	writeFile(t, dir, "middle", 400*1024) // 400 KB
-	time.Sleep(10 * time.Millisecond)
-	writeFile(t, dir, "newest", 300*1024) // 300 KB
+	middle := writeFile(t, dir, "middle", 400*1024)  // 400 KB
+	newest := writeFile(t, dir, "newest", 300*1024)  // 300 KB
+
+	base := time.Now().Add(-2 * time.Minute)
+	setChtimes(t, oldest, base)
+	setChtimes(t, middle, base.Add(1*time.Minute))
+	setChtimes(t, newest, base.Add(2*time.Minute))
 
 	// Total: 1300 KB. Limit: 1 MB (1024 KB). Need to evict ~276 KB → oldest file (600 KB).
 	limit := 1
@@ -140,6 +144,13 @@ func writeFile(t *testing.T, dir, name string, size int) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func setChtimes(t *testing.T, path string, mtime time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatalf("failed to set mtime for %s: %v", filepath.Base(path), err)
+	}
 }
 
 func assertFileCount(t *testing.T, dir string, expected int) {

@@ -23,6 +23,10 @@ type cachedFile struct {
 // per-repository cache size limits by evicting the oldest protocol response
 // files. The goroutine stops when ctx is cancelled.
 func StartCleanup(ctx context.Context, responseCacheDir string, store database.Store, interval time.Duration) {
+	if interval <= 0 {
+		slog.Warn("cache cleanup: non-positive interval; cleanup disabled", "interval", interval)
+		return
+	}
 	go runCleanupLoop(ctx, responseCacheDir, store, interval)
 }
 
