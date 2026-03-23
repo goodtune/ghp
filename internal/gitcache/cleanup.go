@@ -21,16 +21,18 @@ type cachedFile struct {
 
 // StartCleanup launches a background goroutine that periodically enforces
 // per-repository cache size limits by evicting the oldest protocol response
-// files. The goroutine stops when ctx is cancelled.
-func StartCleanup(ctx context.Context, responseCacheDir string, store database.Store, interval time.Duration) {
+// files. cacheStorageRoot is the top-level cache storage directory (protocol
+// response subdirectories are resolved internally). The goroutine stops when
+// ctx is cancelled.
+func StartCleanup(ctx context.Context, cacheStorageRoot string, store database.Store, interval time.Duration) {
 	if interval <= 0 {
 		slog.Warn("cache cleanup: non-positive interval; cleanup disabled", "interval", interval)
 		return
 	}
-	go runCleanupLoop(ctx, responseCacheDir, store, interval)
+	go runCleanupLoop(ctx, cacheStorageRoot, store, interval)
 }
 
-func runCleanupLoop(ctx context.Context, responseCacheDir string, store database.Store, interval time.Duration) {
+func runCleanupLoop(ctx context.Context, cacheStorageRoot string, store database.Store, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -39,12 +41,12 @@ func runCleanupLoop(ctx context.Context, responseCacheDir string, store database
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			runCleanupCycle(ctx, responseCacheDir, store)
+			runCleanupCycle(ctx, cacheStorageRoot, store)
 		}
 	}
 }
 
-func runCleanupCycle(ctx context.Context, responseCacheDir string, store database.Store) {
+func runCleanupCycle(ctx context.Context, cacheStorageRoot string, store database.Store) {
 	repos, err := store.ListCachedRepositories(ctx)
 	if err != nil {
 		slog.Error("cache cleanup: failed to list repos", "err", err)
@@ -55,7 +57,7 @@ func runCleanupCycle(ctx context.Context, responseCacheDir string, store databas
 		if ctx.Err() != nil {
 			return
 		}
-		repoDir := filepath.Join(responseCacheDir, "_protocol_responses", repo.Owner, repo.Name)
+		repoDir := filepath.Join(cacheStorageRoot, "_protocol_responses", repo.Owner, repo.Name)
 		evicted := enforceRepoSizeLimit(repoDir, repo)
 		if evicted > 0 {
 			slog.Info("cache cleanup: evicted files",
