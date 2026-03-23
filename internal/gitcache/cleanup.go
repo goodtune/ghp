@@ -113,6 +113,9 @@ func enforceRepoSizeLimit(repoDir string, repo *database.CachedRepository) int {
 func scanCacheDir(dir string) ([]cachedFile, int64) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("cache cleanup: failed to read cache directory", "dir", dir, "err", err)
+		}
 		return nil, 0
 	}
 

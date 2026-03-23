@@ -116,7 +116,7 @@
                     </div>
                     <div class="form-group">
                         <label for="cache-max-size">Cache Size Limit (MB)</label>
-                        <input type="number" id="cache-max-size" placeholder="unlimited" min="1">
+                        <input type="number" id="cache-max-size" placeholder="unlimited" min="1" max="1048576">
                     </div>
                     <div style="margin-bottom:1rem">
                         <label style="display:inline-flex;align-items:center;gap:0.5rem;font-size:0.875rem;color:#8b949e;cursor:pointer"><input type="checkbox" id="cache-enabled" checked> Enabled</label>
@@ -784,7 +784,7 @@
                     const timeoutVal = (repo.timeout_seconds != null) ? repo.timeout_seconds : '';
                     const cacheSizeVal = (repo.max_cache_size_mb != null) ? repo.max_cache_size_mb : '';
                     html += '<td><input type="number" data-edit-timeout="' + esc(repo.id) + '" value="' + timeoutVal + '" placeholder="default: 30" min="1" max="3600" style="width:80px"></td>';
-                    html += '<td><input type="number" data-edit-cache-size="' + esc(repo.id) + '" value="' + cacheSizeVal + '" placeholder="unlimited" min="1" style="width:80px"></td>';
+                    html += '<td><input type="number" data-edit-cache-size="' + esc(repo.id) + '" value="' + cacheSizeVal + '" placeholder="unlimited" min="1" max="1048576" style="width:80px"></td>';
                 } else {
                     const timeout = (repo.timeout_seconds != null) ? repo.timeout_seconds + 's' : 'default';
                     const cacheSize = (repo.max_cache_size_mb != null) ? repo.max_cache_size_mb + ' MB' : 'unlimited';
@@ -858,8 +858,8 @@
             }
             if (cacheSizeStr !== '') {
                 const cacheSize = Number(cacheSizeStr);
-                if (!Number.isFinite(cacheSize) || !Number.isInteger(cacheSize) || cacheSize < 1) {
-                    alert('Cache size limit must be a positive integer (MB).');
+                if (!Number.isFinite(cacheSize) || !Number.isInteger(cacheSize) || cacheSize < 1 || cacheSize > 1048576) {
+                    alert('Cache size limit must be a positive integer between 1 and 1048576 MB.');
                     return;
                 }
                 body.max_cache_size_mb = cacheSize;
@@ -897,8 +897,8 @@
                 body.max_cache_size_mb = 0; // 0 clears to unlimited
             } else {
                 const cacheSize = Number(cacheSizeStr);
-                if (!Number.isFinite(cacheSize) || !Number.isInteger(cacheSize) || cacheSize < 1) {
-                    alert('Cache size limit must be a positive integer (MB), or empty for unlimited.');
+                if (!Number.isFinite(cacheSize) || !Number.isInteger(cacheSize) || cacheSize < 1 || cacheSize > 1048576) {
+                    alert('Cache size limit must be a positive integer between 1 and 1048576 MB, or empty for unlimited.');
                     return;
                 }
                 body.max_cache_size_mb = cacheSize;
