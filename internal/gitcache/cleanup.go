@@ -33,6 +33,10 @@ func StartCleanup(ctx context.Context, cacheStorageRoot string, store database.S
 }
 
 func runCleanupLoop(ctx context.Context, cacheStorageRoot string, store database.Store, interval time.Duration) {
+	// Run an initial cleanup cycle before waiting on the ticker so that
+	// existing oversized caches are evicted promptly after startup.
+	runCleanupCycle(ctx, cacheStorageRoot, store)
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -74,6 +78,11 @@ func runCleanupCycle(ctx context.Context, cacheStorageRoot string, store databas
 // the number of files evicted.
 func enforceRepoSizeLimit(repoDir string, repo *database.CachedRepository) int {
 	files, totalSize := scanCacheDir(repoDir)
+	if files == nil {
+		// scanCacheDir returns nil on read errors; preserve previous gauge
+		// value rather than incorrectly reporting 0.
+		return 0
+	}
 	metrics.CacheResponseSizeBytes.WithLabelValues(repo.Owner, repo.Name).Set(float64(totalSize))
 
 	if repo.MaxCacheSizeMB == nil || *repo.MaxCacheSizeMB <= 0 {
@@ -111,13 +120,16 @@ func enforceRepoSizeLimit(repoDir string, repo *database.CachedRepository) int {
 
 // scanCacheDir reads the contents of a directory and returns file metadata
 // and the total size. Dotfiles (e.g. ".tmp-" partial writes) and
-// subdirectories are skipped.
+// subdirectories are skipped. Returns (nil, 0) on read errors (caller
+// should not update metrics) or ([]cachedFile{}, 0) for empty/nonexistent
+// directories.
 func scanCacheDir(dir string) ([]cachedFile, int64) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			slog.Warn("cache cleanup: failed to read cache directory", "dir", dir, "err", err)
+		if os.IsNotExist(err) {
+			return []cachedFile{}, 0
 		}
+		slog.Warn("cache cleanup: failed to read cache directory", "dir", dir, "err", err)
 		return nil, 0
 	}
 
