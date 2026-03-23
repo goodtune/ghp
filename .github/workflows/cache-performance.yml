@@ -3,6 +3,7 @@ name: Cache Performance
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
   schedule:
     - cron: "0 6 * * 1" # Weekly Monday 6am UTC
   workflow_dispatch:
@@ -13,6 +14,9 @@ permissions:
 jobs:
   benchmark:
     name: Git clone cache benchmark
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'performance')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
