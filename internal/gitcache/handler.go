@@ -332,7 +332,9 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 	if f, err := os.Open(cachePath); err == nil {
 		// Touch mtime so the size-limit cleanup evicts least-recently-used files first.
 		now := time.Now()
-		_ = os.Chtimes(cachePath, now, now)
+		if err := os.Chtimes(cachePath, now, now); err != nil {
+			slog.Warn("failed to update cache file mtime; LRU eviction may evict hot entries", "path", cachePath, "error", err)
+		}
 		defer f.Close()
 		n, copyErr := io.Copy(w, f)
 		if copyErr != nil {

@@ -108,8 +108,8 @@ func enforceRepoSizeLimit(repoDir string, repo *database.CachedRepository) int {
 }
 
 // scanCacheDir reads the contents of a directory and returns file metadata
-// and the total size. Only regular files are included; temporary files
-// (prefix ".tmp-") and subdirectories are skipped.
+// and the total size. Dotfiles (e.g. ".tmp-" partial writes) and
+// subdirectories are skipped.
 func scanCacheDir(dir string) ([]cachedFile, int64) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

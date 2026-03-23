@@ -73,7 +73,7 @@ func TestEnforceRepoSizeLimit_EvictsMultiple(t *testing.T) {
 		writeFile(t, dir, name, 300*1024)
 		// Ensure distinct mtimes.
 		past := time.Now().Add(-time.Duration(5-i) * time.Minute)
-		os.Chtimes(filepath.Join(dir, name), past, past)
+		setChtimes(t, filepath.Join(dir, name), past)
 	}
 
 	// Limit: 1 MB (1024 KB). Need to evict at least 476 KB → 2 files (600 KB).

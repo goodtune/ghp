@@ -1226,8 +1226,8 @@ func (a *API) handleCreateCachedRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "timeout_seconds must be between 1 and 3600"})
 		return
 	}
-	if req.MaxCacheSizeMB != nil && *req.MaxCacheSizeMB < 1 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "max_cache_size_mb must be at least 1"})
+	if req.MaxCacheSizeMB != nil && (*req.MaxCacheSizeMB < 1 || *req.MaxCacheSizeMB > 1048576) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "max_cache_size_mb must be between 1 and 1048576"})
 		return
 	}
 
@@ -1333,8 +1333,8 @@ func (a *API) handleUpdateCachedRepo(w http.ResponseWriter, r *http.Request) {
 			// PATCH semantics: max_cache_size_mb: 0 clears the limit (unlimited).
 			existing.MaxCacheSizeMB = nil
 		} else {
-			if *req.MaxCacheSizeMB < 1 {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "max_cache_size_mb must be at least 1, or 0 to clear"})
+			if *req.MaxCacheSizeMB < 1 || *req.MaxCacheSizeMB > 1048576 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "max_cache_size_mb must be between 1 and 1048576, or 0 to clear"})
 				return
 			}
 			existing.MaxCacheSizeMB = req.MaxCacheSizeMB
