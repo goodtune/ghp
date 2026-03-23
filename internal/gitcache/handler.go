@@ -83,14 +83,6 @@ type ServiceTokenFunc func(ctx context.Context) (string, error)
 // fetch requests, the ScopedPassthroughHandler has already validated the
 // token and enforced scope before the request reaches this handler.
 //
-// TODO(cache-ttl): Add a background goroutine that periodically scans
-// responseCacheDir for stale entries and removes them. The cleanup loop
-// should run on a configurable interval (e.g. every 10 minutes), walk
-// _protocol_responses/<owner>/<repo>/<hash> files, and remove any file
-// whose mtime is older than a configurable TTL (e.g. 1 hour). This
-// prevents unbounded disk growth as refs change and old cache keys
-// become unreachable. Consider exposing a metric for cache directory
-// size and eviction count.
 type Handler struct {
 	registry         *Registry
 	serviceTokenFn   ServiceTokenFunc
@@ -337,10 +329,12 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 	}
 
 	// Try serving from response cache.
-	// TODO(cache-ttl): Touch the file mtime on cache hit so the TTL cleanup
-	// goroutine can distinguish recently-accessed entries from stale ones.
-	// Use os.Chtimes(cachePath, now, now) after opening successfully.
 	if f, err := os.Open(cachePath); err == nil {
+		// Touch mtime so the size-limit cleanup evicts least-recently-used files first.
+		now := time.Now()
+		if err := os.Chtimes(cachePath, now, now); err != nil {
+			slog.Warn("failed to update cache file mtime; LRU eviction may evict hot entries", "path", cachePath, "error", err)
+		}
 		defer f.Close()
 		n, copyErr := io.Copy(w, f)
 		if copyErr != nil {
@@ -391,9 +385,6 @@ func (h *Handler) handleFetch(r *http.Request, repo *ManagedRepository, cmd Comm
 	}
 
 	// Stream upstream response to client and cache to disk.
-	// TODO(cache-ttl): The file's mtime at creation time serves as the
-	// cache entry timestamp. The TTL cleanup goroutine should remove
-	// files older than the configured TTL based on this mtime.
 	if mkErr := os.MkdirAll(cacheDir, 0o750); mkErr == nil {
 		tmpFile, tmpErr := os.CreateTemp(cacheDir, ".tmp-*")
 		if tmpErr == nil {

@@ -650,9 +650,9 @@ func (s *SQLiteStore) CreateCachedRepository(ctx context.Context, repo *CachedRe
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO cached_repositories (id, owner, name, enabled, timeout_seconds, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repo.ID, repo.Owner, repo.Name, repo.Enabled, repo.TimeoutSeconds, now, now)
+		INSERT INTO cached_repositories (id, owner, name, enabled, timeout_seconds, max_cache_size_mb, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, repo.ID, repo.Owner, repo.Name, repo.Enabled, repo.TimeoutSeconds, repo.MaxCacheSizeMB, now, now)
 	if err != nil {
 		return err
 	}
@@ -665,8 +665,8 @@ func (s *SQLiteStore) GetCachedRepositoryByID(ctx context.Context, id string) (*
 	r := &CachedRepository{}
 	var createdStr, updatedStr string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, owner, name, enabled, timeout_seconds, created_at, updated_at FROM cached_repositories WHERE id = ?`, id,
-	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &createdStr, &updatedStr)
+		`SELECT id, owner, name, enabled, timeout_seconds, max_cache_size_mb, created_at, updated_at FROM cached_repositories WHERE id = ?`, id,
+	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &r.MaxCacheSizeMB, &createdStr, &updatedStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -682,8 +682,8 @@ func (s *SQLiteStore) GetCachedRepositoryByOwnerName(ctx context.Context, owner,
 	r := &CachedRepository{}
 	var createdStr, updatedStr string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, owner, name, enabled, timeout_seconds, created_at, updated_at FROM cached_repositories WHERE owner = ? AND name = ?`, owner, name,
-	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &createdStr, &updatedStr)
+		`SELECT id, owner, name, enabled, timeout_seconds, max_cache_size_mb, created_at, updated_at FROM cached_repositories WHERE owner = ? AND name = ?`, owner, name,
+	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &r.MaxCacheSizeMB, &createdStr, &updatedStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -697,7 +697,7 @@ func (s *SQLiteStore) GetCachedRepositoryByOwnerName(ctx context.Context, owner,
 
 func (s *SQLiteStore) ListCachedRepositories(ctx context.Context) ([]*CachedRepository, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, owner, name, enabled, timeout_seconds, created_at, updated_at FROM cached_repositories ORDER BY owner, name`)
+		`SELECT id, owner, name, enabled, timeout_seconds, max_cache_size_mb, created_at, updated_at FROM cached_repositories ORDER BY owner, name`)
 	if err != nil {
 		return nil, err
 	}
@@ -707,7 +707,7 @@ func (s *SQLiteStore) ListCachedRepositories(ctx context.Context) ([]*CachedRepo
 	for rows.Next() {
 		r := &CachedRepository{}
 		var createdStr, updatedStr string
-		if err := rows.Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &createdStr, &updatedStr); err != nil {
+		if err := rows.Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &r.MaxCacheSizeMB, &createdStr, &updatedStr); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = parseTime(createdStr)
@@ -720,9 +720,9 @@ func (s *SQLiteStore) ListCachedRepositories(ctx context.Context) ([]*CachedRepo
 func (s *SQLiteStore) UpdateCachedRepository(ctx context.Context, repo *CachedRepository) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE cached_repositories SET owner = ?, name = ?, enabled = ?, timeout_seconds = ?, updated_at = ?
+		UPDATE cached_repositories SET owner = ?, name = ?, enabled = ?, timeout_seconds = ?, max_cache_size_mb = ?, updated_at = ?
 		WHERE id = ?
-	`, repo.Owner, repo.Name, repo.Enabled, repo.TimeoutSeconds, now, repo.ID)
+	`, repo.Owner, repo.Name, repo.Enabled, repo.TimeoutSeconds, repo.MaxCacheSizeMB, now, repo.ID)
 	if err != nil {
 		return err
 	}

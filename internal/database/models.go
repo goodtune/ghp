@@ -111,13 +111,14 @@ func (s Scopes) HasPermission(permission, level string) bool {
 // CachedRepository represents a repository whose git clone/fetch operations
 // are cached locally by the proxy.
 type CachedRepository struct {
-	ID             string    `json:"id"`
-	Owner          string    `json:"owner"`
-	Name           string    `json:"name"`
-	Enabled        bool      `json:"enabled"`
-	TimeoutSeconds *int      `json:"timeout_seconds,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	Owner           string    `json:"owner"`
+	Name            string    `json:"name"`
+	Enabled         bool      `json:"enabled"`
+	TimeoutSeconds  *int      `json:"timeout_seconds,omitempty"`
+	MaxCacheSizeMB  *int      `json:"max_cache_size_mb,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // Store defines the database operations for ghp.

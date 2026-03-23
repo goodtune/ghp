@@ -707,6 +707,9 @@ func testCachedRepositoryCRUD(t *testing.T, store Store) {
 	if got.TimeoutSeconds != nil {
 		t.Errorf("expected nil TimeoutSeconds, got %d", *got.TimeoutSeconds)
 	}
+	if got.MaxCacheSizeMB != nil {
+		t.Errorf("expected nil MaxCacheSizeMB, got %d", *got.MaxCacheSizeMB)
+	}
 	if got.CreatedAt.IsZero() {
 		t.Error("expected CreatedAt to be set on retrieved repo")
 	}
@@ -777,6 +780,33 @@ func testCachedRepositoryCRUD(t *testing.T, store Store) {
 		t.Errorf("TimeoutSeconds = %v, want 600", got4b.TimeoutSeconds)
 	}
 
+	// Update — set max cache size.
+	maxSize := 100
+	repo.MaxCacheSizeMB = &maxSize
+	if err := store.UpdateCachedRepository(ctx, repo); err != nil {
+		t.Fatalf("UpdateCachedRepository (max_cache_size): %v", err)
+	}
+	got4c, err := store.GetCachedRepositoryByID(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("GetCachedRepositoryByID after max_cache_size update: %v", err)
+	}
+	if got4c.MaxCacheSizeMB == nil || *got4c.MaxCacheSizeMB != 100 {
+		t.Errorf("MaxCacheSizeMB = %v, want 100", got4c.MaxCacheSizeMB)
+	}
+
+	// Update — clear max cache size.
+	repo.MaxCacheSizeMB = nil
+	if err := store.UpdateCachedRepository(ctx, repo); err != nil {
+		t.Fatalf("UpdateCachedRepository (clear max_cache_size): %v", err)
+	}
+	got4d, err := store.GetCachedRepositoryByID(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("GetCachedRepositoryByID after clearing max_cache_size: %v", err)
+	}
+	if got4d.MaxCacheSizeMB != nil {
+		t.Errorf("expected nil MaxCacheSizeMB after clearing, got %d", *got4d.MaxCacheSizeMB)
+	}
+
 	// Update non-existent should return ErrNotFound.
 	err = store.UpdateCachedRepository(ctx, &CachedRepository{
 		ID:    "00000000-0000-0000-0000-000000000000",
@@ -787,13 +817,15 @@ func testCachedRepositoryCRUD(t *testing.T, store Store) {
 		t.Errorf("expected ErrNotFound updating non-existent repo, got: %v", err)
 	}
 
-	// Create a second repo with timeout set.
+	// Create a second repo with timeout and max cache size set.
 	timeout2 := 120
+	maxSize2 := 500
 	repo2 := &CachedRepository{
 		Owner:          "otherorg",
 		Name:           "otherrepo",
 		Enabled:        true,
 		TimeoutSeconds: &timeout2,
+		MaxCacheSizeMB: &maxSize2,
 	}
 	if err := store.CreateCachedRepository(ctx, repo2); err != nil {
 		t.Fatalf("CreateCachedRepository (second): %v", err)
@@ -804,6 +836,9 @@ func testCachedRepositoryCRUD(t *testing.T, store Store) {
 	}
 	if got7.TimeoutSeconds == nil || *got7.TimeoutSeconds != 120 {
 		t.Errorf("second repo TimeoutSeconds = %v, want 120", got7.TimeoutSeconds)
+	}
+	if got7.MaxCacheSizeMB == nil || *got7.MaxCacheSizeMB != 500 {
+		t.Errorf("second repo MaxCacheSizeMB = %v, want 500", got7.MaxCacheSizeMB)
 	}
 
 	repos2, err := store.ListCachedRepositories(ctx)
