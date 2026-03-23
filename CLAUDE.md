@@ -115,6 +115,8 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_cache_packfile_total` / `ghp_cache_packfile_bytes_total` — packfile response cache hit/miss counts and bytes served
 - `ghp_cache_repos_active` — gauge of cache-enabled repositories
 - `ghp_cache_request_total` — per-repository git requests with cache outcome (`owner`, `repo`, `result` labels)
+- `ghp_cache_eviction_total` — protocol response files evicted by size-limit cleanup (`owner`, `repo` labels)
+- `ghp_cache_response_size_bytes` — current total cached protocol response file size per repo (`owner`, `repo` labels)
 
 ## Coding Conventions
 

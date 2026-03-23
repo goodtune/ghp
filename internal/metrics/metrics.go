@@ -229,6 +229,20 @@ var (
 		Help: "Total bytes served from packfile response cache by result.",
 	}, []string{"owner", "repo", "user", "result"})
 
+	// CacheEvictionTotal counts the number of cached protocol response files
+	// evicted by the size-limit cleanup goroutine, labeled by owner and repo.
+	CacheEvictionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_cache_eviction_total",
+		Help: "Total cached protocol response files evicted by size-limit cleanup.",
+	}, []string{"owner", "repo"})
+
+	// CacheResponseSizeBytes reports the current total size (in bytes) of
+	// cached protocol response files per repository, updated each cleanup cycle.
+	CacheResponseSizeBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ghp_cache_response_size_bytes",
+		Help: "Current total size of cached protocol response files per repository.",
+	}, []string{"owner", "repo"})
+
 	// BuildInfo is a gauge with a constant value of 1 labeled by build
 	// metadata. It follows the node_exporter_build_info convention.
 	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{

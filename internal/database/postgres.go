@@ -541,10 +541,10 @@ func (s *PostgresStore) CreateCachedRepository(ctx context.Context, repo *Cached
 	}
 	now := time.Now().UTC()
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO cached_repositories (id, owner, name, enabled, timeout_seconds, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO cached_repositories (id, owner, name, enabled, timeout_seconds, max_cache_size_mb, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING created_at, updated_at
-	`, repo.ID, repo.Owner, repo.Name, repo.Enabled, repo.TimeoutSeconds, now, now,
+	`, repo.ID, repo.Owner, repo.Name, repo.Enabled, repo.TimeoutSeconds, repo.MaxCacheSizeMB, now, now,
 	).Scan(&repo.CreatedAt, &repo.UpdatedAt)
 	return err
 }
@@ -552,8 +552,8 @@ func (s *PostgresStore) CreateCachedRepository(ctx context.Context, repo *Cached
 func (s *PostgresStore) GetCachedRepositoryByID(ctx context.Context, id string) (*CachedRepository, error) {
 	r := &CachedRepository{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, owner, name, enabled, timeout_seconds, created_at, updated_at FROM cached_repositories WHERE id = $1`, id,
-	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &r.CreatedAt, &r.UpdatedAt)
+		`SELECT id, owner, name, enabled, timeout_seconds, max_cache_size_mb, created_at, updated_at FROM cached_repositories WHERE id = $1`, id,
+	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &r.MaxCacheSizeMB, &r.CreatedAt, &r.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -566,8 +566,8 @@ func (s *PostgresStore) GetCachedRepositoryByID(ctx context.Context, id string) 
 func (s *PostgresStore) GetCachedRepositoryByOwnerName(ctx context.Context, owner, name string) (*CachedRepository, error) {
 	r := &CachedRepository{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, owner, name, enabled, timeout_seconds, created_at, updated_at FROM cached_repositories WHERE owner = $1 AND name = $2`, owner, name,
-	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &r.CreatedAt, &r.UpdatedAt)
+		`SELECT id, owner, name, enabled, timeout_seconds, max_cache_size_mb, created_at, updated_at FROM cached_repositories WHERE owner = $1 AND name = $2`, owner, name,
+	).Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &r.MaxCacheSizeMB, &r.CreatedAt, &r.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -579,7 +579,7 @@ func (s *PostgresStore) GetCachedRepositoryByOwnerName(ctx context.Context, owne
 
 func (s *PostgresStore) ListCachedRepositories(ctx context.Context) ([]*CachedRepository, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, owner, name, enabled, timeout_seconds, created_at, updated_at FROM cached_repositories ORDER BY owner, name`)
+		`SELECT id, owner, name, enabled, timeout_seconds, max_cache_size_mb, created_at, updated_at FROM cached_repositories ORDER BY owner, name`)
 	if err != nil {
 		return nil, err
 	}
@@ -588,7 +588,7 @@ func (s *PostgresStore) ListCachedRepositories(ctx context.Context) ([]*CachedRe
 	var repos []*CachedRepository
 	for rows.Next() {
 		r := &CachedRepository{}
-		if err := rows.Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Owner, &r.Name, &r.Enabled, &r.TimeoutSeconds, &r.MaxCacheSizeMB, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		repos = append(repos, r)
@@ -599,9 +599,9 @@ func (s *PostgresStore) ListCachedRepositories(ctx context.Context) ([]*CachedRe
 func (s *PostgresStore) UpdateCachedRepository(ctx context.Context, repo *CachedRepository) error {
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE cached_repositories SET owner = $1, name = $2, enabled = $3, timeout_seconds = $4, updated_at = $5
-		WHERE id = $6
-	`, repo.Owner, repo.Name, repo.Enabled, repo.TimeoutSeconds, now, repo.ID)
+		UPDATE cached_repositories SET owner = $1, name = $2, enabled = $3, timeout_seconds = $4, max_cache_size_mb = $5, updated_at = $6
+		WHERE id = $7
+	`, repo.Owner, repo.Name, repo.Enabled, repo.TimeoutSeconds, repo.MaxCacheSizeMB, now, repo.ID)
 	if err != nil {
 		return err
 	}

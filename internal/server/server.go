@@ -432,6 +432,7 @@ func (s *Server) Run(ctx context.Context) error {
 		)
 		githubInner = gitcache.NewCacheLookup(githubInner, cacheHandler, store, s.logger)
 		gitcache.SyncCacheReposMetric(lifecycleCtx, store)
+		gitcache.StartCleanup(lifecycleCtx, s.cfg.Cache.StoragePath, store, 10*time.Minute)
 		s.logger.Info("git cache enabled", "storage_path", s.cfg.Cache.StoragePath)
 	}
 

@@ -54,6 +54,10 @@ Repositories not listed pass through to GitHub as normal.
 section to add repositories by owner and name. An optional **Timeout** field
 controls how long the proxy waits for upstream GitHub responses (default: 30
 seconds). Large repositories like `torvalds/linux` may need 600 seconds or more.
+An optional **Cache Size Limit** (in MB) caps the total size of cached protocol
+response files per repository; when exceeded, the oldest files are evicted first.
+Both timeout and cache size limit can be edited on existing repos via the Edit
+button in the table.
 
 **API:**
 
@@ -69,6 +73,12 @@ curl -X POST https://ghp.example.com/api/cached-repos \
   -H "Authorization: Bearer ghpr_..." \
   -H "Content-Type: application/json" \
   -d '{"owner": "torvalds", "name": "linux", "timeout_seconds": 600}'
+
+# Add a repository with a cache size limit (MB)
+curl -X POST https://ghp.example.com/api/cached-repos \
+  -H "Authorization: Bearer ghpr_..." \
+  -H "Content-Type: application/json" \
+  -d '{"owner": "myorg", "name": "large-repo", "max_cache_size_mb": 500}'
 
 # List cached repositories
 curl https://ghp.example.com/api/cached-repos \
@@ -86,10 +96,33 @@ curl -X PATCH https://ghp.example.com/api/cached-repos/{id} \
   -H "Content-Type: application/json" \
   -d '{"timeout_seconds": 300}'
 
+# Set or update the cache size limit (MB); use 0 to clear (unlimited)
+curl -X PATCH https://ghp.example.com/api/cached-repos/{id} \
+  -H "Authorization: Bearer ghpr_..." \
+  -H "Content-Type: application/json" \
+  -d '{"max_cache_size_mb": 200}'
+
 # Remove a repository from the cache list
 curl -X DELETE https://ghp.example.com/api/cached-repos/{id} \
   -H "Authorization: Bearer ghpr_..."
 ```
+
+## Cache Size Limits & Cleanup
+
+Each cached repository can have an optional `max_cache_size_mb` setting that
+limits the total disk space used by cached protocol response files. When the
+limit is exceeded, a background cleanup goroutine (running every 10 minutes)
+evicts the oldest files (by last-access time) until the total is back under
+the limit.
+
+- **No limit set (default):** cached response files accumulate indefinitely.
+  Operators should monitor `ghp_cache_response_size_bytes` and set limits on
+  repositories that grow large.
+- **Limit set:** the cleanup goroutine enforces the cap automatically. Recently
+  accessed cache entries are preserved (cache hits touch the file's mtime).
+- **Set via API:** `max_cache_size_mb` on POST or PATCH `/api/cached-repos`.
+- **Set via UI:** use the Cache Size Limit field when creating, or the Edit
+  button on existing repositories.
 
 ## Metrics
 
@@ -102,6 +135,8 @@ The cache exposes Prometheus metrics at the `/metrics` endpoint:
 | `ghp_cache_warm_total` | Counter | `result` | Cache warming operations by result (`success`, `error`) |
 | `ghp_cache_repos_active` | Gauge | — | Number of repositories with caching enabled |
 | `ghp_cache_request_total` | Counter | `owner`, `repo`, `result` | Per-repository git requests with cache outcome |
+| `ghp_cache_eviction_total` | Counter | `owner`, `repo` | Protocol response files evicted by size-limit cleanup |
+| `ghp_cache_response_size_bytes` | Gauge | `owner`, `repo` | Current total size of cached protocol response files |
 
 The `ghp_proxy_decision_duration_seconds` histogram includes a `cache_lookup`
 stage measuring the time spent checking whether a request targets a cached

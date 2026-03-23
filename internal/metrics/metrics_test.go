@@ -431,6 +431,34 @@ func TestObserveDecision_CacheLookup(t *testing.T) {
 	}
 }
 
+func getGaugeVecValue(t *testing.T, g *prometheus.GaugeVec, labels prometheus.Labels) float64 {
+	t.Helper()
+	gauge, err := g.GetMetricWith(labels)
+	if err != nil {
+		t.Fatalf("GetMetricWith: %v", err)
+	}
+	return getGaugeValue(t, gauge)
+}
+
+func TestCacheEvictionTotal(t *testing.T) {
+	labels := prometheus.Labels{"owner": "testorg", "repo": "testrepo"}
+	before := getCounterValue(t, CacheEvictionTotal, labels)
+	CacheEvictionTotal.WithLabelValues("testorg", "testrepo").Inc()
+	after := getCounterValue(t, CacheEvictionTotal, labels)
+	if after-before != 1 {
+		t.Errorf("expected counter to increment by 1, got %f", after-before)
+	}
+}
+
+func TestCacheResponseSizeBytes(t *testing.T) {
+	labels := prometheus.Labels{"owner": "testorg", "repo": "testrepo"}
+	CacheResponseSizeBytes.WithLabelValues("testorg", "testrepo").Set(1048576)
+	got := getGaugeVecValue(t, CacheResponseSizeBytes, labels)
+	if got != 1048576 {
+		t.Errorf("expected gauge value 1048576, got %f", got)
+	}
+}
+
 func TestSetBuildInfo(t *testing.T) {
 	// Inject a fake debug.ReadBuildInfo that returns a known revision.
 	orig := runtimeDebugReadBuildInfo
