@@ -1091,6 +1091,16 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 		t.Error("expected expired token to be hard-deleted, but it still exists")
 	}
 
+	// Recently-revoked token must still exist: its revoked_at is within the
+	// 1-hour retention window so it is not yet eligible for hard-delete.
+	stillRevoked, err := store.GetProxyTokenByID(ctx, revokedToken.ID)
+	if err != nil {
+		t.Fatalf("GetProxyTokenByID (revoked, post-cleanup): %v", err)
+	}
+	if stillRevoked == nil {
+		t.Error("expected recently-revoked token to survive cleanup (within retention window)")
+	}
+
 	// Active token must still exist.
 	still, err := store.GetProxyTokenByID(ctx, activeToken.ID)
 	if err != nil {
