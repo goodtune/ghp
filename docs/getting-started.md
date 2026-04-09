@@ -13,7 +13,7 @@ assumes your administrator has already deployed ghp and configured DNS so that
 3. Click **Create Token**
 4. Select the target repository (or leave blank for an open-scoped token)
 5. Choose permission scopes (e.g. `contents:read`, `pull_requests:write`)
-6. Set a duration (default: 24 hours)
+6. Set a duration (default: 24 hours; if the server has `tokens.allow_no_expiry` enabled, a "No expiry" option is also available)
 7. Click **Create** and copy the `ghx_`-prefixed token
 
 ### CLI
@@ -29,6 +29,9 @@ Then create a scoped proxy token:
       --scope contents:read,pull_requests:write \
       --duration 48h \
       --session "my-coding-session"
+
+If the server has `tokens.allow_no_expiry` enabled, you can create a token
+that never expires by passing `--duration never`.
 
 Administrators can also create agent tokens backed by a GitHub App installation
 (see [GitHub App Setup](admin/github-app.md) for server configuration):

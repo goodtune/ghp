@@ -95,3 +95,9 @@ All tokens have a configurable lifetime. The default is 24 hours, with a
 server-configured maximum (default 7 days). Tokens can be revoked immediately
 at any time from the CLI or web dashboard — once revoked, any further requests
 using that token are rejected.
+
+When the server has `tokens.allow_no_expiry` enabled, tokens can be created
+with no expiry (`"duration": "never"` in the API, `--duration never` on the
+CLI). Non-expiring tokens are useful for long-lived automation managed via
+infrastructure-as-code (e.g. Terraform), where token lifecycle is controlled
+through revocation rather than time-based expiry.
