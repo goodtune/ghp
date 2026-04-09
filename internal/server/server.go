@@ -436,6 +436,9 @@ func (s *Server) Run(ctx context.Context) error {
 		s.logger.Info("git cache enabled", "storage_path", s.cfg.Cache.StoragePath)
 	}
 
+	// Start periodic cleanup of expired/revoked proxy tokens.
+	token.StartCleanup(lifecycleCtx, store, s.cfg.Tokens.ExpiredTokenRetentionPeriod)
+
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
 		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, s.logger, s.cfg)
 	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger)

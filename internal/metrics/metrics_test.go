@@ -517,3 +517,12 @@ func TestSetBuildInfo_NoVCSRevision(t *testing.T) {
 		t.Errorf("expected build_info gauge value 1, got %f", got)
 	}
 }
+
+func TestTokenCleanupDeletedTotal(t *testing.T) {
+	before := getCounterValueSimple(t, TokenCleanupDeletedTotal)
+	TokenCleanupDeletedTotal.Add(5)
+	after := getCounterValueSimple(t, TokenCleanupDeletedTotal)
+	if after-before != 5 {
+		t.Errorf("expected counter to increment by 5, got %f", after-before)
+	}
+}
