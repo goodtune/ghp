@@ -1017,7 +1017,9 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 		t.Fatalf("CreateProxyToken (expired): %v", err)
 	}
 
-	// Create a token that was revoked 2 days ago (still within expiry).
+	// Create a token that is revoked "just now" (still within expiry) — its
+	// revoked_at will be inside the 1-hour retention window used below, so it
+	// must survive the cleanup call.
 	revokedToken := &ProxyToken{
 		TokenHash:    "cleanup_hash_revoked",
 		TokenPrefix:  "ghx_cleanup_rev",

@@ -48,6 +48,12 @@ func runCleanupLoop(ctx context.Context, store database.Store, retentionPeriod t
 func runCleanupCycle(ctx context.Context, store database.Store, retentionPeriod time.Duration) {
 	n, err := store.DeleteExpiredProxyTokens(ctx, retentionPeriod)
 	if err != nil {
+		// Suppress noisy shutdown logs: when the lifecycle context is being
+		// cancelled, a cancellation error from the store is expected and not
+		// actionable.
+		if ctx.Err() != nil {
+			return
+		}
 		slog.Error("token cleanup: failed to delete expired tokens", "err", err)
 		return
 	}

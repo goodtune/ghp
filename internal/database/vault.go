@@ -727,6 +727,7 @@ func (s *VaultStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan tim
 	}
 
 	var deleted int64
+	var firstErr error
 	for _, t := range all {
 		shouldDelete := false
 		if t.RevokedAt != nil && t.RevokedAt.Before(cutoff) {
@@ -738,27 +739,38 @@ func (s *VaultStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan tim
 			continue
 		}
 
-		// Delete the main record.
-		if err := s.kvDelete(ctx, "proxy-tokens/"+t.ID); err != nil {
-			return deleted, fmt.Errorf("deleting proxy token %s: %w", t.ID, err)
-		}
-		deleted++
-
-		// Remove hash index.
+		// Remove index entries before the main record so a failure cannot
+		// leave orphaned indexes pointing at a deleted record. kvDelete is
+		// idempotent on Vault, so retrying on the next cycle is safe.
 		if t.TokenHash != "" {
 			if err := s.kvDelete(ctx, "proxy-tokens/by-hash/"+t.TokenHash); err != nil {
-				return deleted, fmt.Errorf("deleting proxy token hash index %s: %w", t.ID, err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("deleting proxy token hash index %s: %w", t.ID, err)
+				}
+				continue
 			}
 		}
 
-		// Remove user index entry.
 		if t.UserID != nil && *t.UserID != "" {
 			if err := s.kvDelete(ctx, "proxy-tokens/by-user/"+*t.UserID+"/"+t.ID); err != nil {
-				return deleted, fmt.Errorf("deleting proxy token user index %s: %w", t.ID, err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("deleting proxy token user index %s: %w", t.ID, err)
+				}
+				continue
 			}
 		}
+
+		// Delete the main record last. On failure, continue so a single
+		// transient Vault error does not abort the whole cleanup cycle.
+		if err := s.kvDelete(ctx, "proxy-tokens/"+t.ID); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("deleting proxy token %s: %w", t.ID, err)
+			}
+			continue
+		}
+		deleted++
 	}
-	return deleted, nil
+	return deleted, firstErr
 }
 
 // --- Cached Repositories ---
