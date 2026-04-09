@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
 )
@@ -12,10 +13,13 @@ import (
 const cleanupInterval = time.Hour
 
 // StartCleanup launches a background goroutine that periodically hard-deletes
-// proxy tokens that have been expired or revoked for longer than retentionPeriod.
-// The goroutine stops when ctx is cancelled.  When retentionPeriod is zero or
-// negative the cleanup is disabled and this function returns immediately.
-func StartCleanup(ctx context.Context, store database.Store, retentionPeriod time.Duration) {
+// proxy tokens that have been expired or revoked for longer than the retention
+// period configured in cfg.  The retention period is re-read from cfg on every
+// cleanup cycle so that a SIGUSR1 hot-reload takes effect without a restart.
+// The goroutine stops when ctx is cancelled.  When the configured period is
+// zero or negative the cleanup is disabled and this function returns immediately.
+func StartCleanup(ctx context.Context, store database.Store, cfg *config.Config) {
+	retentionPeriod := cfg.Tokens.ExpiredTokenRetentionPeriod
 	if retentionPeriod <= 0 {
 		if retentionPeriod < 0 {
 			slog.Warn("token cleanup: negative retention period is invalid; cleanup disabled",
@@ -25,12 +29,12 @@ func StartCleanup(ctx context.Context, store database.Store, retentionPeriod tim
 		}
 		return
 	}
-	go runCleanupLoop(ctx, store, retentionPeriod)
+	go runCleanupLoop(ctx, store, cfg)
 }
 
-func runCleanupLoop(ctx context.Context, store database.Store, retentionPeriod time.Duration) {
+func runCleanupLoop(ctx context.Context, store database.Store, cfg *config.Config) {
 	// Run once immediately so stale tokens are removed promptly after startup.
-	runCleanupCycle(ctx, store, retentionPeriod)
+	runCleanupCycle(ctx, store, cfg.Tokens.ExpiredTokenRetentionPeriod)
 
 	ticker := time.NewTicker(cleanupInterval)
 	defer ticker.Stop()
@@ -40,7 +44,9 @@ func runCleanupLoop(ctx context.Context, store database.Store, retentionPeriod t
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			runCleanupCycle(ctx, store, retentionPeriod)
+			// Re-read retention period each cycle so SIGUSR1 hot-reloads apply
+			// without a restart.
+			runCleanupCycle(ctx, store, cfg.Tokens.ExpiredTokenRetentionPeriod)
 		}
 	}
 }
