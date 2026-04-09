@@ -13,11 +13,16 @@ const cleanupInterval = time.Hour
 
 // StartCleanup launches a background goroutine that periodically hard-deletes
 // proxy tokens that have been expired or revoked for longer than retentionPeriod.
-// The goroutine stops when ctx is cancelled.  When retentionPeriod is zero the
-// cleanup is disabled and this function returns immediately.
+// The goroutine stops when ctx is cancelled.  When retentionPeriod is zero or
+// negative the cleanup is disabled and this function returns immediately.
 func StartCleanup(ctx context.Context, store database.Store, retentionPeriod time.Duration) {
 	if retentionPeriod <= 0 {
-		slog.Info("token cleanup: disabled (expired_token_retention_period = 0)")
+		if retentionPeriod < 0 {
+			slog.Warn("token cleanup: negative retention period is invalid; cleanup disabled",
+				"expired_token_retention_period", retentionPeriod)
+		} else {
+			slog.Info("token cleanup: disabled (expired_token_retention_period = 0)")
+		}
 		return
 	}
 	go runCleanupLoop(ctx, store, retentionPeriod)

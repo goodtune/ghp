@@ -1034,8 +1034,8 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 	if err := store.RevokeProxyToken(ctx, revokedToken.ID); err != nil {
 		t.Fatalf("RevokeProxyToken: %v", err)
 	}
-	// Manually backdate revoked_at so it falls outside the retention window.
-	// We rely on checking that a token revoked "just now" is NOT deleted.
+	// revokedToken.RevokedAt is set to "just now", which is within the 1-hour
+	// retention window used below — so it must survive the cleanup call.
 
 	// Create an active (non-expired, non-revoked) token that must be preserved.
 	activeToken := &ProxyToken{
@@ -1106,12 +1106,15 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 		t.Error("expected no-expiry token to be preserved after cleanup")
 	}
 
-	// Calling DeleteExpiredProxyTokens again must be idempotent (0 rows deleted
-	// since we already cleaned up).
+	// Calling DeleteExpiredProxyTokens again must be idempotent: the expired
+	// token was already removed, the revoked token is still within the 1-hour
+	// window, and the active/no-expiry tokens are never eligible — so zero
+	// additional rows should be deleted.
 	n2, err := store.DeleteExpiredProxyTokens(ctx, time.Hour)
 	if err != nil {
 		t.Fatalf("DeleteExpiredProxyTokens (idempotent): %v", err)
 	}
-	// n2 may be 0 or non-zero depending on timing; only verify no error.
-	_ = n2
+	if n2 != 0 {
+		t.Errorf("expected 0 deletions on second call (idempotent), got %d", n2)
+	}
 }
