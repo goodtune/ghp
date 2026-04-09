@@ -47,6 +47,14 @@ func runCleanupLoop(ctx context.Context, store database.Store, retentionPeriod t
 
 func runCleanupCycle(ctx context.Context, store database.Store, retentionPeriod time.Duration) {
 	n, err := store.DeleteExpiredProxyTokens(ctx, retentionPeriod)
+	// Record partial progress first: DeleteExpiredProxyTokens can return a
+	// non-zero count alongside an error (e.g., Vault deleted some tokens and
+	// then failed), so observability should reflect the successful deletions
+	// regardless of the error outcome.
+	if n > 0 {
+		metrics.TokenCleanupDeletedTotal.Add(float64(n))
+		slog.Info("token cleanup: deleted expired/revoked tokens", "count", n)
+	}
 	if err != nil {
 		// Suppress noisy shutdown logs: when the lifecycle context is being
 		// cancelled, a cancellation error from the store is expected and not
@@ -55,10 +63,5 @@ func runCleanupCycle(ctx context.Context, store database.Store, retentionPeriod 
 			return
 		}
 		slog.Error("token cleanup: failed to delete expired tokens", "err", err)
-		return
-	}
-	if n > 0 {
-		metrics.TokenCleanupDeletedTotal.Add(float64(n))
-		slog.Info("token cleanup: deleted expired/revoked tokens", "count", n)
 	}
 }

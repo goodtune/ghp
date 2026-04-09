@@ -732,6 +732,15 @@ func (s *VaultStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan tim
 	var deleted int64
 	var firstErr error
 	for _, t := range all {
+		// Stop early on context cancellation so shutdown is not delayed by
+		// a loop full of kvDelete calls that would all fail fast anyway.
+		if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			break
+		}
+
 		// Evaluate the two conditions independently so the Vault backend
 		// matches the SQL backends: a token is eligible if EITHER revoked_at
 		// OR expires_at is older than the cutoff. Using `else if` would keep
@@ -754,7 +763,7 @@ func (s *VaultStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan tim
 		if t.TokenHash != "" {
 			if err := s.kvDelete(ctx, "proxy-tokens/by-hash/"+t.TokenHash); err != nil {
 				if firstErr == nil {
-					firstErr = fmt.Errorf("deleting proxy token hash index %s: %w", t.ID, err)
+					firstErr = fmt.Errorf("deleting hash index for proxy token %s: %w", t.ID, err)
 				}
 				continue
 			}
@@ -763,7 +772,7 @@ func (s *VaultStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan tim
 		if t.UserID != nil && *t.UserID != "" {
 			if err := s.kvDelete(ctx, "proxy-tokens/by-user/"+*t.UserID+"/"+t.ID); err != nil {
 				if firstErr == nil {
-					firstErr = fmt.Errorf("deleting proxy token user index %s: %w", t.ID, err)
+					firstErr = fmt.Errorf("deleting user index for proxy token %s: %w", t.ID, err)
 				}
 				continue
 			}
