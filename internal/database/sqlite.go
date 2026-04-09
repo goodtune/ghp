@@ -505,6 +505,8 @@ func (s *SQLiteStore) UpdateProxyTokenAppID(ctx context.Context, id string, appI
 }
 
 func (s *SQLiteStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
+	// See PostgresStore.DeleteExpiredProxyTokens for why the cutoff is
+	// computed with the application clock instead of a DB-side NOW().
 	cutoff := time.Now().UTC().Add(-olderThan).Format(time.RFC3339Nano)
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM proxy_tokens
