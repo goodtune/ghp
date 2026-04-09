@@ -62,6 +62,6 @@ func runCleanupCycle(ctx context.Context, store database.Store, retentionPeriod 
 		if ctx.Err() != nil {
 			return
 		}
-		slog.Error("token cleanup: failed to delete expired tokens", "err", err)
+		slog.Error("token cleanup: failed to delete expired/revoked tokens", "err", err)
 	}
 }
