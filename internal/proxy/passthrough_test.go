@@ -209,7 +209,7 @@ func newScopedPassthrough(t *testing.T, repo string, scopes map[string]string) (
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,
@@ -447,7 +447,7 @@ func newOpenScopedPassthrough(t *testing.T) (http.Handler, string) {
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,
@@ -503,7 +503,7 @@ func newRepoOnlyPassthrough(t *testing.T, repo string) (http.Handler, string) {
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,
@@ -560,7 +560,7 @@ func newScopeOnlyPassthrough(t *testing.T, scopes map[string]string) (http.Handl
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,

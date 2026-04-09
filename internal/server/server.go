@@ -276,7 +276,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Create services.
-	tokenSvc := token.NewService(store, s.cfg.Tokens.MaxDuration)
+	tokenSvc := token.NewService(store, s.cfg.Tokens.MaxDuration, s.cfg.Tokens.AllowNoExpiry)
 	tokenSvc.WarmTokenCache(ctx, s.logger)
 
 	// Seed the default app from config if no apps exist in the store.

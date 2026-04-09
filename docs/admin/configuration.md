@@ -63,6 +63,7 @@ values from the config file.
 |----------|-------------|---------|
 | `GHP_TOKENS_DEFAULT_DURATION` | Default token lifetime | `24h` |
 | `GHP_TOKENS_MAX_DURATION` | Maximum token lifetime | `168h` |
+| `GHP_TOKENS_ALLOW_NO_EXPIRY` | Allow creating tokens that never expire | `false` |
 
 ### Logging
 
@@ -179,6 +180,7 @@ tls:
 tokens:
   default_duration: "24h"
   max_duration: "168h"         # 7 days
+  allow_no_expiry: false       # set true to allow tokens with no expiry (duration: "never")
 
 logging:
   output: "stdout"             # "stdout" or "file"
@@ -265,8 +267,8 @@ Settings that require a restart: database driver/DSN, server listen addresses,
 `cache` (enable/disable, storage path),
 TLS certificates, the encryption key, logging configuration, metrics
 enable/disable, OAuth broker enable/disable and signing key
-(`auth.jwt_private_key` / `auth.jwt_private_key_file`), and `tokens.max_duration`
-(captured at server startup).
+(`auth.jwt_private_key` / `auth.jwt_private_key_file`), `tokens.max_duration`,
+and `tokens.allow_no_expiry` (both captured at server startup).
 
 !!! note "App changes are live without reload"
     GitHub Apps created, updated, or deleted via the admin UI or API take effect

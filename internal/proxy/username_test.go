@@ -716,7 +716,7 @@ func TestUsernameResolver_WarmCache_ProxyTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	if _, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,
@@ -777,7 +777,7 @@ func TestUsernameResolver_WarmCache_SkipsExpiredAndRevoked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 
 	// Create a token with a very short duration so it expires immediately.
 	if _, err := tokenSvc.Create(ctx, token.CreateRequest{
@@ -852,7 +852,7 @@ func TestUsernameResolver_WarmCache_AgentTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	var installID int64 = 55
 	if _, err := tokenSvc.Create(ctx, token.CreateRequest{
 		TokenType:      token.TokenTypeAgent,

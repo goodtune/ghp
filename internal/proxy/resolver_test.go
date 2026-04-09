@@ -44,7 +44,7 @@ func TestProxyTokenResolver(t *testing.T) {
 	}
 
 	// Create a proxy token via the token service.
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,
@@ -77,7 +77,7 @@ func TestProxyTokenResolver_InvalidToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
 
 	_, err = resolver.ResolveToGitHubToken(ctx, "ghx_nonexistenttoken1234567890abcdefghijklmno")

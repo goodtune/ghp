@@ -222,8 +222,11 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var noExpiry bool
 	duration := a.cfg.Tokens.DefaultDuration
-	if req.Duration != "" {
+	if req.Duration == "never" {
+		noExpiry = true
+	} else if req.Duration != "" {
 		d, err := time.ParseDuration(req.Duration)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid duration format"})
@@ -281,6 +284,7 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		UserID:      session.UserID,
 		Scopes:      scopes,
 		Duration:    duration,
+		NoExpiry:    noExpiry,
 		SessionID:   sessionID,
 	}
 
@@ -335,13 +339,17 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		"session", result.SessionID,
 	)
 
+	var expiresAtJSON interface{}
+	if result.ExpiresAt != nil {
+		expiresAtJSON = result.ExpiresAt.Format(time.RFC3339)
+	}
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"token":        result.Token,
 		"id":           result.ID,
 		"type":         string(result.TokenType),
 		"repositories": result.Repositories,
 		"scopes":       result.Scopes,
-		"expires_at":   result.ExpiresAt.Format(time.RFC3339),
+		"expires_at":   expiresAtJSON,
 		"session_id":   result.SessionID,
 	})
 }

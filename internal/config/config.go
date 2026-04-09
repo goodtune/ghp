@@ -5,7 +5,7 @@
 // (for example admins, auth and block policies, release handling, and the token
 // default duration) take effect without restart. Settings that are bound at
 // startup, such as logging level/output, metrics server enable/disable, token
-// maximum duration, and infrastructure-related fields (database, TLS, listen
+// maximum duration and allow-no-expiry, and infrastructure-related fields (database, TLS, listen
 // addresses, encryption key), are only applied on process start.
 package config
 
@@ -147,6 +147,7 @@ type ServerConfig struct {
 type TokensConfig struct {
 	DefaultDuration time.Duration `koanf:"default_duration"`
 	MaxDuration     time.Duration `koanf:"max_duration"`
+	AllowNoExpiry   bool          `koanf:"allow_no_expiry"`
 }
 
 type LoggingConfig struct {

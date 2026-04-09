@@ -88,6 +88,7 @@ type CreateRequest struct {
 	Repositories   []string          // Optional — open-scoped (all repos) if empty.
 	Scopes         map[string]string // Optional — open-scoped if empty.
 	Duration       time.Duration
+	NoExpiry       bool // When true, create a token that never expires. Requires AllowNoExpiry config.
 	SessionID      string
 }
 
@@ -98,14 +99,15 @@ type CreateResult struct {
 	TokenType    TokenType
 	Repositories []string
 	Scopes       map[string]string
-	ExpiresAt    time.Time
+	ExpiresAt    *time.Time // nil when the token has no expiry.
 	SessionID    string
 }
 
 // Service manages proxy token lifecycle.
 type Service struct {
-	store       database.Store
-	maxDuration time.Duration
+	store         database.Store
+	maxDuration   time.Duration
+	allowNoExpiry bool
 
 	// tokenCache is an in-memory cache of resolved proxy tokens keyed by
 	// SHA-256 hex digest (the same key used for database lookups). Entries
@@ -123,11 +125,12 @@ type Service struct {
 }
 
 // NewService creates a new token Service.
-func NewService(store database.Store, maxDuration time.Duration) *Service {
+func NewService(store database.Store, maxDuration time.Duration, allowNoExpiry bool) *Service {
 	return &Service{
-		store:       store,
-		maxDuration: maxDuration,
-		nowFunc:     time.Now,
+		store:         store,
+		maxDuration:   maxDuration,
+		allowNoExpiry: allowNoExpiry,
+		nowFunc:       time.Now,
 	}
 }
 
@@ -160,11 +163,17 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 
 	// Scopes are optional — an empty map means the token is open-scoped
 	// and carries the full permissions of the underlying credential.
-	if req.Duration <= 0 {
-		return nil, fmt.Errorf("duration must be positive")
-	}
-	if req.Duration > s.maxDuration {
-		return nil, fmt.Errorf("duration %s exceeds maximum %s", req.Duration, s.maxDuration)
+	if req.NoExpiry {
+		if !s.allowNoExpiry {
+			return nil, fmt.Errorf("no-expiry tokens are not allowed by server configuration")
+		}
+	} else {
+		if req.Duration <= 0 {
+			return nil, fmt.Errorf("duration must be positive")
+		}
+		if req.Duration > s.maxDuration {
+			return nil, fmt.Errorf("duration %s exceeds maximum %s", req.Duration, s.maxDuration)
+		}
 	}
 
 	plaintext, err := generateToken(tt)
@@ -197,7 +206,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*CreateResult,
 		reposJSON = []byte("null")
 	}
 
-	expiresAt := time.Now().UTC().Add(req.Duration)
+	var expiresAt *time.Time
+	if !req.NoExpiry {
+		t := time.Now().UTC().Add(req.Duration)
+		expiresAt = &t
+	}
 
 	pt := &database.ProxyToken{
 		TokenHash:    hash,
@@ -262,7 +275,7 @@ func (s *Service) Resolve(ctx context.Context, plaintext string) (*database.Prox
 			if pt.RevokedAt != nil {
 				return nil, fmt.Errorf("token has been revoked")
 			}
-			if now.After(pt.ExpiresAt) {
+			if pt.ExpiresAt != nil && now.After(*pt.ExpiresAt) {
 				return nil, fmt.Errorf("token has expired")
 			}
 			return pt, nil
@@ -282,7 +295,7 @@ func (s *Service) Resolve(ctx context.Context, plaintext string) (*database.Prox
 	if pt.RevokedAt != nil {
 		return nil, fmt.Errorf("token has been revoked")
 	}
-	if now.After(pt.ExpiresAt) {
+	if pt.ExpiresAt != nil && now.After(*pt.ExpiresAt) {
 		return nil, fmt.Errorf("token has expired")
 	}
 

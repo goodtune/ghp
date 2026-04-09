@@ -35,7 +35,7 @@ Create a new scoped token for an agent. There are two token types:
 | `--repos` | Agent only | | Comma-separated repositories |
 | `--installation-id` | Agent only | | GitHub App installation ID |
 | `--scope` | Yes | | Comma-separated permissions (e.g. `contents:read,pulls:write`) |
-| `--duration` | No | `24h` | Token lifetime (max: server-configured, default max 7 days) |
+| `--duration` | No | `24h` | Token lifetime (e.g. `48h`, `168h`; max: server-configured, default max 7 days). Use `never` to create a token with no expiry (requires `tokens.allow_no_expiry` in server config) |
 | `--session` | No | | Session identifier for audit tracking |
 
 

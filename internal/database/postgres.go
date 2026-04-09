@@ -276,11 +276,11 @@ func (s *PostgresStore) CreateProxyToken(ctx context.Context, token *ProxyToken)
 func scanPostgresProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, error) {
 	t := &ProxyToken{}
 	var scopesStr, reposStr string
-	var revokedAt sql.NullTime
+	var expiresAt, revokedAt sql.NullTime
 	var appID, userID, githubTokenID sql.NullString
 	var installationID sql.NullInt64
 	err := scan(&t.ID, &t.TokenHash, &t.TokenPrefix, &t.TokenType, &appID, &userID, &githubTokenID, &installationID, &reposStr, &scopesStr,
-		&t.SessionID, &t.ExpiresAt, &revokedAt, &t.CreatedAt)
+		&t.SessionID, &expiresAt, &revokedAt, &t.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +297,9 @@ func scanPostgresProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, 
 	}
 	if installationID.Valid {
 		t.InstallationID = &installationID.Int64
+	}
+	if expiresAt.Valid {
+		t.ExpiresAt = &expiresAt.Time
 	}
 	if revokedAt.Valid {
 		t.RevokedAt = &revokedAt.Time
@@ -348,7 +351,7 @@ func (s *PostgresStore) ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, 
 
 func (s *PostgresStore) ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+pgProxyTokenCols+` FROM proxy_tokens WHERE revoked_at IS NULL AND expires_at > NOW() ORDER BY created_at DESC`)
+		`SELECT `+pgProxyTokenCols+` FROM proxy_tokens WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}

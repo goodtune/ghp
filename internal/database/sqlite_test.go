@@ -154,7 +154,7 @@ func TestProxyTokenCRUD(t *testing.T) {
 		Repositories:  repos,
 		Scopes:        scopes,
 		SessionID:     "test-session",
-		ExpiresAt:     time.Now().Add(24 * time.Hour),
+		ExpiresAt:     timePtr(time.Now().Add(24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, pt); err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestProxyTokenCRUD(t *testing.T) {
 		Repositories:   agentRepos,
 		Scopes:         json.RawMessage(`{"contents":"read"}`),
 		SessionID:      "admin-session",
-		ExpiresAt:      time.Now().Add(365 * 24 * time.Hour),
+		ExpiresAt:      timePtr(time.Now().Add(365 * 24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, at); err != nil {
 		t.Fatal(err)

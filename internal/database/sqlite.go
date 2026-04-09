@@ -353,24 +353,28 @@ func (s *SQLiteStore) CreateProxyToken(ctx context.Context, token *ProxyToken) e
 	if tokenType == "" {
 		tokenType = DefaultTokenType
 	}
+	var expiresAtStr interface{}
+	if token.ExpiresAt != nil {
+		expiresAtStr = token.ExpiresAt.Format(time.RFC3339Nano)
+	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO proxy_tokens (id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, token.ID, token.TokenHash, token.TokenPrefix, tokenType, token.AppID, token.UserID, token.GitHubTokenID,
 		token.InstallationID, string(reposJSON), string(scopesJSON), token.SessionID,
-		token.ExpiresAt.Format(time.RFC3339Nano), now)
+		expiresAtStr, now)
 	return err
 }
 
 func scanProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, error) {
 	t := &ProxyToken{}
 	var scopesStr, reposStr string
-	var revokedAt sql.NullString
-	var expiresStr, createdStr string
+	var revokedAt, expiresAt sql.NullString
+	var createdStr string
 	var appID, userID, githubTokenID sql.NullString
 	var installationID sql.NullInt64
 	err := scan(&t.ID, &t.TokenHash, &t.TokenPrefix, &t.TokenType, &appID, &userID, &githubTokenID, &installationID, &reposStr, &scopesStr,
-		&t.SessionID, &expiresStr, &revokedAt, &createdStr)
+		&t.SessionID, &expiresAt, &revokedAt, &createdStr)
 	if err != nil {
 		return nil, err
 	}
@@ -388,7 +392,10 @@ func scanProxyToken(scan func(dest ...interface{}) error) (*ProxyToken, error) {
 	if installationID.Valid {
 		t.InstallationID = &installationID.Int64
 	}
-	t.ExpiresAt = parseTime(expiresStr)
+	if expiresAt.Valid {
+		ts := parseTime(expiresAt.String)
+		t.ExpiresAt = &ts
+	}
 	t.CreatedAt = parseTime(createdStr)
 	if revokedAt.Valid {
 		ts := parseTime(revokedAt.String)
@@ -444,7 +451,7 @@ func (s *SQLiteStore) ListAllProxyTokens(ctx context.Context) ([]*ProxyToken, er
 func (s *SQLiteStore) ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, token_hash, token_prefix, token_type, app_id, user_id, github_token_id, installation_id, repositories, scopes, session_id, expires_at, revoked_at, created_at
-		FROM proxy_tokens WHERE revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC`,
+		FROM proxy_tokens WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC`,
 		time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err

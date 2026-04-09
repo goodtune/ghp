@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+func timePtr(t time.Time) *time.Time { return &t }
+
 // testStoreContract runs the full CRUD test suite against any Store implementation.
 // Each backend test file calls this with its own Store instance.
 func testStoreContract(t *testing.T, store Store) {
@@ -16,6 +18,7 @@ func testStoreContract(t *testing.T, store Store) {
 	t.Run("UserCRUD", func(t *testing.T) { testUserCRUD(t, store) })
 	t.Run("ProxyTokenCRUD", func(t *testing.T) { testProxyTokenCRUD(t, store) })
 	t.Run("ProxyTokenWithAppID", func(t *testing.T) { testProxyTokenWithAppID(t, store) })
+	t.Run("ProxyTokenNoExpiry", func(t *testing.T) { testProxyTokenNoExpiry(t, store) })
 	t.Run("UpdateProxyTokenAppID", func(t *testing.T) { testUpdateProxyTokenAppID(t, store) })
 	t.Run("GitHubTokenAppID", func(t *testing.T) { testGitHubTokenAppID(t, store) })
 	t.Run("SyncAdminRoles", func(t *testing.T) { testSyncAdminRoles(t, store) })
@@ -348,7 +351,7 @@ func testProxyTokenCRUD(t *testing.T, store Store) {
 		Repositories:  repos,
 		Scopes:        scopes,
 		SessionID:     "test-session",
-		ExpiresAt:     time.Now().Add(24 * time.Hour),
+		ExpiresAt:     timePtr(time.Now().Add(24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, pt); err != nil {
 		t.Fatal(err)
@@ -387,7 +390,7 @@ func testProxyTokenCRUD(t *testing.T, store Store) {
 		Repositories:   json.RawMessage(`["org/repo1","org/repo2"]`),
 		Scopes:         json.RawMessage(`{"contents":"read"}`),
 		SessionID:      "admin-session",
-		ExpiresAt:      time.Now().Add(365 * 24 * time.Hour),
+		ExpiresAt:      timePtr(time.Now().Add(365 * 24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, at); err != nil {
 		t.Fatal(err)
@@ -458,7 +461,7 @@ func testProxyTokenWithAppID(t *testing.T, store Store) {
 		Repositories:   json.RawMessage(`["org/app-repo"]`),
 		Scopes:         json.RawMessage(`{"contents":"write"}`),
 		SessionID:      "app-session",
-		ExpiresAt:      time.Now().Add(24 * time.Hour),
+		ExpiresAt:      timePtr(time.Now().Add(24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, pt); err != nil {
 		t.Fatal(err)
@@ -487,7 +490,7 @@ func testProxyTokenWithAppID(t *testing.T, store Store) {
 		InstallationID: &installID,
 		Repositories:   json.RawMessage(`[]`),
 		Scopes:         json.RawMessage(`{}`),
-		ExpiresAt:      time.Now().Add(24 * time.Hour),
+		ExpiresAt:      timePtr(time.Now().Add(24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, pt2); err != nil {
 		t.Fatal(err)
@@ -503,6 +506,80 @@ func testProxyTokenWithAppID(t *testing.T, store Store) {
 	// Cleanup.
 	if err := store.DeleteApp(ctx, app.ID); err != nil {
 		t.Errorf("cleanup DeleteApp: %v", err)
+	}
+}
+
+func testProxyTokenNoExpiry(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	// Create a user for the token.
+	user := &User{GitHubID: 990099, GitHubUsername: "noexpiry-user", GitHubEmail: "noexp@test.com"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatalf("UpsertUser: %v", err)
+	}
+	gt := &GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           "enc_noexp",
+		RefreshToken:          "enc_noexp_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+		Scopes:                "repo",
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatalf("UpsertGitHubToken: %v", err)
+	}
+
+	// Create a no-expiry token (ExpiresAt = nil).
+	pt := &ProxyToken{
+		TokenHash:     "contract_hash_noexpiry",
+		TokenPrefix:   "ghx_noex",
+		TokenType:     "proxy",
+		UserID:        &user.ID,
+		GitHubTokenID: &gt.ID,
+		Repositories:  json.RawMessage(`["org/repo"]`),
+		Scopes:        json.RawMessage(`{"contents":"read"}`),
+		SessionID:     "no-expiry-session",
+		ExpiresAt:     nil,
+	}
+	if err := store.CreateProxyToken(ctx, pt); err != nil {
+		t.Fatalf("CreateProxyToken (no expiry): %v", err)
+	}
+
+	// Retrieve by hash and verify ExpiresAt is nil.
+	got, err := store.GetProxyTokenByHash(ctx, "contract_hash_noexpiry")
+	if err != nil {
+		t.Fatalf("GetProxyTokenByHash: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected token, got nil")
+	}
+	if got.ExpiresAt != nil {
+		t.Fatalf("expected nil ExpiresAt for no-expiry token, got %v", got.ExpiresAt)
+	}
+
+	// Retrieve by ID and verify.
+	gotByID, err := store.GetProxyTokenByID(ctx, pt.ID)
+	if err != nil {
+		t.Fatalf("GetProxyTokenByID: %v", err)
+	}
+	if gotByID.ExpiresAt != nil {
+		t.Fatalf("expected nil ExpiresAt for no-expiry token (by ID), got %v", gotByID.ExpiresAt)
+	}
+
+	// No-expiry tokens should appear in the active list.
+	active, err := store.ListActiveProxyTokens(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveProxyTokens: %v", err)
+	}
+	found := false
+	for _, a := range active {
+		if a.ID == pt.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("no-expiry token should appear in active tokens list")
 	}
 }
 
@@ -534,7 +611,7 @@ func testUpdateProxyTokenAppID(t *testing.T, store Store) {
 		InstallationID: &installID,
 		Repositories:   json.RawMessage(`[]`),
 		Scopes:         json.RawMessage(`{}`),
-		ExpiresAt:      time.Now().Add(24 * time.Hour),
+		ExpiresAt:      timePtr(time.Now().Add(24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, pt); err != nil {
 		t.Fatal(err)
