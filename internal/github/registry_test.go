@@ -70,6 +70,9 @@ func (m *mockStore) RevokeProxyToken(ctx context.Context, id string) error { pan
 func (m *mockStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error {
 	panic("unexpected")
 }
+func (m *mockStore) DeleteExpiredProxyTokens(_ context.Context, _ time.Duration) (int64, error) {
+	panic("unexpected")
+}
 func (m *mockStore) CreateCachedRepository(_ context.Context, _ *database.CachedRepository) error {
 	panic("unexpected")
 }

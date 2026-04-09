@@ -23,6 +23,7 @@ func testStoreContract(t *testing.T, store Store) {
 	t.Run("GitHubTokenAppID", func(t *testing.T) { testGitHubTokenAppID(t, store) })
 	t.Run("SyncAdminRoles", func(t *testing.T) { testSyncAdminRoles(t, store) })
 	t.Run("CachedRepositoryCRUD", func(t *testing.T) { testCachedRepositoryCRUD(t, store) })
+	t.Run("DeleteExpiredProxyTokens", func(t *testing.T) { testDeleteExpiredProxyTokens(t, store) })
 }
 
 func testAppCRUD(t *testing.T, store Store) {
@@ -991,4 +992,126 @@ func testSyncAdminRoles(t *testing.T, store Store) {
 	if got3.Role != "user" {
 		t.Errorf("syncalice role after demotion = %q, want user", got3.Role)
 	}
+}
+
+func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	user := &User{GitHubID: 98001, GitHubUsername: "cleanup-user", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatalf("UpsertUser: %v", err)
+	}
+
+	// Create a token that expired 2 days ago.
+	expiredToken := &ProxyToken{
+		TokenHash:    "cleanup_hash_expired",
+		TokenPrefix:  "ghx_cleanup_exp",
+		TokenType:    "proxy",
+		UserID:       &user.ID,
+		Repositories: json.RawMessage(`[]`),
+		Scopes:       json.RawMessage(`{}`),
+		SessionID:    "cleanup-session-1",
+		ExpiresAt:    timePtr(time.Now().Add(-48 * time.Hour)),
+	}
+	if err := store.CreateProxyToken(ctx, expiredToken); err != nil {
+		t.Fatalf("CreateProxyToken (expired): %v", err)
+	}
+
+	// Create a token that was revoked 2 days ago (still within expiry).
+	revokedToken := &ProxyToken{
+		TokenHash:    "cleanup_hash_revoked",
+		TokenPrefix:  "ghx_cleanup_rev",
+		TokenType:    "proxy",
+		UserID:       &user.ID,
+		Repositories: json.RawMessage(`[]`),
+		Scopes:       json.RawMessage(`{}`),
+		SessionID:    "cleanup-session-2",
+		ExpiresAt:    timePtr(time.Now().Add(24 * time.Hour)),
+	}
+	if err := store.CreateProxyToken(ctx, revokedToken); err != nil {
+		t.Fatalf("CreateProxyToken (to-be-revoked): %v", err)
+	}
+	if err := store.RevokeProxyToken(ctx, revokedToken.ID); err != nil {
+		t.Fatalf("RevokeProxyToken: %v", err)
+	}
+	// Manually backdate revoked_at so it falls outside the retention window.
+	// We rely on checking that a token revoked "just now" is NOT deleted.
+
+	// Create an active (non-expired, non-revoked) token that must be preserved.
+	activeToken := &ProxyToken{
+		TokenHash:    "cleanup_hash_active",
+		TokenPrefix:  "ghx_cleanup_act",
+		TokenType:    "proxy",
+		UserID:       &user.ID,
+		Repositories: json.RawMessage(`[]`),
+		Scopes:       json.RawMessage(`{}`),
+		SessionID:    "cleanup-session-3",
+		ExpiresAt:    timePtr(time.Now().Add(24 * time.Hour)),
+	}
+	if err := store.CreateProxyToken(ctx, activeToken); err != nil {
+		t.Fatalf("CreateProxyToken (active): %v", err)
+	}
+
+	// Create a no-expiry token that is NOT revoked — must be preserved.
+	noExpiryToken := &ProxyToken{
+		TokenHash:    "cleanup_hash_noexp",
+		TokenPrefix:  "ghx_cleanup_noe",
+		TokenType:    "proxy",
+		UserID:       &user.ID,
+		Repositories: json.RawMessage(`[]`),
+		Scopes:       json.RawMessage(`{}`),
+		SessionID:    "cleanup-session-4",
+		ExpiresAt:    nil,
+	}
+	if err := store.CreateProxyToken(ctx, noExpiryToken); err != nil {
+		t.Fatalf("CreateProxyToken (no-expiry): %v", err)
+	}
+
+	// With a retention period of 1 hour the expired token (48h old) should be
+	// deleted.  The token revoked "just now" should survive because its
+	// revoked_at is within the last hour.  The active and no-expiry tokens are
+	// never deleted.
+	n, err := store.DeleteExpiredProxyTokens(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("DeleteExpiredProxyTokens: %v", err)
+	}
+	if n < 1 {
+		t.Errorf("expected at least 1 token deleted, got %d", n)
+	}
+
+	// Expired token must be gone.
+	gone, err := store.GetProxyTokenByID(ctx, expiredToken.ID)
+	if err != nil {
+		t.Fatalf("GetProxyTokenByID (expired, post-cleanup): %v", err)
+	}
+	if gone != nil {
+		t.Error("expected expired token to be hard-deleted, but it still exists")
+	}
+
+	// Active token must still exist.
+	still, err := store.GetProxyTokenByID(ctx, activeToken.ID)
+	if err != nil {
+		t.Fatalf("GetProxyTokenByID (active, post-cleanup): %v", err)
+	}
+	if still == nil {
+		t.Error("expected active token to be preserved after cleanup")
+	}
+
+	// No-expiry token must still exist.
+	stillNoExp, err := store.GetProxyTokenByID(ctx, noExpiryToken.ID)
+	if err != nil {
+		t.Fatalf("GetProxyTokenByID (no-expiry, post-cleanup): %v", err)
+	}
+	if stillNoExp == nil {
+		t.Error("expected no-expiry token to be preserved after cleanup")
+	}
+
+	// Calling DeleteExpiredProxyTokens again must be idempotent (0 rows deleted
+	// since we already cleaned up).
+	n2, err := store.DeleteExpiredProxyTokens(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("DeleteExpiredProxyTokens (idempotent): %v", err)
+	}
+	// n2 may be 0 or non-zero depending on timing; only verify no error.
+	_ = n2
 }

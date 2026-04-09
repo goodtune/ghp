@@ -718,6 +718,49 @@ func (s *VaultStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID
 	return s.writeProxyToken(ctx, token)
 }
 
+func (s *VaultStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-olderThan)
+
+	all, err := s.ListAllProxyTokens(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	var deleted int64
+	for _, t := range all {
+		shouldDelete := false
+		if t.RevokedAt != nil && t.RevokedAt.Before(cutoff) {
+			shouldDelete = true
+		} else if t.ExpiresAt != nil && t.ExpiresAt.Before(cutoff) {
+			shouldDelete = true
+		}
+		if !shouldDelete {
+			continue
+		}
+
+		// Delete the main record.
+		if err := s.kvDelete(ctx, "proxy-tokens/"+t.ID); err != nil {
+			return deleted, fmt.Errorf("deleting proxy token %s: %w", t.ID, err)
+		}
+		deleted++
+
+		// Remove hash index.
+		if t.TokenHash != "" {
+			if err := s.kvDelete(ctx, "proxy-tokens/by-hash/"+t.TokenHash); err != nil {
+				return deleted, fmt.Errorf("deleting proxy token hash index %s: %w", t.ID, err)
+			}
+		}
+
+		// Remove user index entry.
+		if t.UserID != nil && *t.UserID != "" {
+			if err := s.kvDelete(ctx, "proxy-tokens/by-user/"+*t.UserID+"/"+t.ID); err != nil {
+				return deleted, fmt.Errorf("deleting proxy token user index %s: %w", t.ID, err)
+			}
+		}
+	}
+	return deleted, nil
+}
+
 // --- Cached Repositories ---
 
 func (s *VaultStore) CreateCachedRepository(ctx context.Context, repo *CachedRepository) error {

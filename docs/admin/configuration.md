@@ -64,6 +64,7 @@ values from the config file.
 | `GHP_TOKENS_DEFAULT_DURATION` | Default token lifetime | `24h` |
 | `GHP_TOKENS_MAX_DURATION` | Maximum token lifetime | `168h` |
 | `GHP_TOKENS_ALLOW_NO_EXPIRY` | Allow creating tokens that never expire | `false` |
+| `GHP_TOKENS_EXPIRED_TOKEN_RETENTION_PERIOD` | How long after expiry or revocation before a token is hard-deleted. Set to `0` to disable cleanup. | `720h` (30 days) |
 
 ### Logging
 
@@ -181,6 +182,7 @@ tokens:
   default_duration: "24h"
   max_duration: "168h"         # 7 days
   allow_no_expiry: false       # set true to allow tokens with no expiry (duration: "never")
+  expired_token_retention_period: "720h"  # hard-delete expired/revoked tokens after 30 days (set to 0 to disable)
 
 logging:
   output: "stdout"             # "stdout" or "file"

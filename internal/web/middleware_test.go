@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
@@ -220,6 +221,7 @@ func (noopStore) ListAllProxyTokens(_ context.Context) ([]*database.ProxyToken, 
 func (noopStore) ListActiveProxyTokens(_ context.Context) ([]*database.ProxyToken, error)       { return nil, nil }
 func (noopStore) RevokeProxyToken(_ context.Context, _ string) error                            { return nil }
 func (noopStore) UpdateProxyTokenAppID(_ context.Context, _ string, _ string) error             { return nil }
+func (noopStore) DeleteExpiredProxyTokens(_ context.Context, _ time.Duration) (int64, error)    { return 0, nil }
 func (noopStore) CreateCachedRepository(_ context.Context, _ *database.CachedRepository) error  { return nil }
 func (noopStore) GetCachedRepositoryByID(_ context.Context, _ string) (*database.CachedRepository, error) {
 	return nil, nil

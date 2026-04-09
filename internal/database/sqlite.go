@@ -504,6 +504,19 @@ func (s *SQLiteStore) UpdateProxyTokenAppID(ctx context.Context, id string, appI
 	return nil
 }
 
+func (s *SQLiteStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-olderThan).Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM proxy_tokens
+		WHERE (revoked_at IS NOT NULL AND revoked_at < ?)
+		   OR (expires_at IS NOT NULL AND expires_at < ?)
+	`, cutoff, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // --- Apps ---
 
 func (s *SQLiteStore) CreateApp(ctx context.Context, app *App) error {

@@ -403,6 +403,19 @@ func (s *PostgresStore) UpdateProxyTokenAppID(ctx context.Context, id string, ap
 	return nil
 }
 
+func (s *PostgresStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-olderThan)
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM proxy_tokens
+		WHERE (revoked_at IS NOT NULL AND revoked_at < $1)
+		   OR (expires_at IS NOT NULL AND expires_at < $1)
+	`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // --- Apps ---
 
 func (s *PostgresStore) CreateApp(ctx context.Context, app *App) error {

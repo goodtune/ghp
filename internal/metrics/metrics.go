@@ -64,6 +64,13 @@ var (
 		Help: "Total number of tokens revoked.",
 	}, []string{"user"})
 
+	// TokenCleanupDeletedTotal counts proxy tokens hard-deleted by the
+	// periodic expired-token cleanup goroutine.
+	TokenCleanupDeletedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ghp_token_cleanup_deleted_total",
+		Help: "Total number of expired or revoked proxy tokens hard-deleted by the cleanup goroutine.",
+	})
+
 	GitHubRateLimitRemaining = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ghp_github_ratelimit_remaining",
 		Help: "GitHub API rate limit remaining.",
