@@ -1002,7 +1002,8 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 		t.Fatalf("UpsertUser: %v", err)
 	}
 
-	// Create a token that expired 2 days ago.
+	// Create a token that expired 2 days ago.  Use UTC throughout so the
+	// contract test does not depend on the process timezone.
 	expiredToken := &ProxyToken{
 		TokenHash:    "cleanup_hash_expired",
 		TokenPrefix:  "ghx_cleanup_exp",
@@ -1011,7 +1012,7 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 		Repositories: json.RawMessage(`[]`),
 		Scopes:       json.RawMessage(`{}`),
 		SessionID:    "cleanup-session-1",
-		ExpiresAt:    timePtr(time.Now().Add(-48 * time.Hour)),
+		ExpiresAt:    timePtr(time.Now().UTC().Add(-48 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, expiredToken); err != nil {
 		t.Fatalf("CreateProxyToken (expired): %v", err)
@@ -1028,7 +1029,7 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 		Repositories: json.RawMessage(`[]`),
 		Scopes:       json.RawMessage(`{}`),
 		SessionID:    "cleanup-session-2",
-		ExpiresAt:    timePtr(time.Now().Add(24 * time.Hour)),
+		ExpiresAt:    timePtr(time.Now().UTC().Add(24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, revokedToken); err != nil {
 		t.Fatalf("CreateProxyToken (to-be-revoked): %v", err)
@@ -1048,7 +1049,7 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 		Repositories: json.RawMessage(`[]`),
 		Scopes:       json.RawMessage(`{}`),
 		SessionID:    "cleanup-session-3",
-		ExpiresAt:    timePtr(time.Now().Add(24 * time.Hour)),
+		ExpiresAt:    timePtr(time.Now().UTC().Add(24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, activeToken); err != nil {
 		t.Fatalf("CreateProxyToken (active): %v", err)

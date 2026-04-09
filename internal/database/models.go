@@ -161,7 +161,9 @@ type Store interface {
 	// DeleteExpiredProxyTokens hard-deletes proxy tokens that have been
 	// expired or revoked for longer than olderThan.  It returns the number
 	// of rows deleted.  Tokens with no expiry (expires_at IS NULL) are only
-	// deleted when they have been revoked.
+	// deleted when they have been revoked.  olderThan must be > 0; a zero
+	// or negative value is rejected to prevent accidentally deleting active
+	// tokens with a future cutoff.
 	DeleteExpiredProxyTokens(ctx context.Context, olderThan time.Duration) (int64, error)
 
 	// Cached repositories

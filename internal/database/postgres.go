@@ -404,6 +404,9 @@ func (s *PostgresStore) UpdateProxyTokenAppID(ctx context.Context, id string, ap
 }
 
 func (s *PostgresStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		return 0, fmt.Errorf("DeleteExpiredProxyTokens: olderThan must be positive, got %v", olderThan)
+	}
 	// The cutoff is computed with the application clock rather than the DB
 	// clock so that all three backends (Postgres, SQLite, Vault) share
 	// identical semantics. Vault has no DB-side NOW(), and the retention

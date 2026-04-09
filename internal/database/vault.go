@@ -719,6 +719,9 @@ func (s *VaultStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID
 }
 
 func (s *VaultStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		return 0, fmt.Errorf("DeleteExpiredProxyTokens: olderThan must be positive, got %v", olderThan)
+	}
 	cutoff := time.Now().UTC().Add(-olderThan)
 
 	all, err := s.ListAllProxyTokens(ctx)
@@ -729,10 +732,16 @@ func (s *VaultStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan tim
 	var deleted int64
 	var firstErr error
 	for _, t := range all {
+		// Evaluate the two conditions independently so the Vault backend
+		// matches the SQL backends: a token is eligible if EITHER revoked_at
+		// OR expires_at is older than the cutoff. Using `else if` would keep
+		// a long-expired token that was recently revoked, diverging from the
+		// SQL `WHERE (revoked_at < $1) OR (expires_at < $1)` semantics.
 		shouldDelete := false
 		if t.RevokedAt != nil && t.RevokedAt.Before(cutoff) {
 			shouldDelete = true
-		} else if t.ExpiresAt != nil && t.ExpiresAt.Before(cutoff) {
+		}
+		if t.ExpiresAt != nil && t.ExpiresAt.Before(cutoff) {
 			shouldDelete = true
 		}
 		if !shouldDelete {
