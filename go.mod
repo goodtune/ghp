@@ -10,7 +10,7 @@ require (
 	github.com/google/go-github/v84 v84.0.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
-	github.com/hashicorp/vault/api v1.22.0
+	github.com/hashicorp/vault/api v1.23.0
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/jdx/go-netrc v1.0.0
 	github.com/knadh/koanf/parsers/yaml v1.1.0
