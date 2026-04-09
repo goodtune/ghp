@@ -672,7 +672,7 @@ func (s *VaultStore) ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, 
 	now := time.Now().UTC()
 	var active []*ProxyToken
 	for _, t := range all {
-		if t.RevokedAt == nil && t.ExpiresAt.After(now) {
+		if t.RevokedAt == nil && (t.ExpiresAt == nil || t.ExpiresAt.After(now)) {
 			active = append(active, t)
 		}
 	}

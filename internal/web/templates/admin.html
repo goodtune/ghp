@@ -714,10 +714,10 @@
             let html = '<table><tr><th>Prefix</th><th>Type</th><th>Repositories</th><th>Scopes</th><th>Session</th><th>Status</th><th>Expires</th><th></th></tr>';
             for (const t of tokens) {
                 const now = new Date();
-                const expires = new Date(t.expires_at);
+                const expires = t.expires_at ? new Date(t.expires_at) : null;
                 let status, badge;
                 if (t.revoked_at) { status = 'Revoked'; badge = 'badge-revoked'; }
-                else if (expires < now) { status = 'Expired'; badge = 'badge-expired'; }
+                else if (expires && expires < now) { status = 'Expired'; badge = 'badge-expired'; }
                 else { status = 'Active'; badge = 'badge-active'; }
 
                 const scopes = (t.scopes && typeof t.scopes === 'object' && Object.keys(t.scopes).length > 0) ? JSON.stringify(t.scopes) : (t.scopes || '(open)');
@@ -729,7 +729,7 @@
                 html += '<td>' + esc(scopes) + '</td>';
                 html += '<td>' + esc(t.session_id || '-') + '</td>';
                 html += '<td><span class="badge ' + badge + '">' + status + '</span></td>';
-                html += '<td>' + expires.toLocaleString() + '</td>';
+                html += '<td>' + (expires ? expires.toLocaleString() : 'Never') + '</td>';
                 html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" data-revoke-token="' + esc(t.id) + '">Revoke</button>' : '') + '</td>';
                 html += '</tr>';
             }

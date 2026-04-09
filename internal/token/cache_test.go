@@ -91,7 +91,7 @@ func newTestToken(hash, id string, expiresAt time.Time) *database.ProxyToken {
 		TokenType:    "proxy",
 		Repositories: json.RawMessage("null"),
 		Scopes:       json.RawMessage("null"),
-		ExpiresAt:    expiresAt,
+		ExpiresAt:    &expiresAt,
 	}
 }
 
@@ -105,7 +105,7 @@ func TestResolve_CacheHit(t *testing.T) {
 		},
 	}
 
-	svc := NewService(store, 24*time.Hour)
+	svc := NewService(store, 24*time.Hour, false)
 	ctx := context.Background()
 
 	// First call: cache miss, hits the database.
@@ -144,7 +144,7 @@ func TestResolve_CacheTTLExpiry(t *testing.T) {
 	}
 
 	now := time.Now()
-	svc := NewService(store, 24*time.Hour)
+	svc := NewService(store, 24*time.Hour, false)
 	svc.nowFunc = func() time.Time { return now }
 	ctx := context.Background()
 
@@ -180,7 +180,7 @@ func TestResolve_CachedExpiredToken(t *testing.T) {
 	}
 
 	now := time.Now()
-	svc := NewService(store, 24*time.Hour)
+	svc := NewService(store, 24*time.Hour, false)
 	svc.nowFunc = func() time.Time { return now }
 	ctx := context.Background()
 
@@ -222,7 +222,7 @@ func TestResolve_CachedRevokedToken(t *testing.T) {
 		tokens: map[string]*database.ProxyToken{hash: pt},
 	}
 
-	svc := NewService(store, 24*time.Hour)
+	svc := NewService(store, 24*time.Hour, false)
 	ctx := context.Background()
 
 	// First call fetches from DB and should report revoked.
@@ -255,7 +255,7 @@ func TestRevoke_InvalidatesCache(t *testing.T) {
 		},
 	}
 
-	svc := NewService(store, 24*time.Hour)
+	svc := NewService(store, 24*time.Hour, false)
 	ctx := context.Background()
 
 	// Prime the cache.
@@ -302,7 +302,7 @@ func TestWarmTokenCache(t *testing.T) {
 		},
 	}
 
-	svc := NewService(store, 24*time.Hour)
+	svc := NewService(store, 24*time.Hour, false)
 	ctx := context.Background()
 
 	// Warm the cache.
@@ -342,7 +342,7 @@ func TestWarmTokenCache_SkipsEmptyHash(t *testing.T) {
 		tokens:       map[string]*database.ProxyToken{},
 	}
 
-	svc := NewService(store, 24*time.Hour)
+	svc := NewService(store, 24*time.Hour, false)
 	svc.WarmTokenCache(context.Background(), nil)
 
 	// The empty-hash token should not have been cached. Verify by checking
@@ -361,7 +361,7 @@ func TestResolve_DoesNotCacheExpiredFromDB(t *testing.T) {
 		},
 	}
 
-	svc := NewService(store, 24*time.Hour)
+	svc := NewService(store, 24*time.Hour, false)
 	ctx := context.Background()
 
 	_, err := svc.Resolve(ctx, plaintext)
@@ -386,7 +386,7 @@ func TestResolve_NotFound(t *testing.T) {
 		tokens: map[string]*database.ProxyToken{},
 	}
 
-	svc := NewService(store, 24*time.Hour)
+	svc := NewService(store, 24*time.Hour, false)
 	ctx := context.Background()
 
 	pt, err := svc.Resolve(ctx, plaintext)
@@ -407,5 +407,85 @@ func TestResolve_NotFound(t *testing.T) {
 	}
 	if store.getByHashCalls.Load() != 2 {
 		t.Fatalf("expected 2 DB calls (not-found not cached), got %d", store.getByHashCalls.Load())
+	}
+}
+
+func TestResolve_NoExpiry(t *testing.T) {
+	plaintext := "ghx_noexpiry_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	hash := Hash(plaintext)
+
+	// A token with nil ExpiresAt should never expire.
+	tok := &database.ProxyToken{
+		ID:           "tok-noexp",
+		TokenHash:    hash,
+		TokenPrefix:  "ghx_noex",
+		TokenType:    "proxy",
+		Repositories: json.RawMessage("null"),
+		Scopes:       json.RawMessage("null"),
+		ExpiresAt:    nil,
+	}
+
+	store := &mockStore{
+		tokens: map[string]*database.ProxyToken{hash: tok},
+	}
+
+	svc := NewService(store, 24*time.Hour, true)
+	ctx := context.Background()
+
+	pt, err := svc.Resolve(ctx, plaintext)
+	if err != nil {
+		t.Fatalf("Resolve no-expiry token: %v", err)
+	}
+	if pt == nil {
+		t.Fatal("expected non-nil token")
+	}
+	if pt.ExpiresAt != nil {
+		t.Fatalf("expected nil ExpiresAt, got %v", pt.ExpiresAt)
+	}
+}
+
+func TestCreate_NoExpiry(t *testing.T) {
+	store := &mockStore{
+		tokens: map[string]*database.ProxyToken{},
+	}
+
+	svc := NewService(store, 24*time.Hour, true)
+	ctx := context.Background()
+
+	result, err := svc.Create(ctx, CreateRequest{
+		TokenType:     TokenTypeProxy,
+		UserID:        "user-1",
+		GitHubTokenID: "gt-1",
+		NoExpiry:      true,
+		SessionID:     "sess",
+	})
+	if err != nil {
+		t.Fatalf("Create no-expiry: %v", err)
+	}
+	if result.ExpiresAt != nil {
+		t.Fatalf("expected nil ExpiresAt, got %v", result.ExpiresAt)
+	}
+}
+
+func TestCreate_NoExpiryDisallowed(t *testing.T) {
+	store := &mockStore{
+		tokens: map[string]*database.ProxyToken{},
+	}
+
+	svc := NewService(store, 24*time.Hour, false) // allowNoExpiry=false
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, CreateRequest{
+		TokenType:     TokenTypeProxy,
+		UserID:        "user-1",
+		GitHubTokenID: "gt-1",
+		NoExpiry:      true,
+		SessionID:     "sess",
+	})
+	if err == nil {
+		t.Fatal("expected error when NoExpiry is disallowed")
+	}
+	if err.Error() != "no-expiry tokens are not allowed by server configuration" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -381,7 +381,7 @@ func newOpenScopedHandler(t *testing.T) (*Handler, string) {
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,
@@ -470,7 +470,7 @@ func newRepoOnlyHandler(t *testing.T, repo string) (*Handler, string) {
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,
@@ -528,7 +528,7 @@ func newScopeOnlyHandler(t *testing.T, scopes map[string]string) (*Handler, stri
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,
@@ -741,7 +741,7 @@ func newScopedHandlerWithTransport(t *testing.T, repo string, scopes map[string]
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,
@@ -837,7 +837,7 @@ func TestServeHTTP_OpenScopedToken_RootEndpoint_PassesThroughOAuthScopes(t *test
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,
@@ -901,7 +901,7 @@ func TestServeHTTP_OpenScoped_AgentToken_RootEndpoint_NoOAuthScopes(t *testing.T
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	var installID int64 = 99
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		TokenType:      token.TokenTypeAgent,
@@ -960,7 +960,7 @@ func TestServeHTTP_AgentToken_ResolvesBot_NotTokenCreator(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	var installID int64 = 42
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		TokenType:      token.TokenTypeAgent,
@@ -1056,7 +1056,7 @@ func TestServeHTTP_ProxyToken_ResolvesViaGraphQL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tokenSvc := token.NewService(store, 7*24*time.Hour)
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
 	result, err := tokenSvc.Create(ctx, token.CreateRequest{
 		UserID:        user.ID,
 		GitHubTokenID: gt.ID,

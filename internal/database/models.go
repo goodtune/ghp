@@ -78,7 +78,7 @@ type ProxyToken struct {
 	Repositories   json.RawMessage `json:"repositories"`
 	Scopes         json.RawMessage `json:"scopes"`
 	SessionID      string          `json:"session_id"`
-	ExpiresAt time.Time  `json:"expires_at"`
+	ExpiresAt *time.Time `json:"expires_at"` // nil means no expiry.
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 }
