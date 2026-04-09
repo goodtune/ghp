@@ -145,9 +145,13 @@ type ServerConfig struct {
 }
 
 type TokensConfig struct {
-	DefaultDuration time.Duration `koanf:"default_duration"`
-	MaxDuration     time.Duration `koanf:"max_duration"`
-	AllowNoExpiry   bool          `koanf:"allow_no_expiry"`
+	DefaultDuration              time.Duration `koanf:"default_duration"`
+	MaxDuration                  time.Duration `koanf:"max_duration"`
+	AllowNoExpiry                bool          `koanf:"allow_no_expiry"`
+	// ExpiredTokenRetentionPeriod is how long after a token expires or is
+	// revoked before it is hard-deleted from the database.  Defaults to
+	// 30 days.  Set to 0 to disable automatic cleanup.
+	ExpiredTokenRetentionPeriod time.Duration `koanf:"expired_token_retention_period"`
 }
 
 type LoggingConfig struct {
@@ -218,8 +222,9 @@ func Defaults() *Config {
 			Listen: ":8080",
 		},
 		Tokens: TokensConfig{
-			DefaultDuration: 24 * time.Hour,
-			MaxDuration:     7 * 24 * time.Hour,
+			DefaultDuration:             24 * time.Hour,
+			MaxDuration:                 7 * 24 * time.Hour,
+			ExpiredTokenRetentionPeriod: 30 * 24 * time.Hour,
 		},
 		Logging: LoggingConfig{
 			Output: "stdout",
