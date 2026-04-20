@@ -5,15 +5,22 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
+
+// cliHTTPClient is used for short-lived CLI requests to the ghp server. A
+// timeout is essential because `ghp auth` commands are often run in headless
+// or SSH contexts where an unreachable server would otherwise hang indefinitely.
+var cliHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 type cliConfig struct {
 	ServerURL string `yaml:"server_url"`
@@ -81,19 +88,21 @@ func saveCLIConfig(cfg *cliConfig) error {
 
 // openBrowser attempts to open url in the system browser. Errors are silently
 // ignored because callers always print a fallback URL for copy-paste.
-func openBrowser(url string) {
+func openBrowser(rawURL string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", url)
+		cmd = exec.Command("open", rawURL)
 	case "windows":
-		// Empty string is the window title; without it, cmd treats the first
-		// quoted argument as the title, which breaks URLs containing & or =.
-		cmd = exec.Command("cmd", "/c", "start", "", url)
+		// Avoid `cmd /c start` so URLs containing `&` (common in OAuth URLs)
+		// are not interpreted by the Windows command shell.
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
 	default:
-		cmd = exec.Command("xdg-open", url)
+		cmd = exec.Command("xdg-open", rawURL)
 	}
-	_ = cmd.Start()
+	if err := cmd.Start(); err == nil && cmd.Process != nil {
+		_ = cmd.Process.Release()
+	}
 }
 
 func newAuthCmd() *cobra.Command {
@@ -119,13 +128,17 @@ func newAuthCmd() *cobra.Command {
 			// Accept: application/json also instructs the server to append
 			// ?format=json to the OAuth callback, so the browser will display
 			// the session token as JSON after the user authenticates.
-			req, err := http.NewRequest("GET", cfg.ServerURL+"/auth/github", nil)
+			endpoint, err := url.JoinPath(cfg.ServerURL, "/auth/github")
+			if err != nil {
+				return fmt.Errorf("building auth URL: %w", err)
+			}
+			req, err := http.NewRequest("GET", endpoint, nil)
 			if err != nil {
 				return err
 			}
 			req.Header.Set("Accept", "application/json")
 
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := cliHTTPClient.Do(req)
 			if err != nil {
 				return fmt.Errorf("connecting to server: %w", err)
 			}
@@ -178,8 +191,13 @@ func newAuthCmd() *cobra.Command {
 			if err := saveCLIConfig(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to ~/.config/ghp/config.yaml\n")
-			fmt.Fprintf(cmd.OutOrStdout(), "Run 'ghp auth status' to verify.\n")
+			out := cmd.OutOrStdout()
+			if home, err := os.UserHomeDir(); err == nil {
+				fmt.Fprintf(out, "Token saved to %s\n", filepath.Join(home, ".config", "ghp", "config.yaml"))
+			} else {
+				fmt.Fprintln(out, "Token saved.")
+			}
+			fmt.Fprintf(out, "Run 'ghp auth status' to verify.\n")
 			return nil
 		},
 	}
@@ -200,13 +218,17 @@ func newAuthCmd() *cobra.Command {
 				return nil
 			}
 
-			req, err := http.NewRequest("GET", cfg.ServerURL+"/auth/status", nil)
+			endpoint, err := url.JoinPath(cfg.ServerURL, "/auth/status")
+			if err != nil {
+				return fmt.Errorf("building status URL: %w", err)
+			}
+			req, err := http.NewRequest("GET", endpoint, nil)
 			if err != nil {
 				return err
 			}
 			req.Header.Set("Authorization", "Bearer "+cfg.UserToken)
 
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := cliHTTPClient.Do(req)
 			if err != nil {
 				return fmt.Errorf("connecting to server: %w", err)
 			}
