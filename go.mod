@@ -25,7 +25,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/vault v0.41.0
 	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.48.0
+	modernc.org/sqlite v1.48.2
 )
 
 require (
