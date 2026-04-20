@@ -40,7 +40,10 @@ func loadCLIConfigFile() (*cliConfig, error) {
 	configPath := filepath.Join(home, ".config", "ghp", "config.yaml")
 	info, err := os.Stat(configPath)
 	if err != nil {
-		return cfg, nil
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return nil, fmt.Errorf("stating %s: %w", configPath, err)
 	}
 	// 0177 masks owner-execute, group, and other permission bits.
 	const insecurePermsMask = 0177
