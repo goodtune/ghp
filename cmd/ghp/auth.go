@@ -27,22 +27,19 @@ type cliConfig struct {
 	UserToken string `yaml:"user_token"`
 }
 
-func loadCLIConfig() (*cliConfig, error) {
+// loadCLIConfigFile reads the on-disk config file without applying any env
+// var overrides. Used by `set-token` so temporary env vars are never persisted
+// back to disk.
+func loadCLIConfigFile() *cliConfig {
 	cfg := &cliConfig{}
-
-	// Environment variable overrides.
-	cfg.ServerURL = os.Getenv("GHP_SERVER_URL")
-	cfg.UserToken = os.Getenv("GHP_USER_TOKEN")
-
-	// Read config file.
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return cfg, nil
+		return cfg
 	}
 	configPath := filepath.Join(home, ".config", "ghp", "config.yaml")
 	info, err := os.Stat(configPath)
 	if err != nil {
-		return cfg, nil // File doesn't exist yet, that's ok.
+		return cfg
 	}
 	// 0177 masks owner-execute, group, and other permission bits.
 	const insecurePermsMask = 0177
@@ -51,20 +48,21 @@ func loadCLIConfig() (*cliConfig, error) {
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return cfg, nil
+		return cfg
 	}
+	_ = yaml.Unmarshal(data, cfg)
+	return cfg
+}
 
-	var fileCfg cliConfig
-	if err := yaml.Unmarshal(data, &fileCfg); err != nil {
-		return cfg, nil
-	}
+func loadCLIConfig() (*cliConfig, error) {
+	cfg := loadCLIConfigFile()
 
-	// File values are used if env vars are not set.
-	if cfg.ServerURL == "" {
-		cfg.ServerURL = fileCfg.ServerURL
+	// Environment variable overrides.
+	if v := os.Getenv("GHP_SERVER_URL"); v != "" {
+		cfg.ServerURL = v
 	}
-	if cfg.UserToken == "" {
-		cfg.UserToken = fileCfg.UserToken
+	if v := os.Getenv("GHP_USER_TOKEN"); v != "" {
+		cfg.UserToken = v
 	}
 
 	return cfg, nil
@@ -88,6 +86,9 @@ func saveCLIConfig(cfg *cliConfig) error {
 
 // openBrowser attempts to open url in the system browser. Errors are silently
 // ignored because callers always print a fallback URL for copy-paste.
+//
+// Openers like xdg-open commonly print diagnostics (e.g. "no DISPLAY") to
+// stderr, which would leak into CLI output; redirect them to io.Discard.
 func openBrowser(rawURL string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -100,6 +101,8 @@ func openBrowser(rawURL string) {
 	default:
 		cmd = exec.Command("xdg-open", rawURL)
 	}
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err == nil && cmd.Process != nil {
 		_ = cmd.Process.Release()
 	}
@@ -161,7 +164,11 @@ func newAuthCmd() *cobra.Command {
 				return fmt.Errorf("server returned empty auth URL")
 			}
 
-			openBrowser(result.URL)
+			// GHP_NO_BROWSER lets tests and CI suppress the side-effect of
+			// spawning a browser opener while still exercising the command.
+			if os.Getenv("GHP_NO_BROWSER") == "" {
+				openBrowser(result.URL)
+			}
 
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "Opening browser for GitHub authentication.\n\n")
@@ -185,10 +192,9 @@ func newAuthCmd() *cobra.Command {
 			if !strings.HasPrefix(token, "ghpr_") {
 				return fmt.Errorf("invalid token: expected a token starting with 'ghpr_'")
 			}
-			cfg, err := loadCLIConfig()
-			if err != nil {
-				return err
-			}
+			// Read the file directly — not loadCLIConfig — so a temporary
+			// GHP_SERVER_URL in the environment doesn't get written back to disk.
+			cfg := loadCLIConfigFile()
 			cfg.UserToken = token
 			if err := saveCLIConfig(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
