@@ -292,8 +292,13 @@ func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	params.Set("state", state)
 	authURL := h.getGitHubBaseURL() + "/login/oauth/authorize?" + params.Encode()
 
+	// Response body depends on Accept; signal this to intermediary caches so
+	// a redirect response can't be served to a CLI client (or vice versa).
+	w.Header().Set("Vary", "Accept")
+
 	// If the request accepts JSON (CLI), return the URL; otherwise redirect.
 	if cliRequest {
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"url": authURL})
 		return

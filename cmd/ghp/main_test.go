@@ -265,6 +265,7 @@ func TestAuthLoginCmd_WithServerURL(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "")
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GHP_NO_BROWSER", "1")
 
 	cmd := newAuthCmd()
 	buf := &bytes.Buffer{}

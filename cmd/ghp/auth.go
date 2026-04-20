@@ -28,18 +28,19 @@ type cliConfig struct {
 }
 
 // loadCLIConfigFile reads the on-disk config file without applying any env
-// var overrides. Used by `set-token` so temporary env vars are never persisted
-// back to disk.
-func loadCLIConfigFile() *cliConfig {
+// var overrides. A missing file yields an empty config and no error; a present
+// but unreadable or malformed file returns an error so callers (notably
+// set-token) can fail loudly rather than silently overwriting existing fields.
+func loadCLIConfigFile() (*cliConfig, error) {
 	cfg := &cliConfig{}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return cfg
+		return cfg, nil
 	}
 	configPath := filepath.Join(home, ".config", "ghp", "config.yaml")
 	info, err := os.Stat(configPath)
 	if err != nil {
-		return cfg
+		return cfg, nil
 	}
 	// 0177 masks owner-execute, group, and other permission bits.
 	const insecurePermsMask = 0177
@@ -48,14 +49,23 @@ func loadCLIConfigFile() *cliConfig {
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return cfg
+		return nil, fmt.Errorf("reading %s: %w", configPath, err)
 	}
-	_ = yaml.Unmarshal(data, cfg)
-	return cfg
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", configPath, err)
+	}
+	return cfg, nil
 }
 
 func loadCLIConfig() (*cliConfig, error) {
-	cfg := loadCLIConfigFile()
+	// For the env-aware loader, swallow file-level errors: a malformed file
+	// shouldn't stop commands like `auth login` that can still work from env
+	// vars alone. set-token uses loadCLIConfigFile directly and fails fast.
+	cfg, err := loadCLIConfigFile()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		cfg = &cliConfig{}
+	}
 
 	// Environment variable overrides.
 	if v := os.Getenv("GHP_SERVER_URL"); v != "" {
@@ -194,7 +204,11 @@ func newAuthCmd() *cobra.Command {
 			}
 			// Read the file directly — not loadCLIConfig — so a temporary
 			// GHP_SERVER_URL in the environment doesn't get written back to disk.
-			cfg := loadCLIConfigFile()
+			// Fail fast on a malformed file so we don't silently overwrite it.
+			cfg, err := loadCLIConfigFile()
+			if err != nil {
+				return err
+			}
 			cfg.UserToken = token
 			if err := saveCLIConfig(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
