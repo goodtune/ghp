@@ -71,7 +71,7 @@ func TestHelpOutput_Migrate(t *testing.T) {
 	}
 }
 
-// TestHelpOutput_Auth verifies that "ghp auth --help" mentions login and status subcommands.
+// TestHelpOutput_Auth verifies that "ghp auth --help" mentions all subcommands.
 func TestHelpOutput_Auth(t *testing.T) {
 	cmd := newAuthCmd()
 	buf := &bytes.Buffer{}
@@ -81,7 +81,7 @@ func TestHelpOutput_Auth(t *testing.T) {
 	_ = cmd.Execute()
 
 	output := buf.String()
-	for _, want := range []string{"login", "status"} {
+	for _, want := range []string{"login", "set-token", "status"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("auth help: expected %q to appear in output:\n%s", want, output)
 		}
@@ -243,11 +243,54 @@ func TestAuthLoginCmd_NoServerURL(t *testing.T) {
 	}
 }
 
-// TestAuthLoginCmd_WithServerURL verifies that auth login prints the authentication URL when configured.
+// TestAuthLoginCmd_WithServerURL verifies that auth login fetches the OAuth URL
+// from the server, prints it, and instructs the user how to save the token.
 func TestAuthLoginCmd_WithServerURL(t *testing.T) {
-	// Use a real httptest server for a consistent URL (no network call is made by login).
+	const fakeGitHubURL = "https://github.com/login/oauth/authorize?client_id=test&state=abc"
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unexpected request to stub server: %s %s", r.Method, r.URL.Path)
+		if r.Method != "GET" || r.URL.Path != "/auth/github" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if !strings.Contains(r.Header.Get("Accept"), "application/json") {
+			t.Errorf("expected Accept: application/json, got %q", r.Header.Get("Accept"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"url":%q}`, fakeGitHubURL)
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GHP_NO_BROWSER", "1")
+
+	cmd := newAuthCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"login"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("auth login error: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, fakeGitHubURL) {
+		t.Errorf("expected GitHub OAuth URL %q in output, got: %q", fakeGitHubURL, output)
+	}
+	if !strings.Contains(output, "set-token") {
+		t.Errorf("expected 'set-token' instruction in output, got: %q", output)
+	}
+}
+
+// TestAuthLoginCmd_ServerError verifies that auth login reports an error when the server
+// returns a non-200 status for the auth URL request.
+func TestAuthLoginCmd_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("internal error"))
 	}))
 	defer srv.Close()
 
@@ -261,12 +304,53 @@ func TestAuthLoginCmd_WithServerURL(t *testing.T) {
 	cmd.SetErr(buf)
 	cmd.SetArgs([]string{"login"})
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("auth login error: %v", err)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error when server returns 500")
 	}
-	output := buf.String()
-	if !strings.Contains(output, srv.URL+"/auth/github") {
-		t.Errorf("expected auth URL %q in output, got: %q", srv.URL+"/auth/github", output)
+}
+
+// TestAuthSetTokenCmd_Valid verifies that set-token saves a ghpr_ token to config.
+func TestAuthSetTokenCmd_Valid(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GHP_SERVER_URL", "http://localhost:8080")
+	t.Setenv("GHP_USER_TOKEN", "")
+
+	cmd := newAuthCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"set-token", "ghpr_abc123def456"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("set-token error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "saved") {
+		t.Errorf("expected 'saved' confirmation in output, got: %q", buf.String())
+	}
+
+	// Verify the token was written to the config file.
+	cfg, err := loadCLIConfig()
+	if err != nil {
+		t.Fatalf("loadCLIConfig: %v", err)
+	}
+	if cfg.UserToken != "ghpr_abc123def456" {
+		t.Errorf("UserToken = %q, want %q", cfg.UserToken, "ghpr_abc123def456")
+	}
+}
+
+// TestAuthSetTokenCmd_InvalidPrefix verifies that set-token rejects tokens without the ghpr_ prefix.
+func TestAuthSetTokenCmd_InvalidPrefix(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cmd := newAuthCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"set-token", "notavalidtoken"})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for token without ghpr_ prefix")
 	}
 }
 

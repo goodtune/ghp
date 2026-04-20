@@ -276,14 +276,31 @@ func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	state := generateState()
 	h.states.Add(state, struct{}{})
 
+	// CLI clients (Accept: application/json) need the callback to return JSON
+	// with the session token rather than setting a cookie and redirecting.
+	// Appending ?format=json to the redirect_uri instructs the callback handler
+	// to return the token as JSON so the user can copy it from the browser.
+	cliRequest := strings.Contains(r.Header.Get("Accept"), "application/json")
+	callbackURL := h.mainCallbackURL(r)
+	if cliRequest {
+		callbackURL += "?format=json"
+	}
+
 	params := url.Values{}
 	params.Set("client_id", h.cfg.GitHub.ClientID)
-	params.Set("redirect_uri", h.mainCallbackURL(r))
+	params.Set("redirect_uri", callbackURL)
 	params.Set("state", state)
 	authURL := h.getGitHubBaseURL() + "/login/oauth/authorize?" + params.Encode()
 
+	// Response body depends on Accept; signal this to intermediary caches so
+	// a redirect response can't be served to a CLI client (or vice versa).
+	// Both branches embed a single-use `state` value in the destination URL,
+	// so neither response is safe to cache.
+	w.Header().Set("Vary", "Accept")
+	w.Header().Set("Cache-Control", "no-store")
+
 	// If the request accepts JSON (CLI), return the URL; otherwise redirect.
-	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+	if cliRequest {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"url": authURL})
 		return
@@ -335,9 +352,17 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// the authorization request so GitHub can verify the two values match.
 	// For the app installation flow (setup_action is set), the redirect_uri
 	// was not sent in the authorization request so we omit it here.
+	//
+	// CLI clients trigger the login with ?format=json appended to the
+	// redirect_uri (see handleGitHubLogin). GitHub requires the redirect_uri
+	// in the token exchange to exactly match the one in the authorize request,
+	// so we must include ?format=json here too when it is present.
 	redirectURI := ""
 	if setupAction == "" {
 		redirectURI = h.mainCallbackURL(r)
+		if r.URL.Query().Get("format") == "json" {
+			redirectURI += "?format=json"
+		}
 	}
 	accessToken, refreshToken, expiresIn, err := h.exchangeCode(code, redirectURI)
 	if err != nil {
