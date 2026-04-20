@@ -345,9 +345,17 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// the authorization request so GitHub can verify the two values match.
 	// For the app installation flow (setup_action is set), the redirect_uri
 	// was not sent in the authorization request so we omit it here.
+	//
+	// CLI clients trigger the login with ?format=json appended to the
+	// redirect_uri (see handleGitHubLogin). GitHub requires the redirect_uri
+	// in the token exchange to exactly match the one in the authorize request,
+	// so we must include ?format=json here too when it is present.
 	redirectURI := ""
 	if setupAction == "" {
 		redirectURI = h.mainCallbackURL(r)
+		if r.URL.Query().Get("format") == "json" {
+			redirectURI += "?format=json"
+		}
 	}
 	accessToken, refreshToken, expiresIn, err := h.exchangeCode(code, redirectURI)
 	if err != nil {
