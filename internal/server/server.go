@@ -437,7 +437,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Start periodic cleanup of expired/revoked proxy tokens.
-	token.StartCleanup(lifecycleCtx, store, s.cfg.Tokens.ExpiredTokenRetentionPeriod)
+	token.StartCleanup(lifecycleCtx, store, s.cfg)
 
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
 		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, s.logger, s.cfg)
