@@ -152,7 +152,9 @@ func newAuthCmd() *cobra.Command {
 			var result struct {
 				URL string `json:"url"`
 			}
-			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			// Cap the body read so a misconfigured or malicious server can't
+			// exhaust memory. Legitimate responses are ~1KB.
+			if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&result); err != nil {
 				return fmt.Errorf("decoding server response: %w", err)
 			}
 			if result.URL == "" {
@@ -234,7 +236,7 @@ func newAuthCmd() *cobra.Command {
 			}
 			defer resp.Body.Close()
 
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 			var result map[string]interface{}
 			json.Unmarshal(body, &result)
 
