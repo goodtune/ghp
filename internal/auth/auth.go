@@ -276,14 +276,24 @@ func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	state := generateState()
 	h.states.Add(state, struct{}{})
 
+	// CLI clients (Accept: application/json) need the callback to return JSON
+	// with the session token rather than setting a cookie and redirecting.
+	// Appending ?format=json to the redirect_uri instructs the callback handler
+	// to return the token as JSON so the user can copy it from the browser.
+	cliRequest := strings.Contains(r.Header.Get("Accept"), "application/json")
+	callbackURL := h.mainCallbackURL(r)
+	if cliRequest {
+		callbackURL += "?format=json"
+	}
+
 	params := url.Values{}
 	params.Set("client_id", h.cfg.GitHub.ClientID)
-	params.Set("redirect_uri", h.mainCallbackURL(r))
+	params.Set("redirect_uri", callbackURL)
 	params.Set("state", state)
 	authURL := h.getGitHubBaseURL() + "/login/oauth/authorize?" + params.Encode()
 
 	// If the request accepts JSON (CLI), return the URL; otherwise redirect.
-	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+	if cliRequest {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"url": authURL})
 		return

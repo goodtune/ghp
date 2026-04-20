@@ -6,7 +6,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -76,6 +79,21 @@ func saveCLIConfig(cfg *cliConfig) error {
 	return os.WriteFile(filepath.Join(configDir, "config.yaml"), data, 0600)
 }
 
+// openBrowser attempts to open url in the system browser. Errors are silently
+// ignored because callers always print a fallback URL for copy-paste.
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
+}
+
 func newAuthCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
@@ -94,12 +112,72 @@ func newAuthCmd() *cobra.Command {
 				return fmt.Errorf("server URL not configured. Set GHP_SERVER_URL or add server_url to ~/.config/ghp/config.yaml")
 			}
 
-			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "Opening browser for GitHub authentication...\n")
-			fmt.Fprintf(out, "Visit: %s/auth/github\n", cfg.ServerURL)
-			fmt.Fprintf(out, "\nAfter authenticating, run:\n")
-			fmt.Fprintf(out, "  export GHP_USER_TOKEN=<token from callback>\n")
+			// Ask the server for the GitHub OAuth URL. The server generates a
+			// state token and returns the full GitHub authorization URL. Using
+			// Accept: application/json also instructs the server to append
+			// ?format=json to the OAuth callback, so the browser will display
+			// the session token as JSON after the user authenticates.
+			req, err := http.NewRequest("GET", cfg.ServerURL+"/auth/github", nil)
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Accept", "application/json")
 
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return fmt.Errorf("connecting to server: %w", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				return fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+
+			var result struct {
+				URL string `json:"url"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				return fmt.Errorf("decoding server response: %w", err)
+			}
+			if result.URL == "" {
+				return fmt.Errorf("server returned empty auth URL")
+			}
+
+			openBrowser(result.URL)
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Opening browser for GitHub authentication.\n\n")
+			fmt.Fprintf(out, "If the browser did not open, visit this URL:\n  %s\n\n", result.URL)
+			fmt.Fprintf(out, "After authenticating, the page will display a JSON token.\n")
+			fmt.Fprintf(out, "Copy the value of \"session_token\" and save it:\n\n")
+			fmt.Fprintf(out, "  ghp auth set-token <session_token>\n\n")
+			fmt.Fprintf(out, "Or set the environment variable:\n\n")
+			fmt.Fprintf(out, "  export GHP_USER_TOKEN=<session_token>\n")
+
+			return nil
+		},
+	}
+
+	setTokenCmd := &cobra.Command{
+		Use:   "set-token <token>",
+		Short: "Save a session token to the local config file",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			token := args[0]
+			if !strings.HasPrefix(token, "ghpr_") {
+				return fmt.Errorf("invalid token: expected a token starting with 'ghpr_'")
+			}
+			cfg, err := loadCLIConfig()
+			if err != nil {
+				return err
+			}
+			cfg.UserToken = token
+			if err := saveCLIConfig(cfg); err != nil {
+				return fmt.Errorf("saving config: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to ~/.config/ghp/config.yaml\n")
+			fmt.Fprintf(cmd.OutOrStdout(), "Run 'ghp auth status' to verify.\n")
 			return nil
 		},
 	}
@@ -148,6 +226,6 @@ func newAuthCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(loginCmd, statusCmd)
+	cmd.AddCommand(loginCmd, setTokenCmd, statusCmd)
 	return cmd
 }
