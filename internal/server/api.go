@@ -490,7 +490,7 @@ func (a *API) handleUpdateTokenScopes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pt.RevokedAt != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Cannot update a revoked token"})
+		writeJSON(w, http.StatusConflict, map[string]string{"message": "Cannot update a revoked token"})
 		return
 	}
 
@@ -521,10 +521,15 @@ func (a *API) handleUpdateTokenScopes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.store.UpdateProxyTokenScopes(r.Context(), id, newRepos, newScopes); err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "Token not found"})
+			return
+		}
 		a.logger.Error("failed to update token scopes", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
 		return
 	}
+	a.tokenService.InvalidateByID(id)
 
 	a.auditLog.writeEntry(&auditLogEntry{
 		Msg:       "audit event",

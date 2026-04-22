@@ -723,6 +723,13 @@ func testUpdateProxyTokenScopes(t *testing.T, store Store) {
 	if len(clearedRepos) != 0 {
 		t.Errorf("expected empty repositories after clear, got %v", clearedRepos)
 	}
+	var clearedScopes map[string]string
+	if err := json.Unmarshal(got2.Scopes, &clearedScopes); err != nil {
+		t.Fatalf("unmarshal cleared scopes: %v", err)
+	}
+	if len(clearedScopes) != 0 {
+		t.Errorf("expected empty scopes after clear, got %v", clearedScopes)
+	}
 
 	// ErrNotFound for missing token.
 	err = store.UpdateProxyTokenScopes(ctx, "00000000-0000-0000-0000-000000000000", newRepos, newScopes)

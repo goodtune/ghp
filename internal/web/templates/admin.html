@@ -666,7 +666,19 @@
             });
         }
 
+        // Tracks the current token view so edit-saves reload the right data.
+        let currentTokenView = { type: 'all' };
+
+        function reloadCurrentTokenView() {
+            if (currentTokenView.type === 'user') {
+                loadUserTokens(currentTokenView.userId, currentTokenView.username);
+            } else {
+                loadAllTokens();
+            }
+        }
+
         async function loadUserTokens(userId, username) {
+            currentTokenView = { type: 'user', userId, username };
             let tokens;
             try {
                 tokens = await api('GET', '/api/users/' + userId + '/tokens');
@@ -686,6 +698,7 @@
         }
 
         async function loadAllTokens() {
+            currentTokenView = { type: 'all' };
             let tokens;
             try {
                 tokens = await api('GET', '/api/tokens?all=true');
@@ -840,7 +853,7 @@
                 try {
                     await api('PATCH', '/api/tokens/' + id, { repositories: repoLines, scopes: parsedScopes });
                     editRow.remove();
-                    loadAllTokens();
+                    reloadCurrentTokenView();
                 } catch (e) {
                     errMsg.textContent = 'Failed to update token: ' + (e.message || 'Unknown error');
                     errMsg.style.display = 'block';
