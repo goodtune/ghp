@@ -60,6 +60,7 @@ func (m *mockStore) GetProxyTokenByID(_ context.Context, _ string) (*database.Pr
 func (m *mockStore) ListProxyTokens(_ context.Context, _ string) ([]*database.ProxyToken, error)   { return nil, nil }
 func (m *mockStore) ListAllProxyTokens(_ context.Context) ([]*database.ProxyToken, error)          { return nil, nil }
 func (m *mockStore) UpdateProxyTokenAppID(_ context.Context, _ string, _ string) error              { return nil }
+func (m *mockStore) UpdateProxyTokenScopes(_ context.Context, _ string, _ json.RawMessage, _ json.RawMessage) error { return nil }
 func (m *mockStore) DeleteExpiredProxyTokens(_ context.Context, _ time.Duration) (int64, error)     { return 0, nil }
 func (m *mockStore) GetDefaultApp(_ context.Context) (*database.App, error)                        { return nil, nil }
 func (m *mockStore) SetDefaultApp(_ context.Context, _ string) error                              { return nil }

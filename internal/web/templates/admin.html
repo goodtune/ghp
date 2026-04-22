@@ -723,7 +723,7 @@
                 else if (expires && expires < now) { status = 'Expired'; badge = 'badge-expired'; }
                 else { status = 'Active'; badge = 'badge-active'; }
 
-                const scopes = (t.scopes && typeof t.scopes === 'object' && Object.keys(t.scopes).length > 0) ? JSON.stringify(t.scopes) : (t.scopes || '(open)');
+                const scopes = (t.scopes && typeof t.scopes === 'object' && Object.keys(t.scopes).length > 0) ? JSON.stringify(t.scopes) : '(open)';
                 const repos = (Array.isArray(t.repositories) && t.repositories.length > 0) ? t.repositories.join(', ') : '(open)';
                 const reposJson = JSON.stringify(Array.isArray(t.repositories) ? t.repositories : []);
                 const scopesJson = JSON.stringify((t.scopes && typeof t.scopes === 'object') ? t.scopes : {});
