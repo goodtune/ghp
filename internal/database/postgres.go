@@ -403,6 +403,23 @@ func (s *PostgresStore) UpdateProxyTokenAppID(ctx context.Context, id string, ap
 	return nil
 }
 
+func (s *PostgresStore) UpdateProxyTokenScopes(ctx context.Context, id string, repositories json.RawMessage, scopes json.RawMessage) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE proxy_tokens SET repositories = $1, scopes = $2 WHERE id = $3`,
+		string(repositories), string(scopes), id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("proxy token %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 func (s *PostgresStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
 	if olderThan <= 0 {
 		return 0, fmt.Errorf("DeleteExpiredProxyTokens: olderThan must be positive, got %v", olderThan)
