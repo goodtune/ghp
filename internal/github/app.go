@@ -302,42 +302,86 @@ func (p *AppTokenProvider) newAppClient() (*ghub.Client, error) {
 }
 
 // ListInstallations returns all installations for this GitHub App.
+// Raw HTTP is used instead of the go-github SDK so that the full permissions
+// map from the API is preserved — the SDK's typed InstallationPermissions
+// struct only exposes a subset of the permission fields GitHub supports.
 func (p *AppTokenProvider) ListInstallations(ctx context.Context) ([]Installation, error) {
-	client, err := p.newAppClient()
+	signed, err := p.signJWT()
 	if err != nil {
 		return nil, err
 	}
 
+	type rawInstallation struct {
+		ID      int64 `json:"id"`
+		Account struct {
+			Login string `json:"login"`
+			ID    int64  `json:"id"`
+			Type  string `json:"type"`
+		} `json:"account"`
+		Permissions         map[string]string `json:"permissions"`
+		RepositorySelection string            `json:"repository_selection"`
+	}
+
 	var all []Installation
-	opts := &ghub.ListOptions{PerPage: 100}
-	for {
-		installs, resp, err := client.Apps.ListInstallations(ctx, opts)
+	nextURL := fmt.Sprintf("%s/app/installations?per_page=100", p.baseURL)
+	for nextURL != "" {
+		req, err := http.NewRequestWithContext(ctx, "GET", nextURL, nil)
 		if err != nil {
-			return nil, fmt.Errorf("listing installations: %w", err)
+			return nil, fmt.Errorf("creating installations request: %w", err)
 		}
+		req.Header.Set("Authorization", "Bearer "+signed)
+		req.Header.Set("Accept", "application/vnd.github+json")
+
+		resp, err := p.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("fetching installations: %w", err)
+		}
+
+		var installs []rawInstallation
+		decodeErr := json.NewDecoder(resp.Body).Decode(&installs)
+		linkHeader := resp.Header.Get("Link")
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decoding installations: %w", decodeErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("listing installations: HTTP %d", resp.StatusCode)
+		}
+
 		for _, inst := range installs {
-			i := Installation{
-				ID:          inst.GetID(),
-				Permissions: installationPermissionsToMap(inst.Permissions),
-			}
-			if inst.RepositorySelection != nil {
-				i.RepositorySelection = *inst.RepositorySelection
-			}
-			if inst.Account != nil {
-				i.Account = InstallationAccount{
-					Login: inst.Account.GetLogin(),
-					ID:    inst.Account.GetID(),
-					Type:  inst.Account.GetType(),
-				}
-			}
-			all = append(all, i)
+			all = append(all, Installation{
+				ID: inst.ID,
+				Account: InstallationAccount{
+					Login: inst.Account.Login,
+					ID:    inst.Account.ID,
+					Type:  inst.Account.Type,
+				},
+				Permissions:         inst.Permissions,
+				RepositorySelection: inst.RepositorySelection,
+			})
 		}
-		if resp.NextPage == 0 {
-			break
-		}
-		opts.Page = resp.NextPage
+		nextURL = extractLinkNext(linkHeader)
 	}
 	return all, nil
+}
+
+// extractLinkNext parses a GitHub Link header and returns the URL for the
+// next page, or an empty string if there is no next page.
+func extractLinkNext(link string) string {
+	// Format: <url>; rel="next", <url>; rel="last"
+	for _, part := range strings.Split(link, ",") {
+		part = strings.TrimSpace(part)
+		segments := strings.Split(part, ";")
+		if len(segments) < 2 {
+			continue
+		}
+		rel := strings.TrimSpace(segments[1])
+		if rel == `rel="next"` {
+			url := strings.TrimSpace(segments[0])
+			return strings.Trim(url, "<>")
+		}
+	}
+	return ""
 }
 
 // ListInstallationRepositories returns repositories accessible to the given installation.
@@ -383,36 +427,6 @@ func (p *AppTokenProvider) ListInstallationRepositories(ctx context.Context, ins
 	return all, nil
 }
 
-// installationPermissionsToMap converts the SDK's typed struct to a flat map.
-func installationPermissionsToMap(p *ghub.InstallationPermissions) map[string]string {
-	if p == nil {
-		return nil
-	}
-	m := make(map[string]string)
-	add := func(key string, val *string) {
-		if val != nil && *val != "" {
-			m[key] = *val
-		}
-	}
-	add("actions", p.Actions)
-	add("administration", p.Administration)
-	add("checks", p.Checks)
-	add("contents", p.Contents)
-	add("deployments", p.Deployments)
-	add("discussions", p.Discussions)
-	add("environments", p.Environments)
-	add("issues", p.Issues)
-	add("members", p.Members)
-	add("metadata", p.Metadata)
-	add("packages", p.Packages)
-	add("pages", p.Pages)
-	add("pull_requests", p.PullRequests)
-	add("security_events", p.SecurityEvents)
-	add("statuses", p.Statuses)
-	add("vulnerability_alerts", p.VulnerabilityAlerts)
-	add("workflows", p.Workflows)
-	return m
-}
 
 // signJWT creates a signed JWT for GitHub App authentication.
 func (p *AppTokenProvider) signJWT() (string, error) {

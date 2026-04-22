@@ -107,23 +107,29 @@ func TestOAuthScopesToPermissions(t *testing.T) {
 		{
 			name:        "repo scope grants core repo permissions",
 			scopeHeader: "repo",
-			wantKeys:    []string{"contents", "pull_requests", "issues", "statuses", "checks", "actions", "metadata"},
+			wantKeys:    []string{"contents", "pull_requests", "issues", "statuses", "checks", "actions", "metadata", "deployments", "environments", "pages", "repository_hooks"},
 			wantLevels: map[string]string{
-				"contents":      "write",
-				"pull_requests": "write",
-				"issues":        "write",
-				"statuses":      "write",
-				"checks":        "write",
-				"actions":       "read", // no workflow scope
-				"metadata":      "read",
+				"contents":         "write",
+				"pull_requests":    "write",
+				"issues":           "write",
+				"statuses":         "write",
+				"checks":           "write",
+				"actions":          "read", // no workflow scope
+				"metadata":         "read",
+				"deployments":      "write",
+				"environments":     "write",
+				"pages":            "write",
+				"repository_hooks": "write",
 			},
+			wantAbsent: []string{"workflows"},
 		},
 		{
-			name:        "repo + workflow grants actions write",
+			name:        "repo + workflow grants actions and workflows write",
 			scopeHeader: "repo, workflow",
 			wantLevels: map[string]string{
-				"contents": "write",
-				"actions":  "write",
+				"contents":  "write",
+				"actions":   "write",
+				"workflows": "write",
 			},
 		},
 		{
@@ -134,10 +140,11 @@ func TestOAuthScopesToPermissions(t *testing.T) {
 		{
 			name:        "security_events adds security permissions",
 			scopeHeader: "repo, security_events",
-			wantKeys:    []string{"security_events", "vulnerability_alerts"},
+			wantKeys:    []string{"security_events", "vulnerability_alerts", "secret_scanning_alerts"},
 			wantLevels: map[string]string{
-				"security_events":      "write",
-				"vulnerability_alerts": "write",
+				"security_events":        "write",
+				"vulnerability_alerts":   "write",
+				"secret_scanning_alerts": "write",
 			},
 		},
 		{
@@ -176,6 +183,21 @@ func TestOAuthScopesToPermissions(t *testing.T) {
 			wantKeys:    []string{"statuses", "metadata"},
 			wantAbsent:  []string{"contents", "pull_requests", "issues"},
 		},
+		{
+			name:        "project scope grants projects write",
+			scopeHeader: "repo, project",
+			wantLevels:  map[string]string{"projects": "write"},
+		},
+		{
+			name:        "read:project scope grants projects read",
+			scopeHeader: "repo, read:project",
+			wantLevels:  map[string]string{"projects": "read"},
+		},
+		{
+			name:        "project overrides read:project",
+			scopeHeader: "repo, project, read:project",
+			wantLevels:  map[string]string{"projects": "write"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -203,7 +225,12 @@ func TestOAuthScopesToPermissions(t *testing.T) {
 
 func TestDefaultPermissions(t *testing.T) {
 	perms := defaultPermissions()
-	required := []string{"contents", "pull_requests", "issues", "statuses", "checks", "actions", "metadata"}
+	required := []string{
+		"contents", "pull_requests", "issues", "statuses", "checks", "actions",
+		"workflows", "metadata", "administration", "deployments", "environments",
+		"packages", "pages", "security_events", "vulnerability_alerts", "discussions",
+		"repository_hooks", "secrets", "secret_scanning_alerts", "members",
+	}
 	for _, key := range required {
 		if _, ok := perms[key]; !ok {
 			t.Errorf("defaultPermissions() missing key %q", key)

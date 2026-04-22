@@ -75,9 +75,68 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/check-runs(/.*)?$`, "POST", "checks", "write"},
 		{`^/repos/[^/]+/[^/]+/check-suites(/.*)?$`, "GET", "checks", "read"},
 
-		// Actions
+		// Secrets — must be matched before the actions catch-all.
+		{`^/repos/[^/]+/[^/]+/actions/secrets(/.*)?$`, "GET", "secrets", "read"},
+		{`^/repos/[^/]+/[^/]+/actions/secrets(/.*)?$`, "PUT", "secrets", "write"},
+		{`^/repos/[^/]+/[^/]+/actions/secrets(/.*)?$`, "DELETE", "secrets", "write"},
+
+		// Workflows — must be matched before the actions catch-all.
+		// Controls enabling/disabling workflow definitions and dispatching them.
+		{`^/repos/[^/]+/[^/]+/actions/workflows(/.*)?$`, "GET", "workflows", "read"},
+		{`^/repos/[^/]+/[^/]+/actions/workflows/[^/]+/(enable|disable)$`, "", "workflows", "write"},
+		{`^/repos/[^/]+/[^/]+/actions/workflows/[^/]+/dispatches$`, "POST", "workflows", "write"},
+
+		// Actions (workflow runs, artifacts, caches, runners — after specific paths above)
 		{`^/repos/[^/]+/[^/]+/actions(/.*)?$`, "GET", "actions", "read"},
-		{`^/repos/[^/]+/[^/]+/actions/(workflows|runs)/[^/]+/dispatches$`, "POST", "actions", "write"},
+		{`^/repos/[^/]+/[^/]+/actions/(runs|jobs)/[^/]+/(rerun|cancel)$`, "POST", "actions", "write"},
+
+		// Deployments
+		{`^/repos/[^/]+/[^/]+/deployments(/.*)?$`, "GET", "deployments", "read"},
+		{`^/repos/[^/]+/[^/]+/deployments$`, "POST", "deployments", "write"},
+		{`^/repos/[^/]+/[^/]+/deployments/[0-9]+/statuses(/.*)?$`, "GET", "deployments", "read"},
+		{`^/repos/[^/]+/[^/]+/deployments/[0-9]+/statuses$`, "POST", "deployments", "write"},
+
+		// Environments
+		{`^/repos/[^/]+/[^/]+/environments(/.*)?$`, "GET", "environments", "read"},
+		{`^/repos/[^/]+/[^/]+/environments/[^/]+$`, "PUT", "environments", "write"},
+		{`^/repos/[^/]+/[^/]+/environments/[^/]+$`, "DELETE", "environments", "write"},
+
+		// Pages
+		{`^/repos/[^/]+/[^/]+/pages(/.*)?$`, "GET", "pages", "read"},
+		{`^/repos/[^/]+/[^/]+/pages$`, "POST", "pages", "write"},
+		{`^/repos/[^/]+/[^/]+/pages$`, "PUT", "pages", "write"},
+		{`^/repos/[^/]+/[^/]+/pages$`, "DELETE", "pages", "write"},
+
+		// Packages
+		{`^/(orgs|users)/[^/]+/packages(/.*)?$`, "GET", "packages", "read"},
+		{`^/(orgs|users)/[^/]+/packages(/.*)?$`, "DELETE", "packages", "write"},
+
+		// Discussions
+		{`^/repos/[^/]+/[^/]+/discussions(/.*)?$`, "GET", "discussions", "read"},
+		{`^/repos/[^/]+/[^/]+/discussions$`, "POST", "discussions", "write"},
+		{`^/repos/[^/]+/[^/]+/discussions/[0-9]+(/.*)?$`, "PATCH", "discussions", "write"},
+		{`^/repos/[^/]+/[^/]+/discussions/[0-9]+(/.*)?$`, "DELETE", "discussions", "write"},
+		{`^/repos/[^/]+/[^/]+/discussions/[0-9]+/comments(/.*)?$`, "POST", "discussions", "write"},
+
+		// Repository webhooks
+		{`^/repos/[^/]+/[^/]+/hooks(/.*)?$`, "GET", "repository_hooks", "read"},
+		{`^/repos/[^/]+/[^/]+/hooks$`, "POST", "repository_hooks", "write"},
+		{`^/repos/[^/]+/[^/]+/hooks/[0-9]+$`, "PATCH", "repository_hooks", "write"},
+		{`^/repos/[^/]+/[^/]+/hooks/[0-9]+$`, "DELETE", "repository_hooks", "write"},
+
+		// Secret scanning alerts
+		{`^/repos/[^/]+/[^/]+/secret-scanning(/.*)?$`, "GET", "secret_scanning_alerts", "read"},
+		{`^/repos/[^/]+/[^/]+/secret-scanning/alerts/[0-9]+$`, "PATCH", "secret_scanning_alerts", "write"},
+
+		// Projects
+		{`^/projects(/.*)?$`, "GET", "projects", "read"},
+		{`^/projects(/.*)?$`, "POST", "projects", "write"},
+		{`^/projects(/.*)?$`, "PATCH", "projects", "write"},
+		{`^/projects(/.*)?$`, "DELETE", "projects", "write"},
+		{`^/repos/[^/]+/[^/]+/projects(/.*)?$`, "GET", "projects", "read"},
+		{`^/repos/[^/]+/[^/]+/projects$`, "POST", "projects", "write"},
+		{`^/orgs/[^/]+/projects(/.*)?$`, "GET", "projects", "read"},
+		{`^/orgs/[^/]+/projects$`, "POST", "projects", "write"},
 
 		// Releases
 		{`^/repos/[^/]+/[^/]+/releases(/.*)?$`, "GET", "contents", "read"},

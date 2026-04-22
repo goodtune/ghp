@@ -27,6 +27,76 @@ func TestEndpointScope(t *testing.T) {
 		{"GET", "/user", "metadata", "read"},
 		{"GET", "/repos/org/repo/pulls/1/files", "pull_requests", "read"},
 		{"POST", "/repos/org/repo/pulls/1/reviews", "pull_requests", "write"},
+
+		// Secrets
+		{"GET", "/repos/org/repo/actions/secrets", "secrets", "read"},
+		{"GET", "/repos/org/repo/actions/secrets/MY_SECRET", "secrets", "read"},
+		{"PUT", "/repos/org/repo/actions/secrets/MY_SECRET", "secrets", "write"},
+		{"DELETE", "/repos/org/repo/actions/secrets/MY_SECRET", "secrets", "write"},
+
+		// Workflows — must not fall through to the actions catch-all.
+		{"GET", "/repos/org/repo/actions/workflows", "workflows", "read"},
+		{"GET", "/repos/org/repo/actions/workflows/ci.yml", "workflows", "read"},
+		{"POST", "/repos/org/repo/actions/workflows/ci.yml/dispatches", "workflows", "write"},
+		{"PUT", "/repos/org/repo/actions/workflows/ci.yml/enable", "workflows", "write"},
+		{"PUT", "/repos/org/repo/actions/workflows/ci.yml/disable", "workflows", "write"},
+
+		// Actions (runs/jobs — after specific paths)
+		{"GET", "/repos/org/repo/actions/runs", "actions", "read"},
+		{"POST", "/repos/org/repo/actions/runs/123/rerun", "actions", "write"},
+		{"POST", "/repos/org/repo/actions/runs/123/cancel", "actions", "write"},
+		{"POST", "/repos/org/repo/actions/jobs/456/rerun", "actions", "write"},
+
+		// Deployments
+		{"GET", "/repos/org/repo/deployments", "deployments", "read"},
+		{"POST", "/repos/org/repo/deployments", "deployments", "write"},
+		{"GET", "/repos/org/repo/deployments/1/statuses", "deployments", "read"},
+		{"POST", "/repos/org/repo/deployments/1/statuses", "deployments", "write"},
+
+		// Environments
+		{"GET", "/repos/org/repo/environments", "environments", "read"},
+		{"GET", "/repos/org/repo/environments/prod", "environments", "read"},
+		{"PUT", "/repos/org/repo/environments/prod", "environments", "write"},
+		{"DELETE", "/repos/org/repo/environments/prod", "environments", "write"},
+
+		// Pages
+		{"GET", "/repos/org/repo/pages", "pages", "read"},
+		{"POST", "/repos/org/repo/pages", "pages", "write"},
+		{"PUT", "/repos/org/repo/pages", "pages", "write"},
+		{"DELETE", "/repos/org/repo/pages", "pages", "write"},
+
+		// Packages
+		{"GET", "/orgs/myorg/packages", "packages", "read"},
+		{"GET", "/orgs/myorg/packages/npm/mypkg", "packages", "read"},
+		{"DELETE", "/orgs/myorg/packages/npm/mypkg", "packages", "write"},
+		{"GET", "/users/alice/packages", "packages", "read"},
+
+		// Discussions
+		{"GET", "/repos/org/repo/discussions", "discussions", "read"},
+		{"POST", "/repos/org/repo/discussions", "discussions", "write"},
+		{"PATCH", "/repos/org/repo/discussions/1", "discussions", "write"},
+		{"DELETE", "/repos/org/repo/discussions/1", "discussions", "write"},
+		{"POST", "/repos/org/repo/discussions/1/comments", "discussions", "write"},
+
+		// Repository webhooks
+		{"GET", "/repos/org/repo/hooks", "repository_hooks", "read"},
+		{"POST", "/repos/org/repo/hooks", "repository_hooks", "write"},
+		{"PATCH", "/repos/org/repo/hooks/1", "repository_hooks", "write"},
+		{"DELETE", "/repos/org/repo/hooks/1", "repository_hooks", "write"},
+
+		// Secret scanning alerts
+		{"GET", "/repos/org/repo/secret-scanning/alerts", "secret_scanning_alerts", "read"},
+		{"GET", "/repos/org/repo/secret-scanning/alerts/1", "secret_scanning_alerts", "read"},
+		{"PATCH", "/repos/org/repo/secret-scanning/alerts/1", "secret_scanning_alerts", "write"},
+
+		// Projects
+		{"GET", "/projects/1", "projects", "read"},
+		{"POST", "/projects/1/columns", "projects", "write"},
+		{"GET", "/repos/org/repo/projects", "projects", "read"},
+		{"POST", "/repos/org/repo/projects", "projects", "write"},
+		{"GET", "/orgs/myorg/projects", "projects", "read"},
+		{"POST", "/orgs/myorg/projects", "projects", "write"},
+
 		// Unknown endpoint.
 		{"GET", "/unknown/path", "", ""},
 	}

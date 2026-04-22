@@ -255,6 +255,109 @@ func TestInstallationTokenError_MissingPermissions(t *testing.T) {
 	}
 }
 
+func TestExtractLinkNext(t *testing.T) {
+	tests := []struct {
+		header string
+		want   string
+	}{
+		{
+			header: `<https://api.github.com/app/installations?per_page=100&page=2>; rel="next", <https://api.github.com/app/installations?per_page=100&page=3>; rel="last"`,
+			want:   "https://api.github.com/app/installations?per_page=100&page=2",
+		},
+		{
+			header: `<https://api.github.com/app/installations?per_page=100&page=3>; rel="last"`,
+			want:   "",
+		},
+		{
+			header: "",
+			want:   "",
+		},
+		{
+			header: `<https://api.github.com/app/installations?page=2>; rel="next"`,
+			want:   "https://api.github.com/app/installations?page=2",
+		},
+	}
+	for _, tt := range tests {
+		got := extractLinkNext(tt.header)
+		if got != tt.want {
+			t.Errorf("extractLinkNext(%q) = %q, want %q", tt.header, got, tt.want)
+		}
+	}
+}
+
+func TestAppTokenProvider_ListInstallations_FullPermissions(t *testing.T) {
+	// Verify that ListInstallations returns the raw permissions map from the
+	// API response, including fields not in the go-github SDK typed struct.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			t.Error("expected Authorization header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]interface{}{
+			{
+				"id": 42,
+				"account": map[string]interface{}{
+					"login": "myorg",
+					"id":    100,
+					"type":  "Organization",
+				},
+				"permissions": map[string]string{
+					"contents":               "write",
+					"pull_requests":          "write",
+					"workflows":              "write",
+					"secret_scanning_alerts": "read",
+				},
+				"repository_selection": "selected",
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{
+		AppID:      1,
+		PrivateKey: testRSAKey,
+		BaseURL:    server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	installs, err := provider.ListInstallations(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(installs) != 1 {
+		t.Fatalf("expected 1 installation, got %d", len(installs))
+	}
+	inst := installs[0]
+	if inst.ID != 42 {
+		t.Errorf("expected ID 42, got %d", inst.ID)
+	}
+	if inst.Account.Login != "myorg" {
+		t.Errorf("expected login myorg, got %q", inst.Account.Login)
+	}
+	if inst.RepositorySelection != "selected" {
+		t.Errorf("expected repository_selection selected, got %q", inst.RepositorySelection)
+	}
+	// Verify all permission fields are present including non-SDK fields.
+	wantPerms := map[string]string{
+		"contents":               "write",
+		"pull_requests":          "write",
+		"workflows":              "write",
+		"secret_scanning_alerts": "read",
+	}
+	for k, v := range wantPerms {
+		if inst.Permissions[k] != v {
+			t.Errorf("permission %q: want %q, got %q", k, v, inst.Permissions[k])
+		}
+	}
+}
+
 // testRSAKey is a test-only RSA private key in PEM format.
 var testRSAKey = `-----BEGIN RSA PRIVATE KEY-----
 MIIEowIBAAKCAQEAwUAwCT0ycvVRxvwAUe4RYLbAyPk2uEEpUJIb0VNvi9WWjPVl
