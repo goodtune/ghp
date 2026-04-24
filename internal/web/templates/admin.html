@@ -770,7 +770,7 @@
                 alert('Failed to revoke token: ' + e.message);
                 return;
             }
-            loadAllTokens();
+            reloadCurrentTokenView();
         }
 
         function editToken(id, reposJson, scopesJson) {
