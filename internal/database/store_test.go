@@ -20,6 +20,7 @@ func testStoreContract(t *testing.T, store Store) {
 	t.Run("ProxyTokenWithAppID", func(t *testing.T) { testProxyTokenWithAppID(t, store) })
 	t.Run("ProxyTokenNoExpiry", func(t *testing.T) { testProxyTokenNoExpiry(t, store) })
 	t.Run("UpdateProxyTokenAppID", func(t *testing.T) { testUpdateProxyTokenAppID(t, store) })
+	t.Run("UpdateProxyTokenScopes", func(t *testing.T) { testUpdateProxyTokenScopes(t, store) })
 	t.Run("GitHubTokenAppID", func(t *testing.T) { testGitHubTokenAppID(t, store) })
 	t.Run("SyncAdminRoles", func(t *testing.T) { testSyncAdminRoles(t, store) })
 	t.Run("CachedRepositoryCRUD", func(t *testing.T) { testCachedRepositoryCRUD(t, store) })
@@ -653,6 +654,87 @@ func testUpdateProxyTokenAppID(t *testing.T, store Store) {
 	// Cleanup.
 	if err := store.DeleteApp(ctx, app.ID); err != nil {
 		t.Errorf("cleanup DeleteApp: %v", err)
+	}
+}
+
+func testUpdateProxyTokenScopes(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	user := &User{GitHubID: 99099, GitHubUsername: "scopeuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	pt := &ProxyToken{
+		TokenHash:    "contract_hash_scopes_001",
+		TokenPrefix:  "ghx_sc1",
+		TokenType:    "proxy",
+		UserID:       &user.ID,
+		Repositories: json.RawMessage(`["org/repo1"]`),
+		Scopes:       json.RawMessage(`{"contents":"read"}`),
+		ExpiresAt:    timePtr(time.Now().Add(24 * time.Hour)),
+	}
+	if err := store.CreateProxyToken(ctx, pt); err != nil {
+		t.Fatalf("CreateProxyToken: %v", err)
+	}
+
+	newRepos := json.RawMessage(`["org/repo1","org/repo2"]`)
+	newScopes := json.RawMessage(`{"contents":"write","pull_requests":"read"}`)
+	if err := store.UpdateProxyTokenScopes(ctx, pt.ID, newRepos, newScopes); err != nil {
+		t.Fatalf("UpdateProxyTokenScopes: %v", err)
+	}
+
+	got, err := store.GetProxyTokenByHash(ctx, "contract_hash_scopes_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var gotRepos []string
+	if err := json.Unmarshal(got.Repositories, &gotRepos); err != nil {
+		t.Fatalf("unmarshal repositories: %v", err)
+	}
+	if len(gotRepos) != 2 || gotRepos[0] != "org/repo1" || gotRepos[1] != "org/repo2" {
+		t.Errorf("repositories = %v, want [org/repo1 org/repo2]", gotRepos)
+	}
+
+	var gotScopes map[string]string
+	if err := json.Unmarshal(got.Scopes, &gotScopes); err != nil {
+		t.Fatalf("unmarshal scopes: %v", err)
+	}
+	if gotScopes["contents"] != "write" {
+		t.Errorf("scopes[contents] = %q, want write", gotScopes["contents"])
+	}
+	if gotScopes["pull_requests"] != "read" {
+		t.Errorf("scopes[pull_requests] = %q, want read", gotScopes["pull_requests"])
+	}
+
+	// Clear to open-scoped (empty arrays/objects).
+	if err := store.UpdateProxyTokenScopes(ctx, pt.ID, json.RawMessage(`[]`), json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("UpdateProxyTokenScopes (clear): %v", err)
+	}
+	got2, err := store.GetProxyTokenByHash(ctx, "contract_hash_scopes_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var clearedRepos []string
+	if err := json.Unmarshal(got2.Repositories, &clearedRepos); err != nil {
+		t.Fatalf("unmarshal cleared repositories: %v", err)
+	}
+	if len(clearedRepos) != 0 {
+		t.Errorf("expected empty repositories after clear, got %v", clearedRepos)
+	}
+	var clearedScopes map[string]string
+	if err := json.Unmarshal(got2.Scopes, &clearedScopes); err != nil {
+		t.Fatalf("unmarshal cleared scopes: %v", err)
+	}
+	if len(clearedScopes) != 0 {
+		t.Errorf("expected empty scopes after clear, got %v", clearedScopes)
+	}
+
+	// ErrNotFound for missing token.
+	err = store.UpdateProxyTokenScopes(ctx, "00000000-0000-0000-0000-000000000000", newRepos, newScopes)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for missing token, got: %v", err)
 	}
 }
 

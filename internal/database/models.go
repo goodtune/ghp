@@ -13,12 +13,11 @@ import (
 	"time"
 )
 
-// ErrNotFound is returned by DeleteApp, UpdateApp, and UpdateProxyTokenAppID
-// when the target record does not exist. Other mutating operations
-// (RevokeProxyToken) and all read operations (Get*,
-// List*) do not wrap ErrNotFound — reads return (nil, nil) for missing
-// records. Callers can distinguish "not found" from other errors using
-// errors.Is(err, ErrNotFound).
+// ErrNotFound is returned by DeleteApp, UpdateApp, UpdateProxyTokenAppID, and
+// UpdateProxyTokenScopes when the target record does not exist. Other mutating
+// operations (RevokeProxyToken) and all read operations (Get*, List*) do not
+// wrap ErrNotFound — reads return (nil, nil) for missing records. Callers can
+// distinguish "not found" from other errors using errors.Is(err, ErrNotFound).
 var ErrNotFound = errors.New("not found")
 
 // DefaultTokenType is the default ProxyToken.TokenType used when none is
@@ -158,6 +157,9 @@ type Store interface {
 	ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error)
 	RevokeProxyToken(ctx context.Context, id string) error
 	UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error
+	// UpdateProxyTokenScopes updates the repositories and scopes of an existing
+	// proxy token. Returns ErrNotFound if the token does not exist.
+	UpdateProxyTokenScopes(ctx context.Context, id string, repositories json.RawMessage, scopes json.RawMessage) error
 	// DeleteExpiredProxyTokens hard-deletes proxy tokens that have been
 	// expired or revoked for longer than olderThan.  It returns the number
 	// of rows deleted.  Tokens with no expiry (expires_at IS NULL) are only

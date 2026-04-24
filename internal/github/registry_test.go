@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"testing"
 	"time"
@@ -68,6 +69,9 @@ func (m *mockStore) ListActiveProxyTokens(ctx context.Context) ([]*database.Prox
 }
 func (m *mockStore) RevokeProxyToken(ctx context.Context, id string) error { panic("unexpected") }
 func (m *mockStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error {
+	panic("unexpected")
+}
+func (m *mockStore) UpdateProxyTokenScopes(_ context.Context, _ string, _ json.RawMessage, _ json.RawMessage) error {
 	panic("unexpected")
 }
 func (m *mockStore) DeleteExpiredProxyTokens(_ context.Context, _ time.Duration) (int64, error) {
