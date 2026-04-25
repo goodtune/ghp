@@ -2,10 +2,6 @@ import { defineConfig, devices } from "@playwright/test";
 
 const baseURL = process.env.GHP_BASE_URL || "http://localhost:8080";
 
-// Optionally restrict to a single browser via PLAYWRIGHT_BROWSER (chromium |
-// firefox | webkit). When unset, all three projects run.
-const onlyBrowser = process.env.PLAYWRIGHT_BROWSER;
-
 const allProjects = [
   {
     name: "chromium",
@@ -20,6 +16,18 @@ const allProjects = [
     use: { ...devices["Desktop Safari"] },
   },
 ];
+
+// Optionally restrict to a single browser via PLAYWRIGHT_BROWSER (chromium |
+// firefox | webkit). When unset, all three projects run. Normalize the value
+// and fail fast on typos rather than silently producing an empty run.
+const rawBrowser = process.env.PLAYWRIGHT_BROWSER;
+const onlyBrowser = rawBrowser?.trim().toLowerCase() || undefined;
+if (onlyBrowser && !allProjects.some((p) => p.name === onlyBrowser)) {
+  const allowed = allProjects.map((p) => p.name).join(", ");
+  throw new Error(
+    `PLAYWRIGHT_BROWSER=${JSON.stringify(rawBrowser)} is not a recognized browser. Allowed values: ${allowed}.`
+  );
+}
 
 export default defineConfig({
   testDir: "./tests",
