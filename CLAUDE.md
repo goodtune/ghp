@@ -44,11 +44,18 @@ make migrate
 ```bash
 cd e2e
 npm ci
-npx playwright install --with-deps chromium
+npx playwright install --with-deps chromium firefox webkit
 npx playwright test
 ```
 
 E2E tests require a running ghp server on `http://localhost:8080` with `GHP_DEV_MODE=true`.
+
+Tests run against Chromium, Firefox, and WebKit by default. To restrict the run
+to a single engine (e.g. for fast local iteration), set `PLAYWRIGHT_BROWSER`:
+
+```bash
+PLAYWRIGHT_BROWSER=chromium npx playwright test
+```
 
 ## Project Structure
 
