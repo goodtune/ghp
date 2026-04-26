@@ -93,9 +93,15 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/actions/workflows/[^/]+/(enable|disable)$`, "", "workflows", "write"},
 		{`^/repos/[^/]+/[^/]+/actions/workflows/[^/]+/dispatches$`, "POST", "workflows", "write"},
 
-		// Actions (workflow runs, artifacts, caches, runners — after specific paths above)
+		// Actions (workflow runs, artifacts, caches, runners — after specific paths above).
+		// The catch-alls cover all remaining methods so non-GET endpoints
+		// (artifact deletes, cache deletes, runner registration, run deletion,
+		// etc.) are scoped under actions:write rather than forwarded unscoped.
 		{`^/repos/[^/]+/[^/]+/actions(/.*)?$`, "GET", "actions", "read"},
-		{`^/repos/[^/]+/[^/]+/actions/(runs|jobs)/[^/]+/(rerun|cancel)$`, "POST", "actions", "write"},
+		{`^/repos/[^/]+/[^/]+/actions(/.*)?$`, "POST", "actions", "write"},
+		{`^/repos/[^/]+/[^/]+/actions(/.*)?$`, "PUT", "actions", "write"},
+		{`^/repos/[^/]+/[^/]+/actions(/.*)?$`, "PATCH", "actions", "write"},
+		{`^/repos/[^/]+/[^/]+/actions(/.*)?$`, "DELETE", "actions", "write"},
 
 		// Deployments
 		{`^/repos/[^/]+/[^/]+/deployments(/.*)?$`, "GET", "deployments", "read"},

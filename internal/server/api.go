@@ -781,11 +781,7 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 		perms["environments"] = "write"
 		perms["pages"] = "write"
 		perms["repository_hooks"] = "write"
-		// repo grants admin access to repos owned by the user, which includes
-		// managing Actions secrets and repo settings.
-		perms["secrets"] = "write"
-		perms["administration"] = "write"
-		// Actions read is implied by repo; write requires the workflow scope.
+		// Actions read is implied by repo/public_repo; write requires workflow.
 		if scopes["workflow"] {
 			perms["actions"] = "write"
 			// The workflow scope specifically covers workflow file management.
@@ -793,7 +789,15 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 		} else {
 			perms["actions"] = "read"
 		}
-	} else if scopes["repo:status"] {
+	}
+	// Full repo scope includes admin-level access to owned repositories
+	// (Actions secrets, repo settings, branch protection). public_repo is
+	// limited to public repos and does not grant these admin capabilities.
+	if scopes["repo"] {
+		perms["secrets"] = "write"
+		perms["administration"] = "write"
+	}
+	if scopes["repo:status"] && !scopes["repo"] && !scopes["public_repo"] {
 		// repo:status alone gives commit-status write without full repo access.
 		perms["statuses"] = "write"
 		perms["metadata"] = "read"

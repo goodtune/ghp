@@ -277,6 +277,11 @@ func TestExtractLinkNext(t *testing.T) {
 			header: `<https://api.github.com/app/installations?page=2>; rel="next"`,
 			want:   "https://api.github.com/app/installations?page=2",
 		},
+		{
+			// rel parameter not first — RFC 5988 allows any order.
+			header: `<https://api.github.com/app/installations?page=2>; type="application/json"; rel="next", <https://api.github.com/app/installations?page=5>; rel="last"`,
+			want:   "https://api.github.com/app/installations?page=2",
+		},
 	}
 	for _, tt := range tests {
 		got := extractLinkNext(tt.header)

@@ -55,7 +55,7 @@ class GhpPermissionSelect extends HTMLElement {
     actions:                'GitHub Actions workflow runs, jobs, artifacts, caches, and runners.',
     workflows:              'GitHub Actions workflow definitions — enabling, disabling, and dispatching workflows.',
     metadata:               'Search repositories and access basic repository metadata.',
-    administration:         'Repository settings, teams, collaborators, and branch protection rules.',
+    administration:         'Repository settings, collaborators, invitations, and branch protection rules.',
     deployments:            'Deployments and deployment statuses.',
     environments:           'Repository environments and their protection rules.',
     packages:               'GitHub Packages — publish, install, and delete packages.',
@@ -66,7 +66,7 @@ class GhpPermissionSelect extends HTMLElement {
     repository_hooks:       'Repository webhooks.',
     secrets:                'Repository Actions secrets.',
     secret_scanning_alerts: 'Secret scanning alerts.',
-    members:                'Organisation members and teams.',
+    members:                'Organisation members, memberships, invitations, and public membership.',
     projects:               'GitHub Projects — repository and organisation project boards.',
   };
 

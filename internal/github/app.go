@@ -26,6 +26,12 @@ import (
 	"github.com/goodtune/ghp/internal/crypto"
 )
 
+// userAgent identifies this proxy in outbound GitHub API requests. GitHub
+// requires a User-Agent on all REST API calls; the go-github SDK sets one
+// automatically, but raw HTTP paths (e.g. ListInstallations) must set it
+// explicitly.
+const userAgent = "ghp-proxy"
+
 // InstallationTokenError represents a failed installation token request,
 // carrying the upstream HTTP status code, GitHub's error message, and
 // permission diagnostics.
@@ -331,6 +337,7 @@ func (p *AppTokenProvider) ListInstallations(ctx context.Context) ([]Installatio
 		}
 		req.Header.Set("Authorization", "Bearer "+signed)
 		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", userAgent)
 
 		installs, linkHeader, err := func() ([]rawInstallation, string, error) {
 			resp, err := p.client.Do(req)
@@ -372,20 +379,29 @@ func (p *AppTokenProvider) ListInstallations(ctx context.Context) ([]Installatio
 }
 
 // extractLinkNext parses a GitHub Link header and returns the URL for the
-// next page, or an empty string if there is no next page.
+// next page, or an empty string if there is no next page. Per RFC 5988,
+// link parameters can appear in any order, so all `;`-separated parameters
+// after the URL are scanned for `rel="next"`.
 func extractLinkNext(link string) string {
-	// Format: <url>; rel="next", <url>; rel="last"
+	// Format: <url>; rel="next"; type="application/json", <url>; rel="last"
 	for _, part := range strings.Split(link, ",") {
 		part = strings.TrimSpace(part)
 		segments := strings.Split(part, ";")
 		if len(segments) < 2 {
 			continue
 		}
-		rel := strings.TrimSpace(segments[1])
-		if rel == `rel="next"` {
-			url := strings.TrimSpace(segments[0])
-			return strings.Trim(url, "<>")
+		isNext := false
+		for _, p := range segments[1:] {
+			if strings.TrimSpace(p) == `rel="next"` {
+				isNext = true
+				break
+			}
 		}
+		if !isNext {
+			continue
+		}
+		url := strings.TrimSpace(segments[0])
+		return strings.Trim(url, "<>")
 	}
 	return ""
 }

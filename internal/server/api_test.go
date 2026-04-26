@@ -136,9 +136,10 @@ func TestOAuthScopesToPermissions(t *testing.T) {
 			},
 		},
 		{
-			name:        "public_repo grants same permissions as repo",
+			name:        "public_repo grants core repo permissions but not admin",
 			scopeHeader: "public_repo",
-			wantKeys:    []string{"contents", "pull_requests", "issues"},
+			wantKeys:    []string{"contents", "pull_requests", "issues", "deployments", "pages"},
+			wantAbsent:  []string{"secrets", "administration"},
 		},
 		{
 			name:        "security_events adds security permissions",

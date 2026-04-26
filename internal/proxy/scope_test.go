@@ -46,6 +46,12 @@ func TestEndpointScope(t *testing.T) {
 		{"POST", "/repos/org/repo/actions/runs/123/rerun", "actions", "write"},
 		{"POST", "/repos/org/repo/actions/runs/123/cancel", "actions", "write"},
 		{"POST", "/repos/org/repo/actions/jobs/456/rerun", "actions", "write"},
+		// Non-GET catch-alls so other Actions endpoints (artifacts, caches,
+		// runners, run deletion) are scoped under actions:write.
+		{"DELETE", "/repos/org/repo/actions/artifacts/789", "actions", "write"},
+		{"DELETE", "/repos/org/repo/actions/caches/12", "actions", "write"},
+		{"POST", "/repos/org/repo/actions/runners/registration-token", "actions", "write"},
+		{"DELETE", "/repos/org/repo/actions/runs/123", "actions", "write"},
 
 		// Deployments
 		{"GET", "/repos/org/repo/deployments", "deployments", "read"},
