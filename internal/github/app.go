@@ -314,11 +314,6 @@ func (p *AppTokenProvider) newAppClient() (*ghub.Client, error) {
 // map from the API is preserved — the SDK's typed InstallationPermissions
 // struct only exposes a subset of the permission fields GitHub supports.
 func (p *AppTokenProvider) ListInstallations(ctx context.Context) ([]Installation, error) {
-	signed, err := p.signJWT()
-	if err != nil {
-		return nil, err
-	}
-
 	type rawInstallation struct {
 		ID      int64 `json:"id"`
 		Account struct {
@@ -333,6 +328,13 @@ func (p *AppTokenProvider) ListInstallations(ctx context.Context) ([]Installatio
 	var all []Installation
 	nextURL := fmt.Sprintf("%s/app/installations?per_page=100", p.baseURL)
 	for nextURL != "" {
+		// Sign per request so a slow paginated walk cannot outlive the JWT
+		// (signJWT sets a 10-minute expiry).
+		signed, err := p.signJWT()
+		if err != nil {
+			return nil, err
+		}
+
 		req, err := http.NewRequestWithContext(ctx, "GET", nextURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("creating installations request: %w", err)
