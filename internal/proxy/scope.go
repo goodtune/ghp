@@ -109,10 +109,13 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/deployments/[0-9]+/statuses(/.*)?$`, "GET", "deployments", "read"},
 		{`^/repos/[^/]+/[^/]+/deployments/[0-9]+/statuses$`, "POST", "deployments", "write"},
 
-		// Environments
+		// Environments. Write rules cover subpaths like
+		// /environments/{name}/deployment-branch-policies and /reviewers.
 		{`^/repos/[^/]+/[^/]+/environments(/.*)?$`, "GET", "environments", "read"},
-		{`^/repos/[^/]+/[^/]+/environments/[^/]+$`, "PUT", "environments", "write"},
-		{`^/repos/[^/]+/[^/]+/environments/[^/]+$`, "DELETE", "environments", "write"},
+		{`^/repos/[^/]+/[^/]+/environments/[^/]+(/.*)?$`, "PUT", "environments", "write"},
+		{`^/repos/[^/]+/[^/]+/environments/[^/]+(/.*)?$`, "POST", "environments", "write"},
+		{`^/repos/[^/]+/[^/]+/environments/[^/]+(/.*)?$`, "PATCH", "environments", "write"},
+		{`^/repos/[^/]+/[^/]+/environments/[^/]+(/.*)?$`, "DELETE", "environments", "write"},
 
 		// Pages
 		{`^/repos/[^/]+/[^/]+/pages(/.*)?$`, "GET", "pages", "read"},
@@ -121,9 +124,11 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/pages(/.*)?$`, "PATCH", "pages", "write"},
 		{`^/repos/[^/]+/[^/]+/pages(/.*)?$`, "DELETE", "pages", "write"},
 
-		// Packages
+		// Packages — covers org, user, and authenticated-user (/user) endpoints.
 		{`^/(orgs|users)/[^/]+/packages(/.*)?$`, "GET", "packages", "read"},
 		{`^/(orgs|users)/[^/]+/packages(/.*)?$`, "DELETE", "packages", "write"},
+		{`^/user/packages(/.*)?$`, "GET", "packages", "read"},
+		{`^/user/packages(/.*)?$`, "DELETE", "packages", "write"},
 
 		// Discussions
 		{`^/repos/[^/]+/[^/]+/discussions(/.*)?$`, "GET", "discussions", "read"},

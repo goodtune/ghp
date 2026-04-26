@@ -64,6 +64,9 @@ func TestEndpointScope(t *testing.T) {
 		{"GET", "/repos/org/repo/environments/prod", "environments", "read"},
 		{"PUT", "/repos/org/repo/environments/prod", "environments", "write"},
 		{"DELETE", "/repos/org/repo/environments/prod", "environments", "write"},
+		{"POST", "/repos/org/repo/environments/prod/deployment-branch-policies", "environments", "write"},
+		{"DELETE", "/repos/org/repo/environments/prod/deployment-branch-policies/1", "environments", "write"},
+		{"PATCH", "/repos/org/repo/environments/prod/reviewers", "environments", "write"},
 
 		// Pages
 		{"GET", "/repos/org/repo/pages", "pages", "read"},
@@ -79,6 +82,9 @@ func TestEndpointScope(t *testing.T) {
 		{"GET", "/orgs/myorg/packages/npm/mypkg", "packages", "read"},
 		{"DELETE", "/orgs/myorg/packages/npm/mypkg", "packages", "write"},
 		{"GET", "/users/alice/packages", "packages", "read"},
+		{"GET", "/user/packages", "packages", "read"},
+		{"GET", "/user/packages/npm/mypkg", "packages", "read"},
+		{"DELETE", "/user/packages/npm/mypkg", "packages", "write"},
 
 		// Discussions
 		{"GET", "/repos/org/repo/discussions", "discussions", "read"},

@@ -187,6 +187,7 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 	req.Header.Set("Authorization", "Bearer "+signed)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -248,6 +249,7 @@ func (p *AppTokenProvider) getInstallationPermissions(ctx context.Context, jwtTo
 	}
 	req.Header.Set("Authorization", "Bearer "+jwtToken)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
