@@ -112,7 +112,7 @@ func NewAppTokenProvider(cfg AppConfig) (*AppTokenProvider, error) {
 		return nil, fmt.Errorf("parsing private key: %w", err)
 	}
 
-	baseURL := cfg.BaseURL
+	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
 	}

@@ -299,9 +299,17 @@ func TestAppTokenProvider_ListInstallations_FullPermissions(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		if auth == "" {
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %q", r.Method)
+		}
+		if auth := r.Header.Get("Authorization"); auth == "" {
 			t.Error("expected Authorization header")
+		}
+		if ua := r.Header.Get("User-Agent"); ua == "" {
+			t.Error("expected User-Agent header")
+		}
+		if accept := r.Header.Get("Accept"); accept != "application/vnd.github+json" {
+			t.Errorf("expected Accept application/vnd.github+json, got %q", accept)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]map[string]interface{}{
@@ -366,6 +374,15 @@ func TestAppTokenProvider_ListInstallations_FullPermissions(t *testing.T) {
 
 func TestAppTokenProvider_ListInstallations_HTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations" {
+			t.Errorf("unexpected path: %q", r.URL.Path)
+		}
+		if r.Method != "GET" {
+			t.Errorf("unexpected method: %q", r.Method)
+		}
+		if r.Header.Get("User-Agent") == "" {
+			t.Error("expected User-Agent header")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"message":"Bad credentials"}`))
@@ -390,6 +407,32 @@ func TestAppTokenProvider_ListInstallations_HTTPError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Bad credentials") {
 		t.Errorf("expected error to include response body, got %q", err.Error())
+	}
+}
+
+func TestAppTokenProvider_BaseURLTrailingSlashTrimmed(t *testing.T) {
+	// A trailing slash on BaseURL must not produce double-slash request URLs.
+	calledPath := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calledPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{
+		AppID:      1,
+		PrivateKey: testRSAKey,
+		BaseURL:    server.URL + "/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.ListInstallations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calledPath != "/app/installations" {
+		t.Errorf("expected request path /app/installations, got %q", calledPath)
 	}
 }
 
