@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -252,6 +253,186 @@ func TestInstallationTokenError_MissingPermissions(t *testing.T) {
 	}
 	if missing["issues"] != "read" {
 		t.Errorf("expected issues:read missing, got %v", missing)
+	}
+}
+
+func TestExtractLinkNext(t *testing.T) {
+	tests := []struct {
+		header string
+		want   string
+	}{
+		{
+			header: `<https://api.github.com/app/installations?per_page=100&page=2>; rel="next", <https://api.github.com/app/installations?per_page=100&page=3>; rel="last"`,
+			want:   "https://api.github.com/app/installations?per_page=100&page=2",
+		},
+		{
+			header: `<https://api.github.com/app/installations?per_page=100&page=3>; rel="last"`,
+			want:   "",
+		},
+		{
+			header: "",
+			want:   "",
+		},
+		{
+			header: `<https://api.github.com/app/installations?page=2>; rel="next"`,
+			want:   "https://api.github.com/app/installations?page=2",
+		},
+		{
+			// rel parameter not first — RFC 5988 allows any order.
+			header: `<https://api.github.com/app/installations?page=2>; type="application/json"; rel="next", <https://api.github.com/app/installations?page=5>; rel="last"`,
+			want:   "https://api.github.com/app/installations?page=2",
+		},
+	}
+	for _, tt := range tests {
+		got := extractLinkNext(tt.header)
+		if got != tt.want {
+			t.Errorf("extractLinkNext(%q) = %q, want %q", tt.header, got, tt.want)
+		}
+	}
+}
+
+func TestAppTokenProvider_ListInstallations_FullPermissions(t *testing.T) {
+	// Verify that ListInstallations returns the raw permissions map from the
+	// API response, including fields not in the go-github SDK typed struct.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %q", r.Method)
+		}
+		if auth := r.Header.Get("Authorization"); auth == "" {
+			t.Error("expected Authorization header")
+		}
+		if ua := r.Header.Get("User-Agent"); ua == "" {
+			t.Error("expected User-Agent header")
+		}
+		if accept := r.Header.Get("Accept"); accept != "application/vnd.github+json" {
+			t.Errorf("expected Accept application/vnd.github+json, got %q", accept)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]interface{}{
+			{
+				"id": 42,
+				"account": map[string]interface{}{
+					"login": "myorg",
+					"id":    100,
+					"type":  "Organization",
+				},
+				"permissions": map[string]string{
+					"contents":               "write",
+					"pull_requests":          "write",
+					"workflows":              "write",
+					"secret_scanning_alerts": "read",
+				},
+				"repository_selection": "selected",
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{
+		AppID:      1,
+		PrivateKey: testRSAKey,
+		BaseURL:    server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	installs, err := provider.ListInstallations(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(installs) != 1 {
+		t.Fatalf("expected 1 installation, got %d", len(installs))
+	}
+	inst := installs[0]
+	if inst.ID != 42 {
+		t.Errorf("expected ID 42, got %d", inst.ID)
+	}
+	if inst.Account.Login != "myorg" {
+		t.Errorf("expected login myorg, got %q", inst.Account.Login)
+	}
+	if inst.RepositorySelection != "selected" {
+		t.Errorf("expected repository_selection selected, got %q", inst.RepositorySelection)
+	}
+	// Verify all permission fields are present including non-SDK fields.
+	wantPerms := map[string]string{
+		"contents":               "write",
+		"pull_requests":          "write",
+		"workflows":              "write",
+		"secret_scanning_alerts": "read",
+	}
+	for k, v := range wantPerms {
+		if inst.Permissions[k] != v {
+			t.Errorf("permission %q: want %q, got %q", k, v, inst.Permissions[k])
+		}
+	}
+}
+
+func TestAppTokenProvider_ListInstallations_HTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations" {
+			t.Errorf("unexpected path: %q", r.URL.Path)
+		}
+		if r.Method != "GET" {
+			t.Errorf("unexpected method: %q", r.Method)
+		}
+		if r.Header.Get("User-Agent") == "" {
+			t.Error("expected User-Agent header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{
+		AppID:      1,
+		PrivateKey: testRSAKey,
+		BaseURL:    server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = provider.ListInstallations(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("expected error to include HTTP status 401, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Bad credentials") {
+		t.Errorf("expected error to include response body, got %q", err.Error())
+	}
+}
+
+func TestAppTokenProvider_BaseURLTrailingSlashTrimmed(t *testing.T) {
+	// A trailing slash on BaseURL must not produce double-slash request URLs.
+	calledPath := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calledPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{
+		AppID:      1,
+		PrivateKey: testRSAKey,
+		BaseURL:    server.URL + "/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.ListInstallations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calledPath != "/app/installations" {
+		t.Errorf("expected request path /app/installations, got %q", calledPath)
 	}
 }
 
