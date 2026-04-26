@@ -108,7 +108,7 @@ func TestOAuthScopesToPermissions(t *testing.T) {
 		{
 			name:        "repo scope grants core repo permissions",
 			scopeHeader: "repo",
-			wantKeys:    []string{"contents", "pull_requests", "issues", "statuses", "checks", "actions", "metadata", "deployments", "environments", "pages", "repository_hooks"},
+			wantKeys:    []string{"contents", "pull_requests", "issues", "statuses", "checks", "actions", "metadata", "deployments", "environments", "pages", "repository_hooks", "secrets", "administration"},
 			wantLevels: map[string]string{
 				"contents":         "write",
 				"pull_requests":    "write",
@@ -121,6 +121,8 @@ func TestOAuthScopesToPermissions(t *testing.T) {
 				"environments":     "write",
 				"pages":            "write",
 				"repository_hooks": "write",
+				"secrets":          "write",
+				"administration":   "write",
 			},
 			wantAbsent: []string{"workflows"},
 		},

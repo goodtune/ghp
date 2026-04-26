@@ -35,6 +35,12 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/git/(refs|trees|blobs|commits|tags)(/.*)?$`, "POST", "contents", "write"},
 		{`^/repos/[^/]+/[^/]+/git/(refs|trees|blobs|commits|tags)(/.*)?$`, "PATCH", "contents", "write"},
 
+		// Branch protection — must be matched before the branches catch-all.
+		{`^/repos/[^/]+/[^/]+/branches/[^/]+/protection(/.*)?$`, "GET", "administration", "read"},
+		{`^/repos/[^/]+/[^/]+/branches/[^/]+/protection(/.*)?$`, "PUT", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/branches/[^/]+/protection(/.*)?$`, "POST", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/branches/[^/]+/protection(/.*)?$`, "DELETE", "administration", "write"},
+
 		// Branches
 		{`^/repos/[^/]+/[^/]+/branches(/.*)?$`, "GET", "contents", "read"},
 
@@ -141,6 +147,34 @@ func init() {
 		// Releases
 		{`^/repos/[^/]+/[^/]+/releases(/.*)?$`, "GET", "contents", "read"},
 		{`^/repos/[^/]+/[^/]+/releases(/.*)?$`, "POST", "contents", "write"},
+
+		// Repository administration: settings changes, collaborators, branch
+		// protection, invitations, transfers, topics. GET on /repos/{owner}/{repo}
+		// is metadata; mutations to the same path are administration.
+		{`^/repos/[^/]+/[^/]+$`, "PATCH", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+$`, "DELETE", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/transfer$`, "POST", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/collaborators(/.*)?$`, "GET", "administration", "read"},
+		{`^/repos/[^/]+/[^/]+/collaborators/[^/]+$`, "PUT", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/collaborators/[^/]+$`, "DELETE", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/invitations(/.*)?$`, "GET", "administration", "read"},
+		{`^/repos/[^/]+/[^/]+/invitations/[0-9]+$`, "PATCH", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/invitations/[0-9]+$`, "DELETE", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/topics$`, "PUT", "administration", "write"},
+
+		// Organisation membership: members list, memberships, invitations,
+		// public members.
+		{`^/orgs/[^/]+/members(/.*)?$`, "GET", "members", "read"},
+		{`^/orgs/[^/]+/members/[^/]+$`, "DELETE", "members", "write"},
+		{`^/orgs/[^/]+/memberships/[^/]+$`, "GET", "members", "read"},
+		{`^/orgs/[^/]+/memberships/[^/]+$`, "PUT", "members", "write"},
+		{`^/orgs/[^/]+/memberships/[^/]+$`, "DELETE", "members", "write"},
+		{`^/orgs/[^/]+/invitations(/.*)?$`, "GET", "members", "read"},
+		{`^/orgs/[^/]+/invitations$`, "POST", "members", "write"},
+		{`^/orgs/[^/]+/invitations/[0-9]+$`, "DELETE", "members", "write"},
+		{`^/orgs/[^/]+/public_members(/.*)?$`, "GET", "members", "read"},
+		{`^/orgs/[^/]+/public_members/[^/]+$`, "PUT", "members", "write"},
+		{`^/orgs/[^/]+/public_members/[^/]+$`, "DELETE", "members", "write"},
 
 		// Repository metadata (always allowed with any scope)
 		{`^/repos/[^/]+/[^/]+$`, "GET", "metadata", "read"},

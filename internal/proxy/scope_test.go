@@ -97,6 +97,36 @@ func TestEndpointScope(t *testing.T) {
 		{"GET", "/orgs/myorg/projects", "projects", "read"},
 		{"POST", "/orgs/myorg/projects", "projects", "write"},
 
+		// Repository administration
+		{"PATCH", "/repos/org/repo", "administration", "write"},
+		{"DELETE", "/repos/org/repo", "administration", "write"},
+		{"POST", "/repos/org/repo/transfer", "administration", "write"},
+		{"GET", "/repos/org/repo/collaborators", "administration", "read"},
+		{"GET", "/repos/org/repo/collaborators/alice", "administration", "read"},
+		{"PUT", "/repos/org/repo/collaborators/alice", "administration", "write"},
+		{"DELETE", "/repos/org/repo/collaborators/alice", "administration", "write"},
+		{"GET", "/repos/org/repo/invitations", "administration", "read"},
+		{"PATCH", "/repos/org/repo/invitations/1", "administration", "write"},
+		{"DELETE", "/repos/org/repo/invitations/1", "administration", "write"},
+		{"GET", "/repos/org/repo/branches/main/protection", "administration", "read"},
+		{"PUT", "/repos/org/repo/branches/main/protection", "administration", "write"},
+		{"DELETE", "/repos/org/repo/branches/main/protection/required_signatures", "administration", "write"},
+		{"PUT", "/repos/org/repo/topics", "administration", "write"},
+
+		// Organisation members
+		{"GET", "/orgs/myorg/members", "members", "read"},
+		{"GET", "/orgs/myorg/members/alice", "members", "read"},
+		{"DELETE", "/orgs/myorg/members/alice", "members", "write"},
+		{"GET", "/orgs/myorg/memberships/alice", "members", "read"},
+		{"PUT", "/orgs/myorg/memberships/alice", "members", "write"},
+		{"DELETE", "/orgs/myorg/memberships/alice", "members", "write"},
+		{"GET", "/orgs/myorg/invitations", "members", "read"},
+		{"POST", "/orgs/myorg/invitations", "members", "write"},
+		{"DELETE", "/orgs/myorg/invitations/42", "members", "write"},
+		{"GET", "/orgs/myorg/public_members", "members", "read"},
+		{"PUT", "/orgs/myorg/public_members/alice", "members", "write"},
+		{"DELETE", "/orgs/myorg/public_members/alice", "members", "write"},
+
 		// Unknown endpoint.
 		{"GET", "/unknown/path", "", ""},
 	}

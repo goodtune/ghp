@@ -781,6 +781,10 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 		perms["environments"] = "write"
 		perms["pages"] = "write"
 		perms["repository_hooks"] = "write"
+		// repo grants admin access to repos owned by the user, which includes
+		// managing Actions secrets and repo settings.
+		perms["secrets"] = "write"
+		perms["administration"] = "write"
 		// Actions read is implied by repo; write requires the workflow scope.
 		if scopes["workflow"] {
 			perms["actions"] = "write"
