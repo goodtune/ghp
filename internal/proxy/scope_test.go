@@ -96,6 +96,26 @@ func TestEndpointScope(t *testing.T) {
 		{"GET", "/repos/org/repo/secret-scanning/alerts/1", "secret_scanning_alerts", "read"},
 		{"PATCH", "/repos/org/repo/secret-scanning/alerts/1", "secret_scanning_alerts", "write"},
 
+		// Code scanning and security advisories
+		{"GET", "/repos/org/repo/code-scanning/alerts", "security_events", "read"},
+		{"GET", "/repos/org/repo/code-scanning/alerts/42", "security_events", "read"},
+		{"PATCH", "/repos/org/repo/code-scanning/alerts/42", "security_events", "write"},
+		{"POST", "/repos/org/repo/code-scanning/sarifs", "security_events", "write"},
+		{"DELETE", "/repos/org/repo/code-scanning/analyses/7", "security_events", "write"},
+		{"GET", "/repos/org/repo/security-advisories", "security_events", "read"},
+		{"POST", "/repos/org/repo/security-advisories", "security_events", "write"},
+		{"PATCH", "/repos/org/repo/security-advisories/GHSA-xxxx", "security_events", "write"},
+		{"GET", "/orgs/myorg/security-advisories", "security_events", "read"},
+
+		// Dependabot / vulnerability alerts
+		{"GET", "/repos/org/repo/dependabot/alerts", "vulnerability_alerts", "read"},
+		{"GET", "/repos/org/repo/dependabot/alerts/9", "vulnerability_alerts", "read"},
+		{"PATCH", "/repos/org/repo/dependabot/alerts/9", "vulnerability_alerts", "write"},
+		{"GET", "/orgs/myorg/dependabot/alerts", "vulnerability_alerts", "read"},
+		{"GET", "/repos/org/repo/vulnerability-alerts", "vulnerability_alerts", "read"},
+		{"PUT", "/repos/org/repo/vulnerability-alerts", "vulnerability_alerts", "write"},
+		{"DELETE", "/repos/org/repo/vulnerability-alerts", "vulnerability_alerts", "write"},
+
 		// Projects
 		{"GET", "/projects/1", "projects", "read"},
 		{"POST", "/projects/1/columns", "projects", "write"},

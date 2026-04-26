@@ -137,6 +137,24 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/secret-scanning(/.*)?$`, "GET", "secret_scanning_alerts", "read"},
 		{`^/repos/[^/]+/[^/]+/secret-scanning/alerts/[0-9]+$`, "PATCH", "secret_scanning_alerts", "write"},
 
+		// Code scanning and security advisories (security_events permission).
+		{`^/repos/[^/]+/[^/]+/code-scanning(/.*)?$`, "GET", "security_events", "read"},
+		{`^/repos/[^/]+/[^/]+/code-scanning/alerts/[0-9]+$`, "PATCH", "security_events", "write"},
+		{`^/repos/[^/]+/[^/]+/code-scanning/(sarifs|analyses(/.*)?)$`, "POST", "security_events", "write"},
+		{`^/repos/[^/]+/[^/]+/code-scanning/analyses/[0-9]+$`, "DELETE", "security_events", "write"},
+		{`^/repos/[^/]+/[^/]+/security-advisories(/.*)?$`, "GET", "security_events", "read"},
+		{`^/repos/[^/]+/[^/]+/security-advisories$`, "POST", "security_events", "write"},
+		{`^/repos/[^/]+/[^/]+/security-advisories/[^/]+$`, "PATCH", "security_events", "write"},
+		{`^/orgs/[^/]+/security-advisories(/.*)?$`, "GET", "security_events", "read"},
+
+		// Dependabot vulnerability alerts (vulnerability_alerts permission).
+		{`^/repos/[^/]+/[^/]+/dependabot/alerts(/.*)?$`, "GET", "vulnerability_alerts", "read"},
+		{`^/repos/[^/]+/[^/]+/dependabot/alerts/[0-9]+$`, "PATCH", "vulnerability_alerts", "write"},
+		{`^/orgs/[^/]+/dependabot/alerts(/.*)?$`, "GET", "vulnerability_alerts", "read"},
+		{`^/repos/[^/]+/[^/]+/vulnerability-alerts$`, "GET", "vulnerability_alerts", "read"},
+		{`^/repos/[^/]+/[^/]+/vulnerability-alerts$`, "PUT", "vulnerability_alerts", "write"},
+		{`^/repos/[^/]+/[^/]+/vulnerability-alerts$`, "DELETE", "vulnerability_alerts", "write"},
+
 		// Projects
 		{`^/projects(/.*)?$`, "GET", "projects", "read"},
 		{`^/projects(/.*)?$`, "POST", "projects", "write"},
