@@ -230,7 +230,7 @@ func TestDefaultPermissions(t *testing.T) {
 		"contents", "pull_requests", "issues", "statuses", "checks", "actions",
 		"workflows", "metadata", "administration", "deployments", "environments",
 		"packages", "pages", "security_events", "vulnerability_alerts", "discussions",
-		"repository_hooks", "secrets", "secret_scanning_alerts", "members",
+		"repository_hooks", "secrets", "secret_scanning_alerts", "projects", "members",
 	}
 	for _, key := range required {
 		if _, ok := perms[key]; !ok {

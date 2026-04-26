@@ -750,6 +750,7 @@ func defaultPermissions() map[string]string {
 		"repository_hooks":       "write",
 		"secrets":                "write",
 		"secret_scanning_alerts": "write",
+		"projects":               "write",
 		// Organisation-level permissions
 		"members":                "write",
 	}

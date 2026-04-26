@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -355,6 +356,35 @@ func TestAppTokenProvider_ListInstallations_FullPermissions(t *testing.T) {
 		if inst.Permissions[k] != v {
 			t.Errorf("permission %q: want %q, got %q", k, v, inst.Permissions[k])
 		}
+	}
+}
+
+func TestAppTokenProvider_ListInstallations_HTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{
+		AppID:      1,
+		PrivateKey: testRSAKey,
+		BaseURL:    server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = provider.ListInstallations(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("expected error to include HTTP status 401, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Bad credentials") {
+		t.Errorf("expected error to include response body, got %q", err.Error())
 	}
 }
 

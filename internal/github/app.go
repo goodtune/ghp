@@ -332,20 +332,26 @@ func (p *AppTokenProvider) ListInstallations(ctx context.Context) ([]Installatio
 		req.Header.Set("Authorization", "Bearer "+signed)
 		req.Header.Set("Accept", "application/vnd.github+json")
 
-		resp, err := p.client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("fetching installations: %w", err)
-		}
+		installs, linkHeader, err := func() ([]rawInstallation, string, error) {
+			resp, err := p.client.Do(req)
+			if err != nil {
+				return nil, "", fmt.Errorf("fetching installations: %w", err)
+			}
+			defer resp.Body.Close()
 
-		var installs []rawInstallation
-		decodeErr := json.NewDecoder(resp.Body).Decode(&installs)
-		linkHeader := resp.Header.Get("Link")
-		resp.Body.Close()
-		if decodeErr != nil {
-			return nil, fmt.Errorf("decoding installations: %w", decodeErr)
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("listing installations: HTTP %d", resp.StatusCode)
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+				return nil, "", fmt.Errorf("listing installations: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+
+			var installs []rawInstallation
+			if err := json.NewDecoder(resp.Body).Decode(&installs); err != nil {
+				return nil, "", fmt.Errorf("decoding installations: %w", err)
+			}
+			return installs, resp.Header.Get("Link"), nil
+		}()
+		if err != nil {
+			return nil, err
 		}
 
 		for _, inst := range installs {
