@@ -725,15 +725,34 @@ func (a *API) handleGetPermissions(w http.ResponseWriter, r *http.Request) {
 // defaultPermissions returns the full set of proxy-token permissions at their
 // maximum levels. Used when no GitHub OAuth token is available to constrain
 // the set (dev mode, test users, GitHub App tokens).
+// The set mirrors what GitHub Apps can be configured with so that users
+// authenticated via App OAuth can restrict tokens to any supported scope.
 func defaultPermissions() map[string]string {
 	return map[string]string{
-		"contents":      "write",
-		"pull_requests": "write",
-		"issues":        "write",
-		"statuses":      "write",
-		"checks":        "write",
-		"actions":       "write",
-		"metadata":      "read",
+		// Core repository permissions
+		"contents":               "write",
+		"pull_requests":          "write",
+		"issues":                 "write",
+		"statuses":               "write",
+		"checks":                 "write",
+		"actions":                "write",
+		"workflows":              "write",
+		"metadata":               "read",
+		// Additional repository permissions
+		"administration":         "write",
+		"deployments":            "write",
+		"environments":           "write",
+		"packages":               "write",
+		"pages":                  "write",
+		"security_events":        "write",
+		"vulnerability_alerts":   "write",
+		"discussions":            "write",
+		"repository_hooks":       "write",
+		"secrets":                "write",
+		"secret_scanning_alerts": "write",
+		"projects":               "write",
+		// Organisation-level permissions
+		"members":                "write",
 	}
 }
 
@@ -758,13 +777,27 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 		perms["statuses"] = "write"
 		perms["checks"] = "write"
 		perms["metadata"] = "read"
-		// Actions read is implied by repo; write requires the workflow scope.
+		perms["deployments"] = "write"
+		perms["environments"] = "write"
+		perms["pages"] = "write"
+		perms["repository_hooks"] = "write"
+		// Actions read is implied by repo/public_repo; write requires workflow.
 		if scopes["workflow"] {
 			perms["actions"] = "write"
+			// The workflow scope specifically covers workflow file management.
+			perms["workflows"] = "write"
 		} else {
 			perms["actions"] = "read"
 		}
-	} else if scopes["repo:status"] {
+	}
+	// Full repo scope includes admin-level access to owned repositories
+	// (Actions secrets, repo settings, branch protection). public_repo is
+	// limited to public repos and does not grant these admin capabilities.
+	if scopes["repo"] {
+		perms["secrets"] = "write"
+		perms["administration"] = "write"
+	}
+	if scopes["repo:status"] && !scopes["repo"] && !scopes["public_repo"] {
 		// repo:status alone gives commit-status write without full repo access.
 		perms["statuses"] = "write"
 		perms["metadata"] = "read"
@@ -774,6 +807,7 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 	if scopes["security_events"] {
 		perms["security_events"] = "write"
 		perms["vulnerability_alerts"] = "write"
+		perms["secret_scanning_alerts"] = "write"
 		if perms["metadata"] == "" {
 			perms["metadata"] = "read"
 		}
@@ -798,6 +832,13 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 		perms["discussions"] = "write"
 	} else if scopes["read:discussion"] {
 		perms["discussions"] = "read"
+	}
+
+	// GitHub Projects.
+	if scopes["project"] {
+		perms["projects"] = "write"
+	} else if scopes["read:project"] {
+		perms["projects"] = "read"
 	}
 
 	return perms
