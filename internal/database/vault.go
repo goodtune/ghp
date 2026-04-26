@@ -718,6 +718,19 @@ func (s *VaultStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID
 	return s.writeProxyToken(ctx, token)
 }
 
+func (s *VaultStore) UpdateProxyTokenScopes(ctx context.Context, id string, repositories json.RawMessage, scopes json.RawMessage) error {
+	token, err := s.GetProxyTokenByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if token == nil {
+		return fmt.Errorf("proxy token %s: %w", id, ErrNotFound)
+	}
+	token.Repositories = repositories
+	token.Scopes = scopes
+	return s.writeProxyToken(ctx, token)
+}
+
 func (s *VaultStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
 	if olderThan <= 0 {
 		return 0, fmt.Errorf("DeleteExpiredProxyTokens: olderThan must be positive, got %v", olderThan)

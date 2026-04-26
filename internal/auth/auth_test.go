@@ -271,6 +271,92 @@ func TestExchangeCode_ErrorDescription(t *testing.T) {
 	}
 }
 
+// TestHandleGitHubCallback_JSONModeRedirectURI verifies that the code exchange
+// in handleGitHubCallback uses a redirect_uri that includes ?format=json when
+// the callback is invoked in CLI mode (format=json query param present).
+// GitHub requires the redirect_uri in the token exchange to exactly match the
+// one sent in the authorization request.
+func TestHandleGitHubCallback_JSONModeRedirectURI(t *testing.T) {
+	var capturedRedirectURI string
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		vals, _ := url.ParseQuery(string(body))
+		capturedRedirectURI = vals.Get("redirect_uri")
+		// Return an error so we short-circuit without needing a store mock.
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"bad_verification_code"}`))
+	}))
+	defer ghServer.Close()
+
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{ClientID: "id", ClientSecret: "secret"},
+		Server: config.ServerConfig{BaseURL: "https://proxy.example.com"},
+	}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+	h.githubBaseURL = ghServer.URL
+
+	// Pre-load a state so state validation passes.
+	state := "teststate456"
+	h.states.Add(state, struct{}{})
+
+	req := httptest.NewRequest("GET",
+		"/auth/github/callback?code=testcode&state="+state+"&format=json", nil)
+	w := httptest.NewRecorder()
+	h.handleGitHubCallback(w, req)
+
+	// The exchange fails (500 from handler), but the redirect_uri sent to
+	// GitHub must include ?format=json to match the authorize request.
+	const want = "https://proxy.example.com/auth/github/callback?format=json"
+	if capturedRedirectURI != want {
+		t.Errorf("token-exchange redirect_uri = %q, want %q", capturedRedirectURI, want)
+	}
+}
+
+// TestHandleGitHubLogin_JSONResponse verifies that CLI clients (Accept: application/json)
+// receive a JSON body containing the GitHub authorization URL, and that the
+// redirect_uri in that URL has ?format=json appended so the callback will
+// return the session token as JSON rather than setting a browser cookie.
+func TestHandleGitHubLogin_JSONResponse(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GitHubConfig{ClientID: "test-client-id"},
+		Server: config.ServerConfig{BaseURL: "https://proxy.example.com"},
+	}
+	h := NewHandler(cfg, nil, nil, slog.Default())
+
+	req := httptest.NewRequest("GET", "/auth/github", nil)
+	req.Header.Set("Accept", "application/json")
+	w := httptest.NewRecorder()
+	h.handleGitHubLogin(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("expected JSON Content-Type, got %q", ct)
+	}
+
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if body.URL == "" {
+		t.Fatal("expected non-empty url in JSON response")
+	}
+
+	parsed, err := url.Parse(body.URL)
+	if err != nil {
+		t.Fatalf("invalid auth URL %q: %v", body.URL, err)
+	}
+
+	redirectURI := parsed.Query().Get("redirect_uri")
+	const wantRedirectURI = "https://proxy.example.com/auth/github/callback?format=json"
+	if redirectURI != wantRedirectURI {
+		t.Errorf("redirect_uri = %q, want %q", redirectURI, wantRedirectURI)
+	}
+}
+
 // TestHandleGitHubLogin_IncludesRedirectURI verifies that the GitHub
 // authorization URL constructed by handleGitHubLogin includes an explicit
 // redirect_uri parameter pointing to the callback endpoint.
