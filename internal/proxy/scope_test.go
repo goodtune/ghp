@@ -64,6 +64,9 @@ func TestEndpointScope(t *testing.T) {
 		{"POST", "/repos/org/repo/pages", "pages", "write"},
 		{"PUT", "/repos/org/repo/pages", "pages", "write"},
 		{"DELETE", "/repos/org/repo/pages", "pages", "write"},
+		{"POST", "/repos/org/repo/pages/builds", "pages", "write"},
+		{"GET", "/repos/org/repo/pages/builds", "pages", "read"},
+		{"GET", "/repos/org/repo/pages/health", "pages", "read"},
 
 		// Packages
 		{"GET", "/orgs/myorg/packages", "packages", "read"},
@@ -83,6 +86,10 @@ func TestEndpointScope(t *testing.T) {
 		{"POST", "/repos/org/repo/hooks", "repository_hooks", "write"},
 		{"PATCH", "/repos/org/repo/hooks/1", "repository_hooks", "write"},
 		{"DELETE", "/repos/org/repo/hooks/1", "repository_hooks", "write"},
+		{"POST", "/repos/org/repo/hooks/1/pings", "repository_hooks", "write"},
+		{"POST", "/repos/org/repo/hooks/1/tests", "repository_hooks", "write"},
+		{"POST", "/repos/org/repo/hooks/1/deliveries/abc/attempts", "repository_hooks", "write"},
+		{"GET", "/repos/org/repo/hooks/1/deliveries", "repository_hooks", "read"},
 
 		// Secret scanning alerts
 		{"GET", "/repos/org/repo/secret-scanning/alerts", "secret_scanning_alerts", "read"},
@@ -110,6 +117,7 @@ func TestEndpointScope(t *testing.T) {
 		{"DELETE", "/repos/org/repo/invitations/1", "administration", "write"},
 		{"GET", "/repos/org/repo/branches/main/protection", "administration", "read"},
 		{"PUT", "/repos/org/repo/branches/main/protection", "administration", "write"},
+		{"PATCH", "/repos/org/repo/branches/main/protection/required_status_checks", "administration", "write"},
 		{"DELETE", "/repos/org/repo/branches/main/protection/required_signatures", "administration", "write"},
 		{"PUT", "/repos/org/repo/topics", "administration", "write"},
 

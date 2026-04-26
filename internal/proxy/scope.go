@@ -39,6 +39,7 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/branches/[^/]+/protection(/.*)?$`, "GET", "administration", "read"},
 		{`^/repos/[^/]+/[^/]+/branches/[^/]+/protection(/.*)?$`, "PUT", "administration", "write"},
 		{`^/repos/[^/]+/[^/]+/branches/[^/]+/protection(/.*)?$`, "POST", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/branches/[^/]+/protection(/.*)?$`, "PATCH", "administration", "write"},
 		{`^/repos/[^/]+/[^/]+/branches/[^/]+/protection(/.*)?$`, "DELETE", "administration", "write"},
 
 		// Branches
@@ -109,9 +110,10 @@ func init() {
 
 		// Pages
 		{`^/repos/[^/]+/[^/]+/pages(/.*)?$`, "GET", "pages", "read"},
-		{`^/repos/[^/]+/[^/]+/pages$`, "POST", "pages", "write"},
-		{`^/repos/[^/]+/[^/]+/pages$`, "PUT", "pages", "write"},
-		{`^/repos/[^/]+/[^/]+/pages$`, "DELETE", "pages", "write"},
+		{`^/repos/[^/]+/[^/]+/pages(/.*)?$`, "POST", "pages", "write"},
+		{`^/repos/[^/]+/[^/]+/pages(/.*)?$`, "PUT", "pages", "write"},
+		{`^/repos/[^/]+/[^/]+/pages(/.*)?$`, "PATCH", "pages", "write"},
+		{`^/repos/[^/]+/[^/]+/pages(/.*)?$`, "DELETE", "pages", "write"},
 
 		// Packages
 		{`^/(orgs|users)/[^/]+/packages(/.*)?$`, "GET", "packages", "read"},
@@ -126,9 +128,10 @@ func init() {
 
 		// Repository webhooks
 		{`^/repos/[^/]+/[^/]+/hooks(/.*)?$`, "GET", "repository_hooks", "read"},
-		{`^/repos/[^/]+/[^/]+/hooks$`, "POST", "repository_hooks", "write"},
-		{`^/repos/[^/]+/[^/]+/hooks/[0-9]+$`, "PATCH", "repository_hooks", "write"},
-		{`^/repos/[^/]+/[^/]+/hooks/[0-9]+$`, "DELETE", "repository_hooks", "write"},
+		{`^/repos/[^/]+/[^/]+/hooks(/.*)?$`, "POST", "repository_hooks", "write"},
+		{`^/repos/[^/]+/[^/]+/hooks(/.*)?$`, "PUT", "repository_hooks", "write"},
+		{`^/repos/[^/]+/[^/]+/hooks(/.*)?$`, "PATCH", "repository_hooks", "write"},
+		{`^/repos/[^/]+/[^/]+/hooks(/.*)?$`, "DELETE", "repository_hooks", "write"},
 
 		// Secret scanning alerts
 		{`^/repos/[^/]+/[^/]+/secret-scanning(/.*)?$`, "GET", "secret_scanning_alerts", "read"},

@@ -54,7 +54,7 @@ class GhpPermissionSelect extends HTMLElement {
     checks:                 'Check runs and check suites.',
     actions:                'GitHub Actions workflow runs, jobs, artifacts, caches, and runners.',
     workflows:              'GitHub Actions workflow definitions — enabling, disabling, and dispatching workflows.',
-    metadata:               'Search repositories, list collaborators, and access repository metadata.',
+    metadata:               'Search repositories and access basic repository metadata.',
     administration:         'Repository settings, teams, collaborators, and branch protection rules.',
     deployments:            'Deployments and deployment statuses.',
     environments:           'Repository environments and their protection rules.',
