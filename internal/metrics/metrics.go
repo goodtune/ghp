@@ -156,6 +156,7 @@ var (
 	//   github_token_resolution – loading & decrypting (or refreshing) the real GitHub credential
 	//   upstream_roundtrip     – proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer)
 	//   redirect_head_check   – HEAD request to the release redirect target to verify asset availability (releases handler only)
+	//   graphql_analysis      – parsing a GraphQL request body and computing the static scope/repository requirements (GraphQL handler only)
 	ProxyDecisionDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ghp_proxy_decision_duration_seconds",
 		Help:    "Duration of each stage in the proxy decision pipeline.",
@@ -271,6 +272,7 @@ const (
 	StageUpstreamRoundtrip     = "upstream_roundtrip"
 	StageRedirectHeadCheck     = "redirect_head_check"
 	StageCacheLookup           = "cache_lookup"
+	StageGraphQLAnalysis       = "graphql_analysis"
 )
 
 // ObserveDecision records the duration of a single stage in the proxy

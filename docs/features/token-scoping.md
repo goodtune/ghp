@@ -76,18 +76,50 @@ an agent legitimately needs broad access and scoping would be too restrictive.
 Open-scoped tokens are the default for proxy tokens created without `--repo`
 and `--scope` flags.
 
-## GraphQL Limitation
+## GraphQL Scope Enforcement
 
-Tokens that are restricted to specific repositories cannot use the GraphQL API.
-GraphQL queries can span multiple repositories in a single request, and ghp
-cannot reliably enforce repository restrictions on GraphQL without parsing
-every query. Repository-restricted tokens that attempt a GraphQL request will
-receive a `403 Forbidden` response.
+ghp enforces token scopes on GraphQL requests via static analysis of the
+incoming query. Every request body is parsed (using `vektah/gqlparser`) and
+walked to extract three things:
 
-Open-scoped and permission-only tokens (no repository restriction) can use
-GraphQL, but ghp does not currently enforce permission scopes on GraphQL
-requests; the effective permissions are those of the underlying GitHub
-credential.
+- **Required permission scopes**, derived from a curated map of
+  `Mutation.<field>` and field-name → scope mappings (e.g.
+  `Mutation.createIssue` → `issues:write`, `pullRequests` → `pull_requests:read`).
+- **Referenced repositories**, extracted from `repository(owner, name)`
+  arguments where both arguments are string literals.
+- **Cross-repository fields** (e.g. `search`, `node`, `viewer.repositories`)
+  that can return data from outside any explicit `repository(...)` selection.
+
+The proxy uses the analysis to apply a deny-by-default policy:
+
+- **Open-scoped tokens** bypass GraphQL static analysis entirely; the
+  underlying credential's permissions remain the only enforcement layer.
+- **Repository-restricted tokens** must reference at least one
+  `repository(owner, name)` with literal arguments, and every referenced
+  repository must appear in the token's allowlist. Cross-repository fields
+  are rejected outright: ghp cannot statically prove their results stay
+  inside the allowlist.
+- **Permission-restricted tokens** must grant every scope the analysis
+  identifies. Mutations whose name does not appear in the curated mutation
+  map are rejected — the proxy never grants a write scope it cannot
+  classify.
+- **Subscriptions** are rejected unconditionally: GitHub's GraphQL endpoint
+  does not support them over HTTP, and the proxy cannot stream-scope
+  per-event payloads.
+- **Unknown object-typed fields** (fields with their own selection set that
+  do not appear in the allow-list or scope map) are rejected for any
+  scoped token. Scalar leaves are permitted without a per-field mapping
+  because their parent field's scope already gates them.
+
+Variable-driven repository lookups (`repository(owner: $owner, ...)`) cannot
+be statically validated; the analyzer treats them as if no repository was
+referenced, so a repository-restricted token must use literal arguments. The
+GraphQL request body is also capped at 1 MiB to bound memory usage.
+
+Operators reading 403 responses with a "GraphQL request references unmapped
+fields" message can use the named field as a hint for extending
+`fieldScopeRequirements` or `mutationScopeRequirements` in
+`internal/proxy/graphql.go` to cover legitimate use cases.
 
 ## Expiration and Revocation
 
