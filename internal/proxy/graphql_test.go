@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -124,6 +125,108 @@ func TestAnalyzeGraphQLRequest_FragmentsResolved(t *testing.T) {
 	if !reflect.DeepEqual(got.requiredScopes, want) {
 		t.Errorf("requiredScopes = %v, want %v", got.requiredScopes, want)
 	}
+}
+
+func TestAnalyzeGraphQLRequest_FragmentAtMutationRootStillScoped(t *testing.T) {
+	// When a mutation operation pulls in its root fields via a fragment
+	// spread, those fields must still be classified as mutation root
+	// fields so mutationScopeRequirements is consulted (rather than the
+	// query field-name map).
+	body := []byte(`{"query":"mutation { ...M } fragment M on Mutation { createIssue(input: {repositoryId: \"abc\", title: \"x\"}) { issue { id } } }"}`)
+	got, err := analyzeGraphQLRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.hasMutation {
+		t.Fatalf("expected mutation flag")
+	}
+	want := []scopeRequirement{{permission: "issues", level: "write"}}
+	if !reflect.DeepEqual(got.requiredScopes, want) {
+		t.Errorf("requiredScopes = %v, want %v", got.requiredScopes, want)
+	}
+	if len(got.unknownFields) != 0 {
+		t.Errorf("expected createIssue not to be flagged unknown via fragment, got %v", got.unknownFields)
+	}
+}
+
+func TestAnalyzeGraphQLRequest_RecursiveFragmentSpreadIsSafe(t *testing.T) {
+	// A self-referential fragment must not drive the analyzer into
+	// infinite recursion. (The query is technically illegal under the
+	// GraphQL spec, but the parser still produces an AST and we must not
+	// hang on it.)
+	body := []byte(`{"query":"{ repository(owner: \"goodtune\", name: \"ghp\") { ...R } } fragment R on Repository { ...R }"}`)
+	if _, err := analyzeGraphQLRequest(body); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAnalyzeGraphQLRequest_NodesInsideConnectionIsNotCrossRepo(t *testing.T) {
+	// `nodes` is a Connection helper when nested under a connection
+	// field; it is only cross-repository when used as a root selection
+	// (`{ nodes(ids: [...]) { ... } }`). The repo-scoped analysis must
+	// not flag the inner case.
+	body := []byte(`{"query":"{ repository(owner: \"goodtune\", name: \"ghp\") { pullRequests(first: 1) { nodes { number } } } }"}`)
+	got, err := analyzeGraphQLRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.crossRepoFields) != 0 {
+		t.Errorf("nested `nodes` should not be flagged cross-repo, got %v", got.crossRepoFields)
+	}
+}
+
+func TestAnalyzeGraphQLRequest_RootNodesIsCrossRepo(t *testing.T) {
+	// Root-level `nodes(ids: ...)` is the cross-repository form.
+	body := []byte(`{"query":"{ nodes(ids: [\"abc\"]) { __typename } }"}`)
+	got, err := analyzeGraphQLRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.crossRepoFields) == 0 {
+		t.Fatalf("expected root-level `nodes` to be flagged cross-repo")
+	}
+}
+
+func TestAnalyzeGraphQLRequest_OperationNameSelectsOnlyOne(t *testing.T) {
+	// The document defines two operations; only `Wanted` should be
+	// analysed. `Unwanted` references unknown fields that would otherwise
+	// fail deny-by-default.
+	q := "query Wanted { viewer { login } } query Unwanted { mysteryRoot { id } }"
+	body := []byte(`{"query":` + jsonString(q) + `,"operationName":"Wanted"}`)
+	got, err := analyzeGraphQLRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.unknownFields) != 0 {
+		t.Errorf("only the named operation should be analysed; got unknown fields %v", got.unknownFields)
+	}
+}
+
+func TestAnalyzeGraphQLRequest_OperationNameMissingErrors(t *testing.T) {
+	q := "query A { viewer { login } } query B { viewer { login } }"
+	body := []byte(`{"query":` + jsonString(q) + `,"operationName":"C"}`)
+	if _, err := analyzeGraphQLRequest(body); err == nil {
+		t.Fatal("expected error when operationName does not match any operation")
+	}
+}
+
+func TestAnalyzeGraphQLRequest_MultipleOperationsRequireOperationName(t *testing.T) {
+	q := "query A { viewer { login } } query B { viewer { login } }"
+	body := []byte(`{"query":` + jsonString(q) + `}`)
+	if _, err := analyzeGraphQLRequest(body); err == nil {
+		t.Fatal("expected error when document has multiple operations and operationName is omitted")
+	}
+}
+
+// jsonString escapes s as a JSON string literal (including surrounding
+// double quotes) so it can be embedded directly into a hand-written JSON
+// fragment in tests.
+func jsonString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 func TestAnalyzeGraphQLRequest_SubscriptionFlagged(t *testing.T) {

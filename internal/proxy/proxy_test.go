@@ -650,8 +650,11 @@ func TestServeHTTP_OpenScopedToken_GraphQLAllowed(t *testing.T) {
 }
 
 func TestServeHTTP_RepoOnly_GraphQLDenied(t *testing.T) {
-	// A repo-restricted token must be denied on GraphQL because repo restrictions
-	// cannot be enforced on arbitrary GraphQL queries without query parsing.
+	// A repo-restricted token issued a GraphQL query that does not pin a
+	// specific repository (`{ viewer { login } }`) is rejected: the
+	// analyzer cannot prove the response stays inside the allowlist.
+	// Queries that do reference an allowlisted `repository(owner, name)`
+	// are exercised by TestServeHTTP_GraphQL_RepoScoped_AllowsAllowlistedRepo.
 	h, ghpToken := newRepoOnlyHandler(t, "goodtune/ghp")
 
 	req := httptest.NewRequest("POST", "http://api.github.com/graphql", strings.NewReader(`{"query":"{ viewer { login } }"}`))
@@ -671,9 +674,12 @@ func TestServeHTTP_RepoOnly_GraphQLDenied(t *testing.T) {
 }
 
 func TestServeHTTP_ScopeOnly_GraphQLAllowed(t *testing.T) {
-	// A scope-only token (scopes set, no repo restrictions) must be allowed to
-	// use GraphQL. Per-operation permission enforcement on GraphQL is not
-	// implemented; the underlying GitHub token enforces actual access.
+	// A scope-only token (scopes set, no repo restrictions) submitting a
+	// metadata-only GraphQL query (`{ viewer { login } }`) passes the
+	// static analysis: the analyzer infers no required scope, so the
+	// token's scopes trivially cover the request. Coverage and denial
+	// behaviour for queries that do require a scope is exercised by the
+	// TestServeHTTP_GraphQL_PermissionScoped_* tests.
 	h, ghpToken := newScopeOnlyHandler(t, map[string]string{
 		"contents": "read",
 	})
@@ -691,8 +697,10 @@ func TestServeHTTP_ScopeOnly_GraphQLAllowed(t *testing.T) {
 }
 
 func TestServeHTTP_RepoAndScopeToken_GraphQLDenied(t *testing.T) {
-	// A fully-scoped token (repos AND scopes set) must also be denied on GraphQL
-	// because repo restrictions cannot be enforced without query parsing.
+	// A fully-scoped token (repos AND scopes set) is rejected on a query
+	// that does not pin a `repository(owner, name)` selection. Repository
+	// scoping is checked first; the permission check is exercised
+	// separately by TestServeHTTP_GraphQL_PermissionScoped_*.
 	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
 		"contents": "read",
 	})

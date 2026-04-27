@@ -251,17 +251,25 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"hooks": {"repository_hooks", "read"},
 }
 
-// crossRepoFieldNames lists fields that can leak data from repositories
-// other than those addressed by the request's `repository(owner, name)`
-// selections. Repository-scoped tokens cannot statically prove the
-// repositories returned by these fields fall inside the allowlist, so the
-// request is rejected.
-var crossRepoFieldNames = map[string]struct{}{
+// crossRepoRootOnlyFields lists fields that are cross-repository when used
+// as a root selection (`{ node(id: ...) { ... } }`) but are unrelated
+// connection helpers when nested (e.g. `Connection.nodes`,
+// `Edge.node`). The analyzer only flags these when the field appears at
+// an operation's top level.
+var crossRepoRootOnlyFields = map[string]struct{}{
+	"node":     {},
+	"nodes":    {},
+	"resource": {},
+}
+
+// crossRepoAnywhereFields lists fields that can leak data from
+// repositories other than those addressed by the request's
+// `repository(owner, name)` selections. Repository-scoped tokens cannot
+// statically prove the repositories returned by these fields fall inside
+// the allowlist, so the request is rejected wherever they appear.
+var crossRepoAnywhereFields = map[string]struct{}{
 	"search":            {},
 	"searchUsers":       {},
-	"node":              {},
-	"nodes":             {},
-	"resource":          {},
 	"repositories":      {},
 	"topRepositories":   {},
 	"watching":          {},
@@ -397,27 +405,34 @@ func analyzeGraphQLRequest(body []byte) (graphQLAnalysis, error) {
 		fragments[frag.Name] = frag
 	}
 
+	// GitHub executes a single operation per request: the one named by
+	// `operationName`, or — when omitted — the sole operation in the
+	// document. Match that semantic so a multi-operation document is not
+	// punished for operations the executor would never run.
+	op, err := selectOperation(doc, req.OperationName)
+	if err != nil {
+		return graphQLAnalysis{}, err
+	}
+
 	a := &gqlAnalyzer{
 		fragments:       fragments,
-		visitedFragments: map[string]bool{},
+		fragmentStack:   map[string]bool{},
 		seenScopes:      map[scopeRequirement]struct{}{},
 		seenRepos:       map[string]struct{}{},
 		seenCrossRepo:   map[string]struct{}{},
 		seenUnknown:     map[string]struct{}{},
 	}
 
-	for _, op := range doc.Operations {
-		switch op.Operation {
-		case ast.Mutation:
-			a.result.hasMutation = true
-		case ast.Subscription:
-			a.result.hasSubscription = true
-		}
-		// Walk the selection set. Top-level selections are special only in
-		// that mutations also carry a per-field scope requirement;
-		// otherwise the walk treats every selection identically.
-		a.walkSelectionSet(op.SelectionSet, op.Operation == ast.Mutation, true)
+	switch op.Operation {
+	case ast.Mutation:
+		a.result.hasMutation = true
+	case ast.Subscription:
+		a.result.hasSubscription = true
 	}
+	// Walk the selection set. Top-level selections are special only in
+	// that mutations also carry a per-field scope requirement; otherwise
+	// the walk treats every selection identically.
+	a.walkSelectionSet(op.SelectionSet, op.Operation == ast.Mutation, true)
 
 	// Materialise the deduplicated maps into deterministic slices. When the
 	// query requires both read and write of the same permission, keep only
@@ -455,14 +470,42 @@ func analyzeGraphQLRequest(body []byte) (graphQLAnalysis, error) {
 	return a.result, nil
 }
 
+// selectOperation picks the single operation that GitHub will execute for
+// a request. When `operationName` is non-empty it must match one of the
+// operations in the document; otherwise the document must contain exactly
+// one operation. A request that supplies multiple operations without
+// naming one is ambiguous and rejected — the proxy refuses to forward
+// queries it cannot statically scope.
+func selectOperation(doc *ast.QueryDocument, operationName string) (*ast.OperationDefinition, error) {
+	if operationName != "" {
+		for _, op := range doc.Operations {
+			if op.Name == operationName {
+				return op, nil
+			}
+		}
+		return nil, fmt.Errorf("graphql: operationName %q not found in document", operationName)
+	}
+	if len(doc.Operations) > 1 {
+		return nil, fmt.Errorf("graphql: document has multiple operations; operationName is required")
+	}
+	return doc.Operations[0], nil
+}
+
 type gqlAnalyzer struct {
-	fragments        map[string]*ast.FragmentDefinition
-	visitedFragments map[string]bool
-	result           graphQLAnalysis
-	seenScopes       map[scopeRequirement]struct{}
-	seenRepos        map[string]struct{}
-	seenCrossRepo    map[string]struct{}
-	seenUnknown      map[string]struct{}
+	fragments map[string]*ast.FragmentDefinition
+	// fragmentStack holds the fragment names currently being walked, so
+	// recursive fragment spreads (which the GraphQL spec disallows) cannot
+	// drive the analyzer into infinite recursion. Unlike a flat
+	// "visited" set, the stack permits the same fragment to be analysed
+	// multiple times in unrelated contexts (e.g. once at the operation
+	// root and once again inside a nested selection), which matters because
+	// the `atRoot`/`inMutation` flags affect mutation root-field scoping.
+	fragmentStack map[string]bool
+	result        graphQLAnalysis
+	seenScopes    map[scopeRequirement]struct{}
+	seenRepos     map[string]struct{}
+	seenCrossRepo map[string]struct{}
+	seenUnknown   map[string]struct{}
 }
 
 func (a *gqlAnalyzer) walkSelectionSet(set ast.SelectionSet, inMutation, atRoot bool) {
@@ -471,17 +514,25 @@ func (a *gqlAnalyzer) walkSelectionSet(set ast.SelectionSet, inMutation, atRoot 
 		case *ast.Field:
 			a.walkField(s, inMutation, atRoot)
 		case *ast.InlineFragment:
+			// Inline fragments are an in-place type narrowing; they
+			// preserve the surrounding selection's root-ness.
 			a.walkSelectionSet(s.SelectionSet, inMutation, atRoot)
 		case *ast.FragmentSpread:
-			if a.visitedFragments[s.Name] {
+			// A fragment spread that refers to a fragment we are already
+			// inside is a recursion: skip it. Otherwise push the name on
+			// the stack, walk the fragment with the caller's atRoot
+			// preserved (so mutation root fields sourced via fragments are
+			// still treated as root fields), and pop on the way out.
+			if a.fragmentStack[s.Name] {
 				continue
 			}
-			a.visitedFragments[s.Name] = true
 			frag, ok := a.fragments[s.Name]
 			if !ok {
 				continue
 			}
-			a.walkSelectionSet(frag.SelectionSet, inMutation, false)
+			a.fragmentStack[s.Name] = true
+			a.walkSelectionSet(frag.SelectionSet, inMutation, atRoot)
+			delete(a.fragmentStack, s.Name)
 		}
 	}
 }
@@ -497,8 +548,15 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool) {
 	}
 
 	// Cross-repo fields can leak data from outside the repo allowlist.
-	if _, ok := crossRepoFieldNames[name]; ok {
+	// Some field names (`node`, `nodes`) are only cross-repo when used as
+	// a root selection — at non-root positions they are connection
+	// helpers and benign.
+	if _, ok := crossRepoAnywhereFields[name]; ok {
 		a.seenCrossRepo[name] = struct{}{}
+	} else if atRoot {
+		if _, ok := crossRepoRootOnlyFields[name]; ok {
+			a.seenCrossRepo[name] = struct{}{}
+		}
 	}
 
 	// Mutation root fields require a write-level scope.
