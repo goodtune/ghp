@@ -426,9 +426,12 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 			h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
 		}
-		// Every selection in the query must be pinned to at least one
-		// repository, and every referenced repository must be in the
-		// allowlist.
+		// Repository-restricted queries must include at least one literal
+		// repository(owner, name) reference, and every referenced
+		// repository must be in the allowlist. Selections that are not
+		// pinned to a repository are bounded by the cross-repository
+		// field check above, which rejects fields that could return
+		// out-of-allowlist data.
 		if len(analysis.referencedRepos) == 0 {
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
