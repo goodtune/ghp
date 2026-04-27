@@ -536,4 +536,13 @@ func TestServeHTTP_GraphQL_RejectsOversizedBody(t *testing.T) {
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected 413 for oversized body, got %d", rr.Code)
 	}
+	// The proxy must own the response: it returns its own JSON 413 rather
+	// than letting `http.MaxBytesReader` write a plain-text default that
+	// would race with `writeError`.
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("expected JSON 413 response, got Content-Type %q", ct)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "exceeds proxy size limit") {
+		t.Errorf("expected proxy 413 message in body, got %q", body)
+	}
 }

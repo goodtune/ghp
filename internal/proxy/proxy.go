@@ -349,26 +349,28 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	}
 
 	// Buffer the request body so we can both analyse the query and replay
-	// it to GitHub. MaxBytesReader caps the read so unbounded uploads are
-	// rejected before any allocation. Close the original body once it is
-	// drained so the underlying network connection can be returned to the
-	// pool while we run static analysis.
+	// it to GitHub. Read at most maxGraphQLBodyBytes+1 so oversized
+	// bodies are detected without letting `http.MaxBytesReader` write
+	// directly to the live ResponseWriter (which would race with the
+	// writeError call below and emit a mixed response). Close the
+	// original body once it is drained so the underlying network
+	// connection can be returned to the pool while we run static
+	// analysis.
 	originalBody := r.Body
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxGraphQLBodyBytes))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxGraphQLBodyBytes+1))
 	_ = originalBody.Close()
 	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-			writeError(w, http.StatusRequestEntityTooLarge,
-				"GraphQL request body exceeds proxy size limit")
-			h.logRequest(pt, r, "/graphql", "", http.StatusRequestEntityTooLarge, time.Since(start), "proxy_scope_denied")
-			return
-		}
 		h.logger.Warn("graphql: failed to read request body", "error", err)
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusBadRequest, "Failed to read GraphQL request body")
 		h.logRequest(pt, r, "/graphql", "", http.StatusBadRequest, time.Since(start), "proxy_scope_denied")
+		return
+	}
+	if int64(len(body)) > maxGraphQLBodyBytes {
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		writeError(w, http.StatusRequestEntityTooLarge,
+			"GraphQL request body exceeds proxy size limit")
+		h.logRequest(pt, r, "/graphql", "", http.StatusRequestEntityTooLarge, time.Since(start), "proxy_scope_denied")
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))

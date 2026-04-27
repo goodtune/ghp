@@ -108,7 +108,7 @@ The proxy uses the analysis to apply a deny-by-default policy:
   does not support them over HTTP, and the proxy cannot stream-scope
   per-event payloads.
 - **Unknown object-typed fields** (fields with their own selection set that
-  do not appear in the allow-list or scope map) are rejected for any
+  do not appear in the allowlist or scope map) are rejected for any
   scoped token. Scalar leaves are permitted without a per-field mapping
   because their parent field's scope already gates them.
 
