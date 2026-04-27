@@ -27,11 +27,13 @@ type graphQLAnalysis struct {
 	// referencedRepos lists every "owner/name" pair that appears as the
 	// arguments to a `repository(owner, name)` selection in the query.
 	referencedRepos []string
-	// hasMutation is true when any operation in the document is a mutation.
+	// hasMutation is true when the operation selected for analysis (per
+	// the request's `operationName`, or the sole operation when omitted)
+	// is a mutation.
 	hasMutation bool
-	// hasSubscription is true when any operation in the document is a
-	// subscription (GitHub does not support GraphQL subscriptions over HTTP;
-	// the proxy rejects them outright).
+	// hasSubscription is true when the operation selected for analysis is
+	// a subscription. GitHub does not support GraphQL subscriptions over
+	// HTTP; the proxy rejects them outright.
 	hasSubscription bool
 	// crossRepoFields lists fields that can return data from repositories
 	// other than those pinned by `repository(owner, name)` (for example

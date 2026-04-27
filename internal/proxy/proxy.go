@@ -338,16 +338,22 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 
 	// Open-scoped tokens skip GraphQL static analysis entirely and forward
 	// to GitHub unchanged. The underlying credential's own permissions act
-	// as the only enforcement layer.
+	// as the only enforcement layer. Emit a zero-duration scope-enforcement
+	// decision so the per-request stage timeline is uniform across paths.
 	if si.isOpenScoped() {
+		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, 0)
 		h.forwardGraphQL(w, r, pt, &si, rewriteAuth, start, nil)
 		return
 	}
 
 	// Buffer the request body so we can both analyse the query and replay
 	// it to GitHub. MaxBytesReader caps the read so unbounded uploads are
-	// rejected before any allocation.
+	// rejected before any allocation. Close the original body once it is
+	// drained so the underlying network connection can be returned to the
+	// pool while we run static analysis.
+	originalBody := r.Body
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxGraphQLBodyBytes))
+	_ = originalBody.Close()
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
