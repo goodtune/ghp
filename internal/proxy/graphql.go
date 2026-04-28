@@ -521,15 +521,20 @@ func (a *gqlAnalyzer) walkSelectionSet(set ast.SelectionSet, inMutation, atRoot 
 			a.walkSelectionSet(s.SelectionSet, inMutation, atRoot)
 		case *ast.FragmentSpread:
 			// A fragment spread that refers to a fragment we are already
-			// inside is a recursion: skip it. Otherwise push the name on
-			// the stack, walk the fragment with the caller's atRoot
-			// preserved (so mutation root fields sourced via fragments are
-			// still treated as root fields), and pop on the way out.
+			// inside is a recursion: skip it. A spread that names a
+			// fragment the document does not define is treated as an
+			// unknown field — silently skipping would let a malformed
+			// query slip past the fail-closed posture and reach GitHub.
+			// Otherwise push the name on the stack, walk the fragment
+			// with the caller's atRoot preserved (so mutation root
+			// fields sourced via fragments are still treated as root
+			// fields), and pop on the way out.
 			if a.fragmentStack[s.Name] {
 				continue
 			}
 			frag, ok := a.fragments[s.Name]
 			if !ok {
+				a.seenUnknown["fragment:"+s.Name] = struct{}{}
 				continue
 			}
 			a.fragmentStack[s.Name] = true

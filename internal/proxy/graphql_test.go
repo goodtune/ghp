@@ -149,6 +149,21 @@ func TestAnalyzeGraphQLRequest_FragmentAtMutationRootStillScoped(t *testing.T) {
 	}
 }
 
+func TestAnalyzeGraphQLRequest_UndefinedFragmentSpreadFlagged(t *testing.T) {
+	// A spread that names a fragment the document does not define must
+	// surface as an unknown-field entry so scoped tokens are denied
+	// rather than letting a malformed document slip through.
+	body := []byte(`{"query":"{ repository(owner: \"goodtune\", name: \"ghp\") { ...Missing } }"}`)
+	got, err := analyzeGraphQLRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"fragment:Missing"}
+	if !reflect.DeepEqual(got.unknownFields, want) {
+		t.Errorf("unknownFields = %v, want %v", got.unknownFields, want)
+	}
+}
+
 func TestAnalyzeGraphQLRequest_RecursiveFragmentSpreadIsSafe(t *testing.T) {
 	// A self-referential fragment must not drive the analyzer into
 	// infinite recursion. (The query is technically illegal under the
@@ -215,6 +230,28 @@ func TestAnalyzeGraphQLRequest_MultipleOperationsRequireOperationName(t *testing
 	body := []byte(`{"query":` + jsonString(q) + `}`)
 	if _, err := analyzeGraphQLRequest(body); err == nil {
 		t.Fatal("expected error when document has multiple operations and operationName is omitted")
+	}
+}
+
+func TestSummariseFieldList(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    []string
+		limit int
+		want  string
+	}{
+		{"empty", nil, 5, ""},
+		{"under limit", []string{"a", "b"}, 5, "a, b"},
+		{"at limit", []string{"a", "b", "c"}, 3, "a, b, c"},
+		{"over limit", []string{"a", "b", "c", "d", "e"}, 2, "a, b, …and 3 more"},
+		{"limit zero falls back to full join", []string{"a", "b"}, 0, "a, b"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := summariseFieldList(tc.in, tc.limit); got != tc.want {
+				t.Errorf("summariseFieldList(%v, %d) = %q, want %q", tc.in, tc.limit, got, tc.want)
+			}
+		})
 	}
 }
 

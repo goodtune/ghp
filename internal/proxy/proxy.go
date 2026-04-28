@@ -50,6 +50,26 @@ import (
 // for adversarial clients.
 const maxGraphQLBodyBytes = 1 << 20 // 1 MiB
 
+// maxRenderedFieldNames caps how many field names are inlined into the
+// 403 messages the GraphQL handler returns when a query is rejected for
+// unmapped or cross-repository fields. Without a cap, an adversarial
+// query could inflate the response body and audit log line to be
+// proportional to the request size.
+const maxRenderedFieldNames = 10
+
+// summariseFieldList renders a comma-separated string of up to `limit`
+// names, appending "…and N more" when the input is longer. Returns an
+// empty string when the input is empty.
+func summariseFieldList(names []string, limit int) string {
+	if len(names) == 0 {
+		return ""
+	}
+	if limit <= 0 || len(names) <= limit {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s, …and %d more", strings.Join(names[:limit], ", "), len(names)-limit)
+}
+
 const (
 	githubAPIBase    = "https://api.github.com"
 	githubTokenURL   = "https://github.com/login/oauth/access_token"
@@ -403,12 +423,14 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	}
 
 	// Deny-by-default: any unknown field rejects the request when the token
-	// has any restriction. Open-scoped tokens were forwarded earlier.
+	// has any restriction. Open-scoped tokens were forwarded earlier. The
+	// rendered field list is capped so an adversarial query cannot
+	// inflate the response body (or audit log line) to O(request size).
 	if len(analysis.unknownFields) > 0 {
 		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusForbidden,
-			fmt.Sprintf("GraphQL request references unmapped fields: %s", strings.Join(analysis.unknownFields, ", ")))
+			fmt.Sprintf("GraphQL request references unmapped fields: %s", summariseFieldList(analysis.unknownFields, maxRenderedFieldNames)))
 		h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
@@ -424,7 +446,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("Token is repository-restricted; GraphQL request uses cross-repository fields: %s",
-					strings.Join(analysis.crossRepoFields, ", ")))
+					summariseFieldList(analysis.crossRepoFields, maxRenderedFieldNames)))
 			h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
 		}
