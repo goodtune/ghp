@@ -74,10 +74,13 @@ const (
 )
 
 // registerDeviceRoutes adds the CLI device-authorization endpoints to the mux.
-// Called from RegisterRoutes.
+// Called from RegisterRoutes. The two anonymous endpoints (/cli/auth/device
+// for flow initiation and /cli/auth/device/token for polling) are wrapped in
+// per-IP rate limiters so a hostile client cannot churn the database with
+// device-auth rows or hammer the polling endpoint with non-existent codes.
 func (h *Handler) registerDeviceRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /cli/auth/device", h.handleDeviceStart)
-	mux.HandleFunc("POST /cli/auth/device/token", h.handleDevicePoll)
+	mux.Handle("POST /cli/auth/device", h.deviceStartLimiter.Middleware(http.HandlerFunc(h.handleDeviceStart)))
+	mux.Handle("POST /cli/auth/device/token", h.devicePollLimiter.Middleware(http.HandlerFunc(h.handleDevicePoll)))
 	mux.HandleFunc("GET /cli/auth", h.handleDeviceVerify)
 	mux.HandleFunc("POST /cli/auth/decision", h.handleDeviceDecision)
 }
@@ -88,18 +91,24 @@ func (h *Handler) registerDeviceRoutes(mux *http.ServeMux) {
 //
 // Response is RFC-8628-shaped JSON.
 func (h *Handler) handleDeviceStart(w http.ResponseWriter, r *http.Request) {
-	deviceCode, err := generateDeviceCode()
-	if err != nil {
-		h.logger.Error("failed to generate device_code", "error", err)
-		writeDeviceError(w, "server_error", http.StatusInternalServerError)
-		return
-	}
-
 	// user_code collisions are extremely unlikely (≈40 bits of entropy with
-	// at most ~1k records active in a 10-minute window) but possible. Retry
-	// a small number of times if Create reports a unique-constraint error.
-	var userCode string
-	for attempt := 0; attempt < 5; attempt++ {
+	// at most ~1k records active in a 10-minute window) but possible. We
+	// regenerate both codes on each attempt: a duplicate user_code is the
+	// expected retriable failure, but if some other transient DB issue
+	// happens to be tied to a particular row (e.g. a primary-key collision
+	// on device_code, however vanishingly improbable), keeping the same
+	// device_code across attempts would just spin uselessly. Fresh codes
+	// each iteration also remove any need to introspect driver-specific
+	// constraint error messages.
+	var deviceCode, userCode string
+	const maxAttempts = 5
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		dc, err := generateDeviceCode()
+		if err != nil {
+			h.logger.Error("failed to generate device_code", "error", err)
+			writeDeviceError(w, "server_error", http.StatusInternalServerError)
+			return
+		}
 		uc, err := generateUserCode()
 		if err != nil {
 			h.logger.Error("failed to generate user_code", "error", err)
@@ -107,21 +116,19 @@ func (h *Handler) handleDeviceStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := h.store.CreateDeviceAuth(r.Context(), &database.DeviceAuth{
-			DeviceCode: deviceCode,
+			DeviceCode: dc,
 			UserCode:   uc,
 			Status:     database.DeviceAuthStatusPending,
 			ExpiresAt:  time.Now().Add(deviceRequestTTL).UTC(),
 		}); err != nil {
-			// A duplicate user_code is the only retriable error we expect;
-			// retry on any error here is cheap and safer than parsing
-			// driver-specific constraint messages.
-			if attempt == 4 {
-				h.logger.Error("failed to persist device_auth", "error", err)
+			if attempt == maxAttempts-1 {
+				h.logger.Error("failed to persist device_auth", "error", err, "attempts", maxAttempts)
 				writeDeviceError(w, "server_error", http.StatusInternalServerError)
 				return
 			}
 			continue
 		}
+		deviceCode = dc
 		userCode = uc
 		break
 	}
@@ -286,7 +293,16 @@ func (h *Handler) handleDeviceDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bound the body size before ParseForm reads it. The form has two
+	// short fields (user_code, action); 1 MB is the same ceiling we apply
+	// elsewhere and is far more than the legitimate flow needs.
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	if err := r.ParseForm(); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "Invalid form", http.StatusBadRequest)
 		return
 	}

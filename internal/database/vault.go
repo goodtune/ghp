@@ -151,6 +151,47 @@ func (s *VaultStore) kvWrite(ctx context.Context, key string, data map[string]in
 	})
 }
 
+// errKVAlreadyExists is returned by kvCreate when the target path already
+// has a non-deleted value. Vault surfaces a CAS mismatch as an HTTP 400 with
+// a specific "check-and-set parameter did not match the current version"
+// error, which is what we look for here.
+var errKVAlreadyExists = errors.New("kv: already exists")
+
+// kvCreate writes data to a KV v2 path only if no value exists there. It
+// uses KV v2's check-and-set option (`cas: 0`) so the operation is atomic
+// and concurrent callers cannot race past each other to overwrite the same
+// key. Returns errKVAlreadyExists if the key is already present.
+//
+// Re-authenticates once on 403 errors via withRelogin, like the other KV
+// helpers; CAS conflicts are returned to the caller as errKVAlreadyExists
+// so they can be distinguished from authentication failures.
+func (s *VaultStore) kvCreate(ctx context.Context, key string, data map[string]interface{}) error {
+	return s.withRelogin(ctx, func() error {
+		_, err := s.client.Logical().WriteWithContext(ctx, s.dataPath(key), map[string]interface{}{
+			"data":    data,
+			"options": map[string]interface{}{"cas": 0},
+		})
+		if err != nil && isKVCASMismatch(err) {
+			return errKVAlreadyExists
+		}
+		return err
+	})
+}
+
+// isKVCASMismatch detects the specific Vault response that indicates a
+// check-and-set conflict so the caller can surface a typed error. Vault
+// emits the phrase "check-and-set parameter did not match" in the body of
+// a 400 response on a CAS conflict; structured detection via
+// vault.ResponseError would be preferable but the response error type
+// embedded in the SDK does not expose a code we can match on directly.
+func isKVCASMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "check-and-set") ||
+		strings.Contains(err.Error(), "cas parameter")
+}
+
 // kvRead reads data from a KV v2 path. Returns nil, nil if not found.
 // Re-authenticates once on 403 errors.
 func (s *VaultStore) kvRead(ctx context.Context, key string) (map[string]interface{}, error) {
@@ -984,8 +1025,9 @@ func (s *VaultStore) DeleteSession(ctx context.Context, tokenHash string) error 
 
 // DeleteExpiredSessions iterates the sessions/ prefix and deletes anything
 // past its expiry. Vault has no list-with-filter, so this fans out one Read
-// per row. Acceptable because cleanup runs infrequently (configurable
-// interval, default minutes).
+// per row. Acceptable because cleanup runs infrequently — the auth handler
+// invokes it on a fixed cadence (see authStateCleanupInterval in the auth
+// package, currently 5 minutes).
 func (s *VaultStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	keys, err := s.kvList(ctx, "sessions")
 	if err != nil {
@@ -1107,24 +1149,38 @@ func (s *VaultStore) CreateDeviceAuth(ctx context.Context, da *DeviceAuth) error
 	if da.CreatedAt.IsZero() {
 		da.CreatedAt = time.Now().UTC()
 	}
-	// Reject duplicate user_code at the application level; Vault has no
-	// unique-index equivalent.
-	if existing, err := s.kvRead(ctx, "device-auth/by-user-code/"+da.UserCode); err != nil {
-		return err
-	} else if existing != nil {
-		return fmt.Errorf("user_code already in use")
-	}
 	data, err := marshalToMap(da)
 	if err != nil {
 		return fmt.Errorf("marshaling device_auth: %w", err)
 	}
-	if err := s.kvWrite(ctx, "device-auth/"+da.DeviceCode, data); err != nil {
+	// Use KV v2 check-and-set (cas=0) for both writes so duplicate
+	// device_code or user_code values are rejected atomically. SQL backends
+	// rely on UNIQUE indexes for this guarantee; Vault has no equivalent
+	// constraint, but `cas: 0` provides per-key create-only semantics, which
+	// is enough when both keys are written together.
+	if err := s.kvCreate(ctx, "device-auth/"+da.DeviceCode, data); err != nil {
+		if errors.Is(err, errKVAlreadyExists) {
+			return fmt.Errorf("device_code already in use")
+		}
 		return err
 	}
 	// Index user_code -> device_code for the verification page lookup.
-	return s.kvWrite(ctx, "device-auth/by-user-code/"+da.UserCode, map[string]interface{}{
+	if err := s.kvCreate(ctx, "device-auth/by-user-code/"+da.UserCode, map[string]interface{}{
 		"device_code": da.DeviceCode,
-	})
+	}); err != nil {
+		// Roll back the primary record if the user_code index conflicts so
+		// we don't leave an orphan device-auth row pointing at a user_code
+		// that resolves to someone else.
+		if delErr := s.kvDelete(ctx, "device-auth/"+da.DeviceCode); delErr != nil {
+			// Best-effort; the cleanup goroutine will eventually purge it.
+			_ = delErr
+		}
+		if errors.Is(err, errKVAlreadyExists) {
+			return fmt.Errorf("user_code already in use")
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *VaultStore) GetDeviceAuthByDeviceCode(ctx context.Context, deviceCode string) (*DeviceAuth, error) {

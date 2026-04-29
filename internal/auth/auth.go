@@ -36,6 +36,7 @@ import (
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/metrics"
 )
 
 const (
@@ -85,9 +86,11 @@ type Handler struct {
 	rsaPrivKey *rsa.PrivateKey
 
 	// Rate limiters for sensitive endpoints (keyed by IP address).
-	loginLimiter     *IPRateLimiter // POST /auth/test-login
-	githubLimiter    *IPRateLimiter // GET  /auth/github
-	authorizeLimiter *IPRateLimiter // GET  /auth/authorize
+	loginLimiter      *IPRateLimiter // POST /auth/test-login
+	githubLimiter     *IPRateLimiter // GET  /auth/github
+	authorizeLimiter  *IPRateLimiter // GET  /auth/authorize
+	deviceStartLimiter *IPRateLimiter // POST /cli/auth/device
+	devicePollLimiter  *IPRateLimiter // POST /cli/auth/device/token
 
 	// httpClient is used for all outbound OAuth and GitHub API requests.
 	// It has a finite timeout to prevent goroutine/connection leaks.
@@ -112,7 +115,14 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 		loginLimiter:     NewIPRateLimiter(100, time.Minute, "/auth/test-login", logger),
 		githubLimiter:    NewIPRateLimiter(10, time.Minute, "/auth/github", logger),
 		authorizeLimiter: NewIPRateLimiter(10, time.Minute, "/auth/authorize", logger),
-		httpClient:       &http.Client{Timeout: authHTTPTimeout},
+		// /cli/auth/device kicks off a flow that creates a database row, so
+		// it gets the same conservative ceiling as /auth/github. The polling
+		// endpoint is more permissive — a single CLI run polls every few
+		// seconds for up to 10 minutes, which is up to ~300 hits, and
+		// multiple CLI processes may run from the same NAT'd IP.
+		deviceStartLimiter: NewIPRateLimiter(10, time.Minute, "/cli/auth/device", logger),
+		devicePollLimiter:  NewIPRateLimiter(600, time.Minute, "/cli/auth/device/token", logger),
+		httpClient:         &http.Client{Timeout: authHTTPTimeout},
 	}
 	if cfg.Auth.JWTPrivateKey != "" || cfg.Auth.JWTPrivateKeyFile != "" {
 		var pemData string
@@ -346,20 +356,38 @@ func (h *Handler) cleanupLoop(ctx context.Context) {
 
 func (h *Handler) runCleanup(ctx context.Context) {
 	if n, err := h.store.DeleteExpiredSessions(ctx); err != nil {
-		h.logger.Warn("session cleanup failed", "error", err)
+		// context.Canceled is expected when the server is shutting down
+		// mid-sweep; demote those to Debug so shutdown logs stay quiet.
+		h.logCleanupError("session cleanup failed", err)
 	} else if n > 0 {
 		h.logger.Debug("expired sessions purged", "count", n)
 	}
 	if n, err := h.store.DeleteExpiredOAuthStates(ctx); err != nil {
-		h.logger.Warn("oauth state cleanup failed", "error", err)
+		h.logCleanupError("oauth state cleanup failed", err)
 	} else if n > 0 {
 		h.logger.Debug("expired oauth states purged", "count", n)
 	}
 	if n, err := h.store.DeleteExpiredDeviceAuths(ctx); err != nil {
-		h.logger.Warn("device auth cleanup failed", "error", err)
+		h.logCleanupError("device auth cleanup failed", err)
 	} else if n > 0 {
 		h.logger.Debug("expired device auth records purged", "count", n)
+		// Surface the count under the same metric the device-flow handlers
+		// use. This means ghp_cli_auth_device_completed_total{result="expired"}
+		// reports records that timed out before the user acted, complementing
+		// the "approved" and "denied" results emitted from the poll endpoint.
+		metrics.CLIDeviceCompletedTotal.WithLabelValues("expired").Add(float64(n))
 	}
+}
+
+// logCleanupError logs a cleanup-loop error at the appropriate level. A
+// context.Canceled error during shutdown is expected and would otherwise
+// produce a noisy Warn on every server stop, so it is logged at Debug.
+func (h *Handler) logCleanupError(msg string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		h.logger.Debug(msg, "error", err)
+		return
+	}
+	h.logger.Warn(msg, "error", err)
 }
 
 func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {

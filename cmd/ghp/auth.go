@@ -310,6 +310,14 @@ web UI, but the CLI never sees a github.com URL.`,
 				return err
 			}
 
+			// Defensive check before writing to disk: every legitimate ghp
+			// session token starts with "ghpr_". Refuse anything else so a
+			// misconfigured or malicious server cannot persist garbage in
+			// the user's config (matches the validation in `auth set-token`).
+			if !strings.HasPrefix(token, "ghpr_") {
+				return fmt.Errorf("server returned an invalid session token (expected 'ghpr_' prefix)")
+			}
+
 			// Persist the issued token. Read the file directly so a transient
 			// GHP_SERVER_URL doesn't get written back to disk.
 			fileCfg, err := loadCLIConfigFile()

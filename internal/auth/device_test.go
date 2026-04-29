@@ -104,8 +104,9 @@ func TestDevicePoll_PendingThenApproved(t *testing.T) {
 		t.Errorf("expected approval HTML, got: %s", decisionW.Body.String())
 	}
 
-	// Wait long enough that the poll-rate limit doesn't trigger.
-	time.Sleep(devicePollMinInterval + 100*time.Millisecond)
+	// The poll-rate limiter is enforced via LastPolledAt on the device row.
+	// Backdate it so the next poll passes without waiting wall-clock time.
+	bumpLastPolledAt(t, h, ds.DeviceCode, -time.Hour)
 
 	// Poll → 200 with token.
 	pollReq := httptest.NewRequest("POST", "/cli/auth/device/token",
@@ -136,8 +137,9 @@ func TestDevicePoll_PendingThenApproved(t *testing.T) {
 		t.Error("issued token did not resolve to an active session")
 	}
 
-	// Polling again must fail (record consumed).
-	time.Sleep(devicePollMinInterval + 100*time.Millisecond)
+	// Polling again must fail (record consumed). The first successful poll
+	// removed the row from the store, so this is a not-found path and the
+	// rate-limit timer is irrelevant.
 	pollReq2 := httptest.NewRequest("POST", "/cli/auth/device/token",
 		bytes.NewReader([]byte(`{"device_code":"`+ds.DeviceCode+`"}`)))
 	pollReq2.Header.Set("Content-Type", "application/json")
@@ -168,7 +170,11 @@ func TestDevicePoll_Denied(t *testing.T) {
 	dr.AddCookie(&http.Cookie{Name: SessionCookieName, Value: sessToken})
 	h.handleDeviceDecision(httptest.NewRecorder(), dr)
 
-	time.Sleep(devicePollMinInterval + 100*time.Millisecond)
+	// Backdate LastPolledAt so the rate-limit timer doesn't suppress this
+	// poll (no decision endpoint has run a poll yet, but the start handler
+	// doesn't seed it either, so this is a no-op when LastPolledAt is nil
+	// — included for clarity and consistency with TestDevicePoll_PendingThenApproved).
+	bumpLastPolledAt(t, h, ds.DeviceCode, -time.Hour)
 	if got := pollDeviceTokenAndExpect(t, h, ds.DeviceCode); got != "access_denied" {
 		t.Errorf("got %q, want access_denied", got)
 	}
@@ -436,6 +442,28 @@ func mustCreateSession(t *testing.T, h *Handler, userID, username, role string) 
 		t.Fatalf("createSession: %v", err)
 	}
 	return tok
+}
+
+// bumpLastPolledAt rewrites the device row's LastPolledAt to now+offset.
+// Tests use this to fast-forward past the poll-rate limiter without sleeping
+// real time. A negative offset (e.g. -time.Hour) makes the next poll succeed
+// immediately; a positive offset is rarely needed but supported for symmetry.
+//
+// If the row doesn't exist (which happens after an approved poll deletes it),
+// this is a no-op so callers don't have to special-case the post-consume path.
+func bumpLastPolledAt(t *testing.T, h *Handler, deviceCode string, offset time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	da, err := h.store.GetDeviceAuthByDeviceCode(ctx, deviceCode)
+	if err != nil {
+		// ErrNotFound is expected for already-consumed rows.
+		return
+	}
+	t1 := time.Now().Add(offset).UTC()
+	da.LastPolledAt = &t1
+	if err := h.store.UpdateDeviceAuth(ctx, da); err != nil {
+		t.Fatalf("bumpLastPolledAt: %v", err)
+	}
 }
 
 // pollDeviceTokenAndExpect makes a single POST /cli/auth/device/token call
