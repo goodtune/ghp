@@ -84,8 +84,17 @@ type Handler struct {
 	// Bounded and TTL-expired via expirable.LRU (thread-safe).
 	sessions *expirable.LRU[string, *Session]
 
-	// states holds in-flight OAuth state tokens (short-lived).
-	states *expirable.LRU[string, struct{}]
+	// states holds in-flight OAuth state tokens (short-lived). The value is an
+	// optional return-to path to redirect the browser to after successful auth;
+	// empty means use the default ("/").
+	states *expirable.LRU[string, string]
+
+	// deviceRequests tracks in-flight CLI device-authorization requests.
+	// Keyed by device_code (the long-lived secret the CLI polls with).
+	deviceRequests *expirable.LRU[string, *deviceAuthRequest]
+	// deviceUserCodes maps short, human-friendly user_codes to device_codes
+	// so the verification page can look up the request from the URL param.
+	deviceUserCodes *expirable.LRU[string, string]
 
 	// brokerStates holds in-flight broker OAuth flow states (short-lived).
 	brokerStates *expirable.LRU[string, *brokerState]
@@ -112,8 +121,10 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 		encryptor:        enc,
 		logger:           logger,
 		sessions:         expirable.NewLRU[string, *Session](maxSessions, nil, SessionDuration),
-		states:           expirable.NewLRU[string, struct{}](maxStates, nil, stateTTL),
+		states:           expirable.NewLRU[string, string](maxStates, nil, stateTTL),
 		brokerStates:     expirable.NewLRU[string, *brokerState](maxBrokerStates, nil, brokerStateTTL),
+		deviceRequests:   expirable.NewLRU[string, *deviceAuthRequest](maxDeviceRequests, nil, deviceRequestTTL),
+		deviceUserCodes:  expirable.NewLRU[string, string](maxDeviceRequests, nil, deviceRequestTTL),
 		loginLimiter:     NewIPRateLimiter(100, time.Minute, "/auth/test-login", logger),
 		githubLimiter:    NewIPRateLimiter(10, time.Minute, "/auth/github", logger),
 		authorizeLimiter: NewIPRateLimiter(10, time.Minute, "/auth/authorize", logger),
@@ -159,6 +170,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/github/callback", h.handleGitHubCallback)
 	mux.HandleFunc("POST /auth/logout", h.handleLogout)
 	mux.HandleFunc("GET /auth/status", h.handleStatus)
+
+	// CLI device-authorization flow (no GitHub round-trip from the CLI).
+	h.registerDeviceRoutes(mux)
 
 	// OAuth broker endpoints: delegate authentication to this proxy.
 	if h.cfg.Auth.JWTPrivateKey != "" || h.cfg.Auth.JWTPrivateKeyFile != "" {
@@ -274,7 +288,13 @@ func (h *Handler) deleteSession(token string) {
 
 func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	state := generateState()
-	h.states.Add(state, struct{}{})
+
+	// return_to lets a browser flow request that the user be sent back to a
+	// specific path after successful login (e.g. the device-authorization
+	// verification page). It is restricted to local paths to prevent open
+	// redirects. Stored alongside the state in the in-flight LRU.
+	returnTo := sanitizeReturnTo(r.URL.Query().Get("return_to"))
+	h.states.Add(state, returnTo)
 
 	// CLI clients (Accept: application/json) need the callback to return JSON
 	// with the session token rather than setting a cookie and redirecting.
@@ -337,13 +357,24 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Validate state. Get returns false for missing or TTL-expired entries.
-		_, ok := h.states.Get(state)
+		// The stored value is an optional return-to path (set when the login
+		// was initiated by an in-app flow such as CLI device authorization).
+		var returnTo string
+		var ok bool
+		returnTo, ok = h.states.Get(state)
 		if ok {
 			h.states.Remove(state)
 		}
 		if !ok {
 			http.Error(w, "Invalid or expired state", http.StatusBadRequest)
 			return
+		}
+		if returnTo != "" {
+			// Defer to the returnTo path after authentication completes.
+			// stateReturnTo is read again below by setting a request-scoped
+			// header, since handleGitHubCallback's existing redirect target
+			// is hardcoded to "/".
+			r = r.WithContext(context.WithValue(r.Context(), returnToCtxKey{}, returnTo))
 		}
 	}
 
@@ -453,7 +484,29 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   int(SessionDuration.Seconds()),
 	})
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	target := "/"
+	if v, ok := r.Context().Value(returnToCtxKey{}).(string); ok && v != "" {
+		target = v
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+type returnToCtxKey struct{}
+
+// sanitizeReturnTo restricts return_to to local paths only, preventing open
+// redirects. It must begin with "/" and must not begin with "//" or "/\\"
+// (which browsers can interpret as a protocol-relative URL).
+func sanitizeReturnTo(v string) string {
+	if v == "" {
+		return ""
+	}
+	if !strings.HasPrefix(v, "/") {
+		return ""
+	}
+	if strings.HasPrefix(v, "//") || strings.HasPrefix(v, "/\\") {
+		return ""
+	}
+	return v
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {

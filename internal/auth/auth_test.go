@@ -297,7 +297,7 @@ func TestHandleGitHubCallback_JSONModeRedirectURI(t *testing.T) {
 
 	// Pre-load a state so state validation passes.
 	state := "teststate456"
-	h.states.Add(state, struct{}{})
+	h.states.Add(state, "")
 
 	req := httptest.NewRequest("GET",
 		"/auth/github/callback?code=testcode&state="+state+"&format=json", nil)

@@ -38,7 +38,7 @@ ghp serves four distinct roles depending on which hostname the request arrives o
 | `api.github.com` | **API proxy** — validates tokens, enforces scopes, injects credentials, logs every request |
 | `github.com` | **Git passthrough** — transparent proxy for `git clone`, `git push`, etc. with token interception |
 | `*.githubcopilot.com` | **Copilot passthrough** — forwards Copilot traffic transparently; all requests are logged |
-| Your management host | **Dashboard** — web UI, GitHub OAuth login, token management API |
+| Your management host | **Dashboard** — web UI, GitHub OAuth login (web), CLI device-authorization endpoints, token management API |
 
 In TLS mode (recommended for production), ghp terminates TLS directly and uses
 SNI to select the correct certificate for each hostname. In plain HTTP mode
