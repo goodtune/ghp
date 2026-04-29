@@ -181,7 +181,8 @@ func TestDevicePoll_Denied(t *testing.T) {
 }
 
 // TestDevicePoll_SlowDown verifies that polling faster than the minimum
-// interval returns slow_down.
+// interval returns slow_down, and that each rejected poll bumps the
+// rate-limit window forward so a tight loop keeps being slow_down'd.
 func TestDevicePoll_SlowDown(t *testing.T) {
 	cfg := &config.Config{}
 	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
@@ -198,6 +199,25 @@ func TestDevicePoll_SlowDown(t *testing.T) {
 	// Immediate second poll → slow_down.
 	if got := pollDeviceTokenAndExpect(t, h, ds.DeviceCode); got != "slow_down" {
 		t.Errorf("rapid second poll: got %q, want slow_down", got)
+	}
+	// The slow_down response must itself update LastPolledAt; otherwise a
+	// misbehaving client could spam the endpoint without ever advancing
+	// the rate-limit window. Verify by reading the row directly.
+	da, err := h.store.GetDeviceAuthByDeviceCode(context.Background(), ds.DeviceCode)
+	if err != nil {
+		t.Fatalf("GetDeviceAuthByDeviceCode: %v", err)
+	}
+	if da.LastPolledAt == nil {
+		t.Fatal("expected LastPolledAt to be set after slow_down")
+	}
+	prev := *da.LastPolledAt
+	// Third poll: still slow_down, LastPolledAt must move forward.
+	if got := pollDeviceTokenAndExpect(t, h, ds.DeviceCode); got != "slow_down" {
+		t.Errorf("third poll: got %q, want slow_down", got)
+	}
+	da2, _ := h.store.GetDeviceAuthByDeviceCode(context.Background(), ds.DeviceCode)
+	if da2.LastPolledAt == nil || !da2.LastPolledAt.After(prev) {
+		t.Errorf("LastPolledAt should advance on every slow_down: prev=%v new=%v", prev, da2.LastPolledAt)
 	}
 }
 
@@ -351,6 +371,32 @@ func TestSanitizeReturnTo(t *testing.T) {
 				t.Errorf("sanitizeReturnTo(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestForwardedField parses RFC 7239 Forwarded header values for the
+// scheme/host fallback used when server.base_url is not configured.
+func TestForwardedField(t *testing.T) {
+	tests := []struct {
+		header, name, want string
+	}{
+		{"", "proto", ""},
+		{"proto=https", "proto", "https"},
+		{"for=10.0.0.1;proto=https;host=ghp.example.com", "host", "ghp.example.com"},
+		{"for=10.0.0.1;proto=https;host=ghp.example.com", "proto", "https"},
+		{`proto="https"`, "proto", "https"},
+		// Only the first forwarded element is used.
+		{"proto=https, proto=http", "proto", "https"},
+		// Case-insensitive field name matching.
+		{"Proto=https", "proto", "https"},
+		// Missing field returns empty.
+		{"for=10.0.0.1", "proto", ""},
+	}
+	for _, tt := range tests {
+		got := forwardedField(tt.header, tt.name)
+		if got != tt.want {
+			t.Errorf("forwardedField(%q, %q) = %q, want %q", tt.header, tt.name, got, tt.want)
+		}
 	}
 }
 

@@ -842,7 +842,14 @@ func (s *SQLiteStore) DeleteSession(ctx context.Context, tokenHash string) error
 
 func (s *SQLiteStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	cutoff := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < ?`, cutoff)
+	// Wrap both sides in datetime() so SQLite normalises the timestamps
+	// before comparing. A raw lexicographic comparison of RFC3339Nano
+	// strings can flip ordering near second boundaries because Go omits
+	// trailing-zero fractional digits ("...05Z" vs "...05.123Z" sort
+	// '.' < 'Z'), which would over-delete future-expiring rows. The
+	// performance cost is negligible: cleanup runs every few minutes
+	// against a small table.
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE datetime(expires_at) < datetime(?)`, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -908,7 +915,9 @@ func (s *SQLiteStore) ConsumeOAuthState(ctx context.Context, state, kind string)
 
 func (s *SQLiteStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error) {
 	cutoff := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := s.db.ExecContext(ctx, `DELETE FROM oauth_states WHERE expires_at < ?`, cutoff)
+	// See DeleteExpiredSessions for why this uses datetime() rather than a
+	// raw TEXT comparison.
+	res, err := s.db.ExecContext(ctx, `DELETE FROM oauth_states WHERE datetime(expires_at) < datetime(?)`, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -1032,7 +1041,9 @@ func (s *SQLiteStore) DeleteDeviceAuth(ctx context.Context, deviceCode string) e
 
 func (s *SQLiteStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error) {
 	cutoff := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := s.db.ExecContext(ctx, `DELETE FROM cli_device_authorizations WHERE expires_at < ?`, cutoff)
+	// See DeleteExpiredSessions for why this uses datetime() rather than a
+	// raw TEXT comparison.
+	res, err := s.db.ExecContext(ctx, `DELETE FROM cli_device_authorizations WHERE datetime(expires_at) < datetime(?)`, cutoff)
 	if err != nil {
 		return 0, err
 	}

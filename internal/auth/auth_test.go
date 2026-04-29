@@ -420,11 +420,14 @@ func TestHandleGitHubLogin_IncludesRedirectURI(t *testing.T) {
 // callback URL from the configured BaseURL or from the incoming request.
 func TestMainCallbackURL(t *testing.T) {
 	tests := []struct {
-		name    string
-		baseURL string
-		reqHost string
-		tls     bool
-		want    string
+		name      string
+		baseURL   string
+		reqHost   string
+		tls       bool
+		xfProto   string
+		xfHost    string
+		forwarded string
+		want      string
 	}{
 		{
 			name:    "with base URL",
@@ -447,6 +450,25 @@ func TestMainCallbackURL(t *testing.T) {
 			reqHost: "proxy.example.com:8080",
 			want:    "http://proxy.example.com:8080/auth/github/callback",
 		},
+		{
+			name:        "no base URL, X-Forwarded-Proto = https",
+			reqHost:     "proxy.example.com",
+			xfProto:     "https",
+			want:        "https://proxy.example.com/auth/github/callback",
+		},
+		{
+			name:    "no base URL, X-Forwarded-Host overrides",
+			reqHost: "internal.local",
+			xfHost:  "ghp.example.com",
+			xfProto: "https",
+			want:    "https://ghp.example.com/auth/github/callback",
+		},
+		{
+			name:      "no base URL, RFC 7239 Forwarded header",
+			reqHost:   "internal.local",
+			forwarded: `for=10.0.0.1;proto=https;host=ghp.example.com`,
+			want:      "https://ghp.example.com/auth/github/callback",
+		},
 	}
 
 	for _, tt := range tests {
@@ -462,6 +484,15 @@ func TestMainCallbackURL(t *testing.T) {
 			}
 			if tt.tls {
 				req.TLS = &tls.ConnectionState{}
+			}
+			if tt.xfProto != "" {
+				req.Header.Set("X-Forwarded-Proto", tt.xfProto)
+			}
+			if tt.xfHost != "" {
+				req.Header.Set("X-Forwarded-Host", tt.xfHost)
+			}
+			if tt.forwarded != "" {
+				req.Header.Set("Forwarded", tt.forwarded)
 			}
 
 			got := h.mainCallbackURL(req)

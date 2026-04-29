@@ -189,6 +189,19 @@ func (h *Handler) handleDevicePoll(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC()
 	if da.LastPolledAt != nil && now.Sub(*da.LastPolledAt) < devicePollMinInterval {
+		// Bump LastPolledAt forward even on rejection so a misbehaving
+		// client polling in a tight loop keeps pushing its own rate-limit
+		// window out instead of repeatedly hitting only the in-memory
+		// timestamp comparison. Without this the next poll from any
+		// instance sees the same stale LastPolledAt and the offender pays
+		// only the cost of the DB lookup, never advancing past slow_down.
+		da.LastPolledAt = &now
+		if err := h.store.UpdateDeviceAuth(r.Context(), da); err != nil {
+			// Non-fatal: the rate-limit window just won't tighten further
+			// for this client across this poll. The IP-level limiter still
+			// applies as a backstop.
+			h.logger.Warn("device_auth slow-down update failed", "error", err)
+		}
 		writeDeviceError(w, "slow_down", http.StatusBadRequest)
 		return
 	}
@@ -449,16 +462,85 @@ func normaliseUserCode(s string) string {
 }
 
 // absoluteURL constructs an absolute URL for path on this server, preferring
-// the configured server.base_url and falling back to the request's host.
+// the configured server.base_url and falling back to a scheme/host derived
+// from the incoming request (with X-Forwarded-* headers honoured for
+// reverse-proxy deployments).
 func (h *Handler) absoluteURL(r *http.Request, path string) string {
 	if h.cfg.Server.BaseURL != "" {
 		return strings.TrimRight(h.cfg.Server.BaseURL, "/") + path
 	}
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
+	return fmt.Sprintf("%s://%s%s", requestScheme(r), requestHost(r), path)
+}
+
+// requestScheme reports the externally-visible scheme for r. It checks the
+// standardised Forwarded header first, then X-Forwarded-Proto (for the
+// common case of an L7 proxy), and finally falls back to whether the
+// connection itself is TLS. This matters because in a typical deployment
+// TLS terminates at the proxy and ghp receives plain HTTP — without the
+// header check we'd hand back http:// verification URLs that don't match
+// the user's externally reachable address.
+func requestScheme(r *http.Request) string {
+	if v := forwardedField(r.Header.Get("Forwarded"), "proto"); v != "" {
+		return v
 	}
-	return fmt.Sprintf("%s://%s%s", scheme, r.Host, path)
+	if v := r.Header.Get("X-Forwarded-Proto"); v != "" {
+		// Multiple proxies may chain values ("https, http"); take the
+		// first, which represents the originating client edge.
+		if i := strings.Index(v, ","); i >= 0 {
+			v = v[:i]
+		}
+		return strings.TrimSpace(v)
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// requestHost reports the externally-visible host for r, honouring
+// X-Forwarded-Host before the request's own Host header.
+func requestHost(r *http.Request) string {
+	if v := forwardedField(r.Header.Get("Forwarded"), "host"); v != "" {
+		return v
+	}
+	if v := r.Header.Get("X-Forwarded-Host"); v != "" {
+		if i := strings.Index(v, ","); i >= 0 {
+			v = v[:i]
+		}
+		return strings.TrimSpace(v)
+	}
+	return r.Host
+}
+
+// forwardedField extracts a single field (e.g. "proto" or "host") from an
+// RFC 7239 Forwarded header value. Returns "" when the header is empty or
+// the field is absent. Only the first forwarded element is consulted (the
+// originating client's view of the request); chained proxies after that
+// are ignored, matching the X-Forwarded-* convention above.
+func forwardedField(header, name string) string {
+	if header == "" {
+		return ""
+	}
+	// Forwarded: by=...;for=...;host=...;proto=...
+	first := header
+	if i := strings.Index(first, ","); i >= 0 {
+		first = first[:i]
+	}
+	for _, part := range strings.Split(first, ";") {
+		part = strings.TrimSpace(part)
+		eq := strings.IndexByte(part, '=')
+		if eq < 0 {
+			continue
+		}
+		if !strings.EqualFold(part[:eq], name) {
+			continue
+		}
+		v := strings.TrimSpace(part[eq+1:])
+		// Values may be quoted per the spec.
+		v = strings.Trim(v, `"`)
+		return v
+	}
+	return ""
 }
 
 // deviceVerifyData drives the verification template. Exactly one of NeedsCode,

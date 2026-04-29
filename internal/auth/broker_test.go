@@ -218,8 +218,10 @@ func TestBrokerAuthorize(t *testing.T) {
 		t.Fatal("expected state parameter")
 	}
 
-	// Verify broker state was stored. Use the underlying store directly
-	// to peek without consuming.
+	// Verify broker state was stored by reading it back. Note that
+	// ConsumeOAuthState atomically reads-and-deletes — the test does not
+	// need to inspect the row again afterwards, so this is fine; if a true
+	// non-destructive peek is ever needed, add a separate Get method.
 	bs, err := h.store.ConsumeOAuthState(context.Background(), state, database.OAuthStateKindBroker)
 	if err != nil {
 		t.Fatalf("broker state not stored: %v", err)
