@@ -463,6 +463,20 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 			h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
 		}
+		// GraphQL mutations on GitHub take an opaque `repositoryId`
+		// (global node ID) in their input rather than `owner`/`name`,
+		// which the proxy cannot statically map to its allowlist. Reject
+		// mutations on repository-restricted tokens with a clear,
+		// actionable message rather than the generic "must reference
+		// repository(owner, name)" path below.
+		if analysis.hasMutation {
+			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+			writeError(w, http.StatusForbidden,
+				"Token is repository-restricted; GraphQL mutations are not supported for repository-scoped tokens (mutations identify their target by global node ID, which the proxy cannot statically map to a repository)")
+			h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+			return
+		}
 		// Repository-restricted queries must include at least one literal
 		// repository(owner, name) reference, and every referenced
 		// repository must be in the allowlist. Selections that are not

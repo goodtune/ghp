@@ -99,7 +99,13 @@ The proxy uses the analysis to apply a deny-by-default policy:
   `repository(owner, name)` with literal arguments, and every referenced
   repository must appear in the token's allowlist. Cross-repository fields
   are rejected outright: ghp cannot statically prove their results stay
-  inside the allowlist.
+  inside the allowlist. GraphQL mutations are also rejected for
+  repository-restricted tokens — GitHub's mutation inputs identify their
+  target with an opaque global node ID (`repositoryId`) rather than
+  `owner`/`name`, which the proxy cannot statically map to the
+  allowlist. Use the REST API for repo-scoped writes, or use a
+  permission-only token if mutations across multiple repositories are
+  required.
 - **Permission-restricted tokens** must grant every scope the analysis
   identifies. Mutations whose name does not appear in the curated mutation
   map are rejected — the proxy never grants a write scope it cannot

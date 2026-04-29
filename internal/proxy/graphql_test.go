@@ -339,6 +339,31 @@ func TestAnalysisSatisfiedBy(t *testing.T) {
 
 // --- handler-level integration tests ---
 
+func TestServeHTTP_GraphQL_RepoScoped_RejectsMutationWithClearMessage(t *testing.T) {
+	// GitHub GraphQL mutations identify their target by global node ID
+	// (e.g. `repositoryId: "MDEwOlJlcG9zaXRvcnk="`) rather than by an
+	// `owner`/`name` pair, so the proxy cannot statically map them to
+	// the repo allowlist. Repo-scoped tokens must therefore be rejected
+	// with a clear, actionable error rather than the generic "must
+	// reference repository(owner, name)" message intended for queries.
+	h, ghpToken := newRepoOnlyHandler(t, "goodtune/ghp")
+
+	body := `{"query":"mutation { createIssue(input: {repositoryId: \"abc\", title: \"x\"}) { issue { id } } }"}`
+	req := httptest.NewRequest("POST", "http://api.github.com/graphql", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "mutations are not supported") {
+		t.Errorf("expected mutation-specific error, got: %s", rr.Body.String())
+	}
+}
+
 func TestServeHTTP_GraphQL_RepoScoped_AllowsAllowlistedRepo(t *testing.T) {
 	h, ghpToken := newRepoOnlyHandler(t, "goodtune/ghp")
 
