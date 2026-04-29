@@ -351,6 +351,9 @@ func (s *Server) Run(ctx context.Context) error {
 	defer lifecycleCancel()
 
 	authHandler := auth.NewHandler(s.cfg, store, enc, s.logger)
+	// Periodically purge expired sessions, oauth_states, and
+	// cli_device_authorizations rows so the tables don't grow unbounded.
+	authHandler.StartCleanup(lifecycleCtx)
 	usernameResolver := proxy.NewUsernameResolver(store, s.logger)
 	proxyTokenResolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc, appTokenProvider)
 	usernameResolver.WarmCache(lifecycleCtx, proxyTokenResolver)

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"io"
@@ -10,9 +11,28 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/database"
 )
+
+// newTestStore returns an in-memory SQLite store with migrations applied.
+// Used by handler tests that need real session/oauth_state/device_auth
+// persistence (which is now everything that touches a Handler).
+func newTestStore(t *testing.T) database.Store {
+	t.Helper()
+	store, err := database.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mig := database.NewMigrator(store, "sqlite")
+	if err := mig.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return store
+}
 
 func TestSecureCookies(t *testing.T) {
 	tests := []struct {
@@ -66,7 +86,7 @@ func TestSecureCookies(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := NewHandler(tt.cfg, nil, nil, slog.Default())
+			h := NewHandler(tt.cfg, newTestStore(t), nil, slog.Default())
 			got := h.secureCookies()
 			if got != tt.want {
 				t.Errorf("secureCookies() = %v, want %v", got, tt.want)
@@ -77,7 +97,7 @@ func TestSecureCookies(t *testing.T) {
 
 func TestHandleTestLogin_BodyTooLarge(t *testing.T) {
 	cfg := &config.Config{DevMode: true}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	// Body must be valid-looking JSON so the decoder reads past the 1 MB limit.
 	body := strings.NewReader(`{"username":"` + strings.Repeat("x", maxRequestBodySize) + `"}`)
@@ -92,7 +112,7 @@ func TestHandleTestLogin_BodyTooLarge(t *testing.T) {
 
 func TestHandleTestLogin_InvalidJSON(t *testing.T) {
 	cfg := &config.Config{DevMode: true}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("POST", "/auth/test-login", strings.NewReader("not valid json"))
 	w := httptest.NewRecorder()
@@ -161,7 +181,7 @@ func TestExchangeCode_URLEncoding(t *testing.T) {
 					ClientSecret: tt.clientSecret,
 				},
 			}
-			h := NewHandler(cfg, nil, nil, slog.Default())
+			h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 			h.githubBaseURL = ghServer.URL
 
 			_, _, _, err := h.exchangeCode(tt.code, tt.redirectURI)
@@ -208,7 +228,7 @@ func TestExchangeCode_HTTPError(t *testing.T) {
 	cfg := &config.Config{
 		GitHub: config.GitHubConfig{ClientID: "id", ClientSecret: "secret"},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 	h.githubBaseURL = ghServer.URL
 
 	_, _, _, err := h.exchangeCode("bad-code", "")
@@ -232,7 +252,7 @@ func TestExchangeCode_EmptyAccessToken(t *testing.T) {
 	cfg := &config.Config{
 		GitHub: config.GitHubConfig{ClientID: "id", ClientSecret: "secret"},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 	h.githubBaseURL = ghServer.URL
 
 	_, _, _, err := h.exchangeCode("code", "")
@@ -256,7 +276,7 @@ func TestExchangeCode_ErrorDescription(t *testing.T) {
 	cfg := &config.Config{
 		GitHub: config.GitHubConfig{ClientID: "id", ClientSecret: "secret"},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 	h.githubBaseURL = ghServer.URL
 
 	_, _, _, err := h.exchangeCode("expired-code", "")
@@ -292,12 +312,18 @@ func TestHandleGitHubCallback_JSONModeRedirectURI(t *testing.T) {
 		GitHub: config.GitHubConfig{ClientID: "id", ClientSecret: "secret"},
 		Server: config.ServerConfig{BaseURL: "https://proxy.example.com"},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 	h.githubBaseURL = ghServer.URL
 
 	// Pre-load a state so state validation passes.
 	state := "teststate456"
-	h.states.Add(state, "")
+	if err := h.store.CreateOAuthState(context.Background(), &database.OAuthState{
+		State:     state,
+		Kind:      database.OAuthStateKindLogin,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
 
 	req := httptest.NewRequest("GET",
 		"/auth/github/callback?code=testcode&state="+state+"&format=json", nil)
@@ -321,7 +347,7 @@ func TestHandleGitHubLogin_JSONResponse(t *testing.T) {
 		GitHub: config.GitHubConfig{ClientID: "test-client-id"},
 		Server: config.ServerConfig{BaseURL: "https://proxy.example.com"},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/auth/github", nil)
 	req.Header.Set("Accept", "application/json")
@@ -365,7 +391,7 @@ func TestHandleGitHubLogin_IncludesRedirectURI(t *testing.T) {
 		GitHub: config.GitHubConfig{ClientID: "test-client-id"},
 		Server: config.ServerConfig{BaseURL: "https://proxy.example.com"},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/auth/github", nil)
 	w := httptest.NewRecorder()
@@ -428,7 +454,7 @@ func TestMainCallbackURL(t *testing.T) {
 			cfg := &config.Config{
 				Server: config.ServerConfig{BaseURL: tt.baseURL},
 			}
-			h := NewHandler(cfg, nil, nil, slog.Default())
+			h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 			req := httptest.NewRequest("GET", "/", nil)
 			if tt.reqHost != "" {

@@ -95,6 +95,39 @@ func (m *mockStore) UpdateCachedRepository(_ context.Context, _ *database.Cached
 func (m *mockStore) DeleteCachedRepository(_ context.Context, _ string) error {
 	panic("unexpected")
 }
+func (m *mockStore) CreateSession(_ context.Context, _ *database.Session) error { panic("unexpected") }
+func (m *mockStore) GetSessionByTokenHash(_ context.Context, _ string) (*database.Session, error) {
+	panic("unexpected")
+}
+func (m *mockStore) DeleteSession(_ context.Context, _ string) error { panic("unexpected") }
+func (m *mockStore) DeleteExpiredSessions(_ context.Context) (int64, error) {
+	panic("unexpected")
+}
+func (m *mockStore) CreateOAuthState(_ context.Context, _ *database.OAuthState) error {
+	panic("unexpected")
+}
+func (m *mockStore) ConsumeOAuthState(_ context.Context, _, _ string) (*database.OAuthState, error) {
+	panic("unexpected")
+}
+func (m *mockStore) DeleteExpiredOAuthStates(_ context.Context) (int64, error) {
+	panic("unexpected")
+}
+func (m *mockStore) CreateDeviceAuth(_ context.Context, _ *database.DeviceAuth) error {
+	panic("unexpected")
+}
+func (m *mockStore) GetDeviceAuthByDeviceCode(_ context.Context, _ string) (*database.DeviceAuth, error) {
+	panic("unexpected")
+}
+func (m *mockStore) GetDeviceAuthByUserCode(_ context.Context, _ string) (*database.DeviceAuth, error) {
+	panic("unexpected")
+}
+func (m *mockStore) UpdateDeviceAuth(_ context.Context, _ *database.DeviceAuth) error {
+	panic("unexpected")
+}
+func (m *mockStore) DeleteDeviceAuth(_ context.Context, _ string) error { panic("unexpected") }
+func (m *mockStore) DeleteExpiredDeviceAuths(_ context.Context) (int64, error) {
+	panic("unexpected")
+}
 func (m *mockStore) Close() error { return nil }
 
 // makeApp creates a minimal App record with a valid private key for testing.

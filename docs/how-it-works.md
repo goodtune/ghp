@@ -45,6 +45,23 @@ SNI to select the correct certificate for each hostname. In plain HTTP mode
 (for development or behind a reverse proxy), routing is based on the `Host`
 header alone.
 
+## High Availability
+
+ghp can run as multiple instances behind a load balancer. All transient auth
+state — browser sessions, in-flight OAuth state tokens for the GitHub login
+redirect, OAuth broker state, and CLI device-authorization records — is
+stored in the configured database (PostgreSQL, SQLite, or Vault), not in
+process memory. A user signed in on instance A can be served their next
+request from instance B, the GitHub OAuth callback for a redirect launched
+on instance A is valid against instance B, and a CLI device flow whose
+`/cli/auth/device` and `/cli/auth/device/token` calls land on different
+instances completes correctly.
+
+A background cleanup goroutine on each instance periodically purges expired
+sessions, OAuth state rows, and device-auth records (default every 5
+minutes). For the SQLite backend this is in-process; for PostgreSQL and
+Vault it is shared by all instances and idempotent.
+
 ## Security Model
 
 - **Token isolation** — agents never see real GitHub credentials; they only hold short-lived ghp tokens

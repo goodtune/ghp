@@ -81,7 +81,28 @@ func (m *mockStore) ListCachedRepositories(_ context.Context) ([]*database.Cache
 }
 func (m *mockStore) UpdateCachedRepository(_ context.Context, _ *database.CachedRepository) error { return nil }
 func (m *mockStore) DeleteCachedRepository(_ context.Context, _ string) error                     { return nil }
-func (m *mockStore) Close() error                                                                  { return nil }
+func (m *mockStore) CreateSession(_ context.Context, _ *database.Session) error                   { return nil }
+func (m *mockStore) GetSessionByTokenHash(_ context.Context, _ string) (*database.Session, error) {
+	return nil, database.ErrNotFound
+}
+func (m *mockStore) DeleteSession(_ context.Context, _ string) error             { return nil }
+func (m *mockStore) DeleteExpiredSessions(_ context.Context) (int64, error)      { return 0, nil }
+func (m *mockStore) CreateOAuthState(_ context.Context, _ *database.OAuthState) error { return nil }
+func (m *mockStore) ConsumeOAuthState(_ context.Context, _, _ string) (*database.OAuthState, error) {
+	return nil, database.ErrNotFound
+}
+func (m *mockStore) DeleteExpiredOAuthStates(_ context.Context) (int64, error)        { return 0, nil }
+func (m *mockStore) CreateDeviceAuth(_ context.Context, _ *database.DeviceAuth) error { return nil }
+func (m *mockStore) GetDeviceAuthByDeviceCode(_ context.Context, _ string) (*database.DeviceAuth, error) {
+	return nil, database.ErrNotFound
+}
+func (m *mockStore) GetDeviceAuthByUserCode(_ context.Context, _ string) (*database.DeviceAuth, error) {
+	return nil, database.ErrNotFound
+}
+func (m *mockStore) UpdateDeviceAuth(_ context.Context, _ *database.DeviceAuth) error { return nil }
+func (m *mockStore) DeleteDeviceAuth(_ context.Context, _ string) error               { return nil }
+func (m *mockStore) DeleteExpiredDeviceAuths(_ context.Context) (int64, error)        { return 0, nil }
+func (m *mockStore) Close() error                                                     { return nil }
 
 // newTestToken creates a valid proxy token for testing with the given hash, ID,
 // and expiry.

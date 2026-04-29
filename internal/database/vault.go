@@ -944,5 +944,306 @@ func (s *VaultStore) DeleteCachedRepository(ctx context.Context, id string) erro
 	return s.kvDelete(ctx, "cached-repos/"+id)
 }
 
+// --- Sessions ---
+
+func (s *VaultStore) CreateSession(ctx context.Context, sess *Session) error {
+	if sess.TokenHash == "" {
+		return fmt.Errorf("CreateSession: TokenHash required")
+	}
+	if sess.CreatedAt.IsZero() {
+		sess.CreatedAt = time.Now().UTC()
+	}
+	data, err := marshalToMap(sess)
+	if err != nil {
+		return fmt.Errorf("marshaling session: %w", err)
+	}
+	return s.kvWrite(ctx, "sessions/"+sess.TokenHash, data)
+}
+
+func (s *VaultStore) GetSessionByTokenHash(ctx context.Context, tokenHash string) (*Session, error) {
+	data, err := s.kvRead(ctx, "sessions/"+tokenHash)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, fmt.Errorf("session: %w", ErrNotFound)
+	}
+	var sess Session
+	if err := unmarshalFromMap(data, &sess); err != nil {
+		return nil, err
+	}
+	if !sess.ExpiresAt.IsZero() && time.Now().After(sess.ExpiresAt) {
+		return nil, fmt.Errorf("session: %w", ErrNotFound)
+	}
+	return &sess, nil
+}
+
+func (s *VaultStore) DeleteSession(ctx context.Context, tokenHash string) error {
+	return s.kvDelete(ctx, "sessions/"+tokenHash)
+}
+
+// DeleteExpiredSessions iterates the sessions/ prefix and deletes anything
+// past its expiry. Vault has no list-with-filter, so this fans out one Read
+// per row. Acceptable because cleanup runs infrequently (configurable
+// interval, default minutes).
+func (s *VaultStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	keys, err := s.kvList(ctx, "sessions")
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	var deleted int64
+	for _, k := range keys {
+		data, err := s.kvRead(ctx, "sessions/"+k)
+		if err != nil {
+			return deleted, err
+		}
+		if data == nil {
+			continue
+		}
+		var sess Session
+		if err := unmarshalFromMap(data, &sess); err != nil {
+			continue
+		}
+		if !sess.ExpiresAt.IsZero() && now.After(sess.ExpiresAt) {
+			if err := s.kvDelete(ctx, "sessions/"+k); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
+// --- OAuth states ---
+
+func (s *VaultStore) CreateOAuthState(ctx context.Context, st *OAuthState) error {
+	if st.State == "" {
+		return fmt.Errorf("CreateOAuthState: State required")
+	}
+	if st.Kind != OAuthStateKindLogin && st.Kind != OAuthStateKindBroker {
+		return fmt.Errorf("CreateOAuthState: invalid Kind %q", st.Kind)
+	}
+	if st.CreatedAt.IsZero() {
+		st.CreatedAt = time.Now().UTC()
+	}
+	data, err := marshalToMap(st)
+	if err != nil {
+		return fmt.Errorf("marshaling oauth_state: %w", err)
+	}
+	return s.kvWrite(ctx, "oauth-states/"+st.State, data)
+}
+
+// ConsumeOAuthState reads then deletes. Vault KV does not support atomic
+// read-and-delete, so a duplicate concurrent callback could in principle
+// receive the same state twice. The window is bounded by the time between
+// the kvRead and kvDelete here (typically single-digit ms), and the state
+// payload itself is non-secret — at worst a duplicate browser session
+// would race to consume the same row. Documented in CLAUDE.md as the
+// Vault read-modify-write trade-off.
+func (s *VaultStore) ConsumeOAuthState(ctx context.Context, state, kind string) (*OAuthState, error) {
+	data, err := s.kvRead(ctx, "oauth-states/"+state)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
+	}
+	var st OAuthState
+	if err := unmarshalFromMap(data, &st); err != nil {
+		return nil, err
+	}
+	if st.Kind != kind {
+		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
+	}
+	if !st.ExpiresAt.IsZero() && time.Now().After(st.ExpiresAt) {
+		_ = s.kvDelete(ctx, "oauth-states/"+state)
+		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
+	}
+	if err := s.kvDelete(ctx, "oauth-states/"+state); err != nil {
+		return nil, err
+	}
+	return &st, nil
+}
+
+func (s *VaultStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error) {
+	keys, err := s.kvList(ctx, "oauth-states")
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	var deleted int64
+	for _, k := range keys {
+		data, err := s.kvRead(ctx, "oauth-states/"+k)
+		if err != nil {
+			return deleted, err
+		}
+		if data == nil {
+			continue
+		}
+		var st OAuthState
+		if err := unmarshalFromMap(data, &st); err != nil {
+			continue
+		}
+		if !st.ExpiresAt.IsZero() && now.After(st.ExpiresAt) {
+			if err := s.kvDelete(ctx, "oauth-states/"+k); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
+// --- Device authorization ---
+
+func (s *VaultStore) CreateDeviceAuth(ctx context.Context, da *DeviceAuth) error {
+	if da.DeviceCode == "" || da.UserCode == "" {
+		return fmt.Errorf("CreateDeviceAuth: DeviceCode and UserCode required")
+	}
+	if da.Status == "" {
+		da.Status = DeviceAuthStatusPending
+	}
+	if da.CreatedAt.IsZero() {
+		da.CreatedAt = time.Now().UTC()
+	}
+	// Reject duplicate user_code at the application level; Vault has no
+	// unique-index equivalent.
+	if existing, err := s.kvRead(ctx, "device-auth/by-user-code/"+da.UserCode); err != nil {
+		return err
+	} else if existing != nil {
+		return fmt.Errorf("user_code already in use")
+	}
+	data, err := marshalToMap(da)
+	if err != nil {
+		return fmt.Errorf("marshaling device_auth: %w", err)
+	}
+	if err := s.kvWrite(ctx, "device-auth/"+da.DeviceCode, data); err != nil {
+		return err
+	}
+	// Index user_code -> device_code for the verification page lookup.
+	return s.kvWrite(ctx, "device-auth/by-user-code/"+da.UserCode, map[string]interface{}{
+		"device_code": da.DeviceCode,
+	})
+}
+
+func (s *VaultStore) GetDeviceAuthByDeviceCode(ctx context.Context, deviceCode string) (*DeviceAuth, error) {
+	data, err := s.kvRead(ctx, "device-auth/"+deviceCode)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	var da DeviceAuth
+	if err := unmarshalFromMap(data, &da); err != nil {
+		return nil, err
+	}
+	if !da.ExpiresAt.IsZero() && time.Now().After(da.ExpiresAt) {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	return &da, nil
+}
+
+func (s *VaultStore) GetDeviceAuthByUserCode(ctx context.Context, userCode string) (*DeviceAuth, error) {
+	idx, err := s.kvRead(ctx, "device-auth/by-user-code/"+userCode)
+	if err != nil {
+		return nil, err
+	}
+	if idx == nil {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	deviceCode, _ := idx["device_code"].(string)
+	if deviceCode == "" {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	return s.GetDeviceAuthByDeviceCode(ctx, deviceCode)
+}
+
+func (s *VaultStore) UpdateDeviceAuth(ctx context.Context, da *DeviceAuth) error {
+	existing, err := s.kvRead(ctx, "device-auth/"+da.DeviceCode)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return fmt.Errorf("device_auth %s: %w", da.DeviceCode, ErrNotFound)
+	}
+	data, err := marshalToMap(da)
+	if err != nil {
+		return fmt.Errorf("marshaling device_auth: %w", err)
+	}
+	return s.kvWrite(ctx, "device-auth/"+da.DeviceCode, data)
+}
+
+func (s *VaultStore) DeleteDeviceAuth(ctx context.Context, deviceCode string) error {
+	// Delete the user_code index too. Best-effort: if the primary record
+	// is gone the index is harmless and will be cleaned up on TTL.
+	if data, err := s.kvRead(ctx, "device-auth/"+deviceCode); err == nil && data != nil {
+		var da DeviceAuth
+		if err := unmarshalFromMap(data, &da); err == nil && da.UserCode != "" {
+			_ = s.kvDelete(ctx, "device-auth/by-user-code/"+da.UserCode)
+		}
+	}
+	return s.kvDelete(ctx, "device-auth/"+deviceCode)
+}
+
+// DeleteExpiredDeviceAuths iterates device-auth/ and deletes expired records
+// along with their user_code indexes. by-user-code/ entries that point at
+// missing primary records are also pruned.
+func (s *VaultStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error) {
+	keys, err := s.kvList(ctx, "device-auth")
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	var deleted int64
+	for _, k := range keys {
+		// Skip the index sub-prefix; we'll prune dangling entries below.
+		if k == "by-user-code" {
+			continue
+		}
+		data, err := s.kvRead(ctx, "device-auth/"+k)
+		if err != nil {
+			return deleted, err
+		}
+		if data == nil {
+			continue
+		}
+		var da DeviceAuth
+		if err := unmarshalFromMap(data, &da); err != nil {
+			continue
+		}
+		if !da.ExpiresAt.IsZero() && now.After(da.ExpiresAt) {
+			if da.UserCode != "" {
+				_ = s.kvDelete(ctx, "device-auth/by-user-code/"+da.UserCode)
+			}
+			if err := s.kvDelete(ctx, "device-auth/"+k); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+	}
+	// Prune dangling user_code index entries (records deleted directly,
+	// e.g. by the polling endpoint).
+	idxKeys, err := s.kvList(ctx, "device-auth/by-user-code")
+	if err == nil {
+		for _, idxKey := range idxKeys {
+			idx, err := s.kvRead(ctx, "device-auth/by-user-code/"+idxKey)
+			if err != nil || idx == nil {
+				continue
+			}
+			deviceCode, _ := idx["device_code"].(string)
+			if deviceCode == "" {
+				_ = s.kvDelete(ctx, "device-auth/by-user-code/"+idxKey)
+				continue
+			}
+			if primary, _ := s.kvRead(ctx, "device-auth/"+deviceCode); primary == nil {
+				_ = s.kvDelete(ctx, "device-auth/by-user-code/"+idxKey)
+			}
+		}
+	}
+	return deleted, nil
+}
+
 // Ensure VaultStore implements Store.
 var _ Store = (*VaultStore)(nil)

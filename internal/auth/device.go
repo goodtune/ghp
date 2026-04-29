@@ -28,16 +28,14 @@ package auth
 //	   |  (polling every interval seconds) |                                    |
 //	   |<--- {session_token, username} ----|                                    |
 //
-// Design notes:
-//   - Device records are kept in-memory (expirable.LRU), since they are
-//     short-lived and small in number; persisting them in the database would
-//     require migrations across all three backends (Postgres, SQLite, Vault)
-//     for no real benefit.
-//   - GitHub OAuth is still the identity provider for the ghp web UI, but it
-//     is no longer involved in the CLI bootstrap. The CLI never sees a
-//     github.com URL.
+// State is held in the database (cli_device_authorizations table) rather
+// than an in-process LRU so that the four round-trips above remain correct
+// when load-balanced across multiple ghp instances. GitHub OAuth is still
+// the identity provider for the ghp web UI, but it is no longer involved in
+// the CLI bootstrap — the CLI never sees a github.com URL.
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -48,9 +46,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
 )
 
@@ -59,14 +57,11 @@ const (
 	// valid. After this window the user_code becomes invalid and the CLI
 	// poll receives "expired_token".
 	deviceRequestTTL = 10 * time.Minute
-	// maxDeviceRequests caps the number of in-flight device requests held
-	// in memory. The LRU evicts oldest entries past this size.
-	maxDeviceRequests = 1_000
 	// devicePollMinInterval is the minimum permitted interval between
 	// polls for a single device_code. Polling faster receives "slow_down".
 	devicePollMinInterval = 2 * time.Second
 	// deviceUserCodeAlphabet is the set of characters used in user_codes.
-	// Restricted to a 32-character set that avoids visually-confusable
+	// Restricted to a 31-character set that avoids visually-confusable
 	// glyphs (no 0/O, 1/I/L) so users can read and re-type codes reliably
 	// from a small printout.
 	deviceUserCodeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -78,41 +73,7 @@ const (
 	deviceUserCodeBlocks = 2
 )
 
-// DeviceAuthStatus is the lifecycle state of a device-authorization request.
-type DeviceAuthStatus string
-
-const (
-	deviceStatusPending  DeviceAuthStatus = "pending"
-	deviceStatusApproved DeviceAuthStatus = "approved"
-	deviceStatusDenied   DeviceAuthStatus = "denied"
-)
-
-// deviceAuthRequest is the in-memory record for a CLI device-authorization
-// request. The device_code is the long-lived secret the CLI polls with;
-// the user_code is the short, human-readable code displayed in both the
-// CLI output and the browser approval page.
-type deviceAuthRequest struct {
-	mu sync.Mutex
-
-	DeviceCode string
-	UserCode   string
-
-	Status DeviceAuthStatus
-
-	// SessionToken and Username are populated when Status transitions to
-	// approved. They are returned to the CLI on its next poll (after which
-	// the device record is removed from the LRU to prevent token re-use).
-	SessionToken string
-	Username     string
-
-	// LastPolledAt is updated by the polling endpoint to enforce the
-	// minimum poll interval.
-	LastPolledAt time.Time
-
-	CreatedAt time.Time
-}
-
-// RegisterDeviceRoutes adds the CLI device-authorization endpoints to the mux.
+// registerDeviceRoutes adds the CLI device-authorization endpoints to the mux.
 // Called from RegisterRoutes.
 func (h *Handler) registerDeviceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /cli/auth/device", h.handleDeviceStart)
@@ -121,42 +82,49 @@ func (h *Handler) registerDeviceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /cli/auth/decision", h.handleDeviceDecision)
 }
 
-// handleDeviceStart creates a new device-authorization request. The CLI
-// hits this endpoint anonymously; no user identity is associated with the
-// record until the verification page is approved.
+// handleDeviceStart creates a new device-authorization request. The CLI hits
+// this endpoint anonymously; no user identity is associated with the record
+// until the verification page is approved.
 //
-// Response is RFC-8628-shaped JSON:
-//
-//	{
-//	  "device_code": "...",
-//	  "user_code": "ABCD-EFGH",
-//	  "verification_uri": "https://server/cli/auth",
-//	  "verification_uri_complete": "https://server/cli/auth?user_code=ABCD-EFGH",
-//	  "expires_in": 600,
-//	  "interval": 5
-//	}
+// Response is RFC-8628-shaped JSON.
 func (h *Handler) handleDeviceStart(w http.ResponseWriter, r *http.Request) {
 	deviceCode, err := generateDeviceCode()
 	if err != nil {
 		h.logger.Error("failed to generate device_code", "error", err)
-		http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
-		return
-	}
-	userCode, err := generateUserCode()
-	if err != nil {
-		h.logger.Error("failed to generate user_code", "error", err)
-		http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
+		writeDeviceError(w, "server_error", http.StatusInternalServerError)
 		return
 	}
 
-	req := &deviceAuthRequest{
-		DeviceCode: deviceCode,
-		UserCode:   userCode,
-		Status:     deviceStatusPending,
-		CreatedAt:  time.Now(),
+	// user_code collisions are extremely unlikely (≈40 bits of entropy with
+	// at most ~1k records active in a 10-minute window) but possible. Retry
+	// a small number of times if Create reports a unique-constraint error.
+	var userCode string
+	for attempt := 0; attempt < 5; attempt++ {
+		uc, err := generateUserCode()
+		if err != nil {
+			h.logger.Error("failed to generate user_code", "error", err)
+			writeDeviceError(w, "server_error", http.StatusInternalServerError)
+			return
+		}
+		if err := h.store.CreateDeviceAuth(r.Context(), &database.DeviceAuth{
+			DeviceCode: deviceCode,
+			UserCode:   uc,
+			Status:     database.DeviceAuthStatusPending,
+			ExpiresAt:  time.Now().Add(deviceRequestTTL).UTC(),
+		}); err != nil {
+			// A duplicate user_code is the only retriable error we expect;
+			// retry on any error here is cheap and safer than parsing
+			// driver-specific constraint messages.
+			if attempt == 4 {
+				h.logger.Error("failed to persist device_auth", "error", err)
+				writeDeviceError(w, "server_error", http.StatusInternalServerError)
+				return
+			}
+			continue
+		}
+		userCode = uc
+		break
 	}
-	h.deviceRequests.Add(deviceCode, req)
-	h.deviceUserCodes.Add(userCode, deviceCode)
 
 	verifyURI := h.absoluteURL(r, "/cli/auth")
 	verifyComplete := verifyURI + "?user_code=" + url.QueryEscape(userCode)
@@ -178,16 +146,6 @@ func (h *Handler) handleDeviceStart(w http.ResponseWriter, r *http.Request) {
 // handleDevicePoll returns the issued session token once the device request
 // has been approved by an authenticated browser session. Until then it
 // returns RFC-8628-style error codes.
-//
-// Request body: {"device_code": "..."}
-//
-// Responses:
-//   - 200 {"session_token": "ghpr_...", "username": "..."}                approved
-//   - 400 {"error": "authorization_pending"}                              still waiting
-//   - 400 {"error": "slow_down"}                                          polled too fast
-//   - 400 {"error": "expired_token"}                                      record TTL'd
-//   - 400 {"error": "access_denied"}                                      user denied
-//   - 400 {"error": "invalid_grant"}                                      device_code unknown
 func (h *Handler) handleDevicePoll(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
@@ -197,7 +155,7 @@ func (h *Handler) handleDevicePoll(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			http.Error(w, `{"error":"invalid_request"}`, http.StatusRequestEntityTooLarge)
+			writeDeviceError(w, "invalid_request", http.StatusRequestEntityTooLarge)
 			return
 		}
 		writeDeviceError(w, "invalid_request", http.StatusBadRequest)
@@ -208,42 +166,53 @@ func (h *Handler) handleDevicePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, ok := h.deviceRequests.Get(body.DeviceCode)
-	if !ok {
-		// Either the device_code was never issued, or it has expired and
-		// been evicted. RFC 8628 distinguishes these but we do not — both
-		// outcomes mean the CLI must restart from the beginning.
-		writeDeviceError(w, "expired_token", http.StatusBadRequest)
+	da, err := h.store.GetDeviceAuthByDeviceCode(r.Context(), body.DeviceCode)
+	if err != nil {
+		// Either the device_code was never issued, or the record has expired
+		// and been pruned. RFC 8628 distinguishes these but we conflate
+		// them — both outcomes mean the CLI must restart from the beginning.
+		if errors.Is(err, database.ErrNotFound) {
+			writeDeviceError(w, "expired_token", http.StatusBadRequest)
+			return
+		}
+		h.logger.Error("device_auth lookup failed", "error", err)
+		writeDeviceError(w, "server_error", http.StatusInternalServerError)
 		return
 	}
 
-	req.mu.Lock()
-	defer req.mu.Unlock()
-
-	now := time.Now()
-	if !req.LastPolledAt.IsZero() && now.Sub(req.LastPolledAt) < devicePollMinInterval {
+	now := time.Now().UTC()
+	if da.LastPolledAt != nil && now.Sub(*da.LastPolledAt) < devicePollMinInterval {
 		writeDeviceError(w, "slow_down", http.StatusBadRequest)
 		return
 	}
-	req.LastPolledAt = now
 
-	switch req.Status {
-	case deviceStatusPending:
+	switch da.Status {
+	case database.DeviceAuthStatusPending:
+		// Persist the new last_polled_at so subsequent pollers from any
+		// instance see the same rate-limit window.
+		da.LastPolledAt = &now
+		if err := h.store.UpdateDeviceAuth(r.Context(), da); err != nil {
+			h.logger.Warn("device_auth poll-time update failed", "error", err)
+			// Continue — failing to record the poll time is non-fatal
+			// (the rate limit just won't trip on this poll).
+		}
 		writeDeviceError(w, "authorization_pending", http.StatusBadRequest)
 		return
-	case deviceStatusDenied:
-		// Remove the record so a denied code can't be re-polled.
-		h.deviceRequests.Remove(req.DeviceCode)
-		h.deviceUserCodes.Remove(req.UserCode)
+	case database.DeviceAuthStatusDenied:
+		// Remove the record so a denied code cannot be re-polled.
+		if err := h.store.DeleteDeviceAuth(r.Context(), da.DeviceCode); err != nil {
+			h.logger.Warn("device_auth delete failed", "error", err)
+		}
 		metrics.CLIDeviceCompletedTotal.WithLabelValues("denied").Inc()
 		writeDeviceError(w, "access_denied", http.StatusBadRequest)
 		return
-	case deviceStatusApproved:
+	case database.DeviceAuthStatusApproved:
 		// Hand the token to the CLI exactly once and discard the record.
-		token := req.SessionToken
-		username := req.Username
-		h.deviceRequests.Remove(req.DeviceCode)
-		h.deviceUserCodes.Remove(req.UserCode)
+		token := da.SessionToken
+		username := da.Username
+		if err := h.store.DeleteDeviceAuth(r.Context(), da.DeviceCode); err != nil {
+			h.logger.Warn("device_auth delete failed", "error", err)
+		}
 		metrics.CLIDeviceCompletedTotal.WithLabelValues("approved").Inc()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -266,14 +235,11 @@ func (h *Handler) handleDeviceVerify(w http.ResponseWriter, r *http.Request) {
 
 	session := h.GetSession(r)
 	if session == nil {
-		// Send the user through GitHub login, then back to this page with
-		// the user_code preserved.
 		ret := "/cli/auth"
 		if userCode != "" {
 			ret += "?user_code=" + url.QueryEscape(userCode)
 		}
-		loginURL := "/auth/github?return_to=" + url.QueryEscape(ret)
-		http.Redirect(w, r, loginURL, http.StatusSeeOther)
+		http.Redirect(w, r, "/auth/github?return_to="+url.QueryEscape(ret), http.StatusSeeOther)
 		return
 	}
 
@@ -288,36 +254,31 @@ func (h *Handler) handleDeviceVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deviceCode, ok := h.deviceUserCodes.Get(userCode)
-	if !ok {
-		data.Error = "That code is invalid or has expired. Run `ghp auth login` again to get a new one."
+	da, err := h.store.GetDeviceAuthByUserCode(r.Context(), userCode)
+	if err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			data.Error = "That code is invalid or has expired. Run `ghp auth login` again to get a new one."
+		} else {
+			h.logger.Error("device_auth lookup failed", "error", err)
+			data.Error = "Internal error looking up that code."
+		}
 		renderDeviceVerify(w, h.logger, data)
 		return
 	}
-	req, ok := h.deviceRequests.Get(deviceCode)
-	if !ok {
-		data.Error = "That code is invalid or has expired. Run `ghp auth login` again to get a new one."
-		renderDeviceVerify(w, h.logger, data)
-		return
-	}
-	req.mu.Lock()
-	status := req.Status
-	req.mu.Unlock()
 
-	switch status {
-	case deviceStatusApproved:
+	switch da.Status {
+	case database.DeviceAuthStatusApproved:
 		data.AlreadyApproved = true
-	case deviceStatusDenied:
+	case database.DeviceAuthStatusDenied:
 		data.AlreadyDenied = true
 	}
-
 	renderDeviceVerify(w, h.logger, data)
 }
 
-// handleDeviceDecision processes the approve/deny form submission. Same-Origin
-// is enforced by the SameSite=Lax session cookie (the cookie is not sent on
-// cross-site POSTs), and the user_code itself is a short-lived secret known
-// only to the CLI and the user.
+// handleDeviceDecision processes the approve/deny form submission. Same-
+// origin protection is provided by the SameSite=Lax session cookie (the
+// cookie is not sent on cross-site POSTs), and the user_code itself is a
+// short-lived secret known only to the CLI and the user.
 func (h *Handler) handleDeviceDecision(w http.ResponseWriter, r *http.Request) {
 	session := h.GetSession(r)
 	if session == nil {
@@ -338,17 +299,11 @@ func (h *Handler) handleDeviceDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deviceCode, ok := h.deviceUserCodes.Get(userCode)
-	if !ok {
-		renderDeviceVerify(w, h.logger, deviceVerifyData{
-			Username: session.Username,
-			UserCode: userCode,
-			Error:    "That code is invalid or has expired. Run `ghp auth login` again to get a new one.",
-		})
-		return
-	}
-	req, ok := h.deviceRequests.Get(deviceCode)
-	if !ok {
+	da, err := h.store.GetDeviceAuthByUserCode(r.Context(), userCode)
+	if err != nil {
+		if !errors.Is(err, database.ErrNotFound) {
+			h.logger.Error("device_auth lookup failed", "error", err)
+		}
 		renderDeviceVerify(w, h.logger, deviceVerifyData{
 			Username: session.Username,
 			UserCode: userCode,
@@ -357,19 +312,16 @@ func (h *Handler) handleDeviceDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.mu.Lock()
-	defer req.mu.Unlock()
-
-	if req.Status != deviceStatusPending {
+	if da.Status != database.DeviceAuthStatusPending {
 		// Already decided. Render an idempotent response.
 		data := deviceVerifyData{
 			Username: session.Username,
 			UserCode: userCode,
 		}
-		switch req.Status {
-		case deviceStatusApproved:
+		switch da.Status {
+		case database.DeviceAuthStatusApproved:
 			data.AlreadyApproved = true
-		case deviceStatusDenied:
+		case database.DeviceAuthStatusDenied:
 			data.AlreadyDenied = true
 		}
 		renderDeviceVerify(w, h.logger, data)
@@ -377,12 +329,17 @@ func (h *Handler) handleDeviceDecision(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if action == "deny" {
-		req.Status = deviceStatusDenied
+		da.Status = database.DeviceAuthStatusDenied
+		if err := h.store.UpdateDeviceAuth(r.Context(), da); err != nil {
+			h.logger.Error("device_auth deny update failed", "error", err)
+			http.Error(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
 		h.logger.Info("cli_auth_denied", "user", session.Username)
 		renderDeviceVerify(w, h.logger, deviceVerifyData{
-			Username:      session.Username,
-			UserCode:      userCode,
-			JustDenied:    true,
+			Username:   session.Username,
+			UserCode:   userCode,
+			JustDenied: true,
 		})
 		return
 	}
@@ -390,10 +347,24 @@ func (h *Handler) handleDeviceDecision(w http.ResponseWriter, r *http.Request) {
 	// Approve: mint a fresh session for the CLI tied to this user. The CLI
 	// session is independent of the browser session — revoking the browser
 	// session via /auth/logout does not revoke CLI sessions.
-	cliToken := h.createSession(session.UserID, session.Username, session.Role)
-	req.Status = deviceStatusApproved
-	req.SessionToken = cliToken
-	req.Username = session.Username
+	cliToken, err := h.createSession(r.Context(), session.UserID, session.Username, session.Role)
+	if err != nil {
+		h.logger.Error("CLI session creation failed", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	da.Status = database.DeviceAuthStatusApproved
+	da.SessionToken = cliToken
+	da.Username = session.Username
+	if err := h.store.UpdateDeviceAuth(r.Context(), da); err != nil {
+		// Best-effort: clean up the session we just created so it isn't
+		// orphaned in the sessions table.
+		h.deleteSession(r.Context(), cliToken)
+		h.logger.Error("device_auth approve update failed", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
 
 	h.logger.Info("cli_auth_approved", "user", session.Username)
 
@@ -448,8 +419,6 @@ func generateUserCode() (string, error) {
 func normaliseUserCode(s string) string {
 	s = strings.ToUpper(strings.TrimSpace(s))
 	s = strings.ReplaceAll(s, " ", "")
-	// Ensure the code contains the dash separator. If the user typed it
-	// without dashes ("ABCDEFGH"), reinsert them every blockSize chars.
 	if !strings.Contains(s, "-") && len(s) == deviceUserCodeBlocks*deviceUserCodeBlockSize {
 		var b strings.Builder
 		for i := 0; i < deviceUserCodeBlocks; i++ {
@@ -566,3 +535,7 @@ func renderDeviceVerify(w http.ResponseWriter, logger interface{ Error(msg strin
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 	}
 }
+
+// Compile-time check that handlers don't accidentally rely on background
+// context for store operations.
+var _ context.Context = context.Background()

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/database"
 )
 
 // TestDeviceStart_ReturnsCodes verifies POST /cli/auth/device returns the
@@ -21,7 +23,7 @@ func TestDeviceStart_ReturnsCodes(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{BaseURL: "https://proxy.example.com"},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("POST", "/cli/auth/device", nil)
 	w := httptest.NewRecorder()
@@ -68,7 +70,7 @@ type deviceStartTestResponse struct {
 // poll-pending, decision=approve, poll-success.
 func TestDevicePoll_PendingThenApproved(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	// Start.
 	startReq := httptest.NewRequest("POST", "/cli/auth/device", nil)
@@ -86,7 +88,7 @@ func TestDevicePoll_PendingThenApproved(t *testing.T) {
 
 	// Now simulate the user approving via the verification page. We need a
 	// session for the decision handler.
-	sessToken := h.createSession("user-1", "alice", "user")
+	sessToken := mustCreateSession(t, h, "user-1", "alice", "user")
 	form := url.Values{}
 	form.Set("user_code", ds.UserCode)
 	form.Set("action", "approve")
@@ -130,7 +132,7 @@ func TestDevicePoll_PendingThenApproved(t *testing.T) {
 	}
 
 	// Token can be used to look up a session.
-	if h.lookupSession(success.SessionToken) == nil {
+	if h.lookupSession(context.Background(), success.SessionToken) == nil {
 		t.Error("issued token did not resolve to an active session")
 	}
 
@@ -150,14 +152,14 @@ func TestDevicePoll_PendingThenApproved(t *testing.T) {
 // access_denied to the CLI.
 func TestDevicePoll_Denied(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	startW := httptest.NewRecorder()
 	h.handleDeviceStart(startW, httptest.NewRequest("POST", "/cli/auth/device", nil))
 	var ds deviceStartTestResponse
 	json.NewDecoder(startW.Body).Decode(&ds)
 
-	sessToken := h.createSession("user-1", "alice", "user")
+	sessToken := mustCreateSession(t, h, "user-1", "alice", "user")
 	form := url.Values{}
 	form.Set("user_code", ds.UserCode)
 	form.Set("action", "deny")
@@ -176,7 +178,7 @@ func TestDevicePoll_Denied(t *testing.T) {
 // interval returns slow_down.
 func TestDevicePoll_SlowDown(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	startW := httptest.NewRecorder()
 	h.handleDeviceStart(startW, httptest.NewRequest("POST", "/cli/auth/device", nil))
@@ -198,7 +200,7 @@ func TestDevicePoll_SlowDown(t *testing.T) {
 // "never existed" — see handler comment).
 func TestDevicePoll_UnknownCode(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 	if got := pollDeviceTokenAndExpect(t, h, "deadbeef-not-a-real-code"); got != "expired_token" {
 		t.Errorf("got %q, want expired_token", got)
 	}
@@ -208,7 +210,7 @@ func TestDevicePoll_UnknownCode(t *testing.T) {
 // invalid_request.
 func TestDevicePoll_InvalidRequest(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("POST", "/cli/auth/device/token", strings.NewReader("not json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -232,7 +234,7 @@ func TestDevicePoll_InvalidRequest(t *testing.T) {
 // unauthenticated browsers to GitHub login with a return_to back to here.
 func TestDeviceVerify_RedirectsWhenLoggedOut(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/cli/auth?user_code=ABCD-EFGH", nil)
 	w := httptest.NewRecorder()
@@ -259,14 +261,14 @@ func TestDeviceVerify_RedirectsWhenLoggedOut(t *testing.T) {
 // rendered when a logged-in user visits with a valid user_code.
 func TestDeviceVerify_RendersFormForKnownCode(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	startW := httptest.NewRecorder()
 	h.handleDeviceStart(startW, httptest.NewRequest("POST", "/cli/auth/device", nil))
 	var ds deviceStartTestResponse
 	json.NewDecoder(startW.Body).Decode(&ds)
 
-	sessToken := h.createSession("user-1", "alice", "user")
+	sessToken := mustCreateSession(t, h, "user-1", "alice", "user")
 	req := httptest.NewRequest("GET", "/cli/auth?user_code="+url.QueryEscape(ds.UserCode), nil)
 	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: sessToken})
 	w := httptest.NewRecorder()
@@ -290,9 +292,9 @@ func TestDeviceVerify_RendersFormForKnownCode(t *testing.T) {
 // invalid or expired (rather than redirecting back to login).
 func TestDeviceVerify_UnknownCode(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
-	sessToken := h.createSession("user-1", "alice", "user")
+	sessToken := mustCreateSession(t, h, "user-1", "alice", "user")
 	req := httptest.NewRequest("GET", "/cli/auth?user_code=ZZZZ-ZZZZ", nil)
 	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: sessToken})
 	w := httptest.NewRecorder()
@@ -310,7 +312,7 @@ func TestDeviceVerify_UnknownCode(t *testing.T) {
 // unauthenticated POSTs.
 func TestDeviceDecision_RequiresSession(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	form := url.Values{}
 	form.Set("user_code", "ABCD-EFGH")
@@ -374,7 +376,7 @@ func TestGitHubLogin_HonoursReturnTo(t *testing.T) {
 		GitHub: config.GitHubConfig{ClientID: "id"},
 		Server: config.ServerConfig{BaseURL: "https://proxy.example.com"},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/auth/github?return_to=/cli/auth?user_code=ABCD-EFGH", nil)
 	w := httptest.NewRecorder()
@@ -389,24 +391,25 @@ func TestGitHubLogin_HonoursReturnTo(t *testing.T) {
 		t.Fatal("missing state")
 	}
 
-	// The states LRU should now hold the return_to value.
-	got, ok := h.states.Get(state)
-	if !ok {
-		t.Fatal("state not stored")
+	// The state row should now hold the return_to value. ConsumeOAuthState
+	// also deletes it; that's fine for the test's single read.
+	got, err := h.store.ConsumeOAuthState(req.Context(), state, database.OAuthStateKindLogin)
+	if err != nil {
+		t.Fatalf("state not stored: %v", err)
 	}
-	if got != "/cli/auth?user_code=ABCD-EFGH" {
-		t.Errorf("stored return_to = %q", got)
+	if got.ReturnTo != "/cli/auth?user_code=ABCD-EFGH" {
+		t.Errorf("stored return_to = %q", got.ReturnTo)
 	}
 }
 
 // TestGitHubLogin_ReturnToIsValidated verifies that a hostile return_to is
-// dropped (sanitizeReturnTo returns "") and the LRU stores empty.
+// dropped (sanitizeReturnTo returns "").
 func TestGitHubLogin_ReturnToIsValidated(t *testing.T) {
 	cfg := &config.Config{
 		GitHub: config.GitHubConfig{ClientID: "id"},
 		Server: config.ServerConfig{BaseURL: "https://proxy.example.com"},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/auth/github?return_to=https://evil.example.com/x", nil)
 	w := httptest.NewRecorder()
@@ -414,10 +417,25 @@ func TestGitHubLogin_ReturnToIsValidated(t *testing.T) {
 
 	loc, _ := url.Parse(w.Header().Get("Location"))
 	state := loc.Query().Get("state")
-	got, _ := h.states.Get(state)
-	if got != "" {
-		t.Errorf("stored return_to = %q, want empty", got)
+	got, err := h.store.ConsumeOAuthState(req.Context(), state, database.OAuthStateKindLogin)
+	if err != nil {
+		t.Fatalf("state not stored: %v", err)
 	}
+	if got.ReturnTo != "" {
+		t.Errorf("stored return_to = %q, want empty", got.ReturnTo)
+	}
+}
+
+// mustCreateSession is a test helper that mints a session and fails the
+// test on store error. Used in place of the old LRU-backed createSession
+// which returned a single value.
+func mustCreateSession(t *testing.T, h *Handler, userID, username, role string) string {
+	t.Helper()
+	tok, err := h.createSession(context.Background(), userID, username, role)
+	if err != nil {
+		t.Fatalf("createSession: %v", err)
+	}
+	return tok
 }
 
 // pollDeviceTokenAndExpect makes a single POST /cli/auth/device/token call
