@@ -149,6 +149,21 @@ func TestAnalyzeGraphQLRequest_FragmentAtMutationRootStillScoped(t *testing.T) {
 	}
 }
 
+func TestAnalyzeGraphQLRequest_UnknownDoubleUnderscoreFieldFlagged(t *testing.T) {
+	// `__schema` and `__type` are explicitly allow-listed via
+	// alwaysAllowedFields; any other `__*` object-typed field must still
+	// be flagged so an attacker can't hide an arbitrary subtree under a
+	// `__Anything { ... }` wrapper.
+	body := []byte(`{"query":"{ __mystery { id } }"}`)
+	got, err := analyzeGraphQLRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.unknownFields) == 0 {
+		t.Fatalf("expected __mystery to be flagged unknown")
+	}
+}
+
 func TestAnalyzeGraphQLRequest_UndefinedFragmentSpreadFlagged(t *testing.T) {
 	// A spread that names a fragment the document does not define must
 	// surface as an unknown-field entry so scoped tokens are denied
@@ -553,6 +568,27 @@ func TestServeHTTP_GraphQL_RejectsInvalidJSON(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid JSON body, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeHTTP_GraphQL_RejectsNonPost(t *testing.T) {
+	// GitHub's GraphQL endpoint accepts only POST; the proxy must reject
+	// other methods with a clear 405 rather than failing JSON parse.
+	h, ghpToken := newScopeOnlyHandler(t, map[string]string{
+		"issues": "read",
+	})
+
+	req := httptest.NewRequest("GET", "http://api.github.com/graphql?query={viewer{login}}", nil)
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for GET, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Allow"); got != http.MethodPost {
+		t.Errorf("expected Allow: POST, got %q", got)
 	}
 }
 

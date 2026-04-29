@@ -585,10 +585,14 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool) {
 		// allowlist to enumerate every field name in the GitHub schema,
 		// which is impractical. Object-typed fields (those with their own
 		// selection set) are still subject to deny-by-default below.
-	} else if !strings.HasPrefix(name, "__") {
-		// Introspection fields (__schema, __type, __typename) handled via
-		// alwaysAllowedFields above; anything else with its own selection
-		// set that does not match the allow/scope tables is flagged.
+	} else {
+		// Object-typed field with a selection set that does not appear in
+		// the allow-list or scope-requirement tables. The standard
+		// introspection fields (`__schema`, `__type`) are already
+		// allow-listed via alwaysAllowedFields, so any other `__*` field
+		// is treated like any other unknown — exempting the entire
+		// introspection namespace would let an attacker hide arbitrary
+		// selections under a `__Anything { ... }` wrapper.
 		a.seenUnknown[name] = struct{}{}
 	}
 

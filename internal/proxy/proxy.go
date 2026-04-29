@@ -356,6 +356,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *database.ProxyToken, si tokenScopeInfo, rewriteAuth func(string) string, start time.Time) {
 	tokenType := pt.TokenType
 
+	// GitHub's GraphQL endpoint only accepts POST. Reject other methods
+	// up front with a clear 405 rather than parsing an empty body and
+	// returning a confusing JSON error. The check applies to scoped and
+	// open-scoped tokens alike: forwarding non-POST requests would yield
+	// the same upstream rejection at the cost of an extra roundtrip.
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		writeError(w, http.StatusMethodNotAllowed, "GraphQL endpoint only accepts POST")
+		h.logRequest(pt, r, "/graphql", "", http.StatusMethodNotAllowed, time.Since(start), "proxy_scope_denied")
+		return
+	}
+
 	// Open-scoped tokens skip GraphQL static analysis entirely and forward
 	// to GitHub unchanged. The underlying credential's own permissions act
 	// as the only enforcement layer. Emit zero-duration GraphQL-analysis
