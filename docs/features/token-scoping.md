@@ -130,6 +130,21 @@ fields" message can use the named field as a hint for extending
 `fieldScopeRequirements` or `mutationScopeRequirements` in
 `internal/proxy/graphql.go` to cover legitimate use cases.
 
+### Known limitations
+
+- **Scalar leaves under always-allowed parents are not deny-by-default.**
+  Without loading GitHub's full SDL the proxy cannot enumerate every
+  scalar field name, so unmapped scalars projected directly under an
+  always-allowed parent (e.g. `repository(owner, name) { someScalar }`)
+  pass static analysis. The risk is bounded by the underlying
+  credential's permissions and by GitHub's own access checks; operators
+  who need stricter enforcement should map the affected scalar in
+  `fieldScopeRequirements` or use REST scoping for the affected flow.
+- **Repository-restricted GraphQL mutations are not supported.** GitHub
+  mutation inputs identify their target by opaque global node ID
+  (`repositoryId`), which the proxy cannot statically map to a
+  repository. Use the REST API or a permission-only token instead.
+
 ## Expiration and Revocation
 
 All tokens have a configurable lifetime. The default is 24 hours, with a

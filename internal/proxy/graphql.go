@@ -579,12 +579,24 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool) {
 		a.seenScopes[req] = struct{}{}
 	} else if len(f.SelectionSet) == 0 {
 		// Scalar leaf with no children. The parent field has already
-		// established the access context (its required scope gates this
-		// projection), so leaves of unknown name are not themselves
-		// suspicious. Treating every leaf as "unknown" would force the
-		// allowlist to enumerate every field name in the GitHub schema,
-		// which is impractical. Object-typed fields (those with their own
-		// selection set) are still subject to deny-by-default below.
+		// established the access context — for object-typed parents
+		// mapped to a scope (e.g. `Repository.issues`) the parent
+		// scope gates the leaf; for always-allowed metadata parents
+		// (e.g. `repository`, `user`, `viewer`) the leaf is itself
+		// metadata-style. Treating every leaf as "unknown" would force
+		// the allowlist to enumerate every scalar field name in
+		// GitHub's schema (hundreds of entries), which is impractical
+		// without schema-aware validation.
+		//
+		// The known trade-off: an unmapped scalar projected directly
+		// under an always-allowed parent is not flagged, even though
+		// in principle GitHub could one day expose a sensitive scalar
+		// at that position. The risk is bounded by what the underlying
+		// credential can read; operators who want stricter enforcement
+		// must either reject GraphQL for the affected token or
+		// extend `fieldScopeRequirements` to map the offending scalar
+		// to a permission. Object-typed fields (those with their own
+		// selection set) remain subject to deny-by-default below.
 	} else {
 		// Object-typed field with a selection set that does not appear in
 		// the allow-list or scope-requirement tables. The standard
@@ -605,11 +617,14 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool) {
 }
 
 // repositoryArgs extracts the (owner, name) arguments from a
-// `repository(owner: "X", name: "Y")` field selection. Returns empty
-// strings if either argument is missing or non-literal (e.g. supplied via
-// a GraphQL variable). Variable-driven repository lookups are
-// indistinguishable from any other lookup at static analysis time, so the
-// caller treats them as cross-repo for safety.
+// `repository(owner: "X", name: "Y")` field selection. It returns empty
+// strings if either argument is missing or non-literal (for example
+// supplied via a GraphQL variable). In that case the helper does not
+// have a statically pinned repository to record; policy enforcement
+// then treats the lookup as having no pinned repository, which causes
+// the `len(referencedRepos) == 0` check in the caller to reject the
+// request for repository-restricted tokens. Cross-repo tracking is not
+// populated from this helper.
 func repositoryArgs(f *ast.Field) (string, string) {
 	var owner, repo string
 	for _, arg := range f.Arguments {
