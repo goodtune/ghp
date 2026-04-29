@@ -382,13 +382,13 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	}
 
 	// Buffer the request body so we can both analyse the query and replay
-	// it to GitHub. Read at most maxGraphQLBodyBytes+1 so oversized
-	// bodies are detected without letting `http.MaxBytesReader` write
-	// directly to the live ResponseWriter (which would race with the
-	// writeError call below and emit a mixed response). Close the
-	// original body once it is drained so the underlying network
-	// connection can be returned to the pool while we run static
-	// analysis.
+	// it to GitHub. Read at most maxGraphQLBodyBytes+1 via io.LimitReader,
+	// then explicitly reject oversized bodies after io.ReadAll returns so
+	// this handler — rather than an implicit reader-side write (which
+	// `http.MaxBytesReader` would do) — controls the error response
+	// emitted below. Close the original body once it is drained so the
+	// underlying network connection can be returned to the pool while we
+	// run static analysis.
 	originalBody := r.Body
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxGraphQLBodyBytes+1))
 	_ = originalBody.Close()

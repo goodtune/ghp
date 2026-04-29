@@ -578,24 +578,32 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool) {
 	} else if req, ok := fieldScopeRequirements[name]; ok {
 		a.seenScopes[req] = struct{}{}
 	} else if len(f.SelectionSet) == 0 {
-		// Scalar leaf with no children. The parent field has already
-		// established the access context — for object-typed parents
-		// mapped to a scope (e.g. `Repository.issues`) the parent
-		// scope gates the leaf; for always-allowed metadata parents
-		// (e.g. `repository`, `user`, `viewer`) the leaf is itself
-		// metadata-style. Treating every leaf as "unknown" would force
-		// the allowlist to enumerate every scalar field name in
-		// GitHub's schema (hundreds of entries), which is impractical
-		// without schema-aware validation.
+		if atRoot {
+			// Root-level scalar leaves have no parent field to
+			// establish an access context, so they must remain
+			// deny-by-default unless explicitly allow-listed or mapped
+			// to a scope.
+			a.seenUnknown[name] = struct{}{}
+		}
+		// Otherwise: a scalar leaf nested under an object parent. The
+		// parent field has already established the access context —
+		// for object-typed parents mapped to a scope (e.g.
+		// `Repository.issues`) the parent scope gates the leaf; for
+		// always-allowed metadata parents (e.g. `repository`, `user`,
+		// `viewer`) the leaf is itself metadata-style. Treating every
+		// nested leaf as "unknown" would force the allowlist to
+		// enumerate every scalar field name in GitHub's schema
+		// (hundreds of entries), which is impractical without
+		// schema-aware validation.
 		//
 		// The known trade-off: an unmapped scalar projected directly
 		// under an always-allowed parent is not flagged, even though
 		// in principle GitHub could one day expose a sensitive scalar
 		// at that position. The risk is bounded by what the underlying
 		// credential can read; operators who want stricter enforcement
-		// must either reject GraphQL for the affected token or
-		// extend `fieldScopeRequirements` to map the offending scalar
-		// to a permission. Object-typed fields (those with their own
+		// must either reject GraphQL for the affected token or extend
+		// `fieldScopeRequirements` to map the offending scalar to a
+		// permission. Object-typed fields (those with their own
 		// selection set) remain subject to deny-by-default below.
 	} else {
 		// Object-typed field with a selection set that does not appear in

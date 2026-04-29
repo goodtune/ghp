@@ -149,6 +149,38 @@ func TestAnalyzeGraphQLRequest_FragmentAtMutationRootStillScoped(t *testing.T) {
 	}
 }
 
+func TestAnalyzeGraphQLRequest_UnknownRootScalarFlagged(t *testing.T) {
+	// A scalar leaf at the operation root has no parent to gate it, so
+	// it must remain deny-by-default. (Nested leaves are intentionally
+	// not flagged — see TestAnalyzeGraphQLRequest_PullRequestRequiresScope
+	// for an example query that projects scalars under a scoped parent
+	// without the scalar names appearing in `unknownFields`.)
+	body := []byte(`{"query":"{ totallyUnknownRootScalar }"}`)
+	got, err := analyzeGraphQLRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"totallyUnknownRootScalar"}
+	if !reflect.DeepEqual(got.unknownFields, want) {
+		t.Errorf("unknownFields = %v, want %v", got.unknownFields, want)
+	}
+}
+
+func TestAnalyzeGraphQLRequest_NestedUnknownScalarNotFlagged(t *testing.T) {
+	// Sanity check the deliberate trade-off: an unmapped scalar nested
+	// under a known parent is permitted, since the parent's scope
+	// requirement already gates the surrounding access. Documented as a
+	// known limitation in docs/features/token-scoping.md.
+	body := []byte(`{"query":"{ repository(owner: \"goodtune\", name: \"ghp\") { someUnmappedScalar } }"}`)
+	got, err := analyzeGraphQLRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.unknownFields) != 0 {
+		t.Errorf("nested scalar leaf should not be flagged, got %v", got.unknownFields)
+	}
+}
+
 func TestAnalyzeGraphQLRequest_UnknownDoubleUnderscoreFieldFlagged(t *testing.T) {
 	// `__schema` and `__type` are explicitly allow-listed via
 	// alwaysAllowedFields; any other `__*` object-typed field must still

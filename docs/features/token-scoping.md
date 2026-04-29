@@ -81,7 +81,7 @@ and `--scope` flags.
 ghp enforces token scopes on GraphQL requests for repository-restricted
 and/or permission-restricted tokens via static analysis of the incoming
 query. For those scoped-token requests the body is parsed (using
-`vektah/gqlparser`) and walked to extract three things:
+`github.com/vektah/gqlparser/v2`) and walked to extract three things:
 
 - **Required permission scopes**, derived from a curated map of
   `Mutation.<field>` and field-name → scope mappings (e.g.
