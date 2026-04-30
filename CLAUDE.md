@@ -240,6 +240,61 @@ When working on `internal/github/registry.go`:
 - **Distinguish "no apps in store" from "apps exist but none loaded."** Expose both `Count()` (loaded providers) and `TotalApps()` (store records). Config-based fallback should only activate when the store genuinely has zero app records and `LoadAll` succeeded — never as a silent fallback when apps failed to load.
 - **Reject agent token creation when no usable provider exists.** If `TotalApps() > 0` but `Count() == 0` (all apps failed to load), return 503 rather than creating tokens that will fail at use-time.
 
+## GraphQL Scope Mapping
+
+`internal/proxy/graphql.go` enforces token scopes on `/graphql` requests via static analysis. The analyzer is **deny-by-default**: any field it cannot classify against the curated tables below produces a 403. When a legitimate query is rejected, the fix is almost always to add the field name to the right table — not to relax the analyzer.
+
+### The four tables
+
+| Table | Purpose | Add to it when… |
+|---|---|---|
+| `alwaysAllowedFields` | Metadata fields that need no scope (names, ids, urls, timestamps, pagination helpers, the bare root selectors `viewer`/`repository`/`organization`/`user`, etc.) | The field exposes only metadata that GitHub returns under any installation's metadata read. |
+| `fieldScopeRequirements` | Maps a query/read field name → `{permission, level}`. | The field exposes a permission-gated **read** resource (e.g. `pullRequests` → `pull_requests:read`, `discussions` → `discussions:read`). |
+| `mutationScopeRequirements` | Maps a top-level mutation name → `{permission, "write"}`. | A new mutation surfaces (e.g. `createIssue` → `issues:write`). Unmapped mutation root fields are denied — the proxy never grants a write scope it can't classify. |
+| `crossRepoAnywhereFields` / `crossRepoRootOnlyFields` | Field names that can leak data from outside the repository allowlist (`search`, `viewer.repositories`, root-level `node(id:)`, …). `*RootOnly` is for names that are cross-repo only at the operation root (e.g. `node`/`nodes`/`resource`); nested `Connection.nodes` is a benign helper and lives in `alwaysAllowedFields`. | The field can return repositories/objects the analyzer cannot statically pin to a `repository(owner, name)` selection. Repo-scoped tokens are rejected when any cross-repo field appears. |
+
+### How the analyzer decides
+
+For each field walked:
+
+1. **Mutation root field** (mutation operation, `atRoot==true`): looked up in `mutationScopeRequirements`. Hit → record the scope. Miss → flagged as unknown (denied).
+2. **Otherwise** the field is checked against the tables in this order:
+   1. `alwaysAllowedFields` — pass with no scope requirement.
+   2. `fieldScopeRequirements` — record the scope.
+   3. **Scalar leaf** (no selection set): permitted at non-root; denied at root (no parent scope to gate it).
+   4. **Object-typed field** (has a selection set) that fell through all of the above: flagged as unknown (denied).
+3. **Cross-repo check** runs in parallel — `crossRepoAnywhereFields` always; `crossRepoRootOnlyFields` only when `atRoot==true`.
+4. **Repository pinning** — `repository(owner, name)` with both arguments as **literal strings** records the repo. With non-literal args (variable, missing) it sets `hasUnpinnedRepositoryLookup`, which fails the request for repo-scoped tokens. A bare `repository` with **no arguments** (e.g. `Issue.repository`) is a nested type accessor, not a lookup, and is ignored.
+
+The lookup is **by field name only** — the analyzer doesn't load GitHub's SDL. Where the same name on different parent types could mean different things, err toward the stricter scope.
+
+### Workflow when a query is denied
+
+The 403 response names the fields the proxy could not classify (capped at `maxRenderedFieldNames` entries). To allow it:
+
+1. Identify the field from the message — `unmapped fields: <name>` or `cross-repository fields: <name>`.
+2. Decide which table fits per the table above. When in doubt, prefer the **stricter** mapping; demoting later is cheaper than an unintended bypass.
+3. Add the entry to the right map in `internal/proxy/graphql.go` (alphabetical within its section).
+4. Add a test in `internal/proxy/graphql_test.go`. Existing patterns to copy:
+   - `TestAnalyzeGraphQLRequest_PullRequestRequiresScope` — analyzer-level scope assertion for a query field.
+   - `TestAnalyzeGraphQLRequest_MutationRequiresWriteScope` — analyzer-level scope assertion for a mutation.
+   - `TestServeHTTP_GraphQL_PermissionScoped_*` — handler-level allow/deny.
+   - `TestServeHTTP_GraphQL_RepoScoped_*` — handler-level repo enforcement (use these for cross-repo additions).
+5. Do **not** widen the analyzer's defaults (e.g. don't allow scalar leaves at root, don't exempt `__*` fields, don't drop the `hasUnpinnedRepositoryLookup` check). The deny-by-default posture is the security model — the maps are the lever.
+
+### Things to never silently do
+
+- **Never** add a write-capable field to `alwaysAllowedFields`. That table is metadata-only.
+- **Never** add a mutation to `fieldScopeRequirements` (it's checked only for non-mutation paths). Mutations belong in `mutationScopeRequirements`.
+- **Never** skip the cross-repo classification just because a field also has a scope mapping. A field can require a scope **and** be cross-repo (e.g. `search` requires no specific scope but is cross-repo).
+- **Never** loosen `repositoryArgs` to accept variables. Variable-driven repo lookups can't be allowlist-checked; that's the whole point of `hasUnpinnedRepositoryLookup`.
+
+### When the user-facing docs need updating
+
+`docs/features/token-scoping.md` has a known-limitations section. Update it when:
+- A trade-off changes (currently: scalar leaves under always-allowed parents are not deny-by-default, repo-scoped GraphQL mutations are not supported).
+- A new class of field is added that operators may run into (e.g. a new cross-repo field).
+
 ## CI
 
 PRs trigger the Test workflow (`.github/workflows/test.yml`):
