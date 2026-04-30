@@ -821,6 +821,12 @@ func (s *SQLiteStore) CreateSession(ctx context.Context, sess *Session) error {
 	if sess.TokenHash == "" {
 		return fmt.Errorf("CreateSession: TokenHash required")
 	}
+	if sess.ExpiresAt.IsZero() {
+		// GetSessionByTokenHash treats zero ExpiresAt as "no expiry", so a
+		// row inserted without one would behave as an immortal session
+		// until a cleanup sweep happened to notice it. Reject up-front.
+		return fmt.Errorf("CreateSession: ExpiresAt required")
+	}
 	if sess.CreatedAt.IsZero() {
 		sess.CreatedAt = time.Now().UTC()
 	}
@@ -881,6 +887,9 @@ func (s *SQLiteStore) CreateOAuthState(ctx context.Context, st *OAuthState) erro
 	}
 	if st.Kind != OAuthStateKindLogin && st.Kind != OAuthStateKindBroker {
 		return fmt.Errorf("CreateOAuthState: invalid Kind %q", st.Kind)
+	}
+	if st.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateOAuthState: ExpiresAt required")
 	}
 	if st.CreatedAt.IsZero() {
 		st.CreatedAt = time.Now().UTC()
@@ -944,6 +953,9 @@ func (s *SQLiteStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, erro
 func (s *SQLiteStore) CreateDeviceAuth(ctx context.Context, da *DeviceAuth) error {
 	if da.DeviceCode == "" || da.UserCode == "" {
 		return fmt.Errorf("CreateDeviceAuth: DeviceCode and UserCode required")
+	}
+	if da.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateDeviceAuth: ExpiresAt required")
 	}
 	if da.Status == "" {
 		da.Status = DeviceAuthStatusPending

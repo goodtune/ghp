@@ -32,5 +32,6 @@ CREATE TABLE cli_device_authorizations (
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
-CREATE INDEX cli_device_authorizations_user_code_idx ON cli_device_authorizations (user_code);
+-- user_code already has an implicit unique index via the UNIQUE column
+-- constraint above; no separate index is needed for verification-page lookups.
 CREATE INDEX cli_device_authorizations_expires_at_idx ON cli_device_authorizations (expires_at);

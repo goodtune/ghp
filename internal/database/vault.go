@@ -1113,6 +1113,9 @@ func (s *VaultStore) CreateSession(ctx context.Context, sess *Session) error {
 	if sess.TokenHash == "" {
 		return fmt.Errorf("CreateSession: TokenHash required")
 	}
+	if sess.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateSession: ExpiresAt required")
+	}
 	if sess.CreatedAt.IsZero() {
 		sess.CreatedAt = time.Now().UTC()
 	}
@@ -1217,6 +1220,9 @@ func (s *VaultStore) CreateOAuthState(ctx context.Context, st *OAuthState) error
 	if st.Kind != OAuthStateKindLogin && st.Kind != OAuthStateKindBroker {
 		return fmt.Errorf("CreateOAuthState: invalid Kind %q", st.Kind)
 	}
+	if st.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateOAuthState: ExpiresAt required")
+	}
 	if st.CreatedAt.IsZero() {
 		st.CreatedAt = time.Now().UTC()
 	}
@@ -1318,6 +1324,9 @@ func (s *VaultStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error
 func (s *VaultStore) CreateDeviceAuth(ctx context.Context, da *DeviceAuth) error {
 	if da.DeviceCode == "" || da.UserCode == "" {
 		return fmt.Errorf("CreateDeviceAuth: DeviceCode and UserCode required")
+	}
+	if da.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateDeviceAuth: ExpiresAt required")
 	}
 	if da.Status == "" {
 		da.Status = DeviceAuthStatusPending
