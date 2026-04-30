@@ -73,13 +73,7 @@ func TestDevicePoll_PendingThenApproved(t *testing.T) {
 	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	// Start.
-	startReq := httptest.NewRequest("POST", "/cli/auth/device", nil)
-	startW := httptest.NewRecorder()
-	h.handleDeviceStart(startW, startReq)
-	var ds deviceStartTestResponse
-	if err := json.NewDecoder(startW.Body).Decode(&ds); err != nil {
-		t.Fatalf("decode start: %v", err)
-	}
+	ds := runDeviceStart(t, h)
 
 	// Poll while pending → 400 authorization_pending.
 	if got := pollDeviceTokenAndExpect(t, h, ds.DeviceCode); got != "authorization_pending" {
@@ -156,10 +150,7 @@ func TestDevicePoll_Denied(t *testing.T) {
 	cfg := &config.Config{}
 	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
-	startW := httptest.NewRecorder()
-	h.handleDeviceStart(startW, httptest.NewRequest("POST", "/cli/auth/device", nil))
-	var ds deviceStartTestResponse
-	json.NewDecoder(startW.Body).Decode(&ds)
+	ds := runDeviceStart(t, h)
 
 	sessToken := mustCreateSession(t, h, "user-1", "alice", "user")
 	form := url.Values{}
@@ -187,10 +178,7 @@ func TestDevicePoll_SlowDown(t *testing.T) {
 	cfg := &config.Config{}
 	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
-	startW := httptest.NewRecorder()
-	h.handleDeviceStart(startW, httptest.NewRequest("POST", "/cli/auth/device", nil))
-	var ds deviceStartTestResponse
-	json.NewDecoder(startW.Body).Decode(&ds)
+	ds := runDeviceStart(t, h)
 
 	// First poll → authorization_pending.
 	if got := pollDeviceTokenAndExpect(t, h, ds.DeviceCode); got != "authorization_pending" {
@@ -299,10 +287,7 @@ func TestDeviceVerify_RendersFormForKnownCode(t *testing.T) {
 	cfg := &config.Config{}
 	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
-	startW := httptest.NewRecorder()
-	h.handleDeviceStart(startW, httptest.NewRequest("POST", "/cli/auth/device", nil))
-	var ds deviceStartTestResponse
-	json.NewDecoder(startW.Body).Decode(&ds)
+	ds := runDeviceStart(t, h)
 
 	sessToken := mustCreateSession(t, h, "user-1", "alice", "user")
 	req := httptest.NewRequest("GET", "/cli/auth?user_code="+url.QueryEscape(ds.UserCode), nil)
@@ -486,6 +471,24 @@ func TestGitHubLogin_ReturnToIsValidated(t *testing.T) {
 	if got.ReturnTo != "" {
 		t.Errorf("stored return_to = %q, want empty", got.ReturnTo)
 	}
+}
+
+// runDeviceStart issues POST /cli/auth/device against h, asserts a 200
+// response, decodes the body, and returns the parsed start response. A
+// failure here surfaces immediately at its source rather than as a chain
+// of "field is empty" assertions later in the calling test.
+func runDeviceStart(t *testing.T, h *Handler) deviceStartTestResponse {
+	t.Helper()
+	startW := httptest.NewRecorder()
+	h.handleDeviceStart(startW, httptest.NewRequest("POST", "/cli/auth/device", nil))
+	if startW.Code != http.StatusOK {
+		t.Fatalf("handleDeviceStart: status %d, body %s", startW.Code, startW.Body.String())
+	}
+	var ds deviceStartTestResponse
+	if err := json.NewDecoder(startW.Body).Decode(&ds); err != nil {
+		t.Fatalf("decoding device-start response: %v", err)
+	}
+	return ds
 }
 
 // mustCreateSession is a test helper that mints a session and fails the
