@@ -76,6 +76,26 @@ func TestAnalyzeGraphQLRequest_LiteralRepositoryDoesNotFlagUnpinned(t *testing.T
 	}
 }
 
+func TestAnalyzeGraphQLRequest_NestedRepositoryFieldDoesNotFlagUnpinned(t *testing.T) {
+	// Nested `repository` accessors (e.g. `Issue.repository`,
+	// `PullRequest.repository`) take no arguments — they are not
+	// `repository(owner, name)` lookups but plain field traversals from a
+	// parent type back to the owning Repository. They must not be flagged
+	// as "unpinned", or every repo-scoped query that uses them would be
+	// rejected.
+	body := []byte(`{"query":"{ repository(owner: \"goodtune\", name: \"ghp\") { issues(first: 1) { nodes { repository { id } } } } }"}`)
+	got, err := analyzeGraphQLRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.hasUnpinnedRepositoryLookup {
+		t.Errorf("nested no-arg `repository` field must not set hasUnpinnedRepositoryLookup")
+	}
+	if len(got.referencedRepos) != 1 || got.referencedRepos[0] != "goodtune/ghp" {
+		t.Errorf("referencedRepos = %v, want [goodtune/ghp]", got.referencedRepos)
+	}
+}
+
 func TestServeHTTP_GraphQL_RepoScoped_RejectsMixedLiteralAndVariableRepoLookups(t *testing.T) {
 	// A repo-scoped query that mixes one literal allowlisted lookup
 	// with a variable-driven `repository(...)` selection must be

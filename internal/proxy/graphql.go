@@ -574,13 +574,17 @@ func (a *gqlAnalyzer) walkSelectionSet(set ast.SelectionSet, inMutation, atRoot 
 func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int) {
 	name := f.Name
 
-	// Capture repository(owner, name) arguments wherever the field appears.
-	// When the arguments are not statically analysable as literal strings
-	// (e.g. supplied via a variable), record the lookup as "unpinned" so
-	// repo-restricted tokens fail closed: otherwise an attacker could mix
-	// one literal allowlisted lookup with a variable-driven lookup and
-	// bypass the allowlist.
-	if name == "repository" {
+	// Capture repository(owner, name) arguments when the field is invoked
+	// as a lookup (i.e. has arguments). Nested `Repository` accessors with
+	// no arguments — `PullRequest.repository`, `Issue.repository`, etc. —
+	// are not lookups and must not be flagged as "unpinned". When a lookup
+	// is present but its arguments are not statically analysable as literal
+	// strings (e.g. supplied via a variable, or single-arg forms like
+	// `Organization.repository(name:)` whose owner is implied by the parent
+	// type), record it as "unpinned" so repo-restricted tokens fail closed:
+	// otherwise an attacker could mix one literal allowlisted lookup with a
+	// variable-driven lookup and bypass the allowlist.
+	if name == "repository" && len(f.Arguments) > 0 {
 		if owner, repo := repositoryArgs(f); owner != "" && repo != "" {
 			a.seenRepos[owner+"/"+repo] = struct{}{}
 		} else {
