@@ -904,19 +904,18 @@ func (s *SQLiteStore) CreateOAuthState(ctx context.Context, st *OAuthState) erro
 }
 
 func (s *SQLiteStore) ConsumeOAuthState(ctx context.Context, state, kind string) (*OAuthState, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	row := tx.QueryRowContext(ctx, `
-		SELECT state, kind, return_to, broker_redirect_uri, broker_downstream_state, expires_at, created_at
-		FROM oauth_states WHERE state = ? AND kind = ?
+	// DELETE ... RETURNING is atomic — exactly the read-and-delete semantics
+	// we need so a state token cannot be replayed by a duplicate callback.
+	// Mirrors PostgresStore.ConsumeOAuthState. SELECT-then-DELETE in a
+	// transaction is not enough: two concurrent readers can both observe
+	// the row before either DELETE runs.
+	row := s.db.QueryRowContext(ctx, `
+		DELETE FROM oauth_states WHERE state = ? AND kind = ?
+		RETURNING state, kind, return_to, broker_redirect_uri, broker_downstream_state, expires_at, created_at
 	`, state, kind)
 	st := &OAuthState{}
 	var expiresStr, createdStr string
-	err = row.Scan(&st.State, &st.Kind, &st.ReturnTo, &st.BrokerRedirectURI, &st.BrokerDownstreamState, &expiresStr, &createdStr)
+	err := row.Scan(&st.State, &st.Kind, &st.ReturnTo, &st.BrokerRedirectURI, &st.BrokerDownstreamState, &expiresStr, &createdStr)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
 	}
@@ -925,14 +924,6 @@ func (s *SQLiteStore) ConsumeOAuthState(ctx context.Context, state, kind string)
 	}
 	st.ExpiresAt = parseTime(expiresStr)
 	st.CreatedAt = parseTime(createdStr)
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_states WHERE state = ?`, state); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-
 	if !st.ExpiresAt.IsZero() && time.Now().After(st.ExpiresAt) {
 		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
 	}
