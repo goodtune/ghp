@@ -648,6 +648,16 @@ func TestServeHTTP_GraphQL_RejectsInvalidJSON(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid JSON body, got %d; body: %s", rr.Code, rr.Body.String())
 	}
+	// Documentation URL must point at GitHub's GraphQL reference, not REST.
+	body := rr.Body.String()
+	if !strings.Contains(body, "docs.github.com/graphql") {
+		t.Errorf("expected GraphQL docs URL in 400 body, got: %s", body)
+	}
+	// The wrapper message must not double the "graphql:" prefix coming
+	// from the analyser error.
+	if strings.Contains(body, "Invalid GraphQL request: graphql:") {
+		t.Errorf("expected single GraphQL prefix, got: %s", body)
+	}
 }
 
 func TestServeHTTP_GraphQL_RejectsNonPost(t *testing.T) {

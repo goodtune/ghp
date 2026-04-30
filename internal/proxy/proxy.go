@@ -364,7 +364,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-		writeError(w, http.StatusMethodNotAllowed, "GraphQL endpoint only accepts POST")
+		writeGraphQLError(w, http.StatusMethodNotAllowed, "GraphQL endpoint only accepts POST")
 		h.logRequest(pt, r, "/graphql", "", http.StatusMethodNotAllowed, time.Since(start), "proxy_scope_denied")
 		return
 	}
@@ -395,13 +395,13 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	if err != nil {
 		h.logger.Warn("graphql: failed to read request body", "error", err)
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-		writeError(w, http.StatusBadRequest, "Failed to read GraphQL request body")
+		writeGraphQLError(w, http.StatusBadRequest, "Failed to read GraphQL request body")
 		h.logRequest(pt, r, "/graphql", "", http.StatusBadRequest, time.Since(start), "proxy_scope_denied")
 		return
 	}
 	if int64(len(body)) > maxGraphQLBodyBytes {
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-		writeError(w, http.StatusRequestEntityTooLarge,
+		writeGraphQLError(w, http.StatusRequestEntityTooLarge,
 			"GraphQL request body exceeds proxy size limit")
 		h.logRequest(pt, r, "/graphql", "", http.StatusRequestEntityTooLarge, time.Since(start), "proxy_scope_denied")
 		return
@@ -417,7 +417,11 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	if err != nil {
 		// Fail closed: a query we cannot parse is a query we cannot scope.
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid GraphQL request: %s", err.Error()))
+		// `analyzeGraphQLRequest` already prefixes its error strings with
+		// "graphql:"; surface them directly so the message reads as a
+		// single sentence rather than nesting two GraphQL-specific
+		// prefixes.
+		writeGraphQLError(w, http.StatusBadRequest, fmt.Sprintf("Invalid request: %s", err.Error()))
 		h.logRequest(pt, r, "/graphql", "", http.StatusBadRequest, time.Since(start), "proxy_scope_denied")
 		return
 	}
@@ -430,7 +434,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	if analysis.hasSubscription {
 		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-		writeError(w, http.StatusForbidden, "GraphQL subscriptions are not supported")
+		writeGraphQLError(w, http.StatusForbidden, "GraphQL subscriptions are not supported")
 		h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
@@ -442,7 +446,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	if len(analysis.unknownFields) > 0 {
 		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-		writeError(w, http.StatusForbidden,
+		writeGraphQLError(w, http.StatusForbidden,
 			fmt.Sprintf("GraphQL request references unmapped fields: %s", summariseFieldList(analysis.unknownFields, maxRenderedFieldNames)))
 		h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
@@ -457,7 +461,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		if len(analysis.crossRepoFields) > 0 {
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-			writeError(w, http.StatusForbidden,
+			writeGraphQLError(w, http.StatusForbidden,
 				fmt.Sprintf("Token is repository-restricted; GraphQL request uses cross-repository fields: %s",
 					summariseFieldList(analysis.crossRepoFields, maxRenderedFieldNames)))
 			h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
@@ -472,7 +476,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		if analysis.hasMutation {
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-			writeError(w, http.StatusForbidden,
+			writeGraphQLError(w, http.StatusForbidden,
 				"Token is repository-restricted; GraphQL mutations are not supported for repository-scoped tokens (mutations identify their target by global node ID, which the proxy cannot statically map to a repository)")
 			h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
@@ -486,7 +490,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		if len(analysis.referencedRepos) == 0 {
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-			writeError(w, http.StatusForbidden,
+			writeGraphQLError(w, http.StatusForbidden,
 				"Token is repository-restricted; GraphQL request must reference repository(owner, name) with literal arguments")
 			h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
@@ -495,7 +499,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 			if !si.repoAllowed(repo) {
 				metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 				metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-				writeError(w, http.StatusForbidden,
+				writeGraphQLError(w, http.StatusForbidden,
 					fmt.Sprintf("Token is not scoped to %s", repo))
 				h.logRequest(pt, r, "/graphql", repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 				return
@@ -512,7 +516,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		if analysis.hasMutation && len(analysis.requiredScopes) == 0 {
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-			writeError(w, http.StatusForbidden,
+			writeGraphQLError(w, http.StatusForbidden,
 				"GraphQL mutation could not be statically scoped; rejected by deny-by-default policy")
 			h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
@@ -520,7 +524,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		if missing := analysis.missingScopes(si.Scopes); len(missing) > 0 {
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-			writeError(w, http.StatusForbidden,
+			writeGraphQLError(w, http.StatusForbidden,
 				fmt.Sprintf("Token does not grant required GraphQL scopes: %s", strings.Join(missing, ", ")))
 			h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
@@ -551,7 +555,7 @@ func (h *Handler) forwardGraphQL(w http.ResponseWriter, r *http.Request, pt *dat
 		h.logger.Error("failed to get GitHub token for GraphQL", "error", err)
 		status, msg := installationTokenErrorResponse(err)
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-		writeError(w, status, msg)
+		writeGraphQLError(w, status, msg)
 		return
 	}
 
@@ -1017,10 +1021,23 @@ func installationTokenErrorResponse(err error) (int, string) {
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
+	writeErrorWithDocs(w, status, message, "https://docs.github.com/rest")
+}
+
+// writeGraphQLError is the GraphQL-specific variant of writeError that
+// sets the documentation_url to GitHub's GraphQL reference. The proxy's
+// `/graphql` handler returns its own JSON error envelopes (rejections,
+// 405 method-not-allowed, oversized body, etc.) and pointing those at
+// the REST docs would mislead clients debugging GraphQL failures.
+func writeGraphQLError(w http.ResponseWriter, status int, message string) {
+	writeErrorWithDocs(w, status, message, "https://docs.github.com/graphql")
+}
+
+func writeErrorWithDocs(w http.ResponseWriter, status int, message, docsURL string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{
 		"message":           message,
-		"documentation_url": "https://docs.github.com/rest",
+		"documentation_url": docsURL,
 	})
 }
