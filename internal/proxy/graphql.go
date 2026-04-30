@@ -45,6 +45,15 @@ type graphQLAnalysis struct {
 	// allowlist. Scoped tokens are denied if this list is non-empty
 	// (deny-by-default). Open-scoped tokens ignore it.
 	unknownFields []string
+	// hasUnpinnedRepositoryLookup is true when a `repository(...)`
+	// selection used non-literal arguments (e.g. supplied via a GraphQL
+	// variable) and could not be statically pinned to an owner/name.
+	// Repository-restricted tokens must reject such requests even if the
+	// query also references at least one literal allowlisted repo —
+	// otherwise an attacker could mix one literal allowlisted lookup
+	// with an unbounded variable-driven lookup that bypasses the
+	// allowlist.
+	hasUnpinnedRepositoryLookup bool
 }
 
 // scopeRequirement is a single (permission, level) entry.
@@ -566,9 +575,16 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int
 	name := f.Name
 
 	// Capture repository(owner, name) arguments wherever the field appears.
+	// When the arguments are not statically analysable as literal strings
+	// (e.g. supplied via a variable), record the lookup as "unpinned" so
+	// repo-restricted tokens fail closed: otherwise an attacker could mix
+	// one literal allowlisted lookup with a variable-driven lookup and
+	// bypass the allowlist.
 	if name == "repository" {
 		if owner, repo := repositoryArgs(f); owner != "" && repo != "" {
 			a.seenRepos[owner+"/"+repo] = struct{}{}
+		} else {
+			a.result.hasUnpinnedRepositoryLookup = true
 		}
 	}
 

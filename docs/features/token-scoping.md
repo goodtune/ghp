@@ -119,11 +119,16 @@ The proxy uses the analysis to apply a deny-by-default policy:
   because their parent field's scope already gates them.
 
 Variable-driven repository lookups (`repository(owner: $owner, ...)`) cannot
-be statically validated; the analyzer treats them as if no repository was
-referenced, so a repository-restricted token must use literal arguments. For
-requests that go through GraphQL static analysis the request body is capped
-at 1 MiB to bound memory usage. Open-scoped tokens bypass static analysis,
-so this cap does not apply to them.
+be statically validated against a token's repository allowlist. For
+repository-restricted tokens, the proxy rejects any request that contains
+even one such variable-driven `repository(...)` selection, even if other
+literal allowlisted lookups are present in the same query — otherwise an
+attacker could mix one literal allowlisted lookup with an unbounded
+variable-driven lookup that bypasses the allowlist. Tokens with no
+repository restriction (permission-only or open-scoped) are unaffected.
+For requests that go through GraphQL static analysis the request body is
+capped at 1 MiB to bound memory usage. Open-scoped tokens bypass static
+analysis, so this cap does not apply to them.
 
 Operators reading 403 responses with a "GraphQL request references unmapped
 fields" message can use the named field as a hint for extending

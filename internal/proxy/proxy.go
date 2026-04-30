@@ -481,6 +481,20 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 			h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 			return
 		}
+		// A `repository(owner, name)` selection whose arguments are not
+		// literal strings (e.g. variable-driven) cannot be statically
+		// validated against the allowlist. Reject the request even if
+		// it also contains other literal allowlisted lookups —
+		// otherwise an attacker could pin one allowlisted repo and ride
+		// a second unbounded variable lookup past the check.
+		if analysis.hasUnpinnedRepositoryLookup {
+			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+			writeGraphQLError(w, http.StatusForbidden,
+				"Token is repository-restricted; every repository(owner, name) selection must use literal string arguments (variable-driven lookups cannot be allowlist-checked)")
+			h.logRequest(pt, r, "/graphql", "", http.StatusForbidden, time.Since(start), "proxy_scope_denied")
+			return
+		}
 		// Repository-restricted queries must include at least one literal
 		// repository(owner, name) reference, and every referenced
 		// repository must be in the allowlist. Selections that are not
@@ -858,9 +872,17 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 		targetURL += "?" + r.URL.RawQuery
 	}
 
+	// Use the GraphQL-flavoured error envelope (with the GraphQL docs
+	// URL) for /graphql failures so proxy-generated 5xx responses don't
+	// point clients at the REST docs.
+	errWriter := writeError
+	if path == "/graphql" {
+		errWriter = writeGraphQLError
+	}
+
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to create upstream request")
+		errWriter(w, http.StatusInternalServerError, "Failed to create upstream request")
 		return http.StatusInternalServerError
 	}
 
@@ -882,7 +904,7 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 	resp, err := h.client.Do(proxyReq)
 	if err != nil {
 		h.logger.Error("upstream request failed", "error", err)
-		writeError(w, http.StatusBadGateway, "Upstream request failed")
+		errWriter(w, http.StatusBadGateway, "Upstream request failed")
 		return http.StatusBadGateway
 	}
 	defer resp.Body.Close()

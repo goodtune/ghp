@@ -60,6 +60,45 @@ func TestAnalyzeGraphQLRequest_RepositoryArgsAreLiteralOnly(t *testing.T) {
 	if len(got.referencedRepos) != 0 {
 		t.Errorf("variable-driven owner must not produce a referencedRepos entry, got %v", got.referencedRepos)
 	}
+	if !got.hasUnpinnedRepositoryLookup {
+		t.Errorf("variable-driven repository lookup must set hasUnpinnedRepositoryLookup")
+	}
+}
+
+func TestAnalyzeGraphQLRequest_LiteralRepositoryDoesNotFlagUnpinned(t *testing.T) {
+	body := []byte(`{"query":"{ repository(owner: \"goodtune\", name: \"ghp\") { id } }"}`)
+	got, err := analyzeGraphQLRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.hasUnpinnedRepositoryLookup {
+		t.Errorf("literal repository(...) must not set hasUnpinnedRepositoryLookup")
+	}
+}
+
+func TestServeHTTP_GraphQL_RepoScoped_RejectsMixedLiteralAndVariableRepoLookups(t *testing.T) {
+	// A repo-scoped query that mixes one literal allowlisted lookup
+	// with a variable-driven `repository(...)` selection must be
+	// rejected: the proxy cannot validate the second lookup against
+	// the allowlist, so an attacker could otherwise pin one allowed
+	// repo and ride a variable-driven lookup past enforcement.
+	h, ghpToken := newRepoOnlyHandler(t, "goodtune/ghp")
+
+	q := "query Q($o: String!, $n: String!) { allowed: repository(owner: \"goodtune\", name: \"ghp\") { name } sneaky: repository(owner: $o, name: $n) { name } }"
+	body := `{"query":` + jsonString(q) + `,"variables":{"o":"someone","n":"else"}}`
+	req := httptest.NewRequest("POST", "http://api.github.com/graphql", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for mixed literal+variable repo lookup, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "literal string arguments") {
+		t.Errorf("expected error to call out non-literal repository args, got: %s", rr.Body.String())
+	}
 }
 
 func TestAnalyzeGraphQLRequest_PullRequestRequiresScope(t *testing.T) {
