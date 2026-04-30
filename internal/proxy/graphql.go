@@ -12,10 +12,15 @@ import (
 )
 
 // graphQLRequestBody is the JSON envelope GitHub's GraphQL endpoint expects.
+// Variables are kept as json.RawMessage rather than `map[string]any`: the
+// analyser does not look inside them (variable values cannot statically
+// pin a repository, so the analyser already treats variable-driven
+// `repository(...)` arguments as unpinned), and decoding them eagerly
+// would allocate the entire object on every analysed request.
 type graphQLRequestBody struct {
-	Query         string         `json:"query"`
-	OperationName string         `json:"operationName,omitempty"`
-	Variables     map[string]any `json:"variables,omitempty"`
+	Query         string          `json:"query"`
+	OperationName string          `json:"operationName,omitempty"`
+	Variables     json.RawMessage `json:"variables,omitempty"`
 }
 
 // graphQLAnalysis is the result of statically analysing a GraphQL request
