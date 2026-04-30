@@ -82,6 +82,27 @@ func parseTime(s string) time.Time {
 	return time.Time{}
 }
 
+// sqliteAuthTimestampLayout is the fixed-width, millisecond-precision
+// timestamp layout used for auth-state rows (sessions, oauth_states,
+// cli_device_authorizations). Two reasons to prefer it over RFC3339Nano:
+//
+//   - It always emits exactly 3 fractional digits, so lexicographic
+//     comparison agrees with chronological order. RFC3339Nano omits
+//     trailing zeros ("...:05Z" vs "...:05.123Z"), which would flip
+//     ordering at second boundaries in the cleanup DELETEs.
+//   - It matches the migration's own default expression
+//     (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) so DB-defaulted and
+//     application-written values share one format.
+//
+// We deliberately do NOT change the timestamp format for older tables
+// (proxy_tokens etc.); their cleanup logic is unaffected and rewriting
+// existing values is out of scope for this PR.
+const sqliteAuthTimestampLayout = "2006-01-02T15:04:05.000Z"
+
+func sqliteFmtAuthTime(t time.Time) string {
+	return t.UTC().Format(sqliteAuthTimestampLayout)
+}
+
 // --- Migration support ---
 
 func (s *SQLiteStore) EnsureMigrationsTable(ctx context.Context) error {
@@ -807,8 +828,8 @@ func (s *SQLiteStore) CreateSession(ctx context.Context, sess *Session) error {
 		INSERT INTO sessions (token_hash, user_id, username, role, expires_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, sess.TokenHash, sess.UserID, sess.Username, sess.Role,
-		sess.ExpiresAt.UTC().Format(time.RFC3339Nano),
-		sess.CreatedAt.UTC().Format(time.RFC3339Nano))
+		sqliteFmtAuthTime(sess.ExpiresAt),
+		sqliteFmtAuthTime(sess.CreatedAt))
 	return err
 }
 
@@ -841,15 +862,11 @@ func (s *SQLiteStore) DeleteSession(ctx context.Context, tokenHash string) error
 }
 
 func (s *SQLiteStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
-	cutoff := time.Now().UTC().Format(time.RFC3339Nano)
-	// Wrap both sides in datetime() so SQLite normalises the timestamps
-	// before comparing. A raw lexicographic comparison of RFC3339Nano
-	// strings can flip ordering near second boundaries because Go omits
-	// trailing-zero fractional digits ("...05Z" vs "...05.123Z" sort
-	// '.' < 'Z'), which would over-delete future-expiring rows. The
-	// performance cost is negligible: cleanup runs every few minutes
-	// against a small table.
-	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE datetime(expires_at) < datetime(?)`, cutoff)
+	// Auth-state rows are written with sqliteAuthTimestampLayout (fixed-width
+	// 3-digit fractional), so a direct lexicographic comparison is
+	// chronologically correct and faster than wrapping with datetime().
+	cutoff := sqliteFmtAuthTime(time.Now())
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < ?`, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -872,8 +889,8 @@ func (s *SQLiteStore) CreateOAuthState(ctx context.Context, st *OAuthState) erro
 		INSERT INTO oauth_states (state, kind, return_to, broker_redirect_uri, broker_downstream_state, expires_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, st.State, st.Kind, st.ReturnTo, st.BrokerRedirectURI, st.BrokerDownstreamState,
-		st.ExpiresAt.UTC().Format(time.RFC3339Nano),
-		st.CreatedAt.UTC().Format(time.RFC3339Nano))
+		sqliteFmtAuthTime(st.ExpiresAt),
+		sqliteFmtAuthTime(st.CreatedAt))
 	return err
 }
 
@@ -914,10 +931,8 @@ func (s *SQLiteStore) ConsumeOAuthState(ctx context.Context, state, kind string)
 }
 
 func (s *SQLiteStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error) {
-	cutoff := time.Now().UTC().Format(time.RFC3339Nano)
-	// See DeleteExpiredSessions for why this uses datetime() rather than a
-	// raw TEXT comparison.
-	res, err := s.db.ExecContext(ctx, `DELETE FROM oauth_states WHERE datetime(expires_at) < datetime(?)`, cutoff)
+	cutoff := sqliteFmtAuthTime(time.Now())
+	res, err := s.db.ExecContext(ctx, `DELETE FROM oauth_states WHERE expires_at < ?`, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -938,7 +953,7 @@ func (s *SQLiteStore) CreateDeviceAuth(ctx context.Context, da *DeviceAuth) erro
 	}
 	var lastPolledStr interface{}
 	if da.LastPolledAt != nil {
-		lastPolledStr = da.LastPolledAt.UTC().Format(time.RFC3339Nano)
+		lastPolledStr = sqliteFmtAuthTime(*da.LastPolledAt)
 	}
 	var sessTok, username interface{}
 	if da.SessionToken != "" {
@@ -952,8 +967,8 @@ func (s *SQLiteStore) CreateDeviceAuth(ctx context.Context, da *DeviceAuth) erro
 			(device_code, user_code, status, session_token, username, last_polled_at, expires_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, da.DeviceCode, da.UserCode, da.Status, sessTok, username, lastPolledStr,
-		da.ExpiresAt.UTC().Format(time.RFC3339Nano),
-		da.CreatedAt.UTC().Format(time.RFC3339Nano))
+		sqliteFmtAuthTime(da.ExpiresAt),
+		sqliteFmtAuthTime(da.CreatedAt))
 	return err
 }
 
@@ -1005,7 +1020,7 @@ func (s *SQLiteStore) scanDeviceAuth(ctx context.Context, query, arg string) (*D
 func (s *SQLiteStore) UpdateDeviceAuth(ctx context.Context, da *DeviceAuth) error {
 	var lastPolledStr interface{}
 	if da.LastPolledAt != nil {
-		lastPolledStr = da.LastPolledAt.UTC().Format(time.RFC3339Nano)
+		lastPolledStr = sqliteFmtAuthTime(*da.LastPolledAt)
 	}
 	var sessTok, username interface{}
 	if da.SessionToken != "" {
@@ -1019,7 +1034,7 @@ func (s *SQLiteStore) UpdateDeviceAuth(ctx context.Context, da *DeviceAuth) erro
 		SET status = ?, session_token = ?, username = ?, last_polled_at = ?, expires_at = ?
 		WHERE device_code = ?
 	`, da.Status, sessTok, username, lastPolledStr,
-		da.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		sqliteFmtAuthTime(da.ExpiresAt),
 		da.DeviceCode)
 	if err != nil {
 		return err
@@ -1040,10 +1055,8 @@ func (s *SQLiteStore) DeleteDeviceAuth(ctx context.Context, deviceCode string) e
 }
 
 func (s *SQLiteStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error) {
-	cutoff := time.Now().UTC().Format(time.RFC3339Nano)
-	// See DeleteExpiredSessions for why this uses datetime() rather than a
-	// raw TEXT comparison.
-	res, err := s.db.ExecContext(ctx, `DELETE FROM cli_device_authorizations WHERE datetime(expires_at) < datetime(?)`, cutoff)
+	cutoff := sqliteFmtAuthTime(time.Now())
+	res, err := s.db.ExecContext(ctx, `DELETE FROM cli_device_authorizations WHERE expires_at < ?`, cutoff)
 	if err != nil {
 		return 0, err
 	}

@@ -998,7 +998,17 @@ func (s *VaultStore) CreateSession(ctx context.Context, sess *Session) error {
 	if err != nil {
 		return fmt.Errorf("marshaling session: %w", err)
 	}
-	return s.kvWrite(ctx, "sessions/"+sess.TokenHash, data)
+	// Sessions are create-once: the token hash is the primary key in the
+	// SQL backends, and a duplicate must be rejected rather than silently
+	// overwriting an existing session. Use CAS-protected create so the
+	// Vault backend matches that contract under retries/concurrency.
+	if err := s.kvCreate(ctx, "sessions/"+sess.TokenHash, data); err != nil {
+		if errors.Is(err, errKVAlreadyExists) {
+			return fmt.Errorf("session token_hash already in use")
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *VaultStore) GetSessionByTokenHash(ctx context.Context, tokenHash string) (*Session, error) {
@@ -1073,7 +1083,18 @@ func (s *VaultStore) CreateOAuthState(ctx context.Context, st *OAuthState) error
 	if err != nil {
 		return fmt.Errorf("marshaling oauth_state: %w", err)
 	}
-	return s.kvWrite(ctx, "oauth-states/"+st.State, data)
+	// OAuth state rows are create-once and one-time-consumed; the State is
+	// a high-entropy token whose collisions are vanishingly unlikely, but
+	// using CAS-protected create matches the SQL backends' PK uniqueness
+	// guarantee and prevents a retried generate-then-create from
+	// overwriting an existing in-flight state.
+	if err := s.kvCreate(ctx, "oauth-states/"+st.State, data); err != nil {
+		if errors.Is(err, errKVAlreadyExists) {
+			return fmt.Errorf("oauth_state already in use")
+		}
+		return err
+	}
+	return nil
 }
 
 // ConsumeOAuthState reads then deletes. Vault KV does not support atomic

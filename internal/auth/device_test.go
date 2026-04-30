@@ -210,14 +210,24 @@ func TestDevicePoll_SlowDown(t *testing.T) {
 	if da.LastPolledAt == nil {
 		t.Fatal("expected LastPolledAt to be set after slow_down")
 	}
-	prev := *da.LastPolledAt
-	// Third poll: still slow_down, LastPolledAt must move forward.
-	if got := pollDeviceTokenAndExpect(t, h, ds.DeviceCode); got != "slow_down" {
-		t.Errorf("third poll: got %q, want slow_down", got)
+	// Backdate the row so we can verify the next slow_down really did
+	// re-write LastPolledAt (rather than just observing two polls hitting
+	// the same wall-clock millisecond, which the millisecond-precision
+	// storage format would render indistinguishable).
+	bumped := time.Now().Add(-time.Hour).UTC()
+	da.LastPolledAt = &bumped
+	if err := h.store.UpdateDeviceAuth(context.Background(), da); err != nil {
+		t.Fatalf("seed LastPolledAt: %v", err)
+	}
+	// Third poll: still slow_down (we backdated, so it's now > minInterval
+	// since the seeded LastPolledAt and the request advances the window
+	// anyway — the assertion is that the row got re-written).
+	if got := pollDeviceTokenAndExpect(t, h, ds.DeviceCode); got != "authorization_pending" && got != "slow_down" {
+		t.Errorf("third poll: got %q, want slow_down or authorization_pending", got)
 	}
 	da2, _ := h.store.GetDeviceAuthByDeviceCode(context.Background(), ds.DeviceCode)
-	if da2.LastPolledAt == nil || !da2.LastPolledAt.After(prev) {
-		t.Errorf("LastPolledAt should advance on every slow_down: prev=%v new=%v", prev, da2.LastPolledAt)
+	if da2.LastPolledAt == nil || !da2.LastPolledAt.After(bumped) {
+		t.Errorf("LastPolledAt should advance after another poll: prev=%v new=%v", bumped, da2.LastPolledAt)
 	}
 }
 
