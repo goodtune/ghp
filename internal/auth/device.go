@@ -35,7 +35,6 @@ package auth
 // the CLI bootstrap — the CLI never sees a github.com URL.
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -633,7 +632,3 @@ func renderDeviceVerify(w http.ResponseWriter, logger interface{ Error(msg strin
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 	}
 }
-
-// Compile-time check that handlers don't accidentally rely on background
-// context for store operations.
-var _ context.Context = context.Background()

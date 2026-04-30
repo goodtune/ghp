@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestHelpOutput_Root verifies that the root help text mentions all subcommands and flags.
@@ -385,6 +386,145 @@ func TestAuthLoginCmd_ServerError(t *testing.T) {
 
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected error when server returns 500")
+	}
+}
+
+// TestAuthLoginCmd_DeviceFlowServerError verifies that an RFC-8628
+// `server_error` from the polling endpoint surfaces as a clear,
+// actionable error instead of "unexpected error from server".
+func TestAuthLoginCmd_DeviceFlowServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cli/auth/device":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"device_code":      "dc",
+				"user_code":        "AAAA-BBBB",
+				"verification_uri": "http://server.example/cli/auth",
+				"expires_in":       600,
+				"interval":         1,
+			})
+		case "/cli/auth/device/token":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "server_error"})
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GHP_NO_BROWSER", "1")
+
+	cmd := newAuthCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"login"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when poll returns server_error")
+	}
+	if !strings.Contains(err.Error(), "server_error") || !strings.Contains(err.Error(), "ghp server") {
+		t.Errorf("expected friendly server_error message, got: %v", err)
+	}
+}
+
+// TestAuthLoginCmd_DeviceFlowRateLimit verifies that the CLI honours an
+// HTTP 429 response with Retry-After by sleeping briefly and resuming the
+// poll instead of aborting. The rate-limit response is followed by a
+// successful approval so the test completes without timing out.
+func TestAuthLoginCmd_DeviceFlowRateLimit(t *testing.T) {
+	const issuedToken = "ghpr_ratelimit_token_aaaaaaaa"
+	pollCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cli/auth/device":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"device_code":      "dc",
+				"user_code":        "AAAA-BBBB",
+				"verification_uri": "http://server.example/cli/auth",
+				"expires_in":       600,
+				"interval":         1,
+			})
+		case "/cli/auth/device/token":
+			pollCount++
+			w.Header().Set("Content-Type", "application/json")
+			if pollCount == 1 {
+				w.Header().Set("Retry-After", "1")
+				w.WriteHeader(http.StatusTooManyRequests)
+				json.NewEncoder(w).Encode(map[string]string{"message": "Rate limit exceeded"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{
+				"session_token": issuedToken,
+				"username":      "alice",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GHP_NO_BROWSER", "1")
+
+	cmd := newAuthCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"login"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected success after backing off on 429, got: %v", err)
+	}
+	if pollCount < 2 {
+		t.Errorf("expected at least 2 polls (one rate-limited + one successful), got %d", pollCount)
+	}
+	cfg, err := loadCLIConfig()
+	if err != nil {
+		t.Fatalf("loadCLIConfig: %v", err)
+	}
+	if cfg.UserToken != issuedToken {
+		t.Errorf("UserToken = %q, want %q", cfg.UserToken, issuedToken)
+	}
+}
+
+// TestParseRetryAfter covers the CLI's interpretation of the Retry-After
+// header (delta-seconds, HTTP-date, and malformed/empty cases).
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		in   string
+		want time.Duration
+	}{
+		{"", 0},
+		{"5", 5 * time.Second},
+		{"  10  ", 10 * time.Second},
+		{"-1", 0},
+		{"not a number", 0},
+		// HTTP-date in the future yields a positive duration; we don't
+		// pin to an exact value because parseRetryAfter computes
+		// time.Until(t), which races with wall-clock at sub-second
+		// granularity. Just assert it's roughly within a 30s window.
+		{now.Add(20 * time.Second).Format(http.TimeFormat), 20 * time.Second},
+	}
+	for _, tt := range tests {
+		got := parseRetryAfter(tt.in)
+		if tt.want == 0 {
+			if got != 0 {
+				t.Errorf("parseRetryAfter(%q) = %v, want 0", tt.in, got)
+			}
+			continue
+		}
+		// Allow ±5s slack for the HTTP-date variant.
+		diff := got - tt.want
+		if diff < -5*time.Second || diff > 5*time.Second {
+			t.Errorf("parseRetryAfter(%q) = %v, want ~%v", tt.in, got, tt.want)
+		}
 	}
 }
 
