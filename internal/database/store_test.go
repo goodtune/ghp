@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1430,6 +1431,51 @@ func testOAuthStateConsume(t *testing.T, store Store) {
 	_, err = store.ConsumeOAuthState(ctx, "never-existed", OAuthStateKindLogin)
 	if err == nil || !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound for unknown state, got: %v", err)
+	}
+
+	// Concurrent consume race: many goroutines hammer the same state and
+	// exactly one must observe it; the rest must see ErrNotFound. Without
+	// atomic read-and-delete (e.g. the prior SELECT-then-DELETE on
+	// SQLite), a snapshot-isolation race could let two callers both read
+	// the row and "consume" it, allowing replay.
+	if err := store.CreateOAuthState(ctx, &OAuthState{
+		State:     "race-state",
+		Kind:      OAuthStateKindLogin,
+		ReturnTo:  "/race",
+		ExpiresAt: now.Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateOAuthState (race): %v", err)
+	}
+	const racers = 16
+	var wg sync.WaitGroup
+	wg.Add(racers)
+	results := make(chan error, racers)
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := store.ConsumeOAuthState(ctx, "race-state", OAuthStateKindLogin)
+			results <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	winners, notFound, otherErrs := 0, 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			winners++
+		case errors.Is(err, ErrNotFound):
+			notFound++
+		default:
+			otherErrs++
+			t.Errorf("unexpected error from concurrent ConsumeOAuthState: %v", err)
+		}
+	}
+	if winners != 1 {
+		t.Errorf("concurrent consume: %d winners, want exactly 1 (notFound=%d, errs=%d)", winners, notFound, otherErrs)
 	}
 }
 
