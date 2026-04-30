@@ -238,8 +238,9 @@ ghp automatically re-authenticates when its token expires (up to
     export GHP_DATABASE_VAULT_K8S_ROLE=ghp
     # Optional — override only if you mounted the auth backend at a non-default path:
     # export GHP_DATABASE_VAULT_K8S_MOUNT=kubernetes/my-cluster
-    # Optional — override only if your projected token is at a non-standard path:
-    # export GHP_DATABASE_VAULT_K8S_TOKEN_PATH=/var/run/secrets/kubernetes.io/serviceaccount/token
+    # Optional — override only if your projected token is at a non-standard path
+    # (the default is /var/run/secrets/kubernetes.io/serviceaccount/token):
+    # export GHP_DATABASE_VAULT_K8S_TOKEN_PATH=/var/run/secrets/projected/ghp-token
     ```
 
 === "Kubernetes — YAML"
@@ -253,7 +254,7 @@ ghp automatically re-authenticates when its token expires (up to
       vault_auth_method: kubernetes
       vault_k8s_role: ghp
       # vault_k8s_mount: kubernetes        # default; override for multi-cluster mounts
-      # vault_k8s_token_path: /var/run/secrets/kubernetes.io/serviceaccount/token
+      # vault_k8s_token_path: /var/run/secrets/projected/ghp-token  # default is /var/run/secrets/kubernetes.io/serviceaccount/token
     ```
 
 | Field | Env Var | Default | Description |

@@ -139,7 +139,7 @@ func NewVaultStore(ctx context.Context, cfg VaultConfig) (*VaultStore, error) {
 	}
 
 	if err := store.login(ctx); err != nil {
-		return nil, fmt.Errorf("vault %s login: %w", authMethod, err)
+		return nil, err
 	}
 
 	return store, nil
