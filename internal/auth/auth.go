@@ -869,13 +869,15 @@ func (h *Handler) getGitHubAPIBaseURL() string {
 
 // mainCallbackURL returns the absolute URL of the GitHub OAuth callback
 // endpoint for the main login flow. It uses the configured BaseURL if
-// available, otherwise derives the URL from the incoming request, honouring
-// Forwarded / X-Forwarded-* headers when ghp sits behind a TLS-terminating
-// reverse proxy. The same shared helpers (requestScheme/requestHost) are
-// used by the CLI device-flow verification URL so the two stay consistent.
+// available, otherwise derives the URL from the incoming request. The
+// shared requestScheme/requestHost helpers honour Forwarded / X-Forwarded-*
+// only when server.trust_proxy_headers is true (matches the device-flow
+// verification URL so the two stay consistent under both deployment
+// patterns).
 func (h *Handler) mainCallbackURL(r *http.Request) string {
 	if h.cfg.Server.BaseURL != "" {
 		return strings.TrimRight(h.cfg.Server.BaseURL, "/") + "/auth/github/callback"
 	}
-	return fmt.Sprintf("%s://%s/auth/github/callback", requestScheme(r), requestHost(r))
+	trustProxy := h.cfg.Server.TrustProxyHeaders
+	return fmt.Sprintf("%s://%s/auth/github/callback", requestScheme(r, trustProxy), requestHost(r, trustProxy))
 }

@@ -1480,28 +1480,34 @@ func (s *VaultStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error
 		}
 	}
 	// Prune dangling user_code index entries (records deleted directly,
-	// e.g. by the polling endpoint).
+	// e.g. by the polling endpoint). A list error here is recorded so the
+	// caller can surface it; otherwise dangling indexes can pile up
+	// indefinitely without any signal.
 	idxKeys, err := s.kvList(ctx, "device-auth/by-user-code")
-	if err == nil {
-		for _, idxKey := range idxKeys {
-			if ctx.Err() != nil {
-				if firstErr == nil {
-					firstErr = ctx.Err()
-				}
-				break
+	if err != nil {
+		if firstErr == nil {
+			firstErr = fmt.Errorf("listing device-auth/by-user-code: %w", err)
+		}
+		return deleted, firstErr
+	}
+	for _, idxKey := range idxKeys {
+		if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = ctx.Err()
 			}
-			idx, err := s.kvRead(ctx, "device-auth/by-user-code/"+idxKey)
-			if err != nil || idx == nil {
-				continue
-			}
-			deviceCode, _ := idx["device_code"].(string)
-			if deviceCode == "" {
-				_ = s.kvDelete(ctx, "device-auth/by-user-code/"+idxKey)
-				continue
-			}
-			if primary, _ := s.kvRead(ctx, "device-auth/"+deviceCode); primary == nil {
-				_ = s.kvDelete(ctx, "device-auth/by-user-code/"+idxKey)
-			}
+			break
+		}
+		idx, err := s.kvRead(ctx, "device-auth/by-user-code/"+idxKey)
+		if err != nil || idx == nil {
+			continue
+		}
+		deviceCode, _ := idx["device_code"].(string)
+		if deviceCode == "" {
+			_ = s.kvDelete(ctx, "device-auth/by-user-code/"+idxKey)
+			continue
+		}
+		if primary, _ := s.kvRead(ctx, "device-auth/"+deviceCode); primary == nil {
+			_ = s.kvDelete(ctx, "device-auth/by-user-code/"+idxKey)
 		}
 	}
 	return deleted, firstErr

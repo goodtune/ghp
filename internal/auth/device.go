@@ -461,34 +461,36 @@ func normaliseUserCode(s string) string {
 }
 
 // absoluteURL constructs an absolute URL for path on this server, preferring
-// the configured server.base_url and falling back to a scheme/host derived
-// from the incoming request (with X-Forwarded-* headers honoured for
-// reverse-proxy deployments).
+// the configured server.base_url. When base_url is unset it falls back to a
+// scheme/host derived from the incoming request, optionally honouring
+// reverse-proxy headers when server.trust_proxy_headers is true.
 func (h *Handler) absoluteURL(r *http.Request, path string) string {
 	if h.cfg.Server.BaseURL != "" {
 		return strings.TrimRight(h.cfg.Server.BaseURL, "/") + path
 	}
-	return fmt.Sprintf("%s://%s%s", requestScheme(r), requestHost(r), path)
+	return fmt.Sprintf("%s://%s%s", requestScheme(r, h.cfg.Server.TrustProxyHeaders), requestHost(r, h.cfg.Server.TrustProxyHeaders), path)
 }
 
-// requestScheme reports the externally-visible scheme for r. It checks the
-// standardised Forwarded header first, then X-Forwarded-Proto (for the
-// common case of an L7 proxy), and finally falls back to whether the
-// connection itself is TLS. This matters because in a typical deployment
-// TLS terminates at the proxy and ghp receives plain HTTP — without the
-// header check we'd hand back http:// verification URLs that don't match
-// the user's externally reachable address.
-func requestScheme(r *http.Request) string {
-	if v := forwardedField(r.Header.Get("Forwarded"), "proto"); v != "" {
-		return v
-	}
-	if v := r.Header.Get("X-Forwarded-Proto"); v != "" {
-		// Multiple proxies may chain values ("https, http"); take the
-		// first, which represents the originating client edge.
-		if i := strings.Index(v, ","); i >= 0 {
-			v = v[:i]
+// requestScheme reports the externally-visible scheme for r. When trustProxy
+// is true it consults the standardised Forwarded header first, then
+// X-Forwarded-Proto, before falling back to whether the connection itself is
+// TLS — this matters when TLS terminates at a reverse proxy and ghp
+// receives plain HTTP. When trustProxy is false the headers are ignored, so
+// an internet-reachable instance cannot be tricked into emitting attacker-
+// controlled scheme values via header spoofing.
+func requestScheme(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if v := forwardedField(r.Header.Get("Forwarded"), "proto"); v != "" {
+			return v
 		}
-		return strings.TrimSpace(v)
+		if v := r.Header.Get("X-Forwarded-Proto"); v != "" {
+			// Multiple proxies may chain values ("https, http"); take the
+			// first, which represents the originating client edge.
+			if i := strings.Index(v, ","); i >= 0 {
+				v = v[:i]
+			}
+			return strings.TrimSpace(v)
+		}
 	}
 	if r.TLS != nil {
 		return "https"
@@ -496,17 +498,21 @@ func requestScheme(r *http.Request) string {
 	return "http"
 }
 
-// requestHost reports the externally-visible host for r, honouring
-// X-Forwarded-Host before the request's own Host header.
-func requestHost(r *http.Request) string {
-	if v := forwardedField(r.Header.Get("Forwarded"), "host"); v != "" {
-		return v
-	}
-	if v := r.Header.Get("X-Forwarded-Host"); v != "" {
-		if i := strings.Index(v, ","); i >= 0 {
-			v = v[:i]
+// requestHost reports the externally-visible host for r. Behaves the same as
+// requestScheme: forwarded host headers are only honoured when trustProxy is
+// true. Otherwise we use r.Host, which Go has already validated for HTTP
+// host-header injection.
+func requestHost(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if v := forwardedField(r.Header.Get("Forwarded"), "host"); v != "" {
+			return v
 		}
-		return strings.TrimSpace(v)
+		if v := r.Header.Get("X-Forwarded-Host"); v != "" {
+			if i := strings.Index(v, ","); i >= 0 {
+				v = v[:i]
+			}
+			return strings.TrimSpace(v)
+		}
 	}
 	return r.Host
 }

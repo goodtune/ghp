@@ -420,14 +420,15 @@ func TestHandleGitHubLogin_IncludesRedirectURI(t *testing.T) {
 // callback URL from the configured BaseURL or from the incoming request.
 func TestMainCallbackURL(t *testing.T) {
 	tests := []struct {
-		name      string
-		baseURL   string
-		reqHost   string
-		tls       bool
-		xfProto   string
-		xfHost    string
-		forwarded string
-		want      string
+		name       string
+		baseURL    string
+		trustProxy bool
+		reqHost    string
+		tls        bool
+		xfProto    string
+		xfHost     string
+		forwarded  string
+		want       string
 	}{
 		{
 			name:    "with base URL",
@@ -451,30 +452,42 @@ func TestMainCallbackURL(t *testing.T) {
 			want:    "http://proxy.example.com:8080/auth/github/callback",
 		},
 		{
-			name:        "no base URL, X-Forwarded-Proto = https",
-			reqHost:     "proxy.example.com",
-			xfProto:     "https",
-			want:        "https://proxy.example.com/auth/github/callback",
-		},
-		{
-			name:    "no base URL, X-Forwarded-Host overrides",
+			// Without trust_proxy_headers an internet-reachable instance must
+			// not honour client-spoofable headers; r.Host wins.
+			name:    "no base URL, X-Forwarded-Proto ignored when trust_proxy_headers=false",
 			reqHost: "internal.local",
-			xfHost:  "ghp.example.com",
 			xfProto: "https",
-			want:    "https://ghp.example.com/auth/github/callback",
+			xfHost:  "attacker.example.com",
+			want:    "http://internal.local/auth/github/callback",
 		},
 		{
-			name:      "no base URL, RFC 7239 Forwarded header",
-			reqHost:   "internal.local",
-			forwarded: `for=10.0.0.1;proto=https;host=ghp.example.com`,
-			want:      "https://ghp.example.com/auth/github/callback",
+			name:       "no base URL, X-Forwarded-Proto trusted when trust_proxy_headers=true",
+			reqHost:    "proxy.example.com",
+			trustProxy: true,
+			xfProto:    "https",
+			want:       "https://proxy.example.com/auth/github/callback",
+		},
+		{
+			name:       "no base URL, X-Forwarded-Host trusted when trust_proxy_headers=true",
+			reqHost:    "internal.local",
+			trustProxy: true,
+			xfHost:     "ghp.example.com",
+			xfProto:    "https",
+			want:       "https://ghp.example.com/auth/github/callback",
+		},
+		{
+			name:       "no base URL, RFC 7239 Forwarded trusted when trust_proxy_headers=true",
+			reqHost:    "internal.local",
+			trustProxy: true,
+			forwarded:  `for=10.0.0.1;proto=https;host=ghp.example.com`,
+			want:       "https://ghp.example.com/auth/github/callback",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &config.Config{
-				Server: config.ServerConfig{BaseURL: tt.baseURL},
+				Server: config.ServerConfig{BaseURL: tt.baseURL, TrustProxyHeaders: tt.trustProxy},
 			}
 			h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
