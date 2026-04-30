@@ -55,11 +55,18 @@ Choose one of the following based on where ghp runs:
     ```
 
     Configure the auth backend so Vault can validate JWTs issued by the
-    cluster's API server. The recommended pattern is to use Vault's own
+    cluster's API server. Write to `auth/<mount>/config` matching the path
+    you enabled above. The recommended pattern is to use Vault's own
     service account to call the TokenReview API:
 
     ```bash
+    # Default mount:
     vault write auth/kubernetes/config \
+      kubernetes_host="https://kubernetes.default.svc:443" \
+      kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+
+    # Custom mount (matching `-path=kubernetes/my-cluster` above):
+    vault write auth/kubernetes/my-cluster/config \
       kubernetes_host="https://kubernetes.default.svc:443" \
       kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
     ```
