@@ -13,8 +13,8 @@ import (
 )
 
 // fakeVault is a minimal HTTP stand-in for Vault that records login requests
-// and returns canned responses. It supports both AppRole and kubernetes auth
-// login endpoints and a single KV v2 read used to confirm token usage.
+// and returns canned responses. It supports a kubernetes auth login endpoint
+// and a single KV v2 read used to confirm token usage.
 type fakeVault struct {
 	t      *testing.T
 	server *httptest.Server

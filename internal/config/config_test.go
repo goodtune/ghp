@@ -294,10 +294,10 @@ func TestLoadBlockAnonymousGitFromYAML(t *testing.T) {
 }
 
 func TestVaultAuthDefaults(t *testing.T) {
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Assert against Defaults() rather than Load("") so ambient
+	// GHP_DATABASE_VAULT_* environment variables on a developer or CI
+	// machine cannot mask a regression in the documented defaults.
+	cfg := Defaults()
 	if got, want := cfg.Database.VaultAuthMethod, "approle"; got != want {
 		t.Errorf("VaultAuthMethod default = %q, want %q", got, want)
 	}
