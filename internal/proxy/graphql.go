@@ -434,7 +434,10 @@ func analyzeGraphQLRequest(body []byte) (graphQLAnalysis, error) {
 	// Walk the selection set. Top-level selections are special only in
 	// that mutations also carry a per-field scope requirement; otherwise
 	// the walk treats every selection identically.
-	a.walkSelectionSet(op.SelectionSet, op.Operation == ast.Mutation, true)
+	a.walkSelectionSet(op.SelectionSet, op.Operation == ast.Mutation, true, 1)
+	if a.tooDeep {
+		return graphQLAnalysis{}, fmt.Errorf("graphql: query exceeds maximum analysis depth (%d)", maxAnalysisDepth)
+	}
 
 	// Materialise the deduplicated maps into deterministic slices. When the
 	// query requires both read and write of the same permission, keep only
@@ -508,17 +511,32 @@ type gqlAnalyzer struct {
 	seenRepos     map[string]struct{}
 	seenCrossRepo map[string]struct{}
 	seenUnknown   map[string]struct{}
+	// tooDeep is set if the walk exceeds maxAnalysisDepth; the caller
+	// surfaces this as a 400 instead of forwarding the request, since a
+	// query the analyzer cannot fully traverse cannot be safely scoped.
+	tooDeep bool
 }
 
-func (a *gqlAnalyzer) walkSelectionSet(set ast.SelectionSet, inMutation, atRoot bool) {
+// maxAnalysisDepth caps the depth of the AST walk so that a malicious
+// (but still ≤ maxGraphQLBodyBytes) query with extreme nesting cannot
+// drive the proxy into stack growth/overflow. Real GitHub queries rarely
+// exceed ~30 levels; 100 leaves comfortable headroom for nested
+// connections and fragments without enabling unbounded recursion.
+const maxAnalysisDepth = 100
+
+func (a *gqlAnalyzer) walkSelectionSet(set ast.SelectionSet, inMutation, atRoot bool, depth int) {
+	if depth > maxAnalysisDepth {
+		a.tooDeep = true
+		return
+	}
 	for _, sel := range set {
 		switch s := sel.(type) {
 		case *ast.Field:
-			a.walkField(s, inMutation, atRoot)
+			a.walkField(s, inMutation, atRoot, depth)
 		case *ast.InlineFragment:
 			// Inline fragments are an in-place type narrowing; they
 			// preserve the surrounding selection's root-ness.
-			a.walkSelectionSet(s.SelectionSet, inMutation, atRoot)
+			a.walkSelectionSet(s.SelectionSet, inMutation, atRoot, depth+1)
 		case *ast.FragmentSpread:
 			// A fragment spread that refers to a fragment we are already
 			// inside is a recursion: skip it. A spread that names a
@@ -538,13 +556,13 @@ func (a *gqlAnalyzer) walkSelectionSet(set ast.SelectionSet, inMutation, atRoot 
 				continue
 			}
 			a.fragmentStack[s.Name] = true
-			a.walkSelectionSet(frag.SelectionSet, inMutation, atRoot)
+			a.walkSelectionSet(frag.SelectionSet, inMutation, atRoot, depth+1)
 			delete(a.fragmentStack, s.Name)
 		}
 	}
 }
 
-func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool) {
+func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int) {
 	name := f.Name
 
 	// Capture repository(owner, name) arguments wherever the field appears.
@@ -620,7 +638,7 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool) {
 	// field are not themselves "root" — their permission is implied by the
 	// mutation's required scope.
 	if len(f.SelectionSet) > 0 {
-		a.walkSelectionSet(f.SelectionSet, false, false)
+		a.walkSelectionSet(f.SelectionSet, false, false, depth+1)
 	}
 }
 

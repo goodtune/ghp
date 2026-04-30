@@ -53,8 +53,8 @@ const maxGraphQLBodyBytes = 1 << 20 // 1 MiB
 // maxRenderedFieldNames caps how many field names are inlined into the
 // 403 messages the GraphQL handler returns when a query is rejected for
 // unmapped or cross-repository fields. Without a cap, an adversarial
-// query could inflate the response body and audit log line to be
-// proportional to the request size.
+// query could inflate the response body to be proportional to the
+// request size.
 const maxRenderedFieldNames = 10
 
 // summariseFieldList renders a comma-separated string of up to `limit`

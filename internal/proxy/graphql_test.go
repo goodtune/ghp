@@ -211,6 +211,28 @@ func TestAnalyzeGraphQLRequest_UndefinedFragmentSpreadFlagged(t *testing.T) {
 	}
 }
 
+func TestAnalyzeGraphQLRequest_DepthLimitEnforced(t *testing.T) {
+	// A query with nesting depth far above maxAnalysisDepth must be
+	// rejected rather than driving the analyser into stack overflow.
+	var b strings.Builder
+	b.WriteString("{ ")
+	const nest = maxAnalysisDepth + 50
+	for i := 0; i < nest; i++ {
+		b.WriteString("a { ")
+	}
+	b.WriteString("__typename ")
+	for i := 0; i < nest; i++ {
+		b.WriteString("} ")
+	}
+	b.WriteString("}")
+	body := []byte(`{"query":` + jsonString(b.String()) + `}`)
+	if _, err := analyzeGraphQLRequest(body); err == nil {
+		t.Fatal("expected depth-limit error, got nil")
+	} else if !strings.Contains(err.Error(), "maximum analysis depth") {
+		t.Errorf("expected error to mention depth limit, got %v", err)
+	}
+}
+
 func TestAnalyzeGraphQLRequest_RecursiveFragmentSpreadIsSafe(t *testing.T) {
 	// A self-referential fragment must not drive the analyzer into
 	// infinite recursion. (The query is technically illegal under the
