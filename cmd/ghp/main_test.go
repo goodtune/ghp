@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestHelpOutput_Root verifies that the root help text mentions all subcommands and flags.
@@ -99,7 +100,7 @@ func TestHelpOutput_AuthLogin(t *testing.T) {
 
 	output := buf.String()
 	for _, want := range []string{
-		"GitHub OAuth",
+		"device-authorization",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("auth login help: expected %q to appear in output:\n%s", want, output)
@@ -243,22 +244,226 @@ func TestAuthLoginCmd_NoServerURL(t *testing.T) {
 	}
 }
 
-// TestAuthLoginCmd_WithServerURL verifies that auth login fetches the OAuth URL
-// from the server, prints it, and instructs the user how to save the token.
-func TestAuthLoginCmd_WithServerURL(t *testing.T) {
-	const fakeGitHubURL = "https://github.com/login/oauth/authorize?client_id=test&state=abc"
+// TestAuthLoginCmd_DeviceFlow verifies that "ghp auth login" runs the device
+// authorization flow against the server, displays the verification URL and
+// user code, polls until the request is approved, and saves the issued token
+// to the local config file.
+func TestAuthLoginCmd_DeviceFlow(t *testing.T) {
+	const userCode = "ABCD-EFGH"
+	const deviceCode = "device-code-xyz"
+	const issuedToken = "ghpr_devicetoken123"
 
+	pollCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" || r.URL.Path != "/auth/github" {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/cli/auth/device":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"device_code":               deviceCode,
+				"user_code":                 userCode,
+				"verification_uri":          "http://server.example/cli/auth",
+				"verification_uri_complete": "http://server.example/cli/auth?user_code=" + userCode,
+				"expires_in":                600,
+				"interval":                  1,
+			})
+		case r.Method == "POST" && r.URL.Path == "/cli/auth/device/token":
+			pollCount++
+			w.Header().Set("Content-Type", "application/json")
+			if pollCount < 2 {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": "authorization_pending"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{
+				"session_token": issuedToken,
+				"username":      "alice",
+			})
+		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
-			return
 		}
-		if !strings.Contains(r.Header.Get("Accept"), "application/json") {
-			t.Errorf("expected Accept: application/json, got %q", r.Header.Get("Accept"))
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "")
+	t.Setenv("HOME", home)
+	t.Setenv("GHP_NO_BROWSER", "1")
+
+	cmd := newAuthCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"login"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("auth login error: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, userCode) {
+		t.Errorf("expected user code %q in output, got: %q", userCode, output)
+	}
+	if !strings.Contains(output, "/cli/auth?user_code="+userCode) {
+		t.Errorf("expected verification URL in output, got: %q", output)
+	}
+
+	// Token should be saved to ~/.config/ghp/config.yaml.
+	cfg, err := loadCLIConfig()
+	if err != nil {
+		t.Fatalf("loadCLIConfig: %v", err)
+	}
+	if cfg.UserToken != issuedToken {
+		t.Errorf("UserToken = %q, want %q", cfg.UserToken, issuedToken)
+	}
+
+	if pollCount < 2 {
+		t.Errorf("expected at least 2 polls, got %d", pollCount)
+	}
+}
+
+// TestAuthLoginCmd_DeviceFlowDenied verifies that the CLI surfaces an
+// access_denied response from the server as a clean error.
+func TestAuthLoginCmd_DeviceFlowDenied(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/cli/auth/device":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"device_code":      "dc",
+				"user_code":        "AAAA-BBBB",
+				"verification_uri": "http://server.example/cli/auth",
+				"expires_in":       600,
+				"interval":         1,
+			})
+		case r.URL.Path == "/cli/auth/device/token":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "access_denied"})
 		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"url":%q}`, fakeGitHubURL)
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GHP_NO_BROWSER", "1")
+
+	cmd := newAuthCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"login"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when device flow is denied")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Errorf("expected 'denied' in error, got: %v", err)
+	}
+}
+
+// TestAuthLoginCmd_ServerError verifies that auth login reports an error when
+// the device-start endpoint returns a non-200 status.
+func TestAuthLoginCmd_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("internal error"))
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GHP_NO_BROWSER", "1")
+
+	cmd := newAuthCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"login"})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error when server returns 500")
+	}
+}
+
+// TestAuthLoginCmd_DeviceFlowServerError verifies that an RFC-8628
+// `server_error` from the polling endpoint surfaces as a clear,
+// actionable error instead of "unexpected error from server".
+func TestAuthLoginCmd_DeviceFlowServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cli/auth/device":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"device_code":      "dc",
+				"user_code":        "AAAA-BBBB",
+				"verification_uri": "http://server.example/cli/auth",
+				"expires_in":       600,
+				"interval":         1,
+			})
+		case "/cli/auth/device/token":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "server_error"})
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GHP_NO_BROWSER", "1")
+
+	cmd := newAuthCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"login"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when poll returns server_error")
+	}
+	if !strings.Contains(err.Error(), "server_error") || !strings.Contains(err.Error(), "ghp server") {
+		t.Errorf("expected friendly server_error message, got: %v", err)
+	}
+}
+
+// TestAuthLoginCmd_DeviceFlowRateLimit verifies that the CLI honours an
+// HTTP 429 response with Retry-After by sleeping briefly and resuming the
+// poll instead of aborting. The rate-limit response is followed by a
+// successful approval so the test completes without timing out.
+func TestAuthLoginCmd_DeviceFlowRateLimit(t *testing.T) {
+	const issuedToken = "ghpr_ratelimit_token_aaaaaaaa"
+	pollCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cli/auth/device":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"device_code":      "dc",
+				"user_code":        "AAAA-BBBB",
+				"verification_uri": "http://server.example/cli/auth",
+				"expires_in":       600,
+				"interval":         1,
+			})
+		case "/cli/auth/device/token":
+			pollCount++
+			w.Header().Set("Content-Type", "application/json")
+			if pollCount == 1 {
+				w.Header().Set("Retry-After", "1")
+				w.WriteHeader(http.StatusTooManyRequests)
+				json.NewEncoder(w).Encode(map[string]string{"message": "Rate limit exceeded"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{
+				"session_token": issuedToken,
+				"username":      "alice",
+			})
+		}
 	}))
 	defer srv.Close()
 
@@ -274,38 +479,52 @@ func TestAuthLoginCmd_WithServerURL(t *testing.T) {
 	cmd.SetArgs([]string{"login"})
 
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("auth login error: %v", err)
+		t.Fatalf("expected success after backing off on 429, got: %v", err)
 	}
-	output := buf.String()
-	if !strings.Contains(output, fakeGitHubURL) {
-		t.Errorf("expected GitHub OAuth URL %q in output, got: %q", fakeGitHubURL, output)
+	if pollCount < 2 {
+		t.Errorf("expected at least 2 polls (one rate-limited + one successful), got %d", pollCount)
 	}
-	if !strings.Contains(output, "set-token") {
-		t.Errorf("expected 'set-token' instruction in output, got: %q", output)
+	cfg, err := loadCLIConfig()
+	if err != nil {
+		t.Fatalf("loadCLIConfig: %v", err)
+	}
+	if cfg.UserToken != issuedToken {
+		t.Errorf("UserToken = %q, want %q", cfg.UserToken, issuedToken)
 	}
 }
 
-// TestAuthLoginCmd_ServerError verifies that auth login reports an error when the server
-// returns a non-200 status for the auth URL request.
-func TestAuthLoginCmd_ServerError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("internal error"))
-	}))
-	defer srv.Close()
-
-	t.Setenv("GHP_SERVER_URL", srv.URL)
-	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
-
-	cmd := newAuthCmd()
-	buf := &bytes.Buffer{}
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
-	cmd.SetArgs([]string{"login"})
-
-	if err := cmd.Execute(); err == nil {
-		t.Fatal("expected error when server returns 500")
+// TestParseRetryAfter covers the CLI's interpretation of the Retry-After
+// header (delta-seconds, HTTP-date, and malformed/empty cases).
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		in   string
+		want time.Duration
+	}{
+		{"", 0},
+		{"5", 5 * time.Second},
+		{"  10  ", 10 * time.Second},
+		{"-1", 0},
+		{"not a number", 0},
+		// HTTP-date in the future yields a positive duration; we don't
+		// pin to an exact value because parseRetryAfter computes
+		// time.Until(t), which races with wall-clock at sub-second
+		// granularity. Just assert it's roughly within a 30s window.
+		{now.Add(20 * time.Second).Format(http.TimeFormat), 20 * time.Second},
+	}
+	for _, tt := range tests {
+		got := parseRetryAfter(tt.in)
+		if tt.want == 0 {
+			if got != 0 {
+				t.Errorf("parseRetryAfter(%q) = %v, want 0", tt.in, got)
+			}
+			continue
+		}
+		// Allow ±5s slack for the HTTP-date variant.
+		diff := got - tt.want
+		if diff < -5*time.Second || diff > 5*time.Second {
+			t.Errorf("parseRetryAfter(%q) = %v, want ~%v", tt.in, got, tt.want)
+		}
 	}
 }
 

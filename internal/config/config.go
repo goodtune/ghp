@@ -158,6 +158,17 @@ type ServerConfig struct {
 	ManagementHost          string `koanf:"management_host"`
 	SystemdSocketActivation bool   `koanf:"systemd_socket_activation"`
 	BaseURL                 string `koanf:"base_url"`
+	// TrustProxyHeaders controls whether ghp honours the standardised
+	// Forwarded (RFC 7239) and X-Forwarded-Proto/X-Forwarded-Host headers
+	// when constructing absolute URLs (e.g. the device-auth verification
+	// URI and OAuth callback URLs) and base_url is unset. Set to true only
+	// when ghp sits behind a trusted reverse proxy/L7 LB that strips and
+	// rewrites these headers. Default false: an internet-reachable instance
+	// would otherwise allow a client to spoof scheme/host via these
+	// headers and influence generated URLs (host-header injection). The
+	// preferred deployment pattern is to set base_url explicitly so the
+	// fallback path is never exercised.
+	TrustProxyHeaders bool `koanf:"trust_proxy_headers"`
 }
 
 type TokensConfig struct {

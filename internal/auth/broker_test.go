@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -16,7 +17,9 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/database"
 )
 func TestValidateRedirectURI(t *testing.T) {
 	cfg := &config.Config{
@@ -27,7 +30,7 @@ func TestValidateRedirectURI(t *testing.T) {
 			},
 		},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	tests := []struct {
 		name string
@@ -65,7 +68,7 @@ func TestValidateRedirectURI_PathScopedWildcard(t *testing.T) {
 			},
 		},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	tests := []struct {
 		name string
@@ -98,7 +101,7 @@ func TestValidateRedirectURI_DevMode(t *testing.T) {
 			},
 		},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	if !h.validateRedirectURI("http://localhost:3000/auth/callback") {
 		t.Error("dev mode should allow HTTP localhost")
@@ -185,7 +188,7 @@ func TestBrokerAuthorize(t *testing.T) {
 			AllowedRedirects: []string{"https://app.example.com/auth/callback"},
 		},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET",
 		"/auth/authorize?redirect_uri=https://app.example.com/auth/callback&state=csrf123", nil)
@@ -215,22 +218,25 @@ func TestBrokerAuthorize(t *testing.T) {
 		t.Fatal("expected state parameter")
 	}
 
-	// Verify broker state was stored.
-	bs, ok := h.brokerStates.Get(state)
-	if !ok {
-		t.Fatal("broker state not stored")
+	// Verify broker state was stored by reading it back. Note that
+	// ConsumeOAuthState atomically reads-and-deletes — the test does not
+	// need to inspect the row again afterwards, so this is fine; if a true
+	// non-destructive peek is ever needed, add a separate Get method.
+	bs, err := h.store.ConsumeOAuthState(context.Background(), state, database.OAuthStateKindBroker)
+	if err != nil {
+		t.Fatalf("broker state not stored: %v", err)
 	}
-	if bs.RedirectURI != "https://app.example.com/auth/callback" {
-		t.Errorf("wrong redirect_uri in state: %s", bs.RedirectURI)
+	if bs.BrokerRedirectURI != "https://app.example.com/auth/callback" {
+		t.Errorf("wrong redirect_uri in state: %s", bs.BrokerRedirectURI)
 	}
-	if bs.DownstreamState != "csrf123" {
-		t.Errorf("wrong downstream state: %s", bs.DownstreamState)
+	if bs.BrokerDownstreamState != "csrf123" {
+		t.Errorf("wrong downstream state: %s", bs.BrokerDownstreamState)
 	}
 }
 
 func TestBrokerAuthorize_MissingRedirectURI(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/auth/authorize", nil)
 	w := httptest.NewRecorder()
@@ -247,7 +253,7 @@ func TestBrokerAuthorize_DisallowedRedirectURI(t *testing.T) {
 			AllowedRedirects: []string{"https://allowed.example.com/cb"},
 		},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET",
 		"/auth/authorize?redirect_uri=https://evil.com/cb", nil)
@@ -299,16 +305,21 @@ func TestBrokerCallback(t *testing.T) {
 			AllowedRedirects: []string{"https://app.example.com/auth/callback"},
 		},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 	h.githubBaseURL = ghServer.URL
 	h.githubAPIBaseURL = ghServer.URL
 
 	// Pre-populate broker state as if /auth/authorize had run.
 	stateToken := "test-state-token"
-	h.brokerStates.Add(stateToken, &brokerState{
-		RedirectURI:     "https://app.example.com/auth/callback",
-		DownstreamState: "csrf123",
-	})
+	if err := h.store.CreateOAuthState(context.Background(), &database.OAuthState{
+		State:                 stateToken,
+		Kind:                  database.OAuthStateKindBroker,
+		BrokerRedirectURI:     "https://app.example.com/auth/callback",
+		BrokerDownstreamState: "csrf123",
+		ExpiresAt:             time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed broker state: %v", err)
+	}
 
 	req := httptest.NewRequest("GET",
 		"/auth/callback?code=test-code&state="+stateToken, nil)
@@ -388,7 +399,7 @@ func TestBrokerCallback_NoState(t *testing.T) {
 	cfg := &config.Config{
 		Auth: config.AuthConfig{JWTPrivateKey: privPEM},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	// Without downstream state, the redirect should not include a state param.
 	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -414,10 +425,15 @@ func TestBrokerCallback_NoState(t *testing.T) {
 	h.githubAPIBaseURL = ghServer.URL
 
 	stateToken := "no-downstream-state"
-	h.brokerStates.Add(stateToken, &brokerState{
-		RedirectURI:     "https://app.example.com/cb",
-		DownstreamState: "", // no downstream state
-	})
+	if err := h.store.CreateOAuthState(context.Background(), &database.OAuthState{
+		State:                 stateToken,
+		Kind:                  database.OAuthStateKindBroker,
+		BrokerRedirectURI:     "https://app.example.com/cb",
+		BrokerDownstreamState: "", // no downstream state
+		ExpiresAt:             time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed broker state: %v", err)
+	}
 
 	req := httptest.NewRequest("GET",
 		"/auth/callback?code=test-code&state="+stateToken, nil)
@@ -439,7 +455,7 @@ func TestBrokerCallback_NoState(t *testing.T) {
 
 func TestBrokerCallback_InvalidState(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET",
 		"/auth/callback?code=test-code&state=nonexistent", nil)
@@ -453,7 +469,7 @@ func TestBrokerCallback_InvalidState(t *testing.T) {
 
 func TestBrokerCallback_MissingCode(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/auth/callback?state=test-state", nil)
 	w := httptest.NewRecorder()
@@ -466,7 +482,7 @@ func TestBrokerCallback_MissingCode(t *testing.T) {
 
 func TestBrokerCallback_MissingState(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/auth/callback?code=test-code", nil)
 	w := httptest.NewRecorder()
@@ -513,7 +529,7 @@ func TestBrokerCallbackURL(t *testing.T) {
 			cfg := &config.Config{
 				Server: config.ServerConfig{BaseURL: tt.baseURL},
 			}
-			h := NewHandler(cfg, nil, nil, slog.Default())
+			h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 			req := httptest.NewRequest("GET", "/", nil)
 			if tt.reqHost != "" {
@@ -556,7 +572,7 @@ func TestHandleJWKS(t *testing.T) {
 			AllowedRedirects: []string{"https://app.example.com/auth/callback"},
 		},
 	}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/.well-known/jwks.json", nil)
 	w := httptest.NewRecorder()
@@ -602,7 +618,7 @@ func TestHandleJWKS(t *testing.T) {
 
 func TestHandleJWKS_NoKey(t *testing.T) {
 	cfg := &config.Config{}
-	h := NewHandler(cfg, nil, nil, slog.Default())
+	h := NewHandler(cfg, newTestStore(t), nil, slog.Default())
 
 	req := httptest.NewRequest("GET", "/.well-known/jwks.json", nil)
 	w := httptest.NewRecorder()

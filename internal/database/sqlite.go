@@ -82,6 +82,27 @@ func parseTime(s string) time.Time {
 	return time.Time{}
 }
 
+// sqliteAuthTimestampLayout is the fixed-width, millisecond-precision
+// timestamp layout used for auth-state rows (sessions, oauth_states,
+// cli_device_authorizations). Two reasons to prefer it over RFC3339Nano:
+//
+//   - It always emits exactly 3 fractional digits, so lexicographic
+//     comparison agrees with chronological order. RFC3339Nano omits
+//     trailing zeros ("...:05Z" vs "...:05.123Z"), which would flip
+//     ordering at second boundaries in the cleanup DELETEs.
+//   - It matches the migration's own default expression
+//     (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) so DB-defaulted and
+//     application-written values share one format.
+//
+// We deliberately do NOT change the timestamp format for older tables
+// (proxy_tokens etc.); their cleanup logic is unaffected and rewriting
+// existing values is out of scope for this PR.
+const sqliteAuthTimestampLayout = "2006-01-02T15:04:05.000Z"
+
+func sqliteFmtAuthTime(t time.Time) string {
+	return t.UTC().Format(sqliteAuthTimestampLayout)
+}
+
 // --- Migration support ---
 
 func (s *SQLiteStore) EnsureMigrationsTable(ctx context.Context) error {
@@ -792,6 +813,257 @@ func (s *SQLiteStore) DeleteCachedRepository(ctx context.Context, id string) err
 		return fmt.Errorf("cached repository %s: %w", id, ErrNotFound)
 	}
 	return nil
+}
+
+// --- Sessions ---
+
+func (s *SQLiteStore) CreateSession(ctx context.Context, sess *Session) error {
+	if sess.TokenHash == "" {
+		return fmt.Errorf("CreateSession: TokenHash required")
+	}
+	if sess.ExpiresAt.IsZero() {
+		// GetSessionByTokenHash treats zero ExpiresAt as "no expiry", so a
+		// row inserted without one would behave as an immortal session
+		// until a cleanup sweep happened to notice it. Reject up-front.
+		return fmt.Errorf("CreateSession: ExpiresAt required")
+	}
+	if sess.CreatedAt.IsZero() {
+		sess.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sessions (token_hash, user_id, username, role, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, sess.TokenHash, sess.UserID, sess.Username, sess.Role,
+		sqliteFmtAuthTime(sess.ExpiresAt),
+		sqliteFmtAuthTime(sess.CreatedAt))
+	return err
+}
+
+func (s *SQLiteStore) GetSessionByTokenHash(ctx context.Context, tokenHash string) (*Session, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT token_hash, user_id, username, role, expires_at, created_at
+		FROM sessions WHERE token_hash = ?
+	`, tokenHash)
+	sess := &Session{}
+	var expiresStr, createdStr string
+	err := row.Scan(&sess.TokenHash, &sess.UserID, &sess.Username, &sess.Role, &expiresStr, &createdStr)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("session: %w", ErrNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	sess.ExpiresAt = parseTime(expiresStr)
+	sess.CreatedAt = parseTime(createdStr)
+	if !sess.ExpiresAt.IsZero() && time.Now().After(sess.ExpiresAt) {
+		// Treat expired rows as not-found; the cleanup goroutine will remove them.
+		return nil, fmt.Errorf("session: %w", ErrNotFound)
+	}
+	return sess, nil
+}
+
+func (s *SQLiteStore) DeleteSession(ctx context.Context, tokenHash string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
+	return err
+}
+
+func (s *SQLiteStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	// Auth-state rows are written with sqliteAuthTimestampLayout (fixed-width
+	// 3-digit fractional), so a direct lexicographic comparison is
+	// chronologically correct and faster than wrapping with datetime().
+	cutoff := sqliteFmtAuthTime(time.Now())
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// --- OAuth states ---
+
+func (s *SQLiteStore) CreateOAuthState(ctx context.Context, st *OAuthState) error {
+	if st.State == "" {
+		return fmt.Errorf("CreateOAuthState: State required")
+	}
+	if st.Kind != OAuthStateKindLogin && st.Kind != OAuthStateKindBroker {
+		return fmt.Errorf("CreateOAuthState: invalid Kind %q", st.Kind)
+	}
+	if st.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateOAuthState: ExpiresAt required")
+	}
+	if st.CreatedAt.IsZero() {
+		st.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO oauth_states (state, kind, return_to, broker_redirect_uri, broker_downstream_state, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, st.State, st.Kind, st.ReturnTo, st.BrokerRedirectURI, st.BrokerDownstreamState,
+		sqliteFmtAuthTime(st.ExpiresAt),
+		sqliteFmtAuthTime(st.CreatedAt))
+	return err
+}
+
+func (s *SQLiteStore) ConsumeOAuthState(ctx context.Context, state, kind string) (*OAuthState, error) {
+	// DELETE ... RETURNING is atomic — exactly the read-and-delete semantics
+	// we need so a state token cannot be replayed by a duplicate callback.
+	// Mirrors PostgresStore.ConsumeOAuthState. SELECT-then-DELETE in a
+	// transaction is not enough: two concurrent readers can both observe
+	// the row before either DELETE runs.
+	row := s.db.QueryRowContext(ctx, `
+		DELETE FROM oauth_states WHERE state = ? AND kind = ?
+		RETURNING state, kind, return_to, broker_redirect_uri, broker_downstream_state, expires_at, created_at
+	`, state, kind)
+	st := &OAuthState{}
+	var expiresStr, createdStr string
+	err := row.Scan(&st.State, &st.Kind, &st.ReturnTo, &st.BrokerRedirectURI, &st.BrokerDownstreamState, &expiresStr, &createdStr)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	st.ExpiresAt = parseTime(expiresStr)
+	st.CreatedAt = parseTime(createdStr)
+	if !st.ExpiresAt.IsZero() && time.Now().After(st.ExpiresAt) {
+		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
+	}
+	return st, nil
+}
+
+func (s *SQLiteStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error) {
+	cutoff := sqliteFmtAuthTime(time.Now())
+	res, err := s.db.ExecContext(ctx, `DELETE FROM oauth_states WHERE expires_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// --- Device authorization ---
+
+func (s *SQLiteStore) CreateDeviceAuth(ctx context.Context, da *DeviceAuth) error {
+	if da.DeviceCode == "" || da.UserCode == "" {
+		return fmt.Errorf("CreateDeviceAuth: DeviceCode and UserCode required")
+	}
+	if da.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateDeviceAuth: ExpiresAt required")
+	}
+	if da.Status == "" {
+		da.Status = DeviceAuthStatusPending
+	}
+	if da.CreatedAt.IsZero() {
+		da.CreatedAt = time.Now().UTC()
+	}
+	var lastPolledStr interface{}
+	if da.LastPolledAt != nil {
+		lastPolledStr = sqliteFmtAuthTime(*da.LastPolledAt)
+	}
+	var sessTok, username interface{}
+	if da.SessionToken != "" {
+		sessTok = da.SessionToken
+	}
+	if da.Username != "" {
+		username = da.Username
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO cli_device_authorizations
+			(device_code, user_code, status, session_token, username, last_polled_at, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, da.DeviceCode, da.UserCode, da.Status, sessTok, username, lastPolledStr,
+		sqliteFmtAuthTime(da.ExpiresAt),
+		sqliteFmtAuthTime(da.CreatedAt))
+	return err
+}
+
+func (s *SQLiteStore) GetDeviceAuthByDeviceCode(ctx context.Context, deviceCode string) (*DeviceAuth, error) {
+	return s.scanDeviceAuth(ctx, `
+		SELECT device_code, user_code, status, session_token, username, last_polled_at, expires_at, created_at
+		FROM cli_device_authorizations WHERE device_code = ?
+	`, deviceCode)
+}
+
+func (s *SQLiteStore) GetDeviceAuthByUserCode(ctx context.Context, userCode string) (*DeviceAuth, error) {
+	return s.scanDeviceAuth(ctx, `
+		SELECT device_code, user_code, status, session_token, username, last_polled_at, expires_at, created_at
+		FROM cli_device_authorizations WHERE user_code = ?
+	`, userCode)
+}
+
+func (s *SQLiteStore) scanDeviceAuth(ctx context.Context, query, arg string) (*DeviceAuth, error) {
+	row := s.db.QueryRowContext(ctx, query, arg)
+	da := &DeviceAuth{}
+	var sessTok, username sql.NullString
+	var lastPolledStr sql.NullString
+	var expiresStr, createdStr string
+	err := row.Scan(&da.DeviceCode, &da.UserCode, &da.Status, &sessTok, &username, &lastPolledStr, &expiresStr, &createdStr)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if sessTok.Valid {
+		da.SessionToken = sessTok.String
+	}
+	if username.Valid {
+		da.Username = username.String
+	}
+	if lastPolledStr.Valid {
+		t := parseTime(lastPolledStr.String)
+		da.LastPolledAt = &t
+	}
+	da.ExpiresAt = parseTime(expiresStr)
+	da.CreatedAt = parseTime(createdStr)
+	if !da.ExpiresAt.IsZero() && time.Now().After(da.ExpiresAt) {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	return da, nil
+}
+
+func (s *SQLiteStore) UpdateDeviceAuth(ctx context.Context, da *DeviceAuth) error {
+	var lastPolledStr interface{}
+	if da.LastPolledAt != nil {
+		lastPolledStr = sqliteFmtAuthTime(*da.LastPolledAt)
+	}
+	var sessTok, username interface{}
+	if da.SessionToken != "" {
+		sessTok = da.SessionToken
+	}
+	if da.Username != "" {
+		username = da.Username
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE cli_device_authorizations
+		SET status = ?, session_token = ?, username = ?, last_polled_at = ?, expires_at = ?
+		WHERE device_code = ?
+	`, da.Status, sessTok, username, lastPolledStr,
+		sqliteFmtAuthTime(da.ExpiresAt),
+		da.DeviceCode)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("device_auth %s: %w", da.DeviceCode, ErrNotFound)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) DeleteDeviceAuth(ctx context.Context, deviceCode string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM cli_device_authorizations WHERE device_code = ?`, deviceCode)
+	return err
+}
+
+func (s *SQLiteStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error) {
+	cutoff := sqliteFmtAuthTime(time.Now())
+	res, err := s.db.ExecContext(ctx, `DELETE FROM cli_device_authorizations WHERE expires_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // Ensure SQLiteStore implements all required interfaces.

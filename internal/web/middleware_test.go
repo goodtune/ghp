@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -236,23 +237,46 @@ func (noopStore) ListCachedRepositories(_ context.Context) ([]*database.CachedRe
 }
 func (noopStore) UpdateCachedRepository(_ context.Context, _ *database.CachedRepository) error { return nil }
 func (noopStore) DeleteCachedRepository(_ context.Context, _ string) error                     { return nil }
-func (noopStore) Close() error { return nil }
+func (noopStore) CreateSession(_ context.Context, _ *database.Session) error                   { return nil }
+func (noopStore) GetSessionByTokenHash(_ context.Context, _ string) (*database.Session, error) {
+	return nil, fmt.Errorf("session: %w", database.ErrNotFound)
+}
+func (noopStore) DeleteSession(_ context.Context, _ string) error                  { return nil }
+func (noopStore) DeleteExpiredSessions(_ context.Context) (int64, error)           { return 0, nil }
+func (noopStore) CreateOAuthState(_ context.Context, _ *database.OAuthState) error { return nil }
+func (noopStore) ConsumeOAuthState(_ context.Context, _, _ string) (*database.OAuthState, error) {
+	return nil, fmt.Errorf("oauth_state: %w", database.ErrNotFound)
+}
+func (noopStore) DeleteExpiredOAuthStates(_ context.Context) (int64, error)        { return 0, nil }
+func (noopStore) CreateDeviceAuth(_ context.Context, _ *database.DeviceAuth) error { return nil }
+func (noopStore) GetDeviceAuthByDeviceCode(_ context.Context, _ string) (*database.DeviceAuth, error) {
+	return nil, fmt.Errorf("device_auth: %w", database.ErrNotFound)
+}
+func (noopStore) GetDeviceAuthByUserCode(_ context.Context, _ string) (*database.DeviceAuth, error) {
+	return nil, fmt.Errorf("device_auth: %w", database.ErrNotFound)
+}
+func (noopStore) UpdateDeviceAuth(_ context.Context, _ *database.DeviceAuth) error { return nil }
+func (noopStore) DeleteDeviceAuth(_ context.Context, _ string) error               { return nil }
+func (noopStore) DeleteExpiredDeviceAuths(_ context.Context) (int64, error)        { return 0, nil }
+func (noopStore) Close() error                                                     { return nil }
 
-// stubStore is a minimal database.Store that overrides UpsertUser and
-// UpsertGitHubToken for the auth test-login flow. All other methods
-// are provided by the embedded noopStore and return zero values.
-type stubStore struct{ noopStore }
-
-func (s *stubStore) UpsertUser(_ context.Context, u *database.User) error {
-	if u.ID == "" {
-		u.ID = "test-user-id"
+// newTestAuthStore returns an in-memory SQLite store with all migrations
+// applied. Used in tests that genuinely exercise auth flows (sessions,
+// oauth_states, device auth) — noopStore's not-found-everywhere semantics
+// would short-circuit those flows.
+func newTestAuthStore(t *testing.T) database.Store {
+	t.Helper()
+	store, err := database.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create test store: %v", err)
 	}
-	return nil
+	t.Cleanup(func() { _ = store.Close() })
+	migrator := database.NewMigrator(store, "sqlite")
+	if err := migrator.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return store
 }
-func (s *stubStore) UpsertGitHubToken(_ context.Context, _ *database.GitHubToken) error {
-	return nil
-}
-func (s *stubStore) Close() error { return nil }
 
 func TestSessionUsernameMiddleware_WithSession(t *testing.T) {
 	key, err := crypto.GenerateKey()
@@ -264,7 +288,7 @@ func TestSessionUsernameMiddleware_WithSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{DevMode: true}
-	ah := auth.NewHandler(cfg, &stubStore{}, enc, slog.Default())
+	ah := auth.NewHandler(cfg, newTestAuthStore(t), enc, slog.Default())
 
 	// Use test-login to create a session.
 	mux := http.NewServeMux()
@@ -333,7 +357,7 @@ func TestSessionUsernameMiddleware_NoSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{DevMode: true}
-	ah := auth.NewHandler(cfg, &stubStore{}, enc, slog.Default())
+	ah := auth.NewHandler(cfg, newTestAuthStore(t), enc, slog.Default())
 
 	var gotUsername, gotUserID string
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

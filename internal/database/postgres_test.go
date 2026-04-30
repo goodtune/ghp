@@ -71,6 +71,13 @@ func newTestPostgresStore(t *testing.T) *PostgresStore {
 func TestPostgresStoreContract(t *testing.T) {
 	store := newTestPostgresStore(t)
 	testStoreContract(t, store)
+
+	// Postgres uses DELETE ... RETURNING for ConsumeOAuthState, so the
+	// stronger atomicity invariant holds. See store_test.go for why this
+	// isn't part of the shared contract suite.
+	t.Run("OAuthStateConsumeAtomic", func(t *testing.T) {
+		testOAuthStateConsumeAtomic(t, store)
+	})
 }
 
 func TestPostgresUserCRUD(t *testing.T) {

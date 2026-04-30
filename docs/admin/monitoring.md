@@ -138,6 +138,8 @@ See [Git Cache](../features/git-cache.md) for configuration details.
 | `ghp_auth_rate_limit_total` | Counter | Rate limiter rejections on auth endpoints (label: `endpoint`) |
 | `ghp_block_anonymous_git_total` | Counter | Anonymous git requests blocked |
 | `ghp_block_anonymous_git_enabled` | Gauge | Whether anonymous git blocking is active (1 or 0) |
+| `ghp_cli_auth_device_started_total` | Counter | CLI device-authorization requests initiated (one per `ghp auth login` invocation) |
+| `ghp_cli_auth_device_completed_total` | Counter | CLI device-authorization requests that reached a terminal state (label: `result` — `approved`, `denied`, or `expired`) |
 
 #### Release Controls Metrics
 

@@ -1,6 +1,6 @@
 # ghp auth
 
-Authenticate with the ghp server.
+Authenticate to the ghp server.
 
 ## Subcommands
 
@@ -8,33 +8,54 @@ Authenticate with the ghp server.
 
     ghp auth login
 
-Start a GitHub OAuth login flow. The command contacts the ghp server to obtain
-a GitHub authorization URL, then attempts to open it in your default browser.
+Sign in to the ghp server using a device-authorization flow. The CLI never
+contacts GitHub directly: GitHub OAuth is the identity provider for the ghp
+web UI, but `ghp auth login` only talks to your ghp server.
 
-If the browser does not open (e.g. in an SSH session or headless environment),
-copy the printed URL and open it manually. After authenticating with GitHub,
-the page will display a JSON payload containing your session token:
+The flow:
 
-```json
-{"session_token":"ghpr_...","username":"your-github-username"}
-```
+1. The CLI requests a fresh sign-in from the ghp server and prints a URL on
+   the **ghp server** (not github.com) along with a short verification code:
 
-Copy the `session_token` value and save it with:
+   ```
+   Open this URL in a browser to authorize the CLI:
+     https://your-ghp.example/cli/auth?user_code=ABCD-EFGH
 
-    ghp auth set-token <session_token>
+   Confirm this code matches what the page displays:
+     ABCD-EFGH
 
-Or export it as an environment variable:
+   Waiting for approval (Ctrl-C to cancel)...
+   ```
 
-    export GHP_USER_TOKEN=<session_token>
+2. Open the URL in a browser. If you are not already signed in to ghp, you
+   will be sent through GitHub OAuth first and returned to the verification
+   page automatically.
+
+3. Confirm that the user code shown in the browser matches the one printed
+   by your CLI, then click **Authorize** (or **Deny**).
+
+4. The CLI polls the server, picks up the issued session token, and saves
+   it to `~/.config/ghp/config.yaml`. Run `ghp auth status` to verify.
+
+The verification code is short-lived (10 minutes) and tied to a specific CLI
+sign-in attempt; if the code expires before approval, run `ghp auth login`
+again to get a new one.
+
+#### Headless / SSH usage
+
+If the browser cannot be opened automatically (for example in an SSH session
+without X forwarding), copy the URL printed by the CLI and open it on
+another machine. The verification page is served over HTTPS by your ghp
+server and works from any browser that can reach it.
 
 ### ghp auth set-token
 
     ghp auth set-token <token>
 
-Save a session token (obtained from `ghp auth login`) to the local config file
-at `~/.config/ghp/config.yaml`. The token must start with `ghpr_`.
-
-    ghp auth set-token ghpr_abc123...
+Save a session token to the local config file at `~/.config/ghp/config.yaml`.
+This is normally done automatically by `ghp auth login`; use this command
+only if you are pasting in a token obtained another way (e.g. from a teammate
+or a session created via the web UI). The token must start with `ghpr_`.
 
 After saving, verify with `ghp auth status`.
 
