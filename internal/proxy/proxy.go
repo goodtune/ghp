@@ -365,7 +365,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		w.Header().Set("Allow", http.MethodPost)
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeGraphQLError(w, http.StatusMethodNotAllowed, "GraphQL endpoint only accepts POST")
-		h.logRequest(pt, r, "/graphql", "", http.StatusMethodNotAllowed, time.Since(start), "proxy_scope_denied")
+		h.logRequest(pt, r, "/graphql", "", http.StatusMethodNotAllowed, time.Since(start), "proxy_request_invalid")
 		return
 	}
 
@@ -396,14 +396,14 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		h.logger.Warn("graphql: failed to read request body", "error", err)
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeGraphQLError(w, http.StatusBadRequest, "Failed to read GraphQL request body")
-		h.logRequest(pt, r, "/graphql", "", http.StatusBadRequest, time.Since(start), "proxy_scope_denied")
+		h.logRequest(pt, r, "/graphql", "", http.StatusBadRequest, time.Since(start), "proxy_request_invalid")
 		return
 	}
 	if int64(len(body)) > maxGraphQLBodyBytes {
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		writeGraphQLError(w, http.StatusRequestEntityTooLarge,
 			"GraphQL request body exceeds proxy size limit")
-		h.logRequest(pt, r, "/graphql", "", http.StatusRequestEntityTooLarge, time.Since(start), "proxy_scope_denied")
+		h.logRequest(pt, r, "/graphql", "", http.StatusRequestEntityTooLarge, time.Since(start), "proxy_request_invalid")
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
@@ -422,7 +422,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 		// single sentence rather than nesting two GraphQL-specific
 		// prefixes.
 		writeGraphQLError(w, http.StatusBadRequest, fmt.Sprintf("Invalid request: %s", err.Error()))
-		h.logRequest(pt, r, "/graphql", "", http.StatusBadRequest, time.Since(start), "proxy_scope_denied")
+		h.logRequest(pt, r, "/graphql", "", http.StatusBadRequest, time.Since(start), "proxy_request_invalid")
 		return
 	}
 
