@@ -1167,7 +1167,17 @@ func (s *VaultStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	}
 	now := time.Now()
 	var deleted int64
+	var firstErr error
 	for _, k := range keys {
+		// Stop early on context cancellation so shutdown is not delayed by
+		// a loop full of Vault reads/deletes that would all fail anyway.
+		// Mirrors DeleteExpiredProxyTokens.
+		if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			break
+		}
 		data, err := s.kvRead(ctx, "sessions/"+k)
 		if err != nil {
 			return deleted, err
@@ -1177,6 +1187,15 @@ func (s *VaultStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 		}
 		var sess Session
 		if err := unmarshalFromMap(data, &sess); err != nil {
+			// A row that cannot be unmarshalled will never become readable
+			// later (the schema is fixed), so leaving it would let bad
+			// values pile up under sessions/ forever. Delete it and surface
+			// the parse error so an operator sees the cause.
+			if delErr := s.kvDelete(ctx, "sessions/"+k); delErr != nil && firstErr == nil {
+				firstErr = fmt.Errorf("deleting unreadable session %s: %w", k, delErr)
+			} else if firstErr == nil {
+				firstErr = fmt.Errorf("unmarshalling session %s: %w", k, err)
+			}
 			continue
 		}
 		if !sess.ExpiresAt.IsZero() && now.After(sess.ExpiresAt) {
@@ -1186,7 +1205,7 @@ func (s *VaultStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 			deleted++
 		}
 	}
-	return deleted, nil
+	return deleted, firstErr
 }
 
 // --- OAuth states ---
@@ -1258,7 +1277,14 @@ func (s *VaultStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error
 	}
 	now := time.Now()
 	var deleted int64
+	var firstErr error
 	for _, k := range keys {
+		if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			break
+		}
 		data, err := s.kvRead(ctx, "oauth-states/"+k)
 		if err != nil {
 			return deleted, err
@@ -1268,6 +1294,13 @@ func (s *VaultStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error
 		}
 		var st OAuthState
 		if err := unmarshalFromMap(data, &st); err != nil {
+			// Unreadable rows would otherwise stay under oauth-states/
+			// forever; remove them and report the parse error.
+			if delErr := s.kvDelete(ctx, "oauth-states/"+k); delErr != nil && firstErr == nil {
+				firstErr = fmt.Errorf("deleting unreadable oauth_state %s: %w", k, delErr)
+			} else if firstErr == nil {
+				firstErr = fmt.Errorf("unmarshalling oauth_state %s: %w", k, err)
+			}
 			continue
 		}
 		if !st.ExpiresAt.IsZero() && now.After(st.ExpiresAt) {
@@ -1277,7 +1310,7 @@ func (s *VaultStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error
 			deleted++
 		}
 	}
-	return deleted, nil
+	return deleted, firstErr
 }
 
 // --- Device authorization ---
@@ -1396,7 +1429,14 @@ func (s *VaultStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error
 	}
 	now := time.Now()
 	var deleted int64
+	var firstErr error
 	for _, k := range keys {
+		if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			break
+		}
 		// Skip the index sub-prefix; we'll prune dangling entries below.
 		if k == "by-user-code" {
 			continue
@@ -1410,6 +1450,14 @@ func (s *VaultStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error
 		}
 		var da DeviceAuth
 		if err := unmarshalFromMap(data, &da); err != nil {
+			// The user_code index for an unreadable row is unknown, so
+			// pruning it is best-effort via the dangling-index sweep below.
+			// Delete the primary so it can't sit unreadable forever.
+			if delErr := s.kvDelete(ctx, "device-auth/"+k); delErr != nil && firstErr == nil {
+				firstErr = fmt.Errorf("deleting unreadable device_auth %s: %w", k, delErr)
+			} else if firstErr == nil {
+				firstErr = fmt.Errorf("unmarshalling device_auth %s: %w", k, err)
+			}
 			continue
 		}
 		if !da.ExpiresAt.IsZero() && now.After(da.ExpiresAt) {
@@ -1427,6 +1475,12 @@ func (s *VaultStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error
 	idxKeys, err := s.kvList(ctx, "device-auth/by-user-code")
 	if err == nil {
 		for _, idxKey := range idxKeys {
+			if ctx.Err() != nil {
+				if firstErr == nil {
+					firstErr = ctx.Err()
+				}
+				break
+			}
 			idx, err := s.kvRead(ctx, "device-auth/by-user-code/"+idxKey)
 			if err != nil || idx == nil {
 				continue
@@ -1441,7 +1495,7 @@ func (s *VaultStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error
 			}
 		}
 	}
-	return deleted, nil
+	return deleted, firstErr
 }
 
 // Ensure VaultStore implements Store.
