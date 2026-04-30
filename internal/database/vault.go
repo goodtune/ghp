@@ -123,8 +123,12 @@ func NewVaultStore(ctx context.Context, cfg VaultConfig) (*VaultStore, error) {
 		}
 		if store.k8sMount == "" {
 			store.k8sMount = DefaultK8sAuthMount
-		} else if strings.Trim(strings.TrimSpace(store.k8sMount), "/") == "" {
-			return nil, fmt.Errorf("vault kubernetes auth: mount path %q is invalid", store.k8sMount)
+		} else {
+			normalized := strings.Trim(strings.TrimSpace(store.k8sMount), "/")
+			if normalized == "" {
+				return nil, fmt.Errorf("vault kubernetes auth: mount path %q is invalid", store.k8sMount)
+			}
+			store.k8sMount = normalized
 		}
 		if store.k8sTokenPath == "" {
 			store.k8sTokenPath = DefaultK8sTokenPath
@@ -183,7 +187,7 @@ func (s *VaultStore) loginKubernetes(ctx context.Context) error {
 		return fmt.Errorf("service account token at %s is empty", s.k8sTokenPath)
 	}
 
-	loginPath := fmt.Sprintf("auth/%s/login", strings.Trim(s.k8sMount, "/"))
+	loginPath := fmt.Sprintf("auth/%s/login", s.k8sMount)
 	loginResp, err := s.client.Logical().WriteWithContext(ctx, loginPath, map[string]interface{}{
 		"role": s.k8sRole,
 		"jwt":  jwtStr,
@@ -199,8 +203,9 @@ func (s *VaultStore) loginKubernetes(ctx context.Context) error {
 }
 
 // withRelogin executes fn; if fn returns a 403 (expired/invalid token) it
-// re-authenticates once and retries. This transparently handles AppRole
-// tokens that expire during the server's lifetime.
+// re-authenticates once using the configured Vault auth method and retries.
+// This transparently handles Vault tokens that expire during the server's
+// lifetime, regardless of whether AppRole or kubernetes auth is in use.
 func (s *VaultStore) withRelogin(ctx context.Context, fn func() error) error {
 	err := fn()
 	if err == nil {

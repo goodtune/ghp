@@ -230,6 +230,32 @@ func TestNewVaultStoreAppRoleMissingSecretID(t *testing.T) {
 	}
 }
 
+// TestNewVaultStoreKubernetesMountNormalized verifies that whitespace and
+// surrounding slashes in K8sMount are stripped at construction so the
+// resulting login URL ("auth/<mount>/login") is well-formed even when the
+// operator supplied a sloppy value.
+func TestNewVaultStoreKubernetesMountNormalized(t *testing.T) {
+	mount := "kubernetes/my-cluster"
+	fv := newFakeVault(t, mount)
+
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("jwt"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	if _, err := NewVaultStore(context.Background(), VaultConfig{
+		Addr:         fv.server.URL,
+		AuthMethod:   VaultAuthMethodKubernetes,
+		K8sRole:      "ghp",
+		K8sMount:     "  /kubernetes/my-cluster/  ",
+		K8sTokenPath: tokenPath,
+	}); err != nil {
+		t.Fatalf("NewVaultStore: %v", err)
+	}
+	if got := fv.loginCount.Load(); got != 1 {
+		t.Errorf("login count = %d, want 1 (whitespace-trimmed mount should match the registered handler)", got)
+	}
+}
+
 func TestNewVaultStoreKubernetesInvalidMount(t *testing.T) {
 	tokenPath := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenPath, []byte("jwt"), 0o600); err != nil {
