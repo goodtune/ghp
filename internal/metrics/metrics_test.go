@@ -161,6 +161,7 @@ func TestObserveDecision_AllStages(t *testing.T) {
 		StageUpstreamRoundtrip,
 		StageRedirectHeadCheck,
 		StageCacheLookup,
+		StageGraphQLAnalysis,
 	}
 
 	for _, stage := range stages {
