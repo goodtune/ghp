@@ -154,12 +154,19 @@ ghp supports three storage backends:
 
 - **SQLite** — single-file database, ideal for development and small deployments
 - **PostgreSQL** — production-grade relational database
-- **HashiCorp Vault** — secrets-native storage using KV v2 secrets engine with AppRole authentication
+- **HashiCorp Vault** — secrets-native storage using KV v2 secrets engine, authenticating via AppRole or Kubernetes service-account auth
 
 All backends implement the same `Store` interface and provide identical
 feature parity. The Vault backend stores all data (users, tokens, apps) as
 KV v2 secrets and uses index entries for lookups. It does not require SQL
 migrations and does not need an `encryption_key` (Vault encrypts at rest).
+
+When ghp runs on Kubernetes, the Vault backend can authenticate using the
+pod's projected service account JWT directly — no AppRole role-id /
+secret-id provisioning is needed and Vault Secret Operator (VSO) is not
+required for the auth path. ghp re-reads the projected token from disk on
+every re-authentication, so kubelet-rotated tokens are picked up
+automatically.
 
 !!! note "Vault concurrency limitation"
     Vault KV does not support atomic increments. Token usage counters use a
