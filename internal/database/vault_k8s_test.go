@@ -202,6 +202,58 @@ func TestNewVaultStoreUnsupportedAuthMethod(t *testing.T) {
 	}
 }
 
+func TestNewVaultStoreAppRoleMissingRoleID(t *testing.T) {
+	_, err := NewVaultStore(context.Background(), VaultConfig{
+		Addr:       "http://localhost:1",
+		AuthMethod: VaultAuthMethodAppRole,
+		SecretID:   "secret",
+	})
+	if err == nil {
+		t.Fatal("expected error when approle role_id is missing")
+	}
+	if !strings.Contains(err.Error(), "role_id is required") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestNewVaultStoreAppRoleMissingSecretID(t *testing.T) {
+	_, err := NewVaultStore(context.Background(), VaultConfig{
+		Addr:       "http://localhost:1",
+		AuthMethod: VaultAuthMethodAppRole,
+		RoleID:     "role",
+	})
+	if err == nil {
+		t.Fatal("expected error when approle secret_id is missing")
+	}
+	if !strings.Contains(err.Error(), "secret_id is required") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestNewVaultStoreKubernetesInvalidMount(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("jwt"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	for _, mount := range []string{"/", "//", " / "} {
+		t.Run(mount, func(t *testing.T) {
+			_, err := NewVaultStore(context.Background(), VaultConfig{
+				Addr:         "http://localhost:1",
+				AuthMethod:   VaultAuthMethodKubernetes,
+				K8sRole:      "ghp",
+				K8sMount:     mount,
+				K8sTokenPath: tokenPath,
+			})
+			if err == nil {
+				t.Fatalf("expected error for k8s mount %q", mount)
+			}
+			if !strings.Contains(err.Error(), "mount path") {
+				t.Errorf("error should mention mount path, got: %v", err)
+			}
+		})
+	}
+}
+
 // TestVaultStoreKubernetesReloginRereadsJWT verifies that after a 403 from
 // Vault, withRelogin re-reads the service-account token from disk before
 // calling auth/<mount>/login again. This mirrors how the kubelet rotates
@@ -250,5 +302,50 @@ func TestVaultStoreKubernetesReloginRereadsJWT(t *testing.T) {
 	}
 	if got := store.client.Token(); got != "ghp-vault-token-2" {
 		t.Errorf("client token after relogin = %q, want ghp-vault-token-2", got)
+	}
+}
+
+// TestVaultStoreReloginErrorSurfacesInnerError verifies that when the initial
+// 403-triggered re-authentication itself fails (e.g. the projected SA token
+// went missing), the error returned to the caller includes the re-login
+// failure rather than just the original "permission denied" — otherwise
+// the actionable cause is invisible to operators.
+func TestVaultStoreReloginErrorSurfacesInnerError(t *testing.T) {
+	mount := "kubernetes"
+	fv := newFakeVault(t, mount)
+
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("jwt-1"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	store, err := NewVaultStore(context.Background(), VaultConfig{
+		Addr:         fv.server.URL,
+		AuthMethod:   VaultAuthMethodKubernetes,
+		K8sRole:      "ghp",
+		K8sMount:     mount,
+		K8sTokenPath: tokenPath,
+	})
+	if err != nil {
+		t.Fatalf("NewVaultStore: %v", err)
+	}
+
+	// Force a 403 on the next KV op AND make re-login fail by deleting the
+	// token file from under us. The original error is "permission denied";
+	// the re-login error is "service account token at <path> ... no such
+	// file or directory". The returned error must include the latter.
+	fv.forceKVForbidden.Store(true)
+	if err := os.Remove(tokenPath); err != nil {
+		t.Fatalf("remove token: %v", err)
+	}
+
+	_, err = store.kvRead(context.Background(), "anything")
+	if err == nil {
+		t.Fatal("expected error when re-login fails")
+	}
+	if !strings.Contains(err.Error(), "re-authentication") {
+		t.Errorf("error should mention re-authentication: %v", err)
+	}
+	if !strings.Contains(err.Error(), "service account token") {
+		t.Errorf("error should surface inner relogin failure (missing token file): %v", err)
 	}
 }

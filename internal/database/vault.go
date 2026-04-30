@@ -111,13 +111,20 @@ func NewVaultStore(ctx context.Context, cfg VaultConfig) (*VaultStore, error) {
 
 	switch authMethod {
 	case VaultAuthMethodAppRole:
-		// No additional defaults required.
+		if store.roleID == "" {
+			return nil, fmt.Errorf("vault approle auth: role_id is required")
+		}
+		if store.secretID == "" {
+			return nil, fmt.Errorf("vault approle auth: secret_id is required")
+		}
 	case VaultAuthMethodKubernetes:
 		if store.k8sRole == "" {
 			return nil, fmt.Errorf("vault kubernetes auth: role is required")
 		}
 		if store.k8sMount == "" {
 			store.k8sMount = DefaultK8sAuthMount
+		} else if strings.Trim(strings.TrimSpace(store.k8sMount), "/") == "" {
+			return nil, fmt.Errorf("vault kubernetes auth: mount path %q is invalid", store.k8sMount)
 		}
 		if store.k8sTokenPath == "" {
 			store.k8sTokenPath = DefaultK8sTokenPath
@@ -209,8 +216,12 @@ func (s *VaultStore) withRelogin(ctx context.Context, fn func() error) error {
 	}
 	if is403 {
 		if reloginErr := s.login(ctx); reloginErr != nil {
-			// Return original error — re-login failed.
-			return err
+			// Surface both the 403 that triggered the re-login and the
+			// re-authentication failure itself. With kubernetes auth, the
+			// inner error is often the actionable one (e.g. "service
+			// account token at /var/run/... is empty") and would otherwise
+			// be hidden behind the original "permission denied".
+			return fmt.Errorf("vault re-authentication after 403 failed: %w (original error: %v)", reloginErr, err)
 		}
 		return fn()
 	}
