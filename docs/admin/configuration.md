@@ -23,8 +23,12 @@ values from the config file.
 | `GHP_DATABASE_VAULT_ADDR` | Vault server address (vault driver only) | |
 | `GHP_DATABASE_VAULT_MOUNT` | Vault KV v2 mount path | `secret` |
 | `GHP_DATABASE_VAULT_PATH` | Key prefix within the mount | `ghp` |
-| `GHP_DATABASE_VAULT_ROLE_ID` | Vault AppRole role ID | |
-| `GHP_DATABASE_VAULT_SECRET_ID` | Vault AppRole secret ID | |
+| `GHP_DATABASE_VAULT_AUTH_METHOD` | Vault auth method: `approle` or `kubernetes` | `approle` |
+| `GHP_DATABASE_VAULT_ROLE_ID` | Vault AppRole role ID (when method=`approle`) | |
+| `GHP_DATABASE_VAULT_SECRET_ID` | Vault AppRole secret ID (when method=`approle`) | |
+| `GHP_DATABASE_VAULT_K8S_ROLE` | Vault role name (when method=`kubernetes`) | |
+| `GHP_DATABASE_VAULT_K8S_MOUNT` | Vault auth mount for kubernetes method (e.g. `kubernetes/cluster-name`) | `kubernetes` |
+| `GHP_DATABASE_VAULT_K8S_TOKEN_PATH` | Path to the projected service account JWT | `/var/run/secrets/kubernetes.io/serviceaccount/token` |
 
 ### Server
 
@@ -161,8 +165,12 @@ database:
   # vault_addr: ""             # Vault server address (vault driver only)
   # vault_mount: "secret"      # KV v2 mount path
   # vault_path: "ghp"          # key prefix within the mount
-  # vault_role_id: ""          # AppRole role ID
-  # vault_secret_id: ""        # AppRole secret ID
+  # vault_auth_method: "approle"  # "approle" (default) or "kubernetes"
+  # vault_role_id: ""          # AppRole role ID (auth_method=approle)
+  # vault_secret_id: ""        # AppRole secret ID (auth_method=approle)
+  # vault_k8s_role: ""         # Vault role to authenticate as (auth_method=kubernetes)
+  # vault_k8s_mount: "kubernetes"  # auth mount path (auth_method=kubernetes)
+  # vault_k8s_token_path: "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
 server:
   listen: ":8080"              # plain HTTP mode (development or behind reverse proxy)

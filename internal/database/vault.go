@@ -6,11 +6,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	vault "github.com/hashicorp/vault/api"
+)
+
+// Supported Vault auth methods for the ghp database backend.
+const (
+	VaultAuthMethodAppRole    = "approle"
+	VaultAuthMethodKubernetes = "kubernetes"
+
+	// DefaultK8sAuthMount is the conventional auth mount path for the
+	// Vault kubernetes auth backend.
+	DefaultK8sAuthMount = "kubernetes"
+	// DefaultK8sTokenPath is the standard path to the projected service
+	// account token inside a pod.
+	DefaultK8sTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 )
 
 // VaultStore implements Store using HashiCorp Vault KV v2 secrets engine.
@@ -19,21 +33,47 @@ type VaultStore struct {
 	mountPath string // KV v2 mount path, e.g. "secret"
 	basePath  string // prefix within the mount, e.g. "ghp"
 
-	// Stored for re-authentication when the token expires.
+	// Authentication parameters retained for re-login on token expiry.
+	authMethod string // "approle" or "kubernetes"
+
+	// AppRole fields (used when authMethod == "approle").
 	roleID   string
 	secretID string
+
+	// Kubernetes fields (used when authMethod == "kubernetes").
+	k8sRole      string
+	k8sMount     string
+	k8sTokenPath string
 }
 
 // VaultConfig holds configuration for Vault connectivity.
 type VaultConfig struct {
 	Addr      string // Vault server address
-	RoleID    string // AppRole role ID
-	SecretID  string // AppRole secret ID
 	MountPath string // KV v2 mount path (default: "secret")
 	BasePath  string // key prefix (default: "ghp")
+
+	// AuthMethod selects how ghp authenticates to Vault. Valid values:
+	// "approle" (default) and "kubernetes". An empty string is treated as
+	// "approle" for backwards compatibility.
+	AuthMethod string
+
+	// AppRole credentials. Required when AuthMethod is "approle".
+	RoleID   string
+	SecretID string
+
+	// Kubernetes auth fields. Required when AuthMethod is "kubernetes".
+	// K8sRole is the Vault role to authenticate as.
+	// K8sMount is the auth mount path (default: "kubernetes").
+	// K8sTokenPath is the path to the projected service account JWT
+	// (default: /var/run/secrets/kubernetes.io/serviceaccount/token).
+	K8sRole      string
+	K8sMount     string
+	K8sTokenPath string
 }
 
-// NewVaultStore creates a VaultStore authenticated via AppRole.
+// NewVaultStore creates a VaultStore authenticated to Vault using the
+// configured auth method (AppRole by default, or kubernetes auth when
+// requested).
 func NewVaultStore(ctx context.Context, cfg VaultConfig) (*VaultStore, error) {
 	vaultCfg := vault.DefaultConfig()
 	vaultCfg.Address = cfg.Addr
@@ -52,25 +92,77 @@ func NewVaultStore(ctx context.Context, cfg VaultConfig) (*VaultStore, error) {
 		basePath = "ghp"
 	}
 
-	store := &VaultStore{
-		client:    client,
-		mountPath: mountPath,
-		basePath:  basePath,
-		roleID:    cfg.RoleID,
-		secretID:  cfg.SecretID,
+	authMethod := cfg.AuthMethod
+	if authMethod == "" {
+		authMethod = VaultAuthMethodAppRole
 	}
 
-	// Authenticate via AppRole.
+	store := &VaultStore{
+		client:       client,
+		mountPath:    mountPath,
+		basePath:     basePath,
+		authMethod:   authMethod,
+		roleID:       cfg.RoleID,
+		secretID:     cfg.SecretID,
+		k8sRole:      cfg.K8sRole,
+		k8sMount:     cfg.K8sMount,
+		k8sTokenPath: cfg.K8sTokenPath,
+	}
+
+	switch authMethod {
+	case VaultAuthMethodAppRole:
+		if store.roleID == "" {
+			return nil, fmt.Errorf("vault approle auth: role_id is required")
+		}
+		if store.secretID == "" {
+			return nil, fmt.Errorf("vault approle auth: secret_id is required")
+		}
+	case VaultAuthMethodKubernetes:
+		if store.k8sRole == "" {
+			return nil, fmt.Errorf("vault kubernetes auth: role is required")
+		}
+		if store.k8sMount == "" {
+			store.k8sMount = DefaultK8sAuthMount
+		} else {
+			normalized := strings.Trim(strings.TrimSpace(store.k8sMount), "/")
+			if normalized == "" {
+				return nil, fmt.Errorf("vault kubernetes auth: mount path %q is invalid", store.k8sMount)
+			}
+			store.k8sMount = normalized
+		}
+		if store.k8sTokenPath == "" {
+			store.k8sTokenPath = DefaultK8sTokenPath
+		}
+	default:
+		return nil, fmt.Errorf("unsupported vault auth method: %q (valid: %q, %q)",
+			authMethod, VaultAuthMethodAppRole, VaultAuthMethodKubernetes)
+	}
+
 	if err := store.login(ctx); err != nil {
-		return nil, fmt.Errorf("vault approle login: %w", err)
+		return nil, err
 	}
 
 	return store, nil
 }
 
-// login authenticates to Vault using the stored AppRole credentials.
-// It is safe to call repeatedly; each call replaces the current token.
+// login authenticates to Vault using the configured auth method. It is
+// safe to call repeatedly; each call replaces the current token.
+//
+// For the kubernetes method, the JWT file is re-read on every call so
+// projected service-account tokens that were rotated by the kubelet are
+// picked up automatically when the previous Vault token expires.
 func (s *VaultStore) login(ctx context.Context) error {
+	switch s.authMethod {
+	case VaultAuthMethodKubernetes:
+		return s.loginKubernetes(ctx)
+	case VaultAuthMethodAppRole, "":
+		return s.loginAppRole(ctx)
+	default:
+		return fmt.Errorf("unsupported vault auth method: %q", s.authMethod)
+	}
+}
+
+func (s *VaultStore) loginAppRole(ctx context.Context) error {
 	loginResp, err := s.client.Logical().WriteWithContext(ctx, "auth/approle/login", map[string]interface{}{
 		"role_id":   s.roleID,
 		"secret_id": s.secretID,
@@ -85,9 +177,35 @@ func (s *VaultStore) login(ctx context.Context) error {
 	return nil
 }
 
+func (s *VaultStore) loginKubernetes(ctx context.Context) error {
+	jwt, err := os.ReadFile(s.k8sTokenPath)
+	if err != nil {
+		return fmt.Errorf("reading service account token from %s: %w", s.k8sTokenPath, err)
+	}
+	jwtStr := strings.TrimSpace(string(jwt))
+	if jwtStr == "" {
+		return fmt.Errorf("service account token at %s is empty", s.k8sTokenPath)
+	}
+
+	loginPath := fmt.Sprintf("auth/%s/login", s.k8sMount)
+	loginResp, err := s.client.Logical().WriteWithContext(ctx, loginPath, map[string]interface{}{
+		"role": s.k8sRole,
+		"jwt":  jwtStr,
+	})
+	if err != nil {
+		return fmt.Errorf("kubernetes login: %w", err)
+	}
+	if loginResp == nil || loginResp.Auth == nil {
+		return fmt.Errorf("kubernetes login returned no auth token")
+	}
+	s.client.SetToken(loginResp.Auth.ClientToken)
+	return nil
+}
+
 // withRelogin executes fn; if fn returns a 403 (expired/invalid token) it
-// re-authenticates once and retries. This transparently handles AppRole
-// tokens that expire during the server's lifetime.
+// re-authenticates once using the configured Vault auth method and retries.
+// This transparently handles Vault tokens that expire during the server's
+// lifetime, regardless of whether AppRole or kubernetes auth is in use.
 func (s *VaultStore) withRelogin(ctx context.Context, fn func() error) error {
 	err := fn()
 	if err == nil {
@@ -103,8 +221,12 @@ func (s *VaultStore) withRelogin(ctx context.Context, fn func() error) error {
 	}
 	if is403 {
 		if reloginErr := s.login(ctx); reloginErr != nil {
-			// Return original error — re-login failed.
-			return err
+			// Surface both the 403 that triggered the re-login and the
+			// re-authentication failure itself. With kubernetes auth, the
+			// inner error is often the actionable one (e.g. "service
+			// account token at /var/run/... is empty") and would otherwise
+			// be hidden behind the original "permission denied".
+			return fmt.Errorf("vault re-authentication after 403 failed: %w (original error: %v)", reloginErr, err)
 		}
 		return fn()
 	}
