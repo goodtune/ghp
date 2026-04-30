@@ -612,7 +612,10 @@ type returnToCtxKey struct{}
 
 // sanitizeReturnTo restricts return_to to local paths only, preventing open
 // redirects. It must begin with "/" and must not begin with "//" or "/\\"
-// (which browsers can interpret as a protocol-relative URL).
+// (which browsers can interpret as a protocol-relative URL). The value also
+// cannot contain ASCII control characters (CR/LF in particular) because the
+// final destination is the `Location:` response header — embedded CRLF
+// would split the header and risk response-splitting on lenient clients.
 func sanitizeReturnTo(v string) string {
 	if v == "" {
 		return ""
@@ -622,6 +625,15 @@ func sanitizeReturnTo(v string) string {
 	}
 	if strings.HasPrefix(v, "//") || strings.HasPrefix(v, "/\\") {
 		return ""
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		// Reject the ASCII control range (NUL..US) and DEL. A legitimate
+		// path/query never contains these — clients that need raw bytes
+		// percent-encode them.
+		if c < 0x20 || c == 0x7f {
+			return ""
+		}
 	}
 	return v
 }

@@ -1433,16 +1433,25 @@ func testOAuthStateConsume(t *testing.T, store Store) {
 		t.Errorf("expected ErrNotFound for unknown state, got: %v", err)
 	}
 
-	// Concurrent consume race: many goroutines hammer the same state and
-	// exactly one must observe it; the rest must see ErrNotFound. Without
-	// atomic read-and-delete (e.g. the prior SELECT-then-DELETE on
-	// SQLite), a snapshot-isolation race could let two callers both read
-	// the row and "consume" it, allowing replay.
+}
+
+// testOAuthStateConsumeAtomic asserts that ConsumeOAuthState is atomic
+// under concurrent callers — exactly one observes the row and the rest
+// see ErrNotFound. This invariant is required to prevent state-token
+// replay across racing OAuth callbacks.
+//
+// Not part of testStoreContract because the Vault backend cannot offer
+// this guarantee with its current read-then-delete implementation (Vault
+// KV v2 has no atomic read-and-delete primitive, and the trade-off is
+// documented in vault.go). Invoked directly from sqlite_test.go and
+// postgres_test.go where the implementation uses DELETE ... RETURNING.
+func testOAuthStateConsumeAtomic(t *testing.T, store Store) {
+	ctx := context.Background()
 	if err := store.CreateOAuthState(ctx, &OAuthState{
 		State:     "race-state",
 		Kind:      OAuthStateKindLogin,
 		ReturnTo:  "/race",
-		ExpiresAt: now.Add(10 * time.Minute),
+		ExpiresAt: time.Now().Add(10 * time.Minute),
 	}); err != nil {
 		t.Fatalf("CreateOAuthState (race): %v", err)
 	}

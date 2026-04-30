@@ -347,21 +347,31 @@ func TestDeviceDecision_RequiresSession(t *testing.T) {
 	}
 }
 
-// TestSanitizeReturnTo blocks non-local and protocol-relative return_to values.
+// TestSanitizeReturnTo blocks non-local, protocol-relative, and
+// control-character-bearing return_to values.
 func TestSanitizeReturnTo(t *testing.T) {
 	tests := []struct {
-		in, want string
+		name, in, want string
 	}{
-		{"", ""},
-		{"/cli/auth", "/cli/auth"},
-		{"/cli/auth?user_code=X", "/cli/auth?user_code=X"},
-		{"https://evil.example.com/", ""},
-		{"//evil.example.com", ""},
-		{"/\\evil.example.com", ""},
-		{"javascript:alert(1)", ""},
+		{"empty", "", ""},
+		{"local path", "/cli/auth", "/cli/auth"},
+		{"local path with query", "/cli/auth?user_code=X", "/cli/auth?user_code=X"},
+		{"absolute https url", "https://evil.example.com/", ""},
+		{"protocol-relative", "//evil.example.com", ""},
+		{"path-with-backslash", "/\\evil.example.com", ""},
+		{"javascript scheme", "javascript:alert(1)", ""},
+		// Control characters in the path/query would otherwise reach the
+		// Location header verbatim and risk response-splitting on lenient
+		// clients/proxies.
+		{"crlf injection", "/cli/auth\r\nSet-Cookie: x=y", ""},
+		{"bare lf", "/cli/auth\nfoo", ""},
+		{"bare cr", "/cli/auth\rfoo", ""},
+		{"null byte", "/cli/auth\x00", ""},
+		{"tab", "/cli/auth\t", ""},
+		{"del", "/cli/auth\x7f", ""},
 	}
 	for _, tt := range tests {
-		t.Run(tt.in, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			if got := sanitizeReturnTo(tt.in); got != tt.want {
 				t.Errorf("sanitizeReturnTo(%q) = %q, want %q", tt.in, got, tt.want)
 			}

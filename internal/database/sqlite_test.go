@@ -291,6 +291,13 @@ func TestMigrations(t *testing.T) {
 func TestSQLiteStoreContract(t *testing.T) {
 	store := newTestStore(t)
 	testStoreContract(t, store)
+
+	// SQLite uses DELETE ... RETURNING for ConsumeOAuthState, so the
+	// stronger atomicity invariant holds. The Vault backend cannot offer
+	// it (read-then-delete) and is therefore not invoked here.
+	t.Run("OAuthStateConsumeAtomic", func(t *testing.T) {
+		testOAuthStateConsumeAtomic(t, store)
+	})
 }
 
 // Ensure temporary files are cleaned up.

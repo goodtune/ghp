@@ -1498,7 +1498,16 @@ func (s *VaultStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error
 			break
 		}
 		idx, err := s.kvRead(ctx, "device-auth/by-user-code/"+idxKey)
-		if err != nil || idx == nil {
+		if err != nil {
+			// A read failure here doesn't mean the index is dangling;
+			// surface it instead so the cleanup logger can alert on
+			// transient Vault issues, but don't delete anything.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("reading device-auth/by-user-code/%s: %w", idxKey, err)
+			}
+			continue
+		}
+		if idx == nil {
 			continue
 		}
 		deviceCode, _ := idx["device_code"].(string)
@@ -1506,7 +1515,20 @@ func (s *VaultStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error
 			_ = s.kvDelete(ctx, "device-auth/by-user-code/"+idxKey)
 			continue
 		}
-		if primary, _ := s.kvRead(ctx, "device-auth/"+deviceCode); primary == nil {
+		// Only prune the index when we can confirm the primary record is
+		// absent. A transient kvRead error must NOT cause us to delete a
+		// valid index entry — that would make GetDeviceAuthByUserCode
+		// fail for a still-pending device-auth row. Surface the read
+		// error and leave the index in place; the next cleanup pass can
+		// re-evaluate.
+		primary, primaryErr := s.kvRead(ctx, "device-auth/"+deviceCode)
+		if primaryErr != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("reading device-auth/%s: %w", deviceCode, primaryErr)
+			}
+			continue
+		}
+		if primary == nil {
 			_ = s.kvDelete(ctx, "device-auth/by-user-code/"+idxKey)
 		}
 	}
