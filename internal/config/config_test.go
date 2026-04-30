@@ -292,3 +292,43 @@ func TestLoadBlockAnonymousGitFromYAML(t *testing.T) {
 		t.Error("expected Block.AnonymousGit to be true when set in YAML")
 	}
 }
+
+func TestVaultAuthDefaults(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.Database.VaultAuthMethod, "approle"; got != want {
+		t.Errorf("VaultAuthMethod default = %q, want %q", got, want)
+	}
+	if got, want := cfg.Database.VaultK8sMount, "kubernetes"; got != want {
+		t.Errorf("VaultK8sMount default = %q, want %q", got, want)
+	}
+	if got, want := cfg.Database.VaultK8sTokenPath, "/var/run/secrets/kubernetes.io/serviceaccount/token"; got != want {
+		t.Errorf("VaultK8sTokenPath default = %q, want %q", got, want)
+	}
+}
+
+func TestLoadVaultK8sFromEnv(t *testing.T) {
+	t.Setenv("GHP_DATABASE_VAULT_AUTH_METHOD", "kubernetes")
+	t.Setenv("GHP_DATABASE_VAULT_K8S_ROLE", "ghp")
+	t.Setenv("GHP_DATABASE_VAULT_K8S_MOUNT", "kubernetes/sin-common-apps-1")
+	t.Setenv("GHP_DATABASE_VAULT_K8S_TOKEN_PATH", "/run/secrets/projected/token")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database.VaultAuthMethod != "kubernetes" {
+		t.Errorf("VaultAuthMethod = %q, want kubernetes", cfg.Database.VaultAuthMethod)
+	}
+	if cfg.Database.VaultK8sRole != "ghp" {
+		t.Errorf("VaultK8sRole = %q, want ghp", cfg.Database.VaultK8sRole)
+	}
+	if cfg.Database.VaultK8sMount != "kubernetes/sin-common-apps-1" {
+		t.Errorf("VaultK8sMount = %q, want kubernetes/sin-common-apps-1", cfg.Database.VaultK8sMount)
+	}
+	if cfg.Database.VaultK8sTokenPath != "/run/secrets/projected/token" {
+		t.Errorf("VaultK8sTokenPath = %q, want /run/secrets/projected/token", cfg.Database.VaultK8sTokenPath)
+	}
+}

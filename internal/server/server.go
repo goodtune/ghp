@@ -207,11 +207,15 @@ func (s *Server) Run(ctx context.Context) error {
 	var err error
 	if s.cfg.Database.Driver == "vault" {
 		store, err = database.OpenVault(ctx, database.VaultConfig{
-			Addr:      s.cfg.Database.VaultAddr,
-			RoleID:    s.cfg.Database.VaultRoleID,
-			SecretID:  s.cfg.Database.VaultSecretID,
-			MountPath: s.cfg.Database.VaultMount,
-			BasePath:  s.cfg.Database.VaultPath,
+			Addr:         s.cfg.Database.VaultAddr,
+			MountPath:    s.cfg.Database.VaultMount,
+			BasePath:     s.cfg.Database.VaultPath,
+			AuthMethod:   s.cfg.Database.VaultAuthMethod,
+			RoleID:       s.cfg.Database.VaultRoleID,
+			SecretID:     s.cfg.Database.VaultSecretID,
+			K8sRole:      s.cfg.Database.VaultK8sRole,
+			K8sMount:     s.cfg.Database.VaultK8sMount,
+			K8sTokenPath: s.cfg.Database.VaultK8sTokenPath,
 		})
 	} else {
 		store, err = database.Open(s.cfg.Database.Driver, s.cfg.Database.DSN)
