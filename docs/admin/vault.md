@@ -200,6 +200,58 @@ ghp automatically re-authenticates when its token expires (up to
           # ...
     ```
 
+    #### Custom JWT audience
+
+    If the Vault role binds an `audience` (or `audiences`) — for example
+    if you set `audience=vault` on `auth/kubernetes/role/ghp` — the
+    default service account token will not work. The auto-mounted token
+    at `/var/run/secrets/kubernetes.io/serviceaccount/token` carries the
+    API server audience (`https://kubernetes.default.svc.cluster.local`),
+    not the audience your role expects, so Vault's login response is:
+
+    ```
+    invalid audience (aud) claim: audience claim does not match any expected audience
+    ```
+
+    The fix is to mount a **projected service account token** with the
+    desired audience and point ghp at that path. This is the same
+    mechanism Vault Agent uses, and it works without any code changes
+    in ghp:
+
+    ```yaml
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: ghp
+      namespace: ghp
+    spec:
+      template:
+        spec:
+          serviceAccountName: ghp
+          containers:
+            - name: ghp
+              # ...
+              env:
+                - name: GHP_DATABASE_VAULT_K8S_TOKEN_PATH
+                  value: /var/run/secrets/vault/token
+              volumeMounts:
+                - name: vault-token
+                  mountPath: /var/run/secrets/vault
+                  readOnly: true
+          volumes:
+            - name: vault-token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      audience: vault          # match `audience` on the Vault role
+                      expirationSeconds: 3600
+                      path: token
+    ```
+
+    The kubelet rotates the projected token before it expires. ghp re-reads
+    the file from disk on every (re-)login, so rotation is handled
+    transparently without restarts.
+
 ## GHP Configuration
 
 === "AppRole — Environment Variables"
@@ -267,7 +319,7 @@ ghp automatically re-authenticates when its token expires (up to
 | `vault_secret_id` | `GHP_DATABASE_VAULT_SECRET_ID` | — | AppRole secret ID (required when method=`approle`) |
 | `vault_k8s_role` | `GHP_DATABASE_VAULT_K8S_ROLE` | — | Vault role name (required when method=`kubernetes`) |
 | `vault_k8s_mount` | `GHP_DATABASE_VAULT_K8S_MOUNT` | `kubernetes` | Auth mount path for the kubernetes backend |
-| `vault_k8s_token_path` | `GHP_DATABASE_VAULT_K8S_TOKEN_PATH` | `/var/run/secrets/kubernetes.io/serviceaccount/token` | Path to the projected service account JWT |
+| `vault_k8s_token_path` | `GHP_DATABASE_VAULT_K8S_TOKEN_PATH` | `/var/run/secrets/kubernetes.io/serviceaccount/token` | Path to the projected service account JWT. Override when the Vault role binds a custom audience — see [Custom JWT audience](#custom-jwt-audience). |
 
 !!! tip "No encryption key needed"
     When using `driver: vault`, the `GHP_ENCRYPTION_KEY` setting is ignored.
@@ -341,6 +393,15 @@ role binding. If the bound service account is deleted or the kubernetes auth
 backend's API server CA changes, ghp's next re-authentication will fail —
 investigate via the Vault audit log and the `ghp_proxy_decision_duration_seconds`
 metric for elevated `github_token_resolution` latency.
+
+!!! warning "`invalid audience (aud) claim` at startup"
+    If the Vault role binds an audience and the pod still mounts the default
+    service account token, login fails with `invalid audience (aud) claim:
+    audience claim does not match any expected audience`. The default token's
+    `aud` is the cluster API server, not the Vault role's audience. Mount a
+    projected service account token with the matching audience and set
+    `vault_k8s_token_path` to that file — see
+    [Custom JWT audience](#custom-jwt-audience).
 
 ## High Availability
 
