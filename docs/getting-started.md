@@ -37,15 +37,25 @@ Administrators can also create agent tokens backed by a GitHub App installation
 (see [GitHub App Setup](admin/github-app.md) for server configuration):
 
     ghp token create \
-      --type agent \
-      --installation-id 12345678 \
+      --app mybot \
+      --installation myorg \
       --repos owner/repo1,owner/repo2 \
       --scope contents:read,pull_requests:write
 
-When multiple GitHub Apps are configured, use the `--app-id` flag to specify
-which app the agent token should use. The value is the **database record ID**
-(a UUID shown in the admin Apps table), not the numeric GitHub App ID. If
-omitted, the default app is used.
+The `--app` flag accepts the app name (as shown in the admin Apps table) and
+`--installation` accepts the GitHub account login (org or user name) where the
+app is installed. Both flags resolve to the underlying IDs automatically. When
+`--app` or `--installation` is used, `--type agent` is inferred.
+
+If only one app is configured (or one is marked as default), `--app` can be
+omitted — the installation is resolved against the default app:
+
+    ghp token create \
+      --installation myorg \
+      --duration never
+
+The numeric `--app-id` (database UUID) and `--installation-id` (GitHub numeric
+ID) flags remain available for advanced or scripted use.
 
 See [Token Scoping](features/token-scoping.md) for a full explanation of
 repository restrictions, permission scopes, and open-scoped tokens.
