@@ -156,6 +156,7 @@ var (
 	//   github_token_resolution – loading & decrypting (or refreshing) the real GitHub credential
 	//   upstream_roundtrip     – proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer)
 	//   redirect_head_check   – HEAD request to the release redirect target to verify asset availability (releases handler only)
+	//   graphql_analysis      – parsing a GraphQL request body and computing the static scope/repository requirements (GraphQL handler only)
 	ProxyDecisionDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ghp_proxy_decision_duration_seconds",
 		Help:    "Duration of each stage in the proxy decision pipeline.",
@@ -250,6 +251,23 @@ var (
 		Help: "Current total size of cached protocol response files per repository.",
 	}, []string{"owner", "repo"})
 
+	// CLIDeviceStartedTotal counts CLI device-authorization requests
+	// initiated via POST /cli/auth/device. Each "ghp auth login" invocation
+	// increments this counter exactly once.
+	CLIDeviceStartedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ghp_cli_auth_device_started_total",
+		Help: "Total number of CLI device-authorization requests initiated.",
+	})
+
+	// CLIDeviceCompletedTotal counts CLI device-authorization requests that
+	// reached a terminal state, labeled by result: "approved" (user
+	// authorized and CLI received a session token), "denied" (user clicked
+	// deny), or "expired" (record TTL'd before the user acted).
+	CLIDeviceCompletedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_cli_auth_device_completed_total",
+		Help: "Total number of CLI device-authorization requests that reached a terminal state.",
+	}, []string{"result"})
+
 	// BuildInfo is a gauge with a constant value of 1 labeled by build
 	// metadata. It follows the node_exporter_build_info convention.
 	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -271,6 +289,7 @@ const (
 	StageUpstreamRoundtrip     = "upstream_roundtrip"
 	StageRedirectHeadCheck     = "redirect_head_check"
 	StageCacheLookup           = "cache_lookup"
+	StageGraphQLAnalysis       = "graphql_analysis"
 )
 
 // ObserveDecision records the duration of a single stage in the proxy

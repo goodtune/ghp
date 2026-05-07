@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	ghub "github.com/google/go-github/v84/github"
+	ghub "github.com/google/go-github/v85/github"
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
@@ -130,6 +130,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/tokens", a.authHandler.RequireAuth(http.HandlerFunc(a.handleListTokens)))
 	mux.Handle("GET /api/tokens/{id}", a.authHandler.RequireAuth(http.HandlerFunc(a.handleGetToken)))
 	mux.Handle("DELETE /api/tokens/{id}", a.authHandler.RequireAuth(http.HandlerFunc(a.handleRevokeToken)))
+	mux.Handle("PATCH /api/tokens/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleUpdateTokenScopes)))
 
 	mux.Handle("GET /api/users", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListUsers)))
 	mux.Handle("GET /api/users/{id}/tokens", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListUserTokens)))
@@ -447,6 +448,108 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Token revoked"})
 }
 
+type updateTokenScopesRequest struct {
+	Repositories *[]string         `json:"repositories"`
+	Scopes       *map[string]string `json:"scopes"`
+}
+
+func (a *API) handleUpdateTokenScopes(w http.ResponseWriter, r *http.Request) {
+	session := auth.SessionFromContext(r.Context())
+	id := r.PathValue("id")
+
+	if !isValidUUID(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid token ID"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	var req updateTokenScopesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"message": "Request body too large"})
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		}
+		return
+	}
+
+	if req.Repositories == nil && req.Scopes == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "At least one of repositories or scopes must be provided"})
+		return
+	}
+
+	pt, err := a.store.GetProxyTokenByID(r.Context(), id)
+	if err != nil {
+		a.logger.Error("failed to get token for scope update", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+	if pt == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Token not found"})
+		return
+	}
+	if pt.RevokedAt != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"message": "Cannot update a revoked token"})
+		return
+	}
+
+	newRepos := pt.Repositories
+	if req.Repositories != nil {
+		enc, err := json.Marshal(*req.Repositories)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid repositories"})
+			return
+		}
+		newRepos = enc
+	}
+
+	newScopes := pt.Scopes
+	if req.Scopes != nil {
+		for perm, level := range *req.Scopes {
+			if level != "read" && level != "write" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid scope level for " + perm + ": must be read or write"})
+				return
+			}
+		}
+		enc, err := json.Marshal(*req.Scopes)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid scopes"})
+			return
+		}
+		newScopes = enc
+	}
+
+	if err := a.store.UpdateProxyTokenScopes(r.Context(), id, newRepos, newScopes); err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "Token not found"})
+			return
+		}
+		a.logger.Error("failed to update token scopes", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
+	a.tokenService.InvalidateByID(id)
+
+	a.auditLog.writeEntry(&auditLogEntry{
+		Msg:       "audit event",
+		Action:    "token_scopes_updated",
+		UserID:    session.UserID,
+		Username:  session.Username,
+		TokenID:   id,
+		TokenType: pt.TokenType,
+	})
+
+	a.logger.Info("token_scopes_updated", "user", session.Username, "token_id", id)
+
+	updated, err := a.store.GetProxyTokenByID(r.Context(), id)
+	if err != nil || updated == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"message": "Token scopes updated"})
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
 func (a *API) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := a.store.ListUsers(r.Context())
 	if err != nil {
@@ -622,15 +725,34 @@ func (a *API) handleGetPermissions(w http.ResponseWriter, r *http.Request) {
 // defaultPermissions returns the full set of proxy-token permissions at their
 // maximum levels. Used when no GitHub OAuth token is available to constrain
 // the set (dev mode, test users, GitHub App tokens).
+// The set mirrors what GitHub Apps can be configured with so that users
+// authenticated via App OAuth can restrict tokens to any supported scope.
 func defaultPermissions() map[string]string {
 	return map[string]string{
-		"contents":      "write",
-		"pull_requests": "write",
-		"issues":        "write",
-		"statuses":      "write",
-		"checks":        "write",
-		"actions":       "write",
-		"metadata":      "read",
+		// Core repository permissions
+		"contents":               "write",
+		"pull_requests":          "write",
+		"issues":                 "write",
+		"statuses":               "write",
+		"checks":                 "write",
+		"actions":                "write",
+		"workflows":              "write",
+		"metadata":               "read",
+		// Additional repository permissions
+		"administration":         "write",
+		"deployments":            "write",
+		"environments":           "write",
+		"packages":               "write",
+		"pages":                  "write",
+		"security_events":        "write",
+		"vulnerability_alerts":   "write",
+		"discussions":            "write",
+		"repository_hooks":       "write",
+		"secrets":                "write",
+		"secret_scanning_alerts": "write",
+		"projects":               "write",
+		// Organisation-level permissions
+		"members":                "write",
 	}
 }
 
@@ -655,13 +777,27 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 		perms["statuses"] = "write"
 		perms["checks"] = "write"
 		perms["metadata"] = "read"
-		// Actions read is implied by repo; write requires the workflow scope.
+		perms["deployments"] = "write"
+		perms["environments"] = "write"
+		perms["pages"] = "write"
+		perms["repository_hooks"] = "write"
+		// Actions read is implied by repo/public_repo; write requires workflow.
 		if scopes["workflow"] {
 			perms["actions"] = "write"
+			// The workflow scope specifically covers workflow file management.
+			perms["workflows"] = "write"
 		} else {
 			perms["actions"] = "read"
 		}
-	} else if scopes["repo:status"] {
+	}
+	// Full repo scope includes admin-level access to owned repositories
+	// (Actions secrets, repo settings, branch protection). public_repo is
+	// limited to public repos and does not grant these admin capabilities.
+	if scopes["repo"] {
+		perms["secrets"] = "write"
+		perms["administration"] = "write"
+	}
+	if scopes["repo:status"] && !scopes["repo"] && !scopes["public_repo"] {
 		// repo:status alone gives commit-status write without full repo access.
 		perms["statuses"] = "write"
 		perms["metadata"] = "read"
@@ -671,6 +807,7 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 	if scopes["security_events"] {
 		perms["security_events"] = "write"
 		perms["vulnerability_alerts"] = "write"
+		perms["secret_scanning_alerts"] = "write"
 		if perms["metadata"] == "" {
 			perms["metadata"] = "read"
 		}
@@ -695,6 +832,13 @@ func oauthScopesToPermissions(scopesHeader string) map[string]string {
 		perms["discussions"] = "write"
 	} else if scopes["read:discussion"] {
 		perms["discussions"] = "read"
+	}
+
+	// GitHub Projects.
+	if scopes["project"] {
+		perms["projects"] = "write"
+	} else if scopes["read:project"] {
+		perms["projects"] = "read"
 	}
 
 	return perms

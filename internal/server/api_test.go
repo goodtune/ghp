@@ -18,6 +18,7 @@ import (
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
 	ghpgithub "github.com/goodtune/ghp/internal/github"
+	"github.com/goodtune/ghp/internal/token"
 )
 
 func TestHandleCreateToken_BodyTooLarge(t *testing.T) {
@@ -107,37 +108,47 @@ func TestOAuthScopesToPermissions(t *testing.T) {
 		{
 			name:        "repo scope grants core repo permissions",
 			scopeHeader: "repo",
-			wantKeys:    []string{"contents", "pull_requests", "issues", "statuses", "checks", "actions", "metadata"},
+			wantKeys:    []string{"contents", "pull_requests", "issues", "statuses", "checks", "actions", "metadata", "deployments", "environments", "pages", "repository_hooks", "secrets", "administration"},
 			wantLevels: map[string]string{
-				"contents":      "write",
-				"pull_requests": "write",
-				"issues":        "write",
-				"statuses":      "write",
-				"checks":        "write",
-				"actions":       "read", // no workflow scope
-				"metadata":      "read",
+				"contents":         "write",
+				"pull_requests":    "write",
+				"issues":           "write",
+				"statuses":         "write",
+				"checks":           "write",
+				"actions":          "read", // no workflow scope
+				"metadata":         "read",
+				"deployments":      "write",
+				"environments":     "write",
+				"pages":            "write",
+				"repository_hooks": "write",
+				"secrets":          "write",
+				"administration":   "write",
 			},
+			wantAbsent: []string{"workflows"},
 		},
 		{
-			name:        "repo + workflow grants actions write",
+			name:        "repo + workflow grants actions and workflows write",
 			scopeHeader: "repo, workflow",
 			wantLevels: map[string]string{
-				"contents": "write",
-				"actions":  "write",
+				"contents":  "write",
+				"actions":   "write",
+				"workflows": "write",
 			},
 		},
 		{
-			name:        "public_repo grants same permissions as repo",
+			name:        "public_repo grants core repo permissions but not admin",
 			scopeHeader: "public_repo",
-			wantKeys:    []string{"contents", "pull_requests", "issues"},
+			wantKeys:    []string{"contents", "pull_requests", "issues", "deployments", "pages"},
+			wantAbsent:  []string{"secrets", "administration"},
 		},
 		{
 			name:        "security_events adds security permissions",
 			scopeHeader: "repo, security_events",
-			wantKeys:    []string{"security_events", "vulnerability_alerts"},
+			wantKeys:    []string{"security_events", "vulnerability_alerts", "secret_scanning_alerts"},
 			wantLevels: map[string]string{
-				"security_events":      "write",
-				"vulnerability_alerts": "write",
+				"security_events":        "write",
+				"vulnerability_alerts":   "write",
+				"secret_scanning_alerts": "write",
 			},
 		},
 		{
@@ -176,6 +187,21 @@ func TestOAuthScopesToPermissions(t *testing.T) {
 			wantKeys:    []string{"statuses", "metadata"},
 			wantAbsent:  []string{"contents", "pull_requests", "issues"},
 		},
+		{
+			name:        "project scope grants projects write",
+			scopeHeader: "repo, project",
+			wantLevels:  map[string]string{"projects": "write"},
+		},
+		{
+			name:        "read:project scope grants projects read",
+			scopeHeader: "repo, read:project",
+			wantLevels:  map[string]string{"projects": "read"},
+		},
+		{
+			name:        "project overrides read:project",
+			scopeHeader: "repo, project, read:project",
+			wantLevels:  map[string]string{"projects": "write"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -203,7 +229,12 @@ func TestOAuthScopesToPermissions(t *testing.T) {
 
 func TestDefaultPermissions(t *testing.T) {
 	perms := defaultPermissions()
-	required := []string{"contents", "pull_requests", "issues", "statuses", "checks", "actions", "metadata"}
+	required := []string{
+		"contents", "pull_requests", "issues", "statuses", "checks", "actions",
+		"workflows", "metadata", "administration", "deployments", "environments",
+		"packages", "pages", "security_events", "vulnerability_alerts", "discussions",
+		"repository_hooks", "secrets", "secret_scanning_alerts", "projects", "members",
+	}
 	for _, key := range required {
 		if _, ok := perms[key]; !ok {
 			t.Errorf("defaultPermissions() missing key %q", key)
@@ -555,5 +586,146 @@ func TestCachedRepos_DuplicateCreate409(t *testing.T) {
 	a.handleCreateCachedRepo(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("duplicate create: expected %d, got %d: %s", http.StatusConflict, w.Code, w.Body.String())
+	}
+}
+
+func timePtrServer(t time.Time) *time.Time { return &t }
+
+// newTestAPIFull builds an API with a real SQLite store, token service, and
+// discard audit log — enough to test handlers that touch all three.
+func newTestAPIFull(t *testing.T) *API {
+	t.Helper()
+	store, err := database.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create test store: %v", err)
+	}
+	migrator := database.NewMigrator(store, "sqlite")
+	if err := migrator.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	ts := token.NewService(store, 24*time.Hour, false)
+	return &API{
+		store:        store,
+		tokenService: ts,
+		auditLog:     newAuditLogWriter(io.Discard),
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+}
+
+func TestHandleUpdateTokenScopes_InvalidUUID(t *testing.T) {
+	a := &API{}
+	req := httptest.NewRequest("PATCH", "/api/tokens/not-a-uuid", strings.NewReader(`{"repositories":[]}`))
+	req.SetPathValue("id", "not-a-uuid")
+	req = req.WithContext(auth.NewContextWithSession(req.Context(), adminSession()))
+	w := httptest.NewRecorder()
+	a.handleUpdateTokenScopes(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleUpdateTokenScopes_NotFound(t *testing.T) {
+	a := newTestAPIFull(t)
+	body := strings.NewReader(`{"repositories":["org/repo"]}`)
+	req := httptest.NewRequest("PATCH", "/api/tokens/00000000-0000-0000-0000-000000000000", body)
+	req.SetPathValue("id", "00000000-0000-0000-0000-000000000000")
+	req = req.WithContext(auth.NewContextWithSession(req.Context(), adminSession()))
+	w := httptest.NewRecorder()
+	a.handleUpdateTokenScopes(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleUpdateTokenScopes_InvalidScopeLevel(t *testing.T) {
+	a := newTestAPIFull(t)
+
+	exp := timePtrServer(time.Now().Add(time.Hour))
+	pt := &database.ProxyToken{
+		TokenHash:   "hash_scope_level_test",
+		TokenPrefix: "ghx_sl1",
+		TokenType:   "proxy",
+		ExpiresAt:   exp,
+	}
+	if err := a.store.CreateProxyToken(context.Background(), pt); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	body := strings.NewReader(`{"scopes":{"contents":"admin"}}`)
+	req := httptest.NewRequest("PATCH", "/api/tokens/"+pt.ID, body)
+	req.SetPathValue("id", pt.ID)
+	req = req.WithContext(auth.NewContextWithSession(req.Context(), adminSession()))
+	w := httptest.NewRecorder()
+	a.handleUpdateTokenScopes(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleUpdateTokenScopes_RevokedToken(t *testing.T) {
+	a := newTestAPIFull(t)
+
+	exp := timePtrServer(time.Now().Add(time.Hour))
+	pt := &database.ProxyToken{
+		TokenHash:   "hash_revoked_scope_test",
+		TokenPrefix: "ghx_rv1",
+		TokenType:   "proxy",
+		ExpiresAt:   exp,
+	}
+	if err := a.store.CreateProxyToken(context.Background(), pt); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	if err := a.store.RevokeProxyToken(context.Background(), pt.ID); err != nil {
+		t.Fatalf("revoke token: %v", err)
+	}
+
+	body := strings.NewReader(`{"repositories":["org/repo"]}`)
+	req := httptest.NewRequest("PATCH", "/api/tokens/"+pt.ID, body)
+	req.SetPathValue("id", pt.ID)
+	req = req.WithContext(auth.NewContextWithSession(req.Context(), adminSession()))
+	w := httptest.NewRecorder()
+	a.handleUpdateTokenScopes(w, req)
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleUpdateTokenScopes_HappyPath(t *testing.T) {
+	a := newTestAPIFull(t)
+
+	exp := timePtrServer(time.Now().Add(time.Hour))
+	pt := &database.ProxyToken{
+		TokenHash:    "hash_scope_update_ok",
+		TokenPrefix:  "ghx_ok1",
+		TokenType:    "proxy",
+		Repositories: json.RawMessage(`["org/old"]`),
+		Scopes:       json.RawMessage(`{"contents":"read"}`),
+		ExpiresAt:    exp,
+	}
+	if err := a.store.CreateProxyToken(context.Background(), pt); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	body := strings.NewReader(`{"repositories":["org/new"],"scopes":{"contents":"write"}}`)
+	req := httptest.NewRequest("PATCH", "/api/tokens/"+pt.ID, body)
+	req.SetPathValue("id", pt.ID)
+	req = req.WithContext(auth.NewContextWithSession(req.Context(), adminSession()))
+	w := httptest.NewRecorder()
+	a.handleUpdateTokenScopes(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	repos, _ := resp["repositories"].([]interface{})
+	if len(repos) != 1 || repos[0] != "org/new" {
+		t.Errorf("repositories = %v, want [org/new]", repos)
+	}
+	scopes, _ := resp["scopes"].(map[string]interface{})
+	if scopes["contents"] != "write" {
+		t.Errorf("scopes[contents] = %v, want write", scopes["contents"])
 	}
 }

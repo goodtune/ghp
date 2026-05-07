@@ -80,18 +80,79 @@ an agent legitimately needs broad access and scoping would be too restrictive.
 Open-scoped tokens are the default for proxy tokens created without `--repo`
 and `--scope` flags.
 
-## GraphQL Limitation
+## GraphQL Scope Enforcement
 
-Tokens that are restricted to specific repositories cannot use the GraphQL API.
-GraphQL queries can span multiple repositories in a single request, and ghp
-cannot reliably enforce repository restrictions on GraphQL without parsing
-every query. Repository-restricted tokens that attempt a GraphQL request will
-receive a `403 Forbidden` response.
+ghp enforces token scopes on GraphQL requests for repository-restricted
+and/or permission-restricted tokens via static analysis of the incoming
+query. For those scoped-token requests the body is parsed (using
+`github.com/vektah/gqlparser/v2`) and walked to extract three things:
 
-Open-scoped and permission-only tokens (no repository restriction) can use
-GraphQL, but ghp does not currently enforce permission scopes on GraphQL
-requests; the effective permissions are those of the underlying GitHub
-credential.
+- **Required permission scopes**, derived from a curated map of
+  `Mutation.<field>` and field-name → scope mappings (e.g.
+  `Mutation.createIssue` → `issues:write`, `pullRequests` → `pull_requests:read`).
+- **Referenced repositories**, extracted from `repository(owner, name)`
+  arguments where both arguments are string literals.
+- **Cross-repository fields** (e.g. `search`, `node`, `viewer.repositories`)
+  that can return data from outside any explicit `repository(...)` selection.
+
+The proxy uses the analysis to apply a deny-by-default policy:
+
+- **Open-scoped tokens** bypass GraphQL static analysis entirely; the
+  underlying credential's permissions remain the only enforcement layer.
+- **Repository-restricted tokens** must reference at least one
+  `repository(owner, name)` with literal arguments, and every referenced
+  repository must appear in the token's allowlist. Cross-repository fields
+  are rejected outright: ghp cannot statically prove their results stay
+  inside the allowlist. GraphQL mutations are also rejected for
+  repository-restricted tokens — GitHub's mutation inputs identify their
+  target with an opaque global node ID (`repositoryId`) rather than
+  `owner`/`name`, which the proxy cannot statically map to the
+  allowlist. Use the REST API for repo-scoped writes, or use a
+  permission-only token if mutations across multiple repositories are
+  required.
+- **Permission-restricted tokens** must grant every scope the analysis
+  identifies. Mutations whose name does not appear in the curated mutation
+  map are rejected — the proxy never grants a write scope it cannot
+  classify.
+- **Subscriptions** are rejected unconditionally: GitHub's GraphQL endpoint
+  does not support them over HTTP, and the proxy cannot stream-scope
+  per-event payloads.
+- **Unknown object-typed fields** (fields with their own selection set that
+  do not appear in the allowlist or scope map) are rejected for any
+  scoped token. Scalar leaves are permitted without a per-field mapping
+  because their parent field's scope already gates them.
+
+Variable-driven repository lookups (`repository(owner: $owner, ...)`) cannot
+be statically validated against a token's repository allowlist. For
+repository-restricted tokens, the proxy rejects any request that contains
+even one such variable-driven `repository(...)` selection, even if other
+literal allowlisted lookups are present in the same query — otherwise an
+attacker could mix one literal allowlisted lookup with an unbounded
+variable-driven lookup that bypasses the allowlist. Tokens with no
+repository restriction (permission-only or open-scoped) are unaffected.
+For requests that go through GraphQL static analysis the request body is
+capped at 1 MiB to bound memory usage. Open-scoped tokens bypass static
+analysis, so this cap does not apply to them.
+
+Operators reading 403 responses with a "GraphQL request references unmapped
+fields" message can use the named field as a hint for extending
+`fieldScopeRequirements` or `mutationScopeRequirements` in
+`internal/proxy/graphql.go` to cover legitimate use cases.
+
+### Known limitations
+
+- **Scalar leaves under always-allowed parents are not deny-by-default.**
+  Without loading GitHub's full SDL the proxy cannot enumerate every
+  scalar field name, so unmapped scalars projected directly under an
+  always-allowed parent (e.g. `repository(owner, name) { someScalar }`)
+  pass static analysis. The risk is bounded by the underlying
+  credential's permissions and by GitHub's own access checks; operators
+  who need stricter enforcement should map the affected scalar in
+  `fieldScopeRequirements` or use REST scoping for the affected flow.
+- **Repository-restricted GraphQL mutations are not supported.** GitHub
+  mutation inputs identify their target by opaque global node ID
+  (`repositoryId`), which the proxy cannot statically map to a
+  repository. Use the REST API or a permission-only token instead.
 
 ## Expiration and Revocation
 

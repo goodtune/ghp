@@ -403,6 +403,23 @@ func (s *PostgresStore) UpdateProxyTokenAppID(ctx context.Context, id string, ap
 	return nil
 }
 
+func (s *PostgresStore) UpdateProxyTokenScopes(ctx context.Context, id string, repositories json.RawMessage, scopes json.RawMessage) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE proxy_tokens SET repositories = $1, scopes = $2 WHERE id = $3`,
+		string(repositories), string(scopes), id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("proxy token %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 func (s *PostgresStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
 	if olderThan <= 0 {
 		return 0, fmt.Errorf("DeleteExpiredProxyTokens: olderThan must be positive, got %v", olderThan)
@@ -653,6 +670,232 @@ func (s *PostgresStore) DeleteCachedRepository(ctx context.Context, id string) e
 		return fmt.Errorf("cached repository %s: %w", id, ErrNotFound)
 	}
 	return nil
+}
+
+// --- Sessions ---
+
+func (s *PostgresStore) CreateSession(ctx context.Context, sess *Session) error {
+	if sess.TokenHash == "" {
+		return fmt.Errorf("CreateSession: TokenHash required")
+	}
+	if sess.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateSession: ExpiresAt required")
+	}
+	if sess.CreatedAt.IsZero() {
+		sess.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sessions (token_hash, user_id, username, role, expires_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, sess.TokenHash, sess.UserID, sess.Username, sess.Role, sess.ExpiresAt.UTC(), sess.CreatedAt.UTC())
+	return err
+}
+
+func (s *PostgresStore) GetSessionByTokenHash(ctx context.Context, tokenHash string) (*Session, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT token_hash, user_id, username, role, expires_at, created_at
+		FROM sessions WHERE token_hash = $1
+	`, tokenHash)
+	sess := &Session{}
+	err := row.Scan(&sess.TokenHash, &sess.UserID, &sess.Username, &sess.Role, &sess.ExpiresAt, &sess.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("session: %w", ErrNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !sess.ExpiresAt.IsZero() && time.Now().After(sess.ExpiresAt) {
+		return nil, fmt.Errorf("session: %w", ErrNotFound)
+	}
+	return sess, nil
+}
+
+func (s *PostgresStore) DeleteSession(ctx context.Context, tokenHash string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = $1`, tokenHash)
+	return err
+}
+
+func (s *PostgresStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	cutoff := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < $1`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// --- OAuth states ---
+
+func (s *PostgresStore) CreateOAuthState(ctx context.Context, st *OAuthState) error {
+	if st.State == "" {
+		return fmt.Errorf("CreateOAuthState: State required")
+	}
+	if st.Kind != OAuthStateKindLogin && st.Kind != OAuthStateKindBroker {
+		return fmt.Errorf("CreateOAuthState: invalid Kind %q", st.Kind)
+	}
+	if st.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateOAuthState: ExpiresAt required")
+	}
+	if st.CreatedAt.IsZero() {
+		st.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO oauth_states (state, kind, return_to, broker_redirect_uri, broker_downstream_state, expires_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, st.State, st.Kind, st.ReturnTo, st.BrokerRedirectURI, st.BrokerDownstreamState,
+		st.ExpiresAt.UTC(), st.CreatedAt.UTC())
+	return err
+}
+
+func (s *PostgresStore) ConsumeOAuthState(ctx context.Context, state, kind string) (*OAuthState, error) {
+	// DELETE ... RETURNING is atomic — exactly the read-and-delete semantics
+	// we need so a state token can never be replayed by a duplicate callback.
+	row := s.db.QueryRowContext(ctx, `
+		DELETE FROM oauth_states WHERE state = $1 AND kind = $2
+		RETURNING state, kind, return_to, broker_redirect_uri, broker_downstream_state, expires_at, created_at
+	`, state, kind)
+	st := &OAuthState{}
+	err := row.Scan(&st.State, &st.Kind, &st.ReturnTo, &st.BrokerRedirectURI, &st.BrokerDownstreamState, &st.ExpiresAt, &st.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !st.ExpiresAt.IsZero() && time.Now().After(st.ExpiresAt) {
+		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
+	}
+	return st, nil
+}
+
+func (s *PostgresStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error) {
+	cutoff := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `DELETE FROM oauth_states WHERE expires_at < $1`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// --- Device authorization ---
+
+func (s *PostgresStore) CreateDeviceAuth(ctx context.Context, da *DeviceAuth) error {
+	if da.DeviceCode == "" || da.UserCode == "" {
+		return fmt.Errorf("CreateDeviceAuth: DeviceCode and UserCode required")
+	}
+	if da.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateDeviceAuth: ExpiresAt required")
+	}
+	if da.Status == "" {
+		da.Status = DeviceAuthStatusPending
+	}
+	if da.CreatedAt.IsZero() {
+		da.CreatedAt = time.Now().UTC()
+	}
+	var lastPolled interface{}
+	if da.LastPolledAt != nil {
+		lastPolled = da.LastPolledAt.UTC()
+	}
+	var sessTok, username interface{}
+	if da.SessionToken != "" {
+		sessTok = da.SessionToken
+	}
+	if da.Username != "" {
+		username = da.Username
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO cli_device_authorizations
+			(device_code, user_code, status, session_token, username, last_polled_at, expires_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, da.DeviceCode, da.UserCode, da.Status, sessTok, username, lastPolled,
+		da.ExpiresAt.UTC(), da.CreatedAt.UTC())
+	return err
+}
+
+func (s *PostgresStore) GetDeviceAuthByDeviceCode(ctx context.Context, deviceCode string) (*DeviceAuth, error) {
+	return s.scanDeviceAuth(ctx, `
+		SELECT device_code, user_code, status, session_token, username, last_polled_at, expires_at, created_at
+		FROM cli_device_authorizations WHERE device_code = $1
+	`, deviceCode)
+}
+
+func (s *PostgresStore) GetDeviceAuthByUserCode(ctx context.Context, userCode string) (*DeviceAuth, error) {
+	return s.scanDeviceAuth(ctx, `
+		SELECT device_code, user_code, status, session_token, username, last_polled_at, expires_at, created_at
+		FROM cli_device_authorizations WHERE user_code = $1
+	`, userCode)
+}
+
+func (s *PostgresStore) scanDeviceAuth(ctx context.Context, query, arg string) (*DeviceAuth, error) {
+	row := s.db.QueryRowContext(ctx, query, arg)
+	da := &DeviceAuth{}
+	var sessTok, username sql.NullString
+	var lastPolled sql.NullTime
+	err := row.Scan(&da.DeviceCode, &da.UserCode, &da.Status, &sessTok, &username, &lastPolled, &da.ExpiresAt, &da.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if sessTok.Valid {
+		da.SessionToken = sessTok.String
+	}
+	if username.Valid {
+		da.Username = username.String
+	}
+	if lastPolled.Valid {
+		t := lastPolled.Time
+		da.LastPolledAt = &t
+	}
+	if !da.ExpiresAt.IsZero() && time.Now().After(da.ExpiresAt) {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	return da, nil
+}
+
+func (s *PostgresStore) UpdateDeviceAuth(ctx context.Context, da *DeviceAuth) error {
+	var lastPolled interface{}
+	if da.LastPolledAt != nil {
+		lastPolled = da.LastPolledAt.UTC()
+	}
+	var sessTok, username interface{}
+	if da.SessionToken != "" {
+		sessTok = da.SessionToken
+	}
+	if da.Username != "" {
+		username = da.Username
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE cli_device_authorizations
+		SET status = $1, session_token = $2, username = $3, last_polled_at = $4, expires_at = $5
+		WHERE device_code = $6
+	`, da.Status, sessTok, username, lastPolled, da.ExpiresAt.UTC(), da.DeviceCode)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("device_auth %s: %w", da.DeviceCode, ErrNotFound)
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteDeviceAuth(ctx context.Context, deviceCode string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM cli_device_authorizations WHERE device_code = $1`, deviceCode)
+	return err
+}
+
+func (s *PostgresStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error) {
+	cutoff := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `DELETE FROM cli_device_authorizations WHERE expires_at < $1`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // Ensure PostgresStore implements all required interfaces.

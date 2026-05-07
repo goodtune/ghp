@@ -6,11 +6,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	vault "github.com/hashicorp/vault/api"
+)
+
+// Supported Vault auth methods for the ghp database backend.
+const (
+	VaultAuthMethodAppRole    = "approle"
+	VaultAuthMethodKubernetes = "kubernetes"
+
+	// DefaultK8sAuthMount is the conventional auth mount path for the
+	// Vault kubernetes auth backend.
+	DefaultK8sAuthMount = "kubernetes"
+	// DefaultK8sTokenPath is the standard path to the projected service
+	// account token inside a pod.
+	DefaultK8sTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 )
 
 // VaultStore implements Store using HashiCorp Vault KV v2 secrets engine.
@@ -19,21 +33,47 @@ type VaultStore struct {
 	mountPath string // KV v2 mount path, e.g. "secret"
 	basePath  string // prefix within the mount, e.g. "ghp"
 
-	// Stored for re-authentication when the token expires.
+	// Authentication parameters retained for re-login on token expiry.
+	authMethod string // "approle" or "kubernetes"
+
+	// AppRole fields (used when authMethod == "approle").
 	roleID   string
 	secretID string
+
+	// Kubernetes fields (used when authMethod == "kubernetes").
+	k8sRole      string
+	k8sMount     string
+	k8sTokenPath string
 }
 
 // VaultConfig holds configuration for Vault connectivity.
 type VaultConfig struct {
 	Addr      string // Vault server address
-	RoleID    string // AppRole role ID
-	SecretID  string // AppRole secret ID
 	MountPath string // KV v2 mount path (default: "secret")
 	BasePath  string // key prefix (default: "ghp")
+
+	// AuthMethod selects how ghp authenticates to Vault. Valid values:
+	// "approle" (default) and "kubernetes". An empty string is treated as
+	// "approle" for backwards compatibility.
+	AuthMethod string
+
+	// AppRole credentials. Required when AuthMethod is "approle".
+	RoleID   string
+	SecretID string
+
+	// Kubernetes auth fields. Required when AuthMethod is "kubernetes".
+	// K8sRole is the Vault role to authenticate as.
+	// K8sMount is the auth mount path (default: "kubernetes").
+	// K8sTokenPath is the path to the projected service account JWT
+	// (default: /var/run/secrets/kubernetes.io/serviceaccount/token).
+	K8sRole      string
+	K8sMount     string
+	K8sTokenPath string
 }
 
-// NewVaultStore creates a VaultStore authenticated via AppRole.
+// NewVaultStore creates a VaultStore authenticated to Vault using the
+// configured auth method (AppRole by default, or kubernetes auth when
+// requested).
 func NewVaultStore(ctx context.Context, cfg VaultConfig) (*VaultStore, error) {
 	vaultCfg := vault.DefaultConfig()
 	vaultCfg.Address = cfg.Addr
@@ -52,25 +92,77 @@ func NewVaultStore(ctx context.Context, cfg VaultConfig) (*VaultStore, error) {
 		basePath = "ghp"
 	}
 
-	store := &VaultStore{
-		client:    client,
-		mountPath: mountPath,
-		basePath:  basePath,
-		roleID:    cfg.RoleID,
-		secretID:  cfg.SecretID,
+	authMethod := cfg.AuthMethod
+	if authMethod == "" {
+		authMethod = VaultAuthMethodAppRole
 	}
 
-	// Authenticate via AppRole.
+	store := &VaultStore{
+		client:       client,
+		mountPath:    mountPath,
+		basePath:     basePath,
+		authMethod:   authMethod,
+		roleID:       cfg.RoleID,
+		secretID:     cfg.SecretID,
+		k8sRole:      cfg.K8sRole,
+		k8sMount:     cfg.K8sMount,
+		k8sTokenPath: cfg.K8sTokenPath,
+	}
+
+	switch authMethod {
+	case VaultAuthMethodAppRole:
+		if store.roleID == "" {
+			return nil, fmt.Errorf("vault approle auth: role_id is required")
+		}
+		if store.secretID == "" {
+			return nil, fmt.Errorf("vault approle auth: secret_id is required")
+		}
+	case VaultAuthMethodKubernetes:
+		if store.k8sRole == "" {
+			return nil, fmt.Errorf("vault kubernetes auth: role is required")
+		}
+		if store.k8sMount == "" {
+			store.k8sMount = DefaultK8sAuthMount
+		} else {
+			normalized := strings.Trim(strings.TrimSpace(store.k8sMount), "/")
+			if normalized == "" {
+				return nil, fmt.Errorf("vault kubernetes auth: mount path %q is invalid", store.k8sMount)
+			}
+			store.k8sMount = normalized
+		}
+		if store.k8sTokenPath == "" {
+			store.k8sTokenPath = DefaultK8sTokenPath
+		}
+	default:
+		return nil, fmt.Errorf("unsupported vault auth method: %q (valid: %q, %q)",
+			authMethod, VaultAuthMethodAppRole, VaultAuthMethodKubernetes)
+	}
+
 	if err := store.login(ctx); err != nil {
-		return nil, fmt.Errorf("vault approle login: %w", err)
+		return nil, err
 	}
 
 	return store, nil
 }
 
-// login authenticates to Vault using the stored AppRole credentials.
-// It is safe to call repeatedly; each call replaces the current token.
+// login authenticates to Vault using the configured auth method. It is
+// safe to call repeatedly; each call replaces the current token.
+//
+// For the kubernetes method, the JWT file is re-read on every call so
+// projected service-account tokens that were rotated by the kubelet are
+// picked up automatically when the previous Vault token expires.
 func (s *VaultStore) login(ctx context.Context) error {
+	switch s.authMethod {
+	case VaultAuthMethodKubernetes:
+		return s.loginKubernetes(ctx)
+	case VaultAuthMethodAppRole, "":
+		return s.loginAppRole(ctx)
+	default:
+		return fmt.Errorf("unsupported vault auth method: %q", s.authMethod)
+	}
+}
+
+func (s *VaultStore) loginAppRole(ctx context.Context) error {
 	loginResp, err := s.client.Logical().WriteWithContext(ctx, "auth/approle/login", map[string]interface{}{
 		"role_id":   s.roleID,
 		"secret_id": s.secretID,
@@ -85,9 +177,35 @@ func (s *VaultStore) login(ctx context.Context) error {
 	return nil
 }
 
+func (s *VaultStore) loginKubernetes(ctx context.Context) error {
+	jwt, err := os.ReadFile(s.k8sTokenPath)
+	if err != nil {
+		return fmt.Errorf("reading service account token from %s: %w", s.k8sTokenPath, err)
+	}
+	jwtStr := strings.TrimSpace(string(jwt))
+	if jwtStr == "" {
+		return fmt.Errorf("service account token at %s is empty", s.k8sTokenPath)
+	}
+
+	loginPath := fmt.Sprintf("auth/%s/login", s.k8sMount)
+	loginResp, err := s.client.Logical().WriteWithContext(ctx, loginPath, map[string]interface{}{
+		"role": s.k8sRole,
+		"jwt":  jwtStr,
+	})
+	if err != nil {
+		return fmt.Errorf("kubernetes login: %w", err)
+	}
+	if loginResp == nil || loginResp.Auth == nil {
+		return fmt.Errorf("kubernetes login returned no auth token")
+	}
+	s.client.SetToken(loginResp.Auth.ClientToken)
+	return nil
+}
+
 // withRelogin executes fn; if fn returns a 403 (expired/invalid token) it
-// re-authenticates once and retries. This transparently handles AppRole
-// tokens that expire during the server's lifetime.
+// re-authenticates once using the configured Vault auth method and retries.
+// This transparently handles Vault tokens that expire during the server's
+// lifetime, regardless of whether AppRole or kubernetes auth is in use.
 func (s *VaultStore) withRelogin(ctx context.Context, fn func() error) error {
 	err := fn()
 	if err == nil {
@@ -103,8 +221,12 @@ func (s *VaultStore) withRelogin(ctx context.Context, fn func() error) error {
 	}
 	if is403 {
 		if reloginErr := s.login(ctx); reloginErr != nil {
-			// Return original error — re-login failed.
-			return err
+			// Surface both the 403 that triggered the re-login and the
+			// re-authentication failure itself. With kubernetes auth, the
+			// inner error is often the actionable one (e.g. "service
+			// account token at /var/run/... is empty") and would otherwise
+			// be hidden behind the original "permission denied".
+			return fmt.Errorf("vault re-authentication after 403 failed: %w (original error: %v)", reloginErr, err)
 		}
 		return fn()
 	}
@@ -149,6 +271,47 @@ func (s *VaultStore) kvWrite(ctx context.Context, key string, data map[string]in
 		})
 		return err
 	})
+}
+
+// errKVAlreadyExists is returned by kvCreate when the target path already
+// has a non-deleted value. Vault surfaces a CAS mismatch as an HTTP 400 with
+// a specific "check-and-set parameter did not match the current version"
+// error, which is what we look for here.
+var errKVAlreadyExists = errors.New("kv: already exists")
+
+// kvCreate writes data to a KV v2 path only if no value exists there. It
+// uses KV v2's check-and-set option (`cas: 0`) so the operation is atomic
+// and concurrent callers cannot race past each other to overwrite the same
+// key. Returns errKVAlreadyExists if the key is already present.
+//
+// Re-authenticates once on 403 errors via withRelogin, like the other KV
+// helpers; CAS conflicts are returned to the caller as errKVAlreadyExists
+// so they can be distinguished from authentication failures.
+func (s *VaultStore) kvCreate(ctx context.Context, key string, data map[string]interface{}) error {
+	return s.withRelogin(ctx, func() error {
+		_, err := s.client.Logical().WriteWithContext(ctx, s.dataPath(key), map[string]interface{}{
+			"data":    data,
+			"options": map[string]interface{}{"cas": 0},
+		})
+		if err != nil && isKVCASMismatch(err) {
+			return errKVAlreadyExists
+		}
+		return err
+	})
+}
+
+// isKVCASMismatch detects the specific Vault response that indicates a
+// check-and-set conflict so the caller can surface a typed error. Vault
+// emits the phrase "check-and-set parameter did not match" in the body of
+// a 400 response on a CAS conflict; structured detection via
+// vault.ResponseError would be preferable but the response error type
+// embedded in the SDK does not expose a code we can match on directly.
+func isKVCASMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "check-and-set") ||
+		strings.Contains(err.Error(), "cas parameter")
 }
 
 // kvRead reads data from a KV v2 path. Returns nil, nil if not found.
@@ -718,6 +881,19 @@ func (s *VaultStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID
 	return s.writeProxyToken(ctx, token)
 }
 
+func (s *VaultStore) UpdateProxyTokenScopes(ctx context.Context, id string, repositories json.RawMessage, scopes json.RawMessage) error {
+	token, err := s.GetProxyTokenByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if token == nil {
+		return fmt.Errorf("proxy token %s: %w", id, ErrNotFound)
+	}
+	token.Repositories = repositories
+	token.Scopes = scopes
+	return s.writeProxyToken(ctx, token)
+}
+
 func (s *VaultStore) DeleteExpiredProxyTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
 	if olderThan <= 0 {
 		return 0, fmt.Errorf("DeleteExpiredProxyTokens: olderThan must be positive, got %v", olderThan)
@@ -929,6 +1105,434 @@ func (s *VaultStore) DeleteCachedRepository(ctx context.Context, id string) erro
 	// Delete the owner/name index entry.
 	_ = s.kvDelete(ctx, fmt.Sprintf("cached-repos/by-owner-name/%s/%s", existing.Owner, existing.Name))
 	return s.kvDelete(ctx, "cached-repos/"+id)
+}
+
+// --- Sessions ---
+
+func (s *VaultStore) CreateSession(ctx context.Context, sess *Session) error {
+	if sess.TokenHash == "" {
+		return fmt.Errorf("CreateSession: TokenHash required")
+	}
+	if sess.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateSession: ExpiresAt required")
+	}
+	if sess.CreatedAt.IsZero() {
+		sess.CreatedAt = time.Now().UTC()
+	}
+	data, err := marshalToMap(sess)
+	if err != nil {
+		return fmt.Errorf("marshaling session: %w", err)
+	}
+	// Sessions are create-once: the token hash is the primary key in the
+	// SQL backends, and a duplicate must be rejected rather than silently
+	// overwriting an existing session. Use CAS-protected create so the
+	// Vault backend matches that contract under retries/concurrency.
+	if err := s.kvCreate(ctx, "sessions/"+sess.TokenHash, data); err != nil {
+		if errors.Is(err, errKVAlreadyExists) {
+			return fmt.Errorf("session token_hash already in use")
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *VaultStore) GetSessionByTokenHash(ctx context.Context, tokenHash string) (*Session, error) {
+	data, err := s.kvRead(ctx, "sessions/"+tokenHash)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, fmt.Errorf("session: %w", ErrNotFound)
+	}
+	var sess Session
+	if err := unmarshalFromMap(data, &sess); err != nil {
+		return nil, err
+	}
+	if !sess.ExpiresAt.IsZero() && time.Now().After(sess.ExpiresAt) {
+		return nil, fmt.Errorf("session: %w", ErrNotFound)
+	}
+	return &sess, nil
+}
+
+func (s *VaultStore) DeleteSession(ctx context.Context, tokenHash string) error {
+	return s.kvDelete(ctx, "sessions/"+tokenHash)
+}
+
+// DeleteExpiredSessions iterates the sessions/ prefix and deletes anything
+// past its expiry. Vault has no list-with-filter, so this fans out one Read
+// per row. Acceptable because cleanup runs infrequently — the auth handler
+// invokes it on a fixed cadence (see authStateCleanupInterval in the auth
+// package, currently 5 minutes).
+func (s *VaultStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	keys, err := s.kvList(ctx, "sessions")
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	var deleted int64
+	var firstErr error
+	for _, k := range keys {
+		// Stop early on context cancellation so shutdown is not delayed by
+		// a loop full of Vault reads/deletes that would all fail anyway.
+		// Mirrors DeleteExpiredProxyTokens.
+		if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			break
+		}
+		data, err := s.kvRead(ctx, "sessions/"+k)
+		if err != nil {
+			return deleted, err
+		}
+		if data == nil {
+			continue
+		}
+		var sess Session
+		if err := unmarshalFromMap(data, &sess); err != nil {
+			// A row that cannot be unmarshalled will never become readable
+			// later (the schema is fixed), so leaving it would let bad
+			// values pile up under sessions/ forever. Delete it and surface
+			// the parse error so an operator sees the cause.
+			if delErr := s.kvDelete(ctx, "sessions/"+k); delErr != nil && firstErr == nil {
+				firstErr = fmt.Errorf("deleting unreadable session %s: %w", k, delErr)
+			} else if firstErr == nil {
+				firstErr = fmt.Errorf("unmarshalling session %s: %w", k, err)
+			}
+			continue
+		}
+		if !sess.ExpiresAt.IsZero() && now.After(sess.ExpiresAt) {
+			if err := s.kvDelete(ctx, "sessions/"+k); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+	}
+	return deleted, firstErr
+}
+
+// --- OAuth states ---
+
+func (s *VaultStore) CreateOAuthState(ctx context.Context, st *OAuthState) error {
+	if st.State == "" {
+		return fmt.Errorf("CreateOAuthState: State required")
+	}
+	if st.Kind != OAuthStateKindLogin && st.Kind != OAuthStateKindBroker {
+		return fmt.Errorf("CreateOAuthState: invalid Kind %q", st.Kind)
+	}
+	if st.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateOAuthState: ExpiresAt required")
+	}
+	if st.CreatedAt.IsZero() {
+		st.CreatedAt = time.Now().UTC()
+	}
+	data, err := marshalToMap(st)
+	if err != nil {
+		return fmt.Errorf("marshaling oauth_state: %w", err)
+	}
+	// OAuth state rows are create-once and one-time-consumed; the State is
+	// a high-entropy token whose collisions are vanishingly unlikely, but
+	// using CAS-protected create matches the SQL backends' PK uniqueness
+	// guarantee and prevents a retried generate-then-create from
+	// overwriting an existing in-flight state.
+	if err := s.kvCreate(ctx, "oauth-states/"+st.State, data); err != nil {
+		if errors.Is(err, errKVAlreadyExists) {
+			return fmt.Errorf("oauth_state already in use")
+		}
+		return err
+	}
+	return nil
+}
+
+// ConsumeOAuthState reads then deletes. Vault KV does not support atomic
+// read-and-delete, so a duplicate concurrent callback could in principle
+// receive the same state twice. The window is bounded by the time between
+// the kvRead and kvDelete here (typically single-digit ms), and the state
+// payload itself is non-secret — at worst a duplicate browser session
+// would race to consume the same row. Documented in CLAUDE.md as the
+// Vault read-modify-write trade-off.
+func (s *VaultStore) ConsumeOAuthState(ctx context.Context, state, kind string) (*OAuthState, error) {
+	data, err := s.kvRead(ctx, "oauth-states/"+state)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
+	}
+	var st OAuthState
+	if err := unmarshalFromMap(data, &st); err != nil {
+		return nil, err
+	}
+	if st.Kind != kind {
+		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
+	}
+	if !st.ExpiresAt.IsZero() && time.Now().After(st.ExpiresAt) {
+		_ = s.kvDelete(ctx, "oauth-states/"+state)
+		return nil, fmt.Errorf("oauth_state: %w", ErrNotFound)
+	}
+	if err := s.kvDelete(ctx, "oauth-states/"+state); err != nil {
+		return nil, err
+	}
+	return &st, nil
+}
+
+func (s *VaultStore) DeleteExpiredOAuthStates(ctx context.Context) (int64, error) {
+	keys, err := s.kvList(ctx, "oauth-states")
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	var deleted int64
+	var firstErr error
+	for _, k := range keys {
+		if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			break
+		}
+		data, err := s.kvRead(ctx, "oauth-states/"+k)
+		if err != nil {
+			return deleted, err
+		}
+		if data == nil {
+			continue
+		}
+		var st OAuthState
+		if err := unmarshalFromMap(data, &st); err != nil {
+			// Unreadable rows would otherwise stay under oauth-states/
+			// forever; remove them and report the parse error.
+			if delErr := s.kvDelete(ctx, "oauth-states/"+k); delErr != nil && firstErr == nil {
+				firstErr = fmt.Errorf("deleting unreadable oauth_state %s: %w", k, delErr)
+			} else if firstErr == nil {
+				firstErr = fmt.Errorf("unmarshalling oauth_state %s: %w", k, err)
+			}
+			continue
+		}
+		if !st.ExpiresAt.IsZero() && now.After(st.ExpiresAt) {
+			if err := s.kvDelete(ctx, "oauth-states/"+k); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+	}
+	return deleted, firstErr
+}
+
+// --- Device authorization ---
+
+func (s *VaultStore) CreateDeviceAuth(ctx context.Context, da *DeviceAuth) error {
+	if da.DeviceCode == "" || da.UserCode == "" {
+		return fmt.Errorf("CreateDeviceAuth: DeviceCode and UserCode required")
+	}
+	if da.ExpiresAt.IsZero() {
+		return fmt.Errorf("CreateDeviceAuth: ExpiresAt required")
+	}
+	if da.Status == "" {
+		da.Status = DeviceAuthStatusPending
+	}
+	if da.CreatedAt.IsZero() {
+		da.CreatedAt = time.Now().UTC()
+	}
+	data, err := marshalToMap(da)
+	if err != nil {
+		return fmt.Errorf("marshaling device_auth: %w", err)
+	}
+	// Use KV v2 check-and-set (cas=0) for both writes so duplicate
+	// device_code or user_code values are rejected atomically. SQL backends
+	// rely on UNIQUE indexes for this guarantee; Vault has no equivalent
+	// constraint, but `cas: 0` provides per-key create-only semantics, which
+	// is enough when both keys are written together.
+	if err := s.kvCreate(ctx, "device-auth/"+da.DeviceCode, data); err != nil {
+		if errors.Is(err, errKVAlreadyExists) {
+			return fmt.Errorf("device_code already in use")
+		}
+		return err
+	}
+	// Index user_code -> device_code for the verification page lookup.
+	if err := s.kvCreate(ctx, "device-auth/by-user-code/"+da.UserCode, map[string]interface{}{
+		"device_code": da.DeviceCode,
+	}); err != nil {
+		// Roll back the primary record if the user_code index conflicts so
+		// we don't leave an orphan device-auth row pointing at a user_code
+		// that resolves to someone else.
+		if delErr := s.kvDelete(ctx, "device-auth/"+da.DeviceCode); delErr != nil {
+			// Best-effort; the cleanup goroutine will eventually purge it.
+			_ = delErr
+		}
+		if errors.Is(err, errKVAlreadyExists) {
+			return fmt.Errorf("user_code already in use")
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *VaultStore) GetDeviceAuthByDeviceCode(ctx context.Context, deviceCode string) (*DeviceAuth, error) {
+	data, err := s.kvRead(ctx, "device-auth/"+deviceCode)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	var da DeviceAuth
+	if err := unmarshalFromMap(data, &da); err != nil {
+		return nil, err
+	}
+	if !da.ExpiresAt.IsZero() && time.Now().After(da.ExpiresAt) {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	return &da, nil
+}
+
+func (s *VaultStore) GetDeviceAuthByUserCode(ctx context.Context, userCode string) (*DeviceAuth, error) {
+	idx, err := s.kvRead(ctx, "device-auth/by-user-code/"+userCode)
+	if err != nil {
+		return nil, err
+	}
+	if idx == nil {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	deviceCode, _ := idx["device_code"].(string)
+	if deviceCode == "" {
+		return nil, fmt.Errorf("device_auth: %w", ErrNotFound)
+	}
+	return s.GetDeviceAuthByDeviceCode(ctx, deviceCode)
+}
+
+func (s *VaultStore) UpdateDeviceAuth(ctx context.Context, da *DeviceAuth) error {
+	existing, err := s.kvRead(ctx, "device-auth/"+da.DeviceCode)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return fmt.Errorf("device_auth %s: %w", da.DeviceCode, ErrNotFound)
+	}
+	data, err := marshalToMap(da)
+	if err != nil {
+		return fmt.Errorf("marshaling device_auth: %w", err)
+	}
+	return s.kvWrite(ctx, "device-auth/"+da.DeviceCode, data)
+}
+
+func (s *VaultStore) DeleteDeviceAuth(ctx context.Context, deviceCode string) error {
+	// Delete the user_code index too. Best-effort: if the primary record
+	// is gone the index is harmless and will be cleaned up on TTL.
+	if data, err := s.kvRead(ctx, "device-auth/"+deviceCode); err == nil && data != nil {
+		var da DeviceAuth
+		if err := unmarshalFromMap(data, &da); err == nil && da.UserCode != "" {
+			_ = s.kvDelete(ctx, "device-auth/by-user-code/"+da.UserCode)
+		}
+	}
+	return s.kvDelete(ctx, "device-auth/"+deviceCode)
+}
+
+// DeleteExpiredDeviceAuths iterates device-auth/ and deletes expired records
+// along with their user_code indexes. by-user-code/ entries that point at
+// missing primary records are also pruned.
+func (s *VaultStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error) {
+	keys, err := s.kvList(ctx, "device-auth")
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	var deleted int64
+	var firstErr error
+	for _, k := range keys {
+		if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			break
+		}
+		// Skip the index sub-prefix; we'll prune dangling entries below.
+		if k == "by-user-code" {
+			continue
+		}
+		data, err := s.kvRead(ctx, "device-auth/"+k)
+		if err != nil {
+			return deleted, err
+		}
+		if data == nil {
+			continue
+		}
+		var da DeviceAuth
+		if err := unmarshalFromMap(data, &da); err != nil {
+			// The user_code index for an unreadable row is unknown, so
+			// pruning it is best-effort via the dangling-index sweep below.
+			// Delete the primary so it can't sit unreadable forever.
+			if delErr := s.kvDelete(ctx, "device-auth/"+k); delErr != nil && firstErr == nil {
+				firstErr = fmt.Errorf("deleting unreadable device_auth %s: %w", k, delErr)
+			} else if firstErr == nil {
+				firstErr = fmt.Errorf("unmarshalling device_auth %s: %w", k, err)
+			}
+			continue
+		}
+		if !da.ExpiresAt.IsZero() && now.After(da.ExpiresAt) {
+			if da.UserCode != "" {
+				_ = s.kvDelete(ctx, "device-auth/by-user-code/"+da.UserCode)
+			}
+			if err := s.kvDelete(ctx, "device-auth/"+k); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+	}
+	// Prune dangling user_code index entries (records deleted directly,
+	// e.g. by the polling endpoint). A list error here is recorded so the
+	// caller can surface it; otherwise dangling indexes can pile up
+	// indefinitely without any signal.
+	idxKeys, err := s.kvList(ctx, "device-auth/by-user-code")
+	if err != nil {
+		if firstErr == nil {
+			firstErr = fmt.Errorf("listing device-auth/by-user-code: %w", err)
+		}
+		return deleted, firstErr
+	}
+	for _, idxKey := range idxKeys {
+		if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			break
+		}
+		idx, err := s.kvRead(ctx, "device-auth/by-user-code/"+idxKey)
+		if err != nil {
+			// A read failure here doesn't mean the index is dangling;
+			// surface it instead so the cleanup logger can alert on
+			// transient Vault issues, but don't delete anything.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("reading device-auth/by-user-code/%s: %w", idxKey, err)
+			}
+			continue
+		}
+		if idx == nil {
+			continue
+		}
+		deviceCode, _ := idx["device_code"].(string)
+		if deviceCode == "" {
+			_ = s.kvDelete(ctx, "device-auth/by-user-code/"+idxKey)
+			continue
+		}
+		// Only prune the index when we can confirm the primary record is
+		// absent. A transient kvRead error must NOT cause us to delete a
+		// valid index entry — that would make GetDeviceAuthByUserCode
+		// fail for a still-pending device-auth row. Surface the read
+		// error and leave the index in place; the next cleanup pass can
+		// re-evaluate.
+		primary, primaryErr := s.kvRead(ctx, "device-auth/"+deviceCode)
+		if primaryErr != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("reading device-auth/%s: %w", deviceCode, primaryErr)
+			}
+			continue
+		}
+		if primary == nil {
+			_ = s.kvDelete(ctx, "device-auth/by-user-code/"+idxKey)
+		}
+	}
+	return deleted, firstErr
 }
 
 // Ensure VaultStore implements Store.

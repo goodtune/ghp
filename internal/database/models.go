@@ -13,12 +13,11 @@ import (
 	"time"
 )
 
-// ErrNotFound is returned by DeleteApp, UpdateApp, and UpdateProxyTokenAppID
-// when the target record does not exist. Other mutating operations
-// (RevokeProxyToken) and all read operations (Get*,
-// List*) do not wrap ErrNotFound — reads return (nil, nil) for missing
-// records. Callers can distinguish "not found" from other errors using
-// errors.Is(err, ErrNotFound).
+// ErrNotFound is returned by DeleteApp, UpdateApp, UpdateProxyTokenAppID, and
+// UpdateProxyTokenScopes when the target record does not exist. Other mutating
+// operations (RevokeProxyToken) and all read operations (Get*, List*) do not
+// wrap ErrNotFound — reads return (nil, nil) for missing records. Callers can
+// distinguish "not found" from other errors using errors.Is(err, ErrNotFound).
 var ErrNotFound = errors.New("not found")
 
 // DefaultTokenType is the default ProxyToken.TokenType used when none is
@@ -121,6 +120,68 @@ type CachedRepository struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+// Session represents a persisted browser/CLI session. The bearer token
+// presented in the Authorization header (or the ghp_session cookie) is
+// hashed with SHA-256 before being looked up here, so the database never
+// holds raw bearer tokens.
+type Session struct {
+	TokenHash string    `json:"-"`
+	UserID    string    `json:"user_id"`
+	Username  string    `json:"username"`
+	Role      string    `json:"role"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// OAuthStateKind identifies which OAuth flow an oauth_states row belongs to.
+const (
+	OAuthStateKindLogin  = "login"
+	OAuthStateKindBroker = "broker"
+)
+
+// OAuthState captures the per-row payload for an in-flight OAuth state. The
+// Kind field selects which payload columns are meaningful: "login" uses
+// ReturnTo; "broker" uses BrokerRedirectURI and BrokerDownstreamState.
+type OAuthState struct {
+	State                 string    `json:"state"`
+	Kind                  string    `json:"kind"`
+	ReturnTo              string    `json:"return_to"`
+	BrokerRedirectURI     string    `json:"broker_redirect_uri"`
+	BrokerDownstreamState string    `json:"broker_downstream_state"`
+	ExpiresAt             time.Time `json:"expires_at"`
+	CreatedAt             time.Time `json:"created_at"`
+}
+
+// DeviceAuthStatusPending, DeviceAuthStatusApproved, DeviceAuthStatusDenied
+// are the lifecycle states of a CLI device-authorization request. The DB
+// CHECK constraint enforces these values; keep them in sync.
+const (
+	DeviceAuthStatusPending  = "pending"
+	DeviceAuthStatusApproved = "approved"
+	DeviceAuthStatusDenied   = "denied"
+)
+
+// DeviceAuth represents an in-flight CLI device-authorization request. It is
+// persisted across the four round-trips that make up the flow (start, poll,
+// browser verify, browser decision) so that the request survives load
+// balancing in HA deployments — every ghp instance reads the same row.
+//
+// Lifecycle:
+//   - created with Status=pending by POST /cli/auth/device
+//   - transitions to approved or denied by POST /cli/auth/decision
+//   - deleted by the polling endpoint once the CLI receives the token, or
+//     by the cleanup goroutine after ExpiresAt passes
+type DeviceAuth struct {
+	DeviceCode   string     `json:"device_code"`
+	UserCode     string     `json:"user_code"`
+	Status       string     `json:"status"`
+	SessionToken string     `json:"session_token,omitempty"`
+	Username     string     `json:"username,omitempty"`
+	LastPolledAt *time.Time `json:"last_polled_at,omitempty"`
+	ExpiresAt    time.Time  `json:"expires_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+}
+
 // Store defines the database operations for ghp.
 type Store interface {
 	// Apps
@@ -158,6 +219,9 @@ type Store interface {
 	ListActiveProxyTokens(ctx context.Context) ([]*ProxyToken, error)
 	RevokeProxyToken(ctx context.Context, id string) error
 	UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error
+	// UpdateProxyTokenScopes updates the repositories and scopes of an existing
+	// proxy token. Returns ErrNotFound if the token does not exist.
+	UpdateProxyTokenScopes(ctx context.Context, id string, repositories json.RawMessage, scopes json.RawMessage) error
 	// DeleteExpiredProxyTokens hard-deletes proxy tokens that have been
 	// expired or revoked for longer than olderThan.  It returns the number
 	// of rows deleted.  Tokens with no expiry (expires_at IS NULL) are only
@@ -173,6 +237,60 @@ type Store interface {
 	ListCachedRepositories(ctx context.Context) ([]*CachedRepository, error)
 	UpdateCachedRepository(ctx context.Context, repo *CachedRepository) error
 	DeleteCachedRepository(ctx context.Context, id string) error
+
+	// Sessions (browser cookie / CLI bearer).
+	//
+	// CreateSession persists a new session keyed by the SHA-256 hash of the
+	// raw bearer token. Callers retain the raw token and present it on
+	// subsequent requests; the DB never holds the unhashed value.
+	CreateSession(ctx context.Context, s *Session) error
+	// GetSessionByTokenHash returns the session for the given hash, or
+	// wrapped ErrNotFound if the hash is unknown or its ExpiresAt has
+	// passed.
+	GetSessionByTokenHash(ctx context.Context, tokenHash string) (*Session, error)
+	// DeleteSession removes the session for the given token hash. No-op
+	// (no error) if the row does not exist.
+	DeleteSession(ctx context.Context, tokenHash string) error
+	// DeleteExpiredSessions removes sessions past their ExpiresAt. Returns
+	// the number of rows deleted.
+	DeleteExpiredSessions(ctx context.Context) (int64, error)
+
+	// In-flight OAuth state tokens (one-time use, short-lived).
+	//
+	// CreateOAuthState persists a new state row.
+	CreateOAuthState(ctx context.Context, s *OAuthState) error
+	// ConsumeOAuthState atomically reads and deletes the state row matching
+	// state and kind. Returns wrapped ErrNotFound if the state is unknown,
+	// expired, or of a different kind. The atomic consume prevents a state
+	// from being replayed if the same callback fires twice.
+	ConsumeOAuthState(ctx context.Context, state, kind string) (*OAuthState, error)
+	// DeleteExpiredOAuthStates removes oauth_states rows past their
+	// ExpiresAt. Returns the number of rows deleted.
+	DeleteExpiredOAuthStates(ctx context.Context) (int64, error)
+
+	// CLI device-authorization requests.
+	//
+	// CreateDeviceAuth inserts a new pending request. It must reject duplicate
+	// device_code or user_code values at the database level.
+	CreateDeviceAuth(ctx context.Context, da *DeviceAuth) error
+	// GetDeviceAuthByDeviceCode looks up a request by the long polling
+	// secret. Returns wrapped ErrNotFound if absent. Implementations also
+	// return ErrNotFound when the row exists but is past its ExpiresAt — the
+	// poll endpoint and cleanup goroutine should treat those identically.
+	GetDeviceAuthByDeviceCode(ctx context.Context, deviceCode string) (*DeviceAuth, error)
+	// GetDeviceAuthByUserCode is the verification page's lookup. Same
+	// not-found / expiry semantics as GetDeviceAuthByDeviceCode.
+	GetDeviceAuthByUserCode(ctx context.Context, userCode string) (*DeviceAuth, error)
+	// UpdateDeviceAuth persists the in-memory mutation back to storage.
+	// Returns ErrNotFound if the device_code does not exist.
+	UpdateDeviceAuth(ctx context.Context, da *DeviceAuth) error
+	// DeleteDeviceAuth removes a row by device_code. It is a no-op (no error)
+	// if the row does not exist; the polling endpoint deletes after handing
+	// the token to the CLI and races with the cleanup goroutine.
+	DeleteDeviceAuth(ctx context.Context, deviceCode string) error
+	// DeleteExpiredDeviceAuths removes all rows whose ExpiresAt is in the
+	// past. Returns the number of rows deleted.
+	DeleteExpiredDeviceAuths(ctx context.Context) (int64, error)
 
 	// Lifecycle
 	Close() error

@@ -23,8 +23,12 @@ values from the config file.
 | `GHP_DATABASE_VAULT_ADDR` | Vault server address (vault driver only) | |
 | `GHP_DATABASE_VAULT_MOUNT` | Vault KV v2 mount path | `secret` |
 | `GHP_DATABASE_VAULT_PATH` | Key prefix within the mount | `ghp` |
-| `GHP_DATABASE_VAULT_ROLE_ID` | Vault AppRole role ID | |
-| `GHP_DATABASE_VAULT_SECRET_ID` | Vault AppRole secret ID | |
+| `GHP_DATABASE_VAULT_AUTH_METHOD` | Vault auth method: `approle` or `kubernetes` | `approle` |
+| `GHP_DATABASE_VAULT_ROLE_ID` | Vault AppRole role ID (when method=`approle`) | |
+| `GHP_DATABASE_VAULT_SECRET_ID` | Vault AppRole secret ID (when method=`approle`) | |
+| `GHP_DATABASE_VAULT_K8S_ROLE` | Vault role name (when method=`kubernetes`) | |
+| `GHP_DATABASE_VAULT_K8S_MOUNT` | Vault auth mount for kubernetes method (e.g. `kubernetes/cluster-name`) | `kubernetes` |
+| `GHP_DATABASE_VAULT_K8S_TOKEN_PATH` | Path to the projected service account JWT | `/var/run/secrets/kubernetes.io/serviceaccount/token` |
 
 ### Server
 
@@ -35,6 +39,7 @@ values from the config file.
 | `GHP_SERVER_HTTP_LISTEN` | HTTP listen address for HTTPS redirects | |
 | `GHP_SERVER_MANAGEMENT_HOST` | Hostname for the management UI and API | |
 | `GHP_SERVER_BASE_URL` | Public base URL for OAuth callbacks and links | |
+| `GHP_SERVER_TRUST_PROXY_HEADERS` | Honour `Forwarded` / `X-Forwarded-Proto` / `X-Forwarded-Host` when `base_url` is unset (only enable behind a trusted reverse proxy) | `false` |
 | `GHP_SERVER_SYSTEMD_SOCKET_ACTIVATION` | Accept sockets from systemd instead of binding addresses | `false` |
 
 ### GitHub
@@ -161,8 +166,12 @@ database:
   # vault_addr: ""             # Vault server address (vault driver only)
   # vault_mount: "secret"      # KV v2 mount path
   # vault_path: "ghp"          # key prefix within the mount
-  # vault_role_id: ""          # AppRole role ID
-  # vault_secret_id: ""        # AppRole secret ID
+  # vault_auth_method: "approle"  # "approle" (default) or "kubernetes"
+  # vault_role_id: ""          # AppRole role ID (auth_method=approle)
+  # vault_secret_id: ""        # AppRole secret ID (auth_method=approle)
+  # vault_k8s_role: ""         # Vault role to authenticate as (auth_method=kubernetes)
+  # vault_k8s_mount: "kubernetes"  # auth mount path (auth_method=kubernetes)
+  # vault_k8s_token_path: "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
 server:
   listen: ":8080"              # plain HTTP mode (development or behind reverse proxy)
@@ -170,6 +179,10 @@ server:
   http_listen: ":80"           # HTTP-to-HTTPS redirect server
   management_host: ""          # hostname for management UI (e.g. ghp.example.com)
   base_url: ""                 # public base URL (e.g. https://ghp.example.com)
+  # trust_proxy_headers: false # honour Forwarded / X-Forwarded-Proto / X-Forwarded-Host
+                                #   when base_url is unset. Set true only behind a trusted
+                                #   reverse proxy that strips and rewrites these headers.
+                                #   Prefer setting base_url instead.
   # systemd_socket_activation: false  # accept sockets from systemd
 
 tls:

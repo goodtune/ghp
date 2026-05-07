@@ -133,6 +133,22 @@ type DatabaseConfig struct {
 	VaultPath     string `koanf:"vault_path"`
 	VaultRoleID   string `koanf:"vault_role_id"`
 	VaultSecretID string `koanf:"vault_secret_id"`
+
+	// VaultAuthMethod selects how ghp authenticates to Vault.
+	// Supported values: "approle" (default) and "kubernetes".
+	VaultAuthMethod string `koanf:"vault_auth_method"`
+	// VaultK8sRole is the Vault role to authenticate as when
+	// VaultAuthMethod is "kubernetes". Required for that method.
+	VaultK8sRole string `koanf:"vault_k8s_role"`
+	// VaultK8sMount is the Vault auth mount path for the kubernetes
+	// auth backend (e.g. "kubernetes" or "kubernetes/cluster-name").
+	// Defaults to "kubernetes" when empty.
+	VaultK8sMount string `koanf:"vault_k8s_mount"`
+	// VaultK8sTokenPath is the path on disk to the projected service
+	// account token. The file is re-read on each (re-)authentication so
+	// rotated tokens are picked up automatically. Defaults to the
+	// in-cluster path when empty.
+	VaultK8sTokenPath string `koanf:"vault_k8s_token_path"`
 }
 
 type ServerConfig struct {
@@ -142,6 +158,17 @@ type ServerConfig struct {
 	ManagementHost          string `koanf:"management_host"`
 	SystemdSocketActivation bool   `koanf:"systemd_socket_activation"`
 	BaseURL                 string `koanf:"base_url"`
+	// TrustProxyHeaders controls whether ghp honours the standardised
+	// Forwarded (RFC 7239) and X-Forwarded-Proto/X-Forwarded-Host headers
+	// when constructing absolute URLs (e.g. the device-auth verification
+	// URI and OAuth callback URLs) and base_url is unset. Set to true only
+	// when ghp sits behind a trusted reverse proxy/L7 LB that strips and
+	// rewrites these headers. Default false: an internet-reachable instance
+	// would otherwise allow a client to spoof scheme/host via these
+	// headers and influence generated URLs (host-header injection). The
+	// preferred deployment pattern is to set base_url explicitly so the
+	// fallback path is never exercised.
+	TrustProxyHeaders bool `koanf:"trust_proxy_headers"`
 }
 
 type TokensConfig struct {
@@ -215,8 +242,11 @@ type AuthConfig struct {
 func Defaults() *Config {
 	return &Config{
 		Database: DatabaseConfig{
-			Driver: "sqlite",
-			DSN:    "ghp.db",
+			Driver:            "sqlite",
+			DSN:               "ghp.db",
+			VaultAuthMethod:   "approle",
+			VaultK8sMount:     "kubernetes",
+			VaultK8sTokenPath: "/var/run/secrets/kubernetes.io/serviceaccount/token",
 		},
 		Server: ServerConfig{
 			Listen: ":8080",

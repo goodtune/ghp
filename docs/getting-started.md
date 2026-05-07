@@ -22,6 +22,13 @@ First, authenticate with the ghp server:
 
     ghp auth login
 
+This opens a verification URL on your **ghp server** (not github.com) showing
+a short user code. Confirm the code matches what the CLI printed and click
+**Authorize**. The CLI then saves the issued session token to
+`~/.config/ghp/config.yaml`. See [`ghp auth login`](cli/auth.md#ghp-auth-login)
+for details, including how to use the flow over SSH or in a headless
+environment.
+
 Then create a scoped proxy token:
 
     ghp token create \

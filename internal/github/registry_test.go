@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"testing"
 	"time"
@@ -70,6 +71,9 @@ func (m *mockStore) RevokeProxyToken(ctx context.Context, id string) error { pan
 func (m *mockStore) UpdateProxyTokenAppID(ctx context.Context, id string, appID string) error {
 	panic("unexpected")
 }
+func (m *mockStore) UpdateProxyTokenScopes(_ context.Context, _ string, _ json.RawMessage, _ json.RawMessage) error {
+	panic("unexpected")
+}
 func (m *mockStore) DeleteExpiredProxyTokens(_ context.Context, _ time.Duration) (int64, error) {
 	panic("unexpected")
 }
@@ -89,6 +93,39 @@ func (m *mockStore) UpdateCachedRepository(_ context.Context, _ *database.Cached
 	panic("unexpected")
 }
 func (m *mockStore) DeleteCachedRepository(_ context.Context, _ string) error {
+	panic("unexpected")
+}
+func (m *mockStore) CreateSession(_ context.Context, _ *database.Session) error { panic("unexpected") }
+func (m *mockStore) GetSessionByTokenHash(_ context.Context, _ string) (*database.Session, error) {
+	panic("unexpected")
+}
+func (m *mockStore) DeleteSession(_ context.Context, _ string) error { panic("unexpected") }
+func (m *mockStore) DeleteExpiredSessions(_ context.Context) (int64, error) {
+	panic("unexpected")
+}
+func (m *mockStore) CreateOAuthState(_ context.Context, _ *database.OAuthState) error {
+	panic("unexpected")
+}
+func (m *mockStore) ConsumeOAuthState(_ context.Context, _, _ string) (*database.OAuthState, error) {
+	panic("unexpected")
+}
+func (m *mockStore) DeleteExpiredOAuthStates(_ context.Context) (int64, error) {
+	panic("unexpected")
+}
+func (m *mockStore) CreateDeviceAuth(_ context.Context, _ *database.DeviceAuth) error {
+	panic("unexpected")
+}
+func (m *mockStore) GetDeviceAuthByDeviceCode(_ context.Context, _ string) (*database.DeviceAuth, error) {
+	panic("unexpected")
+}
+func (m *mockStore) GetDeviceAuthByUserCode(_ context.Context, _ string) (*database.DeviceAuth, error) {
+	panic("unexpected")
+}
+func (m *mockStore) UpdateDeviceAuth(_ context.Context, _ *database.DeviceAuth) error {
+	panic("unexpected")
+}
+func (m *mockStore) DeleteDeviceAuth(_ context.Context, _ string) error { panic("unexpected") }
+func (m *mockStore) DeleteExpiredDeviceAuths(_ context.Context) (int64, error) {
 	panic("unexpected")
 }
 func (m *mockStore) Close() error { return nil }

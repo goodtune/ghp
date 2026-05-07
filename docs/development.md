@@ -21,8 +21,12 @@ Run E2E tests (requires Node.js):
 
     cd e2e
     npm ci
-    npx playwright install --with-deps chromium
+    npx playwright install --with-deps chromium firefox webkit
     npx playwright test
+
+Tests run against Chromium, Firefox, and WebKit. Restrict to a single engine
+with `PLAYWRIGHT_BROWSER=chromium` (or `firefox` / `webkit`) for faster local
+iteration.
 
 ## Dev Mode
 

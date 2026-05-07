@@ -666,7 +666,19 @@
             });
         }
 
+        // Tracks the current token view so edit-saves reload the right data.
+        let currentTokenView = { type: 'all' };
+
+        function reloadCurrentTokenView() {
+            if (currentTokenView.type === 'user') {
+                loadUserTokens(currentTokenView.userId, currentTokenView.username);
+            } else {
+                loadAllTokens();
+            }
+        }
+
         async function loadUserTokens(userId, username) {
+            currentTokenView = { type: 'user', userId, username };
             let tokens;
             try {
                 tokens = await api('GET', '/api/users/' + userId + '/tokens');
@@ -686,6 +698,7 @@
         }
 
         async function loadAllTokens() {
+            currentTokenView = { type: 'all' };
             let tokens;
             try {
                 tokens = await api('GET', '/api/tokens?all=true');
@@ -708,6 +721,9 @@
             container.querySelectorAll('[data-revoke-token]').forEach(el => {
                 el.addEventListener('click', () => revokeToken(el.dataset.revokeToken));
             });
+            container.querySelectorAll('[data-edit-token]').forEach(el => {
+                el.addEventListener('click', () => editToken(el.dataset.editToken, el.dataset.tokenRepos, el.dataset.tokenScopes));
+            });
         }
 
         function renderTokenTable(tokens) {
@@ -720,9 +736,11 @@
                 else if (expires && expires < now) { status = 'Expired'; badge = 'badge-expired'; }
                 else { status = 'Active'; badge = 'badge-active'; }
 
-                const scopes = (t.scopes && typeof t.scopes === 'object' && Object.keys(t.scopes).length > 0) ? JSON.stringify(t.scopes) : (t.scopes || '(open)');
+                const scopes = (t.scopes && typeof t.scopes === 'object' && Object.keys(t.scopes).length > 0) ? JSON.stringify(t.scopes) : '(open)';
                 const repos = (Array.isArray(t.repositories) && t.repositories.length > 0) ? t.repositories.join(', ') : '(open)';
-                html += '<tr>';
+                const reposJson = JSON.stringify(Array.isArray(t.repositories) ? t.repositories : []);
+                const scopesJson = JSON.stringify((t.scopes && typeof t.scopes === 'object') ? t.scopes : {});
+                html += '<tr data-token-id="' + esc(t.id) + '">';
                 html += '<td>' + esc(t.token_prefix) + '...</td>';
                 html += '<td>' + esc(t.token_type || 'proxy') + '</td>';
                 html += '<td>' + esc(repos) + '</td>';
@@ -730,7 +748,14 @@
                 html += '<td>' + esc(t.session_id || '-') + '</td>';
                 html += '<td><span class="badge ' + badge + '">' + status + '</span></td>';
                 html += '<td>' + (expires ? expires.toLocaleString() : 'Never') + '</td>';
-                html += '<td>' + (status === 'Active' ? '<button class="btn btn-danger" data-revoke-token="' + esc(t.id) + '">Revoke</button>' : '') + '</td>';
+                if (status === 'Active') {
+                    html += '<td>'
+                        + '<button class="btn btn-secondary" style="margin-right:0.25rem" data-edit-token="' + esc(t.id) + '" data-token-repos="' + esc(reposJson) + '" data-token-scopes="' + esc(scopesJson) + '">Edit</button>'
+                        + '<button class="btn btn-danger" data-revoke-token="' + esc(t.id) + '">Revoke</button>'
+                        + '</td>';
+                } else {
+                    html += '<td></td>';
+                }
                 html += '</tr>';
             }
             html += '</table>';
@@ -745,7 +770,106 @@
                 alert('Failed to revoke token: ' + e.message);
                 return;
             }
-            loadAllTokens();
+            reloadCurrentTokenView();
+        }
+
+        function editToken(id, reposJson, scopesJson) {
+            // Remove any existing edit row.
+            const existing = document.getElementById('edit-token-row');
+            if (existing) existing.remove();
+
+            let currentRepos, currentScopes;
+            try { currentRepos = JSON.parse(reposJson); } catch { currentRepos = []; }
+            try { currentScopes = JSON.parse(scopesJson); } catch { currentScopes = {}; }
+
+            const tokenRow = document.querySelector('[data-token-id="' + CSS.escape(id) + '"]');
+            if (!tokenRow) return;
+
+            const editRow = document.createElement('tr');
+            editRow.id = 'edit-token-row';
+            const editCell = document.createElement('td');
+            editCell.colSpan = 8;
+            editCell.style.background = '#161b22';
+            editCell.style.padding = '1rem';
+
+            const reposLabel = document.createElement('label');
+            reposLabel.textContent = 'Repositories (one per line, leave empty for open-scoped)';
+            reposLabel.style.cssText = 'display:block;margin-bottom:0.25rem;font-size:0.875rem;color:#8b949e;';
+            const reposInput = document.createElement('textarea');
+            reposInput.rows = 4;
+            reposInput.value = currentRepos.join('\n');
+            reposInput.placeholder = 'org/repo\norg/another-repo';
+            reposInput.style.cssText = 'width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.875rem;font-family:monospace;margin-bottom:0.75rem;';
+
+            const scopesLabel = document.createElement('label');
+            scopesLabel.textContent = 'Scopes (JSON object, e.g. {"contents":"read"}, leave empty {} for open-scoped)';
+            scopesLabel.style.cssText = 'display:block;margin-bottom:0.25rem;font-size:0.875rem;color:#8b949e;';
+            const scopesInput = document.createElement('textarea');
+            scopesInput.rows = 4;
+            scopesInput.value = Object.keys(currentScopes).length > 0 ? JSON.stringify(currentScopes, null, 2) : '';
+            scopesInput.placeholder = '{\n  "contents": "read",\n  "pull_requests": "write"\n}';
+            scopesInput.style.cssText = 'width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.875rem;font-family:monospace;margin-bottom:0.75rem;';
+
+            const errMsg = document.createElement('div');
+            errMsg.style.cssText = 'color:#f85149;margin-bottom:0.5rem;display:none;';
+
+            const btnRow = document.createElement('div');
+            btnRow.style.display = 'flex';
+            btnRow.style.gap = '0.5rem';
+
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'btn';
+            saveBtn.textContent = 'Save';
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'btn btn-secondary';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.addEventListener('click', () => editRow.remove());
+
+            btnRow.appendChild(saveBtn);
+            btnRow.appendChild(cancelBtn);
+
+            saveBtn.addEventListener('click', async () => {
+                errMsg.style.display = 'none';
+
+                const repoLines = reposInput.value.split('\n').map(s => s.trim()).filter(Boolean);
+                let parsedScopes;
+                const rawScopes = scopesInput.value.trim();
+                if (rawScopes === '' || rawScopes === '{}') {
+                    parsedScopes = {};
+                } else {
+                    try {
+                        parsedScopes = JSON.parse(rawScopes);
+                        if (typeof parsedScopes !== 'object' || Array.isArray(parsedScopes)) throw new Error('Must be a JSON object');
+                    } catch (e) {
+                        errMsg.textContent = 'Invalid scopes JSON: ' + e.message;
+                        errMsg.style.display = 'block';
+                        return;
+                    }
+                }
+
+                saveBtn.textContent = 'Saving…';
+                saveBtn.disabled = true;
+                try {
+                    await api('PATCH', '/api/tokens/' + id, { repositories: repoLines, scopes: parsedScopes });
+                    editRow.remove();
+                    reloadCurrentTokenView();
+                } catch (e) {
+                    errMsg.textContent = 'Failed to update token: ' + (e.message || 'Unknown error');
+                    errMsg.style.display = 'block';
+                    saveBtn.textContent = 'Save';
+                    saveBtn.disabled = false;
+                }
+            });
+
+            editCell.appendChild(reposLabel);
+            editCell.appendChild(reposInput);
+            editCell.appendChild(scopesLabel);
+            editCell.appendChild(scopesInput);
+            editCell.appendChild(errMsg);
+            editCell.appendChild(btnRow);
+            editRow.appendChild(editCell);
+            tokenRow.after(editRow);
         }
 
         // ── Cached Repositories ─────────────────────────────────────

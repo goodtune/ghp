@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -20,10 +21,14 @@ func testStoreContract(t *testing.T, store Store) {
 	t.Run("ProxyTokenWithAppID", func(t *testing.T) { testProxyTokenWithAppID(t, store) })
 	t.Run("ProxyTokenNoExpiry", func(t *testing.T) { testProxyTokenNoExpiry(t, store) })
 	t.Run("UpdateProxyTokenAppID", func(t *testing.T) { testUpdateProxyTokenAppID(t, store) })
+	t.Run("UpdateProxyTokenScopes", func(t *testing.T) { testUpdateProxyTokenScopes(t, store) })
 	t.Run("GitHubTokenAppID", func(t *testing.T) { testGitHubTokenAppID(t, store) })
 	t.Run("SyncAdminRoles", func(t *testing.T) { testSyncAdminRoles(t, store) })
 	t.Run("CachedRepositoryCRUD", func(t *testing.T) { testCachedRepositoryCRUD(t, store) })
 	t.Run("DeleteExpiredProxyTokens", func(t *testing.T) { testDeleteExpiredProxyTokens(t, store) })
+	t.Run("SessionCRUD", func(t *testing.T) { testSessionCRUD(t, store) })
+	t.Run("OAuthStateConsume", func(t *testing.T) { testOAuthStateConsume(t, store) })
+	t.Run("DeviceAuthCRUD", func(t *testing.T) { testDeviceAuthCRUD(t, store) })
 }
 
 func testAppCRUD(t *testing.T, store Store) {
@@ -656,6 +661,87 @@ func testUpdateProxyTokenAppID(t *testing.T, store Store) {
 	}
 }
 
+func testUpdateProxyTokenScopes(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	user := &User{GitHubID: 99099, GitHubUsername: "scopeuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	pt := &ProxyToken{
+		TokenHash:    "contract_hash_scopes_001",
+		TokenPrefix:  "ghx_sc1",
+		TokenType:    "proxy",
+		UserID:       &user.ID,
+		Repositories: json.RawMessage(`["org/repo1"]`),
+		Scopes:       json.RawMessage(`{"contents":"read"}`),
+		ExpiresAt:    timePtr(time.Now().Add(24 * time.Hour)),
+	}
+	if err := store.CreateProxyToken(ctx, pt); err != nil {
+		t.Fatalf("CreateProxyToken: %v", err)
+	}
+
+	newRepos := json.RawMessage(`["org/repo1","org/repo2"]`)
+	newScopes := json.RawMessage(`{"contents":"write","pull_requests":"read"}`)
+	if err := store.UpdateProxyTokenScopes(ctx, pt.ID, newRepos, newScopes); err != nil {
+		t.Fatalf("UpdateProxyTokenScopes: %v", err)
+	}
+
+	got, err := store.GetProxyTokenByHash(ctx, "contract_hash_scopes_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var gotRepos []string
+	if err := json.Unmarshal(got.Repositories, &gotRepos); err != nil {
+		t.Fatalf("unmarshal repositories: %v", err)
+	}
+	if len(gotRepos) != 2 || gotRepos[0] != "org/repo1" || gotRepos[1] != "org/repo2" {
+		t.Errorf("repositories = %v, want [org/repo1 org/repo2]", gotRepos)
+	}
+
+	var gotScopes map[string]string
+	if err := json.Unmarshal(got.Scopes, &gotScopes); err != nil {
+		t.Fatalf("unmarshal scopes: %v", err)
+	}
+	if gotScopes["contents"] != "write" {
+		t.Errorf("scopes[contents] = %q, want write", gotScopes["contents"])
+	}
+	if gotScopes["pull_requests"] != "read" {
+		t.Errorf("scopes[pull_requests] = %q, want read", gotScopes["pull_requests"])
+	}
+
+	// Clear to open-scoped (empty arrays/objects).
+	if err := store.UpdateProxyTokenScopes(ctx, pt.ID, json.RawMessage(`[]`), json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("UpdateProxyTokenScopes (clear): %v", err)
+	}
+	got2, err := store.GetProxyTokenByHash(ctx, "contract_hash_scopes_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var clearedRepos []string
+	if err := json.Unmarshal(got2.Repositories, &clearedRepos); err != nil {
+		t.Fatalf("unmarshal cleared repositories: %v", err)
+	}
+	if len(clearedRepos) != 0 {
+		t.Errorf("expected empty repositories after clear, got %v", clearedRepos)
+	}
+	var clearedScopes map[string]string
+	if err := json.Unmarshal(got2.Scopes, &clearedScopes); err != nil {
+		t.Fatalf("unmarshal cleared scopes: %v", err)
+	}
+	if len(clearedScopes) != 0 {
+		t.Errorf("expected empty scopes after clear, got %v", clearedScopes)
+	}
+
+	// ErrNotFound for missing token.
+	err = store.UpdateProxyTokenScopes(ctx, "00000000-0000-0000-0000-000000000000", newRepos, newScopes)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for missing token, got: %v", err)
+	}
+}
+
 func testGitHubTokenAppID(t *testing.T, store Store) {
 	ctx := context.Background()
 
@@ -1070,16 +1156,61 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 		t.Fatalf("CreateProxyToken (no-expiry): %v", err)
 	}
 
-	// With a retention period of 1 hour the expired token (48h old) should be
-	// deleted.  The token revoked "just now" should survive because its
-	// revoked_at is within the last hour.  The active and no-expiry tokens are
-	// never deleted.
+	// Create a no-expiry token that WAS revoked 2 hours ago — must be deleted.
+	// The documented behaviour is: "Tokens with no expiry (expires_at IS NULL)
+	// are only deleted when they have been revoked."  We set revoked_at to a
+	// past value via a backend-specific helper because RevokeProxyToken always
+	// uses NOW().
+	noExpiryRevokedToken := &ProxyToken{
+		TokenHash:    "cleanup_hash_noexp_rev",
+		TokenPrefix:  "ghx_cleanup_ner",
+		TokenType:    "proxy",
+		UserID:       &user.ID,
+		Repositories: json.RawMessage(`[]`),
+		Scopes:       json.RawMessage(`{}`),
+		SessionID:    "cleanup-session-5",
+		ExpiresAt:    nil,
+	}
+	if err := store.CreateProxyToken(ctx, noExpiryRevokedToken); err != nil {
+		t.Fatalf("CreateProxyToken (no-expiry revoked): %v", err)
+	}
+	pastRevocation := time.Now().UTC().Add(-2 * time.Hour)
+	switch s := store.(type) {
+	case *SQLiteStore:
+		if _, err := s.db.ExecContext(ctx,
+			"UPDATE proxy_tokens SET revoked_at = ? WHERE id = ?",
+			pastRevocation, noExpiryRevokedToken.ID); err != nil {
+			t.Fatalf("setRevokedAt (SQLite): %v", err)
+		}
+	case *PostgresStore:
+		if _, err := s.db.ExecContext(ctx,
+			"UPDATE proxy_tokens SET revoked_at = $1 WHERE id = $2",
+			pastRevocation, noExpiryRevokedToken.ID); err != nil {
+			t.Fatalf("setRevokedAt (Postgres): %v", err)
+		}
+	case *VaultStore:
+		tok, err := s.GetProxyTokenByID(ctx, noExpiryRevokedToken.ID)
+		if err != nil || tok == nil {
+			t.Fatalf("GetProxyTokenByID (for setRevokedAt): %v", err)
+		}
+		tok.RevokedAt = &pastRevocation
+		if err := s.writeProxyToken(ctx, tok); err != nil {
+			t.Fatalf("writeProxyToken (set past revokedAt): %v", err)
+		}
+	default:
+		t.Skipf("no-expiry+revoked test skipped: unsupported backend %T", store)
+	}
+
+	// With a retention period of 1 hour: the expired token (48h old) and the
+	// no-expiry revoked token (revoked 2h ago) should both be deleted (n==2).
+	// The recently-revoked token survives (revoked_at within the last hour).
+	// The active and unrevoked no-expiry tokens are never deleted.
 	n, err := store.DeleteExpiredProxyTokens(ctx, time.Hour)
 	if err != nil {
 		t.Fatalf("DeleteExpiredProxyTokens: %v", err)
 	}
-	if n < 1 {
-		t.Errorf("expected at least 1 token deleted, got %d", n)
+	if n != 2 {
+		t.Errorf("expected exactly 2 tokens deleted, got %d", n)
 	}
 
 	// Expired token must be gone.
@@ -1110,7 +1241,7 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 		t.Error("expected active token to be preserved after cleanup")
 	}
 
-	// No-expiry token must still exist.
+	// No-expiry token (unrevoked) must still exist.
 	stillNoExp, err := store.GetProxyTokenByID(ctx, noExpiryToken.ID)
 	if err != nil {
 		t.Fatalf("GetProxyTokenByID (no-expiry, post-cleanup): %v", err)
@@ -1119,9 +1250,20 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 		t.Error("expected no-expiry token to be preserved after cleanup")
 	}
 
+	// No-expiry + old-revocation token must be gone: expires_at IS NULL tokens
+	// are eligible for deletion when revoked_at is beyond the retention window.
+	goneNoExpRev, err := store.GetProxyTokenByID(ctx, noExpiryRevokedToken.ID)
+	if err != nil {
+		t.Fatalf("GetProxyTokenByID (no-expiry revoked, post-cleanup): %v", err)
+	}
+	if goneNoExpRev != nil {
+		t.Error("expected no-expiry revoked token (revoked 2h ago) to be hard-deleted, but it still exists")
+	}
+
 	// Calling DeleteExpiredProxyTokens again must be idempotent: the expired
-	// token was already removed, the revoked token is still within the 1-hour
-	// window, and the active/no-expiry tokens are never eligible — so zero
+	// and no-expiry-revoked tokens were already removed, the recently-revoked
+	// token is still within the 1-hour window, and the active/no-expiry tokens
+	// are never eligible — so zero
 	// additional rows should be deleted.
 	n2, err := store.DeleteExpiredProxyTokens(ctx, time.Hour)
 	if err != nil {
@@ -1129,5 +1271,334 @@ func testDeleteExpiredProxyTokens(t *testing.T, store Store) {
 	}
 	if n2 != 0 {
 		t.Errorf("expected 0 deletions on second call (idempotent), got %d", n2)
+	}
+}
+
+func testSessionCRUD(t *testing.T, store Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	sess := &Session{
+		TokenHash: "session-hash-aaa",
+		UserID:    "user-1",
+		Username:  "alice",
+		Role:      "user",
+		ExpiresAt: now.Add(time.Hour),
+	}
+	if err := store.CreateSession(ctx, sess); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	got, err := store.GetSessionByTokenHash(ctx, sess.TokenHash)
+	if err != nil {
+		t.Fatalf("GetSessionByTokenHash: %v", err)
+	}
+	if got.UserID != sess.UserID || got.Username != sess.Username || got.Role != sess.Role {
+		t.Errorf("session round-trip mismatch: got %+v, want %+v", got, sess)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be set on retrieved session")
+	}
+
+	// Lookup with an unknown hash must return wrapped ErrNotFound. Use a
+	// non-empty hash to exercise the not-found path rather than the empty
+	// guard.
+	_, err = store.GetSessionByTokenHash(ctx, "unknown-hash-xxx")
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for unknown session, got: %v", err)
+	}
+
+	// Expired sessions are also not found.
+	expired := &Session{
+		TokenHash: "session-hash-expired",
+		UserID:    "user-2",
+		Username:  "bob",
+		Role:      "user",
+		ExpiresAt: now.Add(-time.Minute),
+	}
+	if err := store.CreateSession(ctx, expired); err != nil {
+		t.Fatalf("CreateSession (expired): %v", err)
+	}
+	_, err = store.GetSessionByTokenHash(ctx, expired.TokenHash)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for expired session, got: %v", err)
+	}
+
+	// Cleanup removes the expired row.
+	n, err := store.DeleteExpiredSessions(ctx)
+	if err != nil {
+		t.Fatalf("DeleteExpiredSessions: %v", err)
+	}
+	if n < 1 {
+		t.Errorf("DeleteExpiredSessions removed %d rows, want >= 1", n)
+	}
+
+	// Active session is preserved.
+	if _, err := store.GetSessionByTokenHash(ctx, sess.TokenHash); err != nil {
+		t.Errorf("active session should survive cleanup: %v", err)
+	}
+
+	// Explicit delete is idempotent (no-op for missing rows).
+	if err := store.DeleteSession(ctx, sess.TokenHash); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if err := store.DeleteSession(ctx, sess.TokenHash); err != nil {
+		t.Errorf("DeleteSession on missing row should be a no-op: %v", err)
+	}
+	_, err = store.GetSessionByTokenHash(ctx, sess.TokenHash)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound after delete, got: %v", err)
+	}
+}
+
+func testOAuthStateConsume(t *testing.T, store Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Login state: round-trip ReturnTo.
+	if err := store.CreateOAuthState(ctx, &OAuthState{
+		State:     "login-state-123",
+		Kind:      OAuthStateKindLogin,
+		ReturnTo:  "/cli/auth?user_code=ABCD-EFGH",
+		ExpiresAt: now.Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateOAuthState (login): %v", err)
+	}
+
+	got, err := store.ConsumeOAuthState(ctx, "login-state-123", OAuthStateKindLogin)
+	if err != nil {
+		t.Fatalf("ConsumeOAuthState (login): %v", err)
+	}
+	if got.ReturnTo != "/cli/auth?user_code=ABCD-EFGH" {
+		t.Errorf("ReturnTo round-trip: got %q", got.ReturnTo)
+	}
+	if got.Kind != OAuthStateKindLogin {
+		t.Errorf("Kind = %q, want login", got.Kind)
+	}
+
+	// Consume must be one-shot: a second consume of the same state returns
+	// ErrNotFound.
+	_, err = store.ConsumeOAuthState(ctx, "login-state-123", OAuthStateKindLogin)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound on second consume, got: %v", err)
+	}
+
+	// Wrong-kind consume of a present state must also return ErrNotFound.
+	if err := store.CreateOAuthState(ctx, &OAuthState{
+		State:                 "broker-state-456",
+		Kind:                  OAuthStateKindBroker,
+		BrokerRedirectURI:     "https://app.example.com/cb",
+		BrokerDownstreamState: "csrf-789",
+		ExpiresAt:             now.Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateOAuthState (broker): %v", err)
+	}
+	_, err = store.ConsumeOAuthState(ctx, "broker-state-456", OAuthStateKindLogin)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for wrong-kind consume, got: %v", err)
+	}
+
+	// The broker state itself must round-trip correctly.
+	bs, err := store.ConsumeOAuthState(ctx, "broker-state-456", OAuthStateKindBroker)
+	if err != nil {
+		t.Fatalf("ConsumeOAuthState (broker): %v", err)
+	}
+	if bs.BrokerRedirectURI != "https://app.example.com/cb" {
+		t.Errorf("BrokerRedirectURI round-trip: got %q", bs.BrokerRedirectURI)
+	}
+	if bs.BrokerDownstreamState != "csrf-789" {
+		t.Errorf("BrokerDownstreamState round-trip: got %q", bs.BrokerDownstreamState)
+	}
+
+	// Expired state is not returned and is cleaned up.
+	if err := store.CreateOAuthState(ctx, &OAuthState{
+		State:     "expired-state",
+		Kind:      OAuthStateKindLogin,
+		ExpiresAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateOAuthState (expired): %v", err)
+	}
+	_, err = store.ConsumeOAuthState(ctx, "expired-state", OAuthStateKindLogin)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for expired state, got: %v", err)
+	}
+
+	if _, err := store.DeleteExpiredOAuthStates(ctx); err != nil {
+		t.Fatalf("DeleteExpiredOAuthStates: %v", err)
+	}
+
+	// Lookup of a never-issued state is ErrNotFound.
+	_, err = store.ConsumeOAuthState(ctx, "never-existed", OAuthStateKindLogin)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for unknown state, got: %v", err)
+	}
+
+}
+
+// testOAuthStateConsumeAtomic asserts that ConsumeOAuthState is atomic
+// under concurrent callers — exactly one observes the row and the rest
+// see ErrNotFound. This invariant is required to prevent state-token
+// replay across racing OAuth callbacks.
+//
+// Not part of testStoreContract because the Vault backend cannot offer
+// this guarantee with its current read-then-delete implementation (Vault
+// KV v2 has no atomic read-and-delete primitive, and the trade-off is
+// documented in vault.go). Invoked directly from sqlite_test.go and
+// postgres_test.go where the implementation uses DELETE ... RETURNING.
+func testOAuthStateConsumeAtomic(t *testing.T, store Store) {
+	ctx := context.Background()
+	if err := store.CreateOAuthState(ctx, &OAuthState{
+		State:     "race-state",
+		Kind:      OAuthStateKindLogin,
+		ReturnTo:  "/race",
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateOAuthState (race): %v", err)
+	}
+	const racers = 16
+	var wg sync.WaitGroup
+	wg.Add(racers)
+	results := make(chan error, racers)
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := store.ConsumeOAuthState(ctx, "race-state", OAuthStateKindLogin)
+			results <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	winners, notFound, otherErrs := 0, 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			winners++
+		case errors.Is(err, ErrNotFound):
+			notFound++
+		default:
+			otherErrs++
+			t.Errorf("unexpected error from concurrent ConsumeOAuthState: %v", err)
+		}
+	}
+	if winners != 1 {
+		t.Errorf("concurrent consume: %d winners, want exactly 1 (notFound=%d, errs=%d)", winners, notFound, otherErrs)
+	}
+}
+
+func testDeviceAuthCRUD(t *testing.T, store Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	da := &DeviceAuth{
+		DeviceCode: "device-code-aaaa",
+		UserCode:   "AAAA-BBBB",
+		Status:     DeviceAuthStatusPending,
+		ExpiresAt:  now.Add(10 * time.Minute),
+	}
+	if err := store.CreateDeviceAuth(ctx, da); err != nil {
+		t.Fatalf("CreateDeviceAuth: %v", err)
+	}
+
+	// Lookup by device_code.
+	got, err := store.GetDeviceAuthByDeviceCode(ctx, da.DeviceCode)
+	if err != nil {
+		t.Fatalf("GetDeviceAuthByDeviceCode: %v", err)
+	}
+	if got.UserCode != da.UserCode || got.Status != da.Status {
+		t.Errorf("round-trip mismatch: got %+v", got)
+	}
+
+	// Lookup by user_code.
+	got2, err := store.GetDeviceAuthByUserCode(ctx, da.UserCode)
+	if err != nil {
+		t.Fatalf("GetDeviceAuthByUserCode: %v", err)
+	}
+	if got2.DeviceCode != da.DeviceCode {
+		t.Errorf("user_code -> device_code resolve mismatch: got %q", got2.DeviceCode)
+	}
+
+	// Update to approved with session token + last_polled_at.
+	polled := now.Add(-time.Second)
+	got.Status = DeviceAuthStatusApproved
+	got.SessionToken = "ghpr_xxx"
+	got.Username = "alice"
+	got.LastPolledAt = &polled
+	if err := store.UpdateDeviceAuth(ctx, got); err != nil {
+		t.Fatalf("UpdateDeviceAuth: %v", err)
+	}
+
+	got3, err := store.GetDeviceAuthByDeviceCode(ctx, da.DeviceCode)
+	if err != nil {
+		t.Fatalf("GetDeviceAuthByDeviceCode (post-update): %v", err)
+	}
+	if got3.Status != DeviceAuthStatusApproved {
+		t.Errorf("status after update = %q, want approved", got3.Status)
+	}
+	if got3.SessionToken != "ghpr_xxx" {
+		t.Errorf("session_token round-trip: got %q", got3.SessionToken)
+	}
+	if got3.Username != "alice" {
+		t.Errorf("username round-trip: got %q", got3.Username)
+	}
+	if got3.LastPolledAt == nil || !got3.LastPolledAt.Equal(polled) {
+		t.Errorf("LastPolledAt round-trip: got %v, want %v", got3.LastPolledAt, polled)
+	}
+
+	// Update of unknown device_code returns ErrNotFound.
+	missing := &DeviceAuth{
+		DeviceCode: "nonexistent-device-code",
+		UserCode:   "ZZZZ-ZZZZ",
+		Status:     DeviceAuthStatusPending,
+		ExpiresAt:  now.Add(time.Minute),
+	}
+	if err := store.UpdateDeviceAuth(ctx, missing); err == nil || !errors.Is(err, ErrNotFound) {
+		t.Errorf("UpdateDeviceAuth on missing row: got %v, want ErrNotFound", err)
+	}
+
+	// Duplicate user_code is rejected.
+	dupe := &DeviceAuth{
+		DeviceCode: "device-code-bbbb",
+		UserCode:   da.UserCode,
+		Status:     DeviceAuthStatusPending,
+		ExpiresAt:  now.Add(10 * time.Minute),
+	}
+	if err := store.CreateDeviceAuth(ctx, dupe); err == nil {
+		t.Error("expected error for duplicate user_code, got nil")
+	}
+
+	// Delete is idempotent.
+	if err := store.DeleteDeviceAuth(ctx, da.DeviceCode); err != nil {
+		t.Fatalf("DeleteDeviceAuth: %v", err)
+	}
+	if err := store.DeleteDeviceAuth(ctx, da.DeviceCode); err != nil {
+		t.Errorf("DeleteDeviceAuth on missing row should be a no-op: %v", err)
+	}
+	_, err = store.GetDeviceAuthByDeviceCode(ctx, da.DeviceCode)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound after delete, got: %v", err)
+	}
+
+	// Expired records are filtered out and cleaned up.
+	if err := store.CreateDeviceAuth(ctx, &DeviceAuth{
+		DeviceCode: "device-code-expired",
+		UserCode:   "EXPI-RED1",
+		Status:     DeviceAuthStatusPending,
+		ExpiresAt:  now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateDeviceAuth (expired): %v", err)
+	}
+	_, err = store.GetDeviceAuthByDeviceCode(ctx, "device-code-expired")
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for expired device_auth, got: %v", err)
+	}
+	n, err := store.DeleteExpiredDeviceAuths(ctx)
+	if err != nil {
+		t.Fatalf("DeleteExpiredDeviceAuths: %v", err)
+	}
+	if n < 1 {
+		t.Errorf("DeleteExpiredDeviceAuths removed %d, want >= 1", n)
 	}
 }

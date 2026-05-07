@@ -38,12 +38,29 @@ ghp serves four distinct roles depending on which hostname the request arrives o
 | `api.github.com` | **API proxy** — validates tokens, enforces scopes, injects credentials, logs every request |
 | `github.com` | **Git passthrough** — transparent proxy for `git clone`, `git push`, etc. with token interception |
 | `*.githubcopilot.com` | **Copilot passthrough** — forwards Copilot traffic transparently; all requests are logged |
-| Your management host | **Dashboard** — web UI, GitHub OAuth login, token management API |
+| Your management host | **Dashboard** — web UI, GitHub OAuth login (web), CLI device-authorization endpoints, token management API |
 
 In TLS mode (recommended for production), ghp terminates TLS directly and uses
 SNI to select the correct certificate for each hostname. In plain HTTP mode
 (for development or behind a reverse proxy), routing is based on the `Host`
 header alone.
+
+## High Availability
+
+ghp can run as multiple instances behind a load balancer. All transient auth
+state — browser sessions, in-flight OAuth state tokens for the GitHub login
+redirect, OAuth broker state, and CLI device-authorization records — is
+stored in the configured database (PostgreSQL, SQLite, or Vault), not in
+process memory. A user signed in on instance A can be served their next
+request from instance B, the GitHub OAuth callback for a redirect launched
+on instance A is valid against instance B, and a CLI device flow whose
+`/cli/auth/device` and `/cli/auth/device/token` calls land on different
+instances completes correctly.
+
+A background cleanup goroutine on each instance periodically purges expired
+sessions, OAuth state rows, and device-auth records (default every 5
+minutes). For the SQLite backend this is in-process; for PostgreSQL and
+Vault it is shared by all instances and idempotent.
 
 ## Security Model
 
@@ -53,6 +70,7 @@ header alone.
 - **Audit trail** — all requests produce structured JSON access logs (method, path, status, duration). API proxy requests additionally produce structured JSON audit log entries (`"logger":"audit"`) that include token, user, session, repository details, and request context. Token lifecycle events (creation, revocation) also emit audit log entries but may omit repository and request-related fields. Audit logs are written to the same output stream as access logs. Capturing and indexing these logs is the responsibility of the deployment environment (e.g. Splunk, Elastic, Datadog)
 - **Expiration** — tokens have a configurable lifetime (default 24 hours, up to a server-configured maximum; default maximum 7 days). Operators can enable `tokens.allow_no_expiry` to permit creating tokens that never expire (`"duration": "never"` in the API). Non-expiring tokens are useful for long-lived automation managed via infrastructure-as-code (e.g. Terraform) where token lifecycle is controlled externally through revocation rather than time-based expiry
 - **Revocation** — tokens can be revoked immediately from the CLI or web dashboard
+- **Hard deletion** — expired and revoked token records are periodically removed from the database after a configurable retention period (default 30 days, controlled by `tokens.expired_token_retention_period`). This prevents unbounded growth of the token table and ensures that token hashes are physically erased after the retention window, limiting the exposure surface if the database is compromised. Tokens with no expiry are only hard-deleted once they have been revoked and the retention period has elapsed
 - **Border policy** — administrators can block specific GitHub token types from passing through the proxy (see [Token Type Border Policy](features/border-policy.md))
 
 ## Feature Summary
@@ -136,12 +154,19 @@ ghp supports three storage backends:
 
 - **SQLite** — single-file database, ideal for development and small deployments
 - **PostgreSQL** — production-grade relational database
-- **HashiCorp Vault** — secrets-native storage using KV v2 secrets engine with AppRole authentication
+- **HashiCorp Vault** — secrets-native storage using KV v2 secrets engine, authenticating via AppRole or Kubernetes service-account auth
 
 All backends implement the same `Store` interface and provide identical
 feature parity. The Vault backend stores all data (users, tokens, apps) as
 KV v2 secrets and uses index entries for lookups. It does not require SQL
 migrations and does not need an `encryption_key` (Vault encrypts at rest).
+
+When ghp runs on Kubernetes, the Vault backend can authenticate using the
+pod's projected service account JWT directly — no AppRole role-id /
+secret-id provisioning is needed and Vault Secret Operator (VSO) is not
+required for the auth path. ghp re-reads the projected token from disk on
+every re-authentication, so kubelet-rotated tokens are picked up
+automatically.
 
 !!! note "Vault concurrency limitation"
     Vault KV does not support atomic increments. Token usage counters use a

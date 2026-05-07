@@ -320,6 +320,15 @@ func (s *Service) Revoke(ctx context.Context, id string) error {
 	return nil
 }
 
+// InvalidateByID removes a token from the in-memory cache by its ID so that
+// the next request re-reads the updated record from the store. Used after
+// scope updates where the token remains valid but its fields have changed.
+func (s *Service) InvalidateByID(id string) {
+	if hashVal, ok := s.idToHash.LoadAndDelete(id); ok {
+		s.tokenCache.Delete(hashVal.(string))
+	}
+}
+
 // cacheToken stores a proxy token in the in-memory cache and records the
 // id→hash mapping so Revoke can invalidate by ID.
 func (s *Service) cacheToken(hash string, pt *database.ProxyToken) {

@@ -58,7 +58,7 @@ jobs:
         working-directory: e2e
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps chromium firefox webkit
 
       - name: Generate encryption key
         id: enckey
@@ -153,15 +153,16 @@ jobs:
                   const result = test.results[test.results.length - 1];
                   const status = result ? result.status : 'unknown';
                   const duration = result ? (result.duration / 1000).toFixed(1) : '?';
+                  const browser = test.projectName || '—';
                   if (status === 'passed' || status === 'expected') {
                     passed++;
-                    testRows.push(`| ${title} › ${spec.title} | ✅ Pass | ${duration}s |`);
+                    testRows.push(`| ${title} › ${spec.title} | ${browser} | ✅ Pass | ${duration}s |`);
                   } else if (status === 'failed' || status === 'timedOut' || status === 'unexpected') {
                     failed++;
-                    testRows.push(`| ${title} › ${spec.title} | ❌ Fail | ${duration}s |`);
+                    testRows.push(`| ${title} › ${spec.title} | ${browser} | ❌ Fail | ${duration}s |`);
                   } else {
                     skipped++;
-                    testRows.push(`| ${title} › ${spec.title} | ⏭️ Skip | ${duration}s |`);
+                    testRows.push(`| ${title} › ${spec.title} | ${browser} | ⏭️ Skip | ${duration}s |`);
                   }
                 }
               }
@@ -193,8 +194,8 @@ jobs:
 
               if (testRows.length > 0) {
                 body += `<details>\n<summary>Test Details</summary>\n\n`;
-                body += `| Test | Status | Duration |\n`;
-                body += `|------|--------|----------|\n`;
+                body += `| Test | Browser | Status | Duration |\n`;
+                body += `|------|---------|--------|----------|\n`;
                 body += testRows.join('\n') + '\n';
                 body += `\n</details>\n\n`;
               }

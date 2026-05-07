@@ -35,7 +35,7 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v8.1.0
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7

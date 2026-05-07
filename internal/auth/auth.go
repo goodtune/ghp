@@ -1,19 +1,26 @@
 // Package auth handles GitHub OAuth authentication, browser session management,
 // and the optional OAuth broker feature. It provides:
 //
-//   - GitHub OAuth login flow for the web UI and CLI (code exchange, user info)
-//   - In-memory session store with LRU eviction and TTL expiry
+//   - GitHub OAuth login flow for the web UI (code exchange, user info)
+//   - Persistent (database-backed) session store
+//   - CLI device-authorization flow against ghp itself (no GitHub round-trip)
 //   - OAuth broker endpoints that allow downstream services to authenticate
 //     users via ghp without needing their own GitHub OAuth credentials
 //   - RS256 JWT signing for broker tokens, with JWKS endpoint for key discovery
 //   - Per-endpoint IP rate limiting on sensitive auth endpoints
 //   - Dev-mode test login endpoint (bypasses OAuth for development/testing)
+//
+// All transient auth state (sessions, OAuth state tokens, CLI device records)
+// is stored in the database via the Store interface so that flows that span
+// multiple HTTP round-trips remain correct in HA deployments where each
+// request may land on a different ghp instance.
 package auth
 
 import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,11 +33,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2/expirable"
-
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/metrics"
 )
 
 const (
@@ -44,19 +50,16 @@ const (
 	// maxTokenResponseSize is the maximum number of bytes read from GitHub's
 	// OAuth token and user-info endpoints. This guards against unbounded reads.
 	maxTokenResponseSize = 64 * 1024 // 64 KB
-	// maxSessions is the maximum number of concurrent user sessions held in memory.
-	maxSessions = 10_000
-	// maxStates is the maximum number of in-flight OAuth state tokens.
-	maxStates = 1_000
 	// stateTTL is how long an OAuth state token remains valid.
 	stateTTL = 10 * time.Minute
-	// maxBrokerStates is the maximum number of in-flight broker OAuth states.
-	maxBrokerStates = 1_000
 	// brokerStateTTL is how long a broker OAuth state token remains valid.
 	brokerStateTTL = 10 * time.Minute
 	// authHTTPTimeout is the timeout for outbound HTTP requests made by the
 	// auth handler (OAuth token exchange and GitHub user-info calls).
 	authHTTPTimeout = 30 * time.Second
+	// authStateCleanupInterval is how often the cleanup goroutine sweeps
+	// expired sessions, oauth_states, and cli_device_authorizations rows.
+	authStateCleanupInterval = 5 * time.Minute
 )
 
 // Session represents an authenticated user session.
@@ -67,7 +70,9 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
-// Handler manages OAuth flows and sessions.
+// Handler manages OAuth flows and sessions. All transient state (sessions,
+// in-flight OAuth state tokens, CLI device-authorization records) is held in
+// the Store, which makes the auth flows correct under HA load balancing.
 type Handler struct {
 	cfg       *config.Config
 	store     database.Store
@@ -80,20 +85,12 @@ type Handler struct {
 	// does not update it — a server restart is required to change the signing key.
 	rsaPrivKey *rsa.PrivateKey
 
-	// sessions maps session tokens to active user sessions.
-	// Bounded and TTL-expired via expirable.LRU (thread-safe).
-	sessions *expirable.LRU[string, *Session]
-
-	// states holds in-flight OAuth state tokens (short-lived).
-	states *expirable.LRU[string, struct{}]
-
-	// brokerStates holds in-flight broker OAuth flow states (short-lived).
-	brokerStates *expirable.LRU[string, *brokerState]
-
 	// Rate limiters for sensitive endpoints (keyed by IP address).
-	loginLimiter     *IPRateLimiter // POST /auth/test-login
-	githubLimiter    *IPRateLimiter // GET  /auth/github
-	authorizeLimiter *IPRateLimiter // GET  /auth/authorize
+	loginLimiter      *IPRateLimiter // POST /auth/test-login
+	githubLimiter     *IPRateLimiter // GET  /auth/github
+	authorizeLimiter  *IPRateLimiter // GET  /auth/authorize
+	deviceStartLimiter *IPRateLimiter // POST /cli/auth/device
+	devicePollLimiter  *IPRateLimiter // POST /cli/auth/device/token
 
 	// httpClient is used for all outbound OAuth and GitHub API requests.
 	// It has a finite timeout to prevent goroutine/connection leaks.
@@ -102,6 +99,10 @@ type Handler struct {
 	// Overridable base URLs for GitHub endpoints (used in tests).
 	githubBaseURL    string // defaults to "https://github.com"
 	githubAPIBaseURL string // defaults to "https://api.github.com"
+
+	// cleanupCancel stops the background cleanup goroutine when the handler
+	// is shut down. Set by StartCleanup; nil if no cleanup is running.
+	cleanupCancel context.CancelFunc
 }
 
 // NewHandler creates a new auth handler.
@@ -111,13 +112,17 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 		store:            store,
 		encryptor:        enc,
 		logger:           logger,
-		sessions:         expirable.NewLRU[string, *Session](maxSessions, nil, SessionDuration),
-		states:           expirable.NewLRU[string, struct{}](maxStates, nil, stateTTL),
-		brokerStates:     expirable.NewLRU[string, *brokerState](maxBrokerStates, nil, brokerStateTTL),
 		loginLimiter:     NewIPRateLimiter(100, time.Minute, "/auth/test-login", logger),
 		githubLimiter:    NewIPRateLimiter(10, time.Minute, "/auth/github", logger),
 		authorizeLimiter: NewIPRateLimiter(10, time.Minute, "/auth/authorize", logger),
-		httpClient:       &http.Client{Timeout: authHTTPTimeout},
+		// /cli/auth/device kicks off a flow that creates a database row, so
+		// it gets the same conservative ceiling as /auth/github. The polling
+		// endpoint is more permissive — a single CLI run polls every few
+		// seconds for up to 10 minutes, which is up to ~300 hits, and
+		// multiple CLI processes may run from the same NAT'd IP.
+		deviceStartLimiter: NewIPRateLimiter(10, time.Minute, "/cli/auth/device", logger),
+		devicePollLimiter:  NewIPRateLimiter(600, time.Minute, "/cli/auth/device/token", logger),
+		httpClient:         &http.Client{Timeout: authHTTPTimeout},
 	}
 	if cfg.Auth.JWTPrivateKey != "" || cfg.Auth.JWTPrivateKeyFile != "" {
 		var pemData string
@@ -160,6 +165,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/logout", h.handleLogout)
 	mux.HandleFunc("GET /auth/status", h.handleStatus)
 
+	// CLI device-authorization flow (no GitHub round-trip from the CLI).
+	h.registerDeviceRoutes(mux)
+
 	// OAuth broker endpoints: delegate authentication to this proxy.
 	if h.cfg.Auth.JWTPrivateKey != "" || h.cfg.Auth.JWTPrivateKeyFile != "" {
 		if h.rsaPrivKey == nil {
@@ -186,13 +194,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 func (h *Handler) GetSession(r *http.Request) *Session {
 	// Check cookie first.
 	if cookie, err := r.Cookie(SessionCookieName); err == nil {
-		return h.lookupSession(cookie.Value)
+		return h.lookupSession(r.Context(), cookie.Value)
 	}
 
 	// Check Authorization header for service tokens (CLI usage).
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(auth, "Bearer ghpr_") {
-		return h.lookupSession(strings.TrimPrefix(auth, "Bearer "))
+		return h.lookupSession(r.Context(), strings.TrimPrefix(auth, "Bearer "))
 	}
 
 	return nil
@@ -237,53 +245,196 @@ func NewContextWithSession(ctx context.Context, s *Session) context.Context {
 	return context.WithValue(ctx, sessionKey{}, s)
 }
 
-func (h *Handler) lookupSession(token string) *Session {
-	s, ok := h.sessions.Get(token)
-	if !ok {
-		return nil
-	}
-	// ExpiresAt is a belt-and-suspenders check; the LRU TTL already evicts
-	// expired entries, but we keep it for defense in depth.
-	if time.Now().After(s.ExpiresAt) {
-		h.sessions.Remove(token)
-		return nil
-	}
-	return s
+// hashSessionToken returns the SHA-256 hex digest of a raw session bearer.
+// The Store keys sessions by this value so the unhashed token never lives
+// in the database.
+func hashSessionToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
-func (h *Handler) createSession(userID, username, role string) string {
+func (h *Handler) lookupSession(ctx context.Context, token string) *Session {
+	if token == "" {
+		return nil
+	}
+	row, err := h.store.GetSessionByTokenHash(ctx, hashSessionToken(token))
+	if err != nil {
+		if !errors.Is(err, database.ErrNotFound) {
+			h.logger.Error("session lookup failed", "error", err)
+		}
+		return nil
+	}
+	return &Session{
+		UserID:    row.UserID,
+		Username:  row.Username,
+		Role:      row.Role,
+		ExpiresAt: row.ExpiresAt,
+	}
+}
+
+// createSession persists a new session row and returns the raw bearer token
+// to hand to the client (cookie or JSON response). The DB stores only the
+// hash of this value.
+func (h *Handler) createSession(ctx context.Context, userID, username, role string) (string, error) {
 	token := generateSessionToken()
-	h.sessions.Add(token, &Session{
+	expiresAt := time.Now().Add(SessionDuration).UTC()
+	if err := h.store.CreateSession(ctx, &database.Session{
+		TokenHash: hashSessionToken(token),
 		UserID:    userID,
 		Username:  username,
 		Role:      role,
-		ExpiresAt: time.Now().Add(SessionDuration),
-	})
-	return token
+		ExpiresAt: expiresAt,
+	}); err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 // CreateTestSession creates a session for E2E testing without OAuth.
 // Returns the session token that should be set as the ghp_session cookie.
+// Errors from the underlying store are logged and swallowed — test setup is
+// expected to be run against a healthy store, and historical callers don't
+// have an error return.
 func (h *Handler) CreateTestSession(userID, username, role string) string {
-	return h.createSession(userID, username, role)
+	tok, err := h.createSession(context.Background(), userID, username, role)
+	if err != nil {
+		h.logger.Error("CreateTestSession failed", "error", err)
+		return ""
+	}
+	return tok
 }
 
-func (h *Handler) deleteSession(token string) {
-	h.sessions.Remove(token)
+func (h *Handler) deleteSession(ctx context.Context, token string) {
+	if token == "" {
+		return
+	}
+	if err := h.store.DeleteSession(ctx, hashSessionToken(token)); err != nil {
+		h.logger.Warn("session delete failed", "error", err)
+	}
+}
+
+// StartCleanup launches a background goroutine that periodically purges
+// expired sessions, oauth_states, and cli_device_authorizations rows. It
+// returns immediately; the caller should arrange for the returned context's
+// cancellation when the server shuts down.
+//
+// Calling StartCleanup more than once on the same Handler replaces any
+// previously-running cleanup goroutine.
+func (h *Handler) StartCleanup(ctx context.Context) {
+	if h.cleanupCancel != nil {
+		h.cleanupCancel()
+	}
+	cleanupCtx, cancel := context.WithCancel(ctx)
+	h.cleanupCancel = cancel
+	go h.cleanupLoop(cleanupCtx)
+}
+
+// StopCleanup stops a previously-started cleanup goroutine. Safe to call
+// even if cleanup was never started.
+func (h *Handler) StopCleanup() {
+	if h.cleanupCancel != nil {
+		h.cleanupCancel()
+		h.cleanupCancel = nil
+	}
+}
+
+func (h *Handler) cleanupLoop(ctx context.Context) {
+	t := time.NewTicker(authStateCleanupInterval)
+	defer t.Stop()
+	// Run once immediately so a long-running prior process's leftovers are
+	// purged on startup.
+	h.runCleanup(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			h.runCleanup(ctx)
+		}
+	}
+}
+
+func (h *Handler) runCleanup(ctx context.Context) {
+	if n, err := h.store.DeleteExpiredSessions(ctx); err != nil {
+		// context.Canceled is expected when the server is shutting down
+		// mid-sweep; demote those to Debug so shutdown logs stay quiet.
+		h.logCleanupError("session cleanup failed", err)
+	} else if n > 0 {
+		h.logger.Debug("expired sessions purged", "count", n)
+	}
+	if n, err := h.store.DeleteExpiredOAuthStates(ctx); err != nil {
+		h.logCleanupError("oauth state cleanup failed", err)
+	} else if n > 0 {
+		h.logger.Debug("expired oauth states purged", "count", n)
+	}
+	if n, err := h.store.DeleteExpiredDeviceAuths(ctx); err != nil {
+		h.logCleanupError("device auth cleanup failed", err)
+	} else if n > 0 {
+		h.logger.Debug("expired device auth records purged", "count", n)
+		// Surface the count under the same metric the device-flow handlers
+		// use. This means ghp_cli_auth_device_completed_total{result="expired"}
+		// reports records that timed out before the user acted, complementing
+		// the "approved" and "denied" results emitted from the poll endpoint.
+		metrics.CLIDeviceCompletedTotal.WithLabelValues("expired").Add(float64(n))
+	}
+}
+
+// logCleanupError logs a cleanup-loop error at the appropriate level. A
+// context.Canceled error during shutdown is expected and would otherwise
+// produce a noisy Warn on every server stop, so it is logged at Debug.
+func (h *Handler) logCleanupError(msg string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		h.logger.Debug(msg, "error", err)
+		return
+	}
+	h.logger.Warn(msg, "error", err)
 }
 
 func (h *Handler) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	state := generateState()
-	h.states.Add(state, struct{}{})
+
+	// return_to lets a browser flow request that the user be sent back to a
+	// specific path after successful login (e.g. the device-authorization
+	// verification page). It is restricted to local paths to prevent open
+	// redirects. Stored alongside the state row so any ghp instance handling
+	// the GitHub callback can read it.
+	returnTo := sanitizeReturnTo(r.URL.Query().Get("return_to"))
+	if err := h.store.CreateOAuthState(r.Context(), &database.OAuthState{
+		State:     state,
+		Kind:      database.OAuthStateKindLogin,
+		ReturnTo:  returnTo,
+		ExpiresAt: time.Now().Add(stateTTL).UTC(),
+	}); err != nil {
+		h.logger.Error("failed to persist oauth state", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// CLI clients (Accept: application/json) need the callback to return JSON
+	// with the session token rather than setting a cookie and redirecting.
+	// Appending ?format=json to the redirect_uri instructs the callback handler
+	// to return the token as JSON so the user can copy it from the browser.
+	cliRequest := strings.Contains(r.Header.Get("Accept"), "application/json")
+	callbackURL := h.mainCallbackURL(r)
+	if cliRequest {
+		callbackURL += "?format=json"
+	}
 
 	params := url.Values{}
 	params.Set("client_id", h.cfg.GitHub.ClientID)
-	params.Set("redirect_uri", h.mainCallbackURL(r))
+	params.Set("redirect_uri", callbackURL)
 	params.Set("state", state)
 	authURL := h.getGitHubBaseURL() + "/login/oauth/authorize?" + params.Encode()
 
+	// Response body depends on Accept; signal this to intermediary caches so
+	// a redirect response can't be served to a CLI client (or vice versa).
+	// Both branches embed a single-use `state` value in the destination URL,
+	// so neither response is safe to cache.
+	w.Header().Set("Vary", "Accept")
+	w.Header().Set("Cache-Control", "no-store")
+
 	// If the request accepts JSON (CLI), return the URL; otherwise redirect.
-	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+	if cliRequest {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"url": authURL})
 		return
@@ -319,14 +470,23 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Validate state. Get returns false for missing or TTL-expired entries.
-		_, ok := h.states.Get(state)
-		if ok {
-			h.states.Remove(state)
-		}
-		if !ok {
+		// Atomically read-and-delete the state row. Returns ErrNotFound for
+		// missing, expired, or wrong-kind entries.
+		st, err := h.store.ConsumeOAuthState(r.Context(), state, database.OAuthStateKindLogin)
+		if err != nil {
+			if !errors.Is(err, database.ErrNotFound) {
+				h.logger.Error("oauth state consume failed", "error", err)
+			}
 			http.Error(w, "Invalid or expired state", http.StatusBadRequest)
 			return
+		}
+		if st.ReturnTo != "" {
+			// Defer to the returnTo path after authentication completes.
+			// handleGitHubCallback's redirect target is hardcoded to "/" by
+			// default; threading the path through the request context lets
+			// the redirect at the bottom of this handler honour it without
+			// changing its signature.
+			r = r.WithContext(context.WithValue(r.Context(), returnToCtxKey{}, st.ReturnTo))
 		}
 	}
 
@@ -335,9 +495,17 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// the authorization request so GitHub can verify the two values match.
 	// For the app installation flow (setup_action is set), the redirect_uri
 	// was not sent in the authorization request so we omit it here.
+	//
+	// CLI clients trigger the login with ?format=json appended to the
+	// redirect_uri (see handleGitHubLogin). GitHub requires the redirect_uri
+	// in the token exchange to exactly match the one in the authorize request,
+	// so we must include ?format=json here too when it is present.
 	redirectURI := ""
 	if setupAction == "" {
 		redirectURI = h.mainCallbackURL(r)
+		if r.URL.Query().Get("format") == "json" {
+			redirectURI += "?format=json"
+		}
 	}
 	accessToken, refreshToken, expiresIn, err := h.exchangeCode(code, redirectURI)
 	if err != nil {
@@ -405,7 +573,12 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("auth_login", "user", ghUser.Login, "github_id", ghUser.ID)
 
 	// Create session.
-	sessionToken := h.createSession(user.ID, user.GitHubUsername, user.Role)
+	sessionToken, err := h.createSession(r.Context(), user.ID, user.GitHubUsername, user.Role)
+	if err != nil {
+		h.logger.Error("failed to persist session", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
 
 	// If the request wants JSON (CLI client), return the token.
 	if r.URL.Query().Get("format") == "json" {
@@ -428,12 +601,46 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   int(SessionDuration.Seconds()),
 	})
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	target := "/"
+	if v, ok := r.Context().Value(returnToCtxKey{}).(string); ok && v != "" {
+		target = v
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+type returnToCtxKey struct{}
+
+// sanitizeReturnTo restricts return_to to local paths only, preventing open
+// redirects. It must begin with "/" and must not begin with "//" or "/\\"
+// (which browsers can interpret as a protocol-relative URL). The value also
+// cannot contain ASCII control characters (CR/LF in particular) because the
+// final destination is the `Location:` response header — embedded CRLF
+// would split the header and risk response-splitting on lenient clients.
+func sanitizeReturnTo(v string) string {
+	if v == "" {
+		return ""
+	}
+	if !strings.HasPrefix(v, "/") {
+		return ""
+	}
+	if strings.HasPrefix(v, "//") || strings.HasPrefix(v, "/\\") {
+		return ""
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		// Reject the ASCII control range (NUL..US) and DEL. A legitimate
+		// path/query never contains these — clients that need raw bytes
+		// percent-encode them.
+		if c < 0x20 || c == 0x7f {
+			return ""
+		}
+	}
+	return v
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(SessionCookieName); err == nil {
-		h.deleteSession(cookie.Value)
+		h.deleteSession(r.Context(), cookie.Value)
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
@@ -530,7 +737,12 @@ func (h *Handler) handleTestLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create session.
-	sessionToken := h.createSession(user.ID, user.GitHubUsername, user.Role)
+	sessionToken, err := h.createSession(r.Context(), user.ID, user.GitHubUsername, user.Role)
+	if err != nil {
+		h.logger.Error("failed to persist test session", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
 
 	// Set cookie.
 	http.SetCookie(w, &http.Cookie{
@@ -667,16 +879,17 @@ func (h *Handler) getGitHubAPIBaseURL() string {
 	return "https://api.github.com"
 }
 
-// mainCallbackURL returns the absolute URL of the GitHub OAuth callback endpoint
-// for the main login flow. It uses the configured BaseURL if available, otherwise
-// derives the URL from the incoming request.
+// mainCallbackURL returns the absolute URL of the GitHub OAuth callback
+// endpoint for the main login flow. It uses the configured BaseURL if
+// available, otherwise derives the URL from the incoming request. The
+// shared requestScheme/requestHost helpers honour Forwarded / X-Forwarded-*
+// only when server.trust_proxy_headers is true (matches the device-flow
+// verification URL so the two stay consistent under both deployment
+// patterns).
 func (h *Handler) mainCallbackURL(r *http.Request) string {
 	if h.cfg.Server.BaseURL != "" {
 		return strings.TrimRight(h.cfg.Server.BaseURL, "/") + "/auth/github/callback"
 	}
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	return fmt.Sprintf("%s://%s/auth/github/callback", scheme, r.Host)
+	trustProxy := h.cfg.Server.TrustProxyHeaders
+	return fmt.Sprintf("%s://%s/auth/github/callback", requestScheme(r, trustProxy), requestHost(r, trustProxy))
 }
