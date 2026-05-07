@@ -156,8 +156,11 @@ func TestHelpOutput_TokenCreate(t *testing.T) {
 	output := buf.String()
 	for _, want := range []string{
 		"--type",
+		"--app",
+		"--app-id",
 		"--repo",
 		"--repos",
+		"--installation",
 		"--installation-id",
 		"--scope",
 		"--duration",
@@ -726,9 +729,8 @@ func TestTokenCreateCmd_ProxyToken(t *testing.T) {
 	}
 }
 
-// TestTokenCreateCmd_AgentTokenMissingInstallationID verifies that agent token creation requires --installation-id.
-func TestTokenCreateCmd_AgentTokenMissingInstallationID(t *testing.T) {
-	// Use a real httptest server for a consistent URL (validation fails before any HTTP call).
+// TestTokenCreateCmd_AgentTokenMissingInstallation verifies that agent token creation requires --installation or --installation-id.
+func TestTokenCreateCmd_AgentTokenMissingInstallation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected request to stub server: %s %s", r.Method, r.URL.Path)
 	}))
@@ -746,10 +748,10 @@ func TestTokenCreateCmd_AgentTokenMissingInstallationID(t *testing.T) {
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error when --installation-id is missing for agent token")
+		t.Fatal("expected error when --installation is missing for agent token")
 	}
-	if !strings.Contains(err.Error(), "--installation-id") {
-		t.Errorf("expected '--installation-id' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "--installation") {
+		t.Errorf("expected '--installation' in error, got: %v", err)
 	}
 }
 
@@ -794,6 +796,388 @@ func TestTokenCreateCmd_AgentToken(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "gha_testagent") {
 		t.Errorf("expected token in output, got: %q", output)
+	}
+}
+
+// TestTokenCreateCmd_AppAndInstallationByName verifies end-to-end name-based resolution.
+func TestTokenCreateCmd_AppAndInstallationByName(t *testing.T) {
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/apps":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": "app-uuid-1", "name": "mybot", "is_default": false},
+				{"id": "app-uuid-2", "name": "otherbot", "is_default": true},
+			})
+		case r.Method == "GET" && r.URL.Path == "/api/apps/app-uuid-1/installations":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 100, "account": map[string]string{"login": "alpha-org"}},
+				{"id": 200, "account": map[string]string{"login": "beta-org"}},
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/tokens":
+			json.NewDecoder(r.Body).Decode(&gotBody)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"token":      "gha_resolved",
+				"type":       "agent",
+				"expires_at": "2099-01-01T00:00:00Z",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "testtoken")
+	t.Setenv("HOME", t.TempDir())
+
+	cmd := newTokenCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"create", "--app", "mybot", "--installation", "beta-org"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("token create error: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "gha_resolved") {
+		t.Errorf("expected token in output, got: %q", output)
+	}
+	if gotBody["type"] != "agent" {
+		t.Errorf("expected type 'agent', got %v", gotBody["type"])
+	}
+	if gotBody["app_record_id"] != "app-uuid-1" {
+		t.Errorf("expected app_record_id 'app-uuid-1', got %v", gotBody["app_record_id"])
+	}
+	if instID, ok := gotBody["installation_id"].(float64); !ok || int64(instID) != 200 {
+		t.Errorf("expected installation_id 200, got %v", gotBody["installation_id"])
+	}
+}
+
+// TestTokenCreateCmd_InstallationOnlyDefaultApp verifies --installation auto-resolves the default app.
+func TestTokenCreateCmd_InstallationOnlyDefaultApp(t *testing.T) {
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/apps":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": "app-uuid-1", "name": "mybot", "is_default": true},
+				{"id": "app-uuid-2", "name": "otherbot", "is_default": false},
+			})
+		case r.Method == "GET" && r.URL.Path == "/api/apps/app-uuid-1/installations":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 42, "account": map[string]string{"login": "myorg"}},
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/tokens":
+			json.NewDecoder(r.Body).Decode(&gotBody)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"token":      "gha_autoapp",
+				"type":       "agent",
+				"expires_at": "2099-01-01T00:00:00Z",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "testtoken")
+	t.Setenv("HOME", t.TempDir())
+
+	cmd := newTokenCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"create", "--installation", "myorg"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("token create error: %v", err)
+	}
+	if gotBody["type"] != "agent" {
+		t.Errorf("expected type auto-inferred as 'agent', got %v", gotBody["type"])
+	}
+	if instID, ok := gotBody["installation_id"].(float64); !ok || int64(instID) != 42 {
+		t.Errorf("expected installation_id 42, got %v", gotBody["installation_id"])
+	}
+}
+
+// TestTokenCreateCmd_InstallationOnlySingleApp verifies --installation auto-resolves when only one app exists.
+func TestTokenCreateCmd_InstallationOnlySingleApp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/apps":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": "sole-app", "name": "onlybot", "is_default": false},
+			})
+		case r.Method == "GET" && r.URL.Path == "/api/apps/sole-app/installations":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 99, "account": map[string]string{"login": "soleorg"}},
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/tokens":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"token":      "gha_soleapp",
+				"type":       "agent",
+				"expires_at": "2099-01-01T00:00:00Z",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "testtoken")
+	t.Setenv("HOME", t.TempDir())
+
+	cmd := newTokenCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"create", "--installation", "soleorg"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("token create error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "gha_soleapp") {
+		t.Errorf("expected token in output, got: %q", buf.String())
+	}
+}
+
+// TestTokenCreateCmd_AppNotFound verifies error message when app name doesn't match.
+func TestTokenCreateCmd_AppNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/apps" {
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": "app-1", "name": "mybot", "is_default": true},
+			})
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "testtoken")
+	t.Setenv("HOME", t.TempDir())
+
+	cmd := newTokenCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"create", "--app", "nonexistent", "--installation-id", "42"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when app name not found")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "mybot") {
+		t.Errorf("expected available app names in error, got: %v", err)
+	}
+}
+
+// TestTokenCreateCmd_InstallationNotFound verifies error message when installation login doesn't match.
+func TestTokenCreateCmd_InstallationNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/apps":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": "app-1", "name": "mybot", "is_default": true},
+			})
+		case r.URL.Path == "/api/apps/app-1/installations":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 10, "account": map[string]string{"login": "alpha"}},
+				{"id": 20, "account": map[string]string{"login": "beta"}},
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "testtoken")
+	t.Setenv("HOME", t.TempDir())
+
+	cmd := newTokenCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"create", "--installation", "nonexistent"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when installation not found")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "alpha") {
+		t.Errorf("expected available installations in error, got: %v", err)
+	}
+}
+
+// TestTokenCreateCmd_MutuallyExclusiveFlags verifies mutual exclusivity of name/ID flags.
+func TestTokenCreateCmd_MutuallyExclusiveFlags(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "testtoken")
+	t.Setenv("HOME", t.TempDir())
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "app and app-id",
+			args: []string{"create", "--app", "mybot", "--app-id", "some-uuid", "--installation-id", "42"},
+			want: "--app and --app-id are mutually exclusive",
+		},
+		{
+			name: "installation and installation-id",
+			args: []string{"create", "--app", "mybot", "--installation", "myorg", "--installation-id", "42"},
+			want: "--installation and --installation-id are mutually exclusive",
+		},
+		{
+			name: "app with explicit proxy type",
+			args: []string{"create", "--type", "proxy", "--app", "mybot", "--installation-id", "42"},
+			want: "only valid for agent tokens",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newTokenCmd()
+			buf := &bytes.Buffer{}
+			cmd.SetOut(buf)
+			cmd.SetErr(buf)
+			cmd.SetArgs(tt.args)
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("expected %q in error, got: %v", tt.want, err)
+			}
+		})
+	}
+}
+
+// TestTokenCreateCmd_AppWithDurationNever verifies creating a no-expiry app token via name flags.
+func TestTokenCreateCmd_AppWithDurationNever(t *testing.T) {
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/apps":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": "app-1", "name": "mybot", "is_default": true},
+			})
+		case r.Method == "GET" && r.URL.Path == "/api/apps/app-1/installations":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 42, "account": map[string]string{"login": "myorg"}},
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/tokens":
+			json.NewDecoder(r.Body).Decode(&gotBody)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"token":      "gha_neverexpires",
+				"type":       "agent",
+				"expires_at": nil,
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "testtoken")
+	t.Setenv("HOME", t.TempDir())
+
+	cmd := newTokenCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"create", "--app", "mybot", "--installation", "myorg", "--duration", "never"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("token create error: %v", err)
+	}
+	if gotBody["duration"] != "never" {
+		t.Errorf("expected duration 'never', got %v", gotBody["duration"])
+	}
+	if !strings.Contains(buf.String(), "gha_neverexpires") {
+		t.Errorf("expected token in output, got: %q", buf.String())
+	}
+}
+
+// TestTokenCreateCmd_CaseInsensitiveAppMatch verifies that app name matching is case-insensitive.
+func TestTokenCreateCmd_CaseInsensitiveAppMatch(t *testing.T) {
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/apps":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": "app-1", "name": "MyBot", "is_default": true},
+			})
+		case r.Method == "GET" && r.URL.Path == "/api/apps/app-1/installations":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 42, "account": map[string]string{"login": "MyOrg"}},
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/tokens":
+			json.NewDecoder(r.Body).Decode(&gotBody)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"token":      "gha_casetest",
+				"type":       "agent",
+				"expires_at": "2099-01-01T00:00:00Z",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("GHP_SERVER_URL", srv.URL)
+	t.Setenv("GHP_USER_TOKEN", "testtoken")
+	t.Setenv("HOME", t.TempDir())
+
+	cmd := newTokenCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"create", "--app", "mybot", "--installation", "myorg"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("token create error: %v", err)
+	}
+	if gotBody["app_record_id"] != "app-1" {
+		t.Errorf("expected app_record_id 'app-1', got %v", gotBody["app_record_id"])
 	}
 }
 

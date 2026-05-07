@@ -30,10 +30,14 @@ Agent tokens require the administrator to configure a
 create agent tokens:
 
     ghp token create \
-      --type agent \
-      --installation-id 12345678 \
+      --app mybot \
+      --installation myorg \
       --repos owner/repo1,owner/repo2 \
       --scope contents:read,pull_requests:write
+
+The `--app` and `--installation` flags accept human-readable names (app name
+and GitHub account login respectively) and resolve to IDs automatically. The
+numeric `--installation-id` and `--app-id` flags are also available.
 
 ## Repository Restrictions
 
