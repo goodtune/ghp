@@ -18,6 +18,12 @@ const (
 	// controls (releases.mode) are configured.
 	GitHub = "github.com"
 
+	// Codeload handles requests to codeload.github.com — repository archive
+	// downloads (zip/tarball by ref). Traffic is forwarded transparently to
+	// upstream by default; archive download paths may be redirected to a
+	// configured caching mirror when codeload.redirect_to is set.
+	Codeload = "codeload.github.com"
+
 	// Copilot handles requests to *.githubcopilot.com. Traffic is forwarded
 	// transparently without token interception or scope enforcement; only access
 	// logging and metrics are applied.

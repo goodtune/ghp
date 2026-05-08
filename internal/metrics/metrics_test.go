@@ -246,6 +246,37 @@ func TestReleasesRedirectHeadCheckTotal(t *testing.T) {
 	}
 }
 
+func TestCodeloadRedirectTotal(t *testing.T) {
+	tests := []struct {
+		name    string
+		owner   string
+		repo    string
+		archive string
+		result  string
+	}{
+		{"redirect tar.gz", "actions", "checkout", "tar.gz", "redirect"},
+		{"redirect zip", "actions", "checkout", "zip", "redirect"},
+		{"passthrough legacy.tar.gz", "goodtune", "ghp", "legacy.tar.gz", "passthrough"},
+		{"passthrough legacy.zip", "goodtune", "ghp", "legacy.zip", "passthrough"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			labels := prometheus.Labels{
+				"owner":   tt.owner,
+				"repo":    tt.repo,
+				"archive": tt.archive,
+				"result":  tt.result,
+			}
+			before := getCounterValue(t, CodeloadRedirectTotal, labels)
+			CodeloadRedirectTotal.WithLabelValues(tt.owner, tt.repo, tt.archive, tt.result).Inc()
+			after := getCounterValue(t, CodeloadRedirectTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
+	}
+}
+
 func TestObserveDecision_RedirectHeadCheck(t *testing.T) {
 	labels := prometheus.Labels{
 		"stage":      StageRedirectHeadCheck,

@@ -36,6 +36,7 @@ type Config struct {
 	Auth     AuthConfig     `koanf:"auth"`
 	Block    BlockConfig    `koanf:"block"`
 	Releases ReleasesConfig `koanf:"releases"`
+	Codeload CodeloadConfig `koanf:"codeload"`
 
 	Cache CacheConfig `koanf:"cache"`
 
@@ -100,6 +101,29 @@ type ReleasesConfig struct {
 	// Allow is a list of org or org/repo entries that are exempt from the policy.
 	// Entries may be bare org names (e.g. "goodtune") or org/repo pairs
 	// (e.g. "goodtune/ghp"). Matching is case-insensitive.
+	Allow []string `koanf:"allow"`
+}
+
+// CodeloadConfig controls how codeload.github.com archive download requests
+// are handled. The codeload service serves repository archives at paths of the
+// form /{owner}/{repo}/(tar.gz|zip|legacy.tar.gz|legacy.zip)/{ref} — these are
+// highly cacheable (the (org, repo, sha) tuple is immutable) and a common
+// hotspot for build agents that resolve actions like actions/checkout@v4.
+//
+// When RedirectTo is set, matching archive requests are redirected with a 302
+// to RedirectTo + the original path, allowing an internal caching mirror to
+// serve the archive. When RedirectTo is empty, all codeload.github.com traffic
+// is forwarded transparently to the upstream service.
+type CodeloadConfig struct {
+	// RedirectTo is the base URL prepended to the original path when
+	// redirecting archive requests. Must be an absolute URL with scheme + host
+	// (e.g. "https://codeload.cache.example.com/"). When empty, the codeload
+	// handler simply proxies requests through to upstream codeload.github.com.
+	RedirectTo string `koanf:"redirect_to"`
+	// Allow is a list of org or org/repo entries that are exempt from the
+	// redirect (passed through to upstream). Entries may be bare org names
+	// (e.g. "goodtune") or org/repo pairs (e.g. "goodtune/ghp"). Matching is
+	// case-insensitive.
 	Allow []string `koanf:"allow"`
 }
 
@@ -297,7 +321,7 @@ func Load(path string) (*Config, error) {
 			if i := strings.Index(s, "_"); i > 0 {
 				section, field := s[:i], s[i+1:]
 				switch section {
-				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases", "cache":
+				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases", "codeload", "cache":
 					// Handle 3-level nesting for logging.file.*
 					if section == "logging" && strings.HasPrefix(field, "file_") {
 						return "logging.file." + field[len("file_"):], v
@@ -321,6 +345,7 @@ func Load(path string) (*Config, error) {
 	cfg.Admins = splitCommaSlice(cfg.Admins)
 	cfg.Auth.AllowedRedirects = splitCommaSlice(cfg.Auth.AllowedRedirects)
 	cfg.Releases.Allow = splitCommaSlice(cfg.Releases.Allow)
+	cfg.Codeload.Allow = splitCommaSlice(cfg.Codeload.Allow)
 
 	// GHP_RELEASES_ALLOW_COUNT + GHP_RELEASES_ALLOW_N support indexed allow
 	// lists that cannot be expressed as comma-separated values. When set, the
@@ -343,6 +368,29 @@ func Load(path string) (*Config, error) {
 			entries = append(entries, v)
 		}
 		cfg.Releases.Allow = entries
+	}
+
+	// GHP_CODELOAD_ALLOW_COUNT + GHP_CODELOAD_ALLOW_N support indexed allow
+	// lists that cannot be expressed as comma-separated values. When set, the
+	// indexed entries replace any allow list loaded from YAML or other env vars.
+	if countStr := os.Getenv("GHP_CODELOAD_ALLOW_COUNT"); countStr != "" {
+		count, err := strconv.Atoi(countStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid GHP_CODELOAD_ALLOW_COUNT %q: %w", countStr, err)
+		}
+		if count < 0 {
+			return nil, fmt.Errorf("invalid GHP_CODELOAD_ALLOW_COUNT %q: must be non-negative", countStr)
+		}
+		entries := make([]string, 0, count)
+		for i := 0; i < count; i++ {
+			key := fmt.Sprintf("GHP_CODELOAD_ALLOW_%d", i)
+			v := strings.TrimSpace(os.Getenv(key))
+			if v == "" {
+				return nil, fmt.Errorf("%s not set or empty (GHP_CODELOAD_ALLOW_COUNT=%d)", key, count)
+			}
+			entries = append(entries, v)
+		}
+		cfg.Codeload.Allow = entries
 	}
 
 	// Convenience env vars for the common single-certificate case.
@@ -377,6 +425,7 @@ func (c *Config) ReloadFrom(path string) error {
 	c.Auth = fresh.Auth
 	c.Block = fresh.Block
 	c.Releases = fresh.Releases
+	c.Codeload = fresh.Codeload
 	c.Cache = fresh.Cache
 	return nil
 }
@@ -432,6 +481,21 @@ func (c *Config) IsTokenBlocked(token string) bool {
 func (c *Config) IsReleaseAllowed(org, repo string) bool {
 	orgRepo := org + "/" + repo
 	for _, entry := range c.Releases.Allow {
+		if strings.EqualFold(entry, org) || strings.EqualFold(entry, orgRepo) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsCodeloadAllowed returns true when the given org or org/repo combination
+// appears in the codeload allow list, meaning archive download requests for it
+// are passed through to upstream rather than redirected to the configured
+// caching mirror. Matching is case-insensitive. An org-only entry (e.g.
+// "goodtune") exempts every repository under that org.
+func (c *Config) IsCodeloadAllowed(org, repo string) bool {
+	orgRepo := org + "/" + repo
+	for _, entry := range c.Codeload.Allow {
 		if strings.EqualFold(entry, org) || strings.EqualFold(entry, orgRepo) {
 			return true
 		}
