@@ -441,8 +441,14 @@ func Load(path string) (*Config, error) {
 //
 // The hot-reloadable field updates are serialised with the read locks held by
 // the accessor methods (IsAdmin, IsTokenBlocked, IsReleaseAllowed,
-// IsCodeloadAllowed, CodeloadSnapshot) so requests in flight either observe
-// the pre-reload or post-reload values consistently — never a torn mix.
+// IsCodeloadAllowed, CodeloadRedirectTo). The guarantee is per accessor call:
+// any single accessor invocation observes either the pre-reload or
+// post-reload value of the field it reads — never a torn read of a slice or
+// string. The guarantee does NOT extend across multiple accessor calls;
+// e.g. CodeloadRedirectTo() followed by IsCodeloadAllowed(...) may interleave
+// with a reload between them, so a handler that needs cross-field consistency
+// must add a snapshot accessor that takes the lock once and copies the
+// related fields together.
 func (c *Config) ReloadFrom(path string) error {
 	fresh, err := Load(path)
 	if err != nil {

@@ -467,9 +467,10 @@ func failingTransport(t *testing.T) http.RoundTripper {
 // TestCodeloadHandler_RaceFreeUnderConcurrentReload drives the handler from
 // many goroutines while ReloadFrom rewrites the codeload section in parallel.
 // Run under `go test -race`: any direct read of cfg.Codeload from the request
-// hot path would be flagged. The accessor (CodeloadSnapshot) and the
-// IsCodeloadAllowed helper take the config RWMutex, so this exercise must
-// stay race-free.
+// hot path would be flagged. The accessors used by the handler —
+// Config.CodeloadRedirectTo (per-request redirect base) and
+// Config.IsCodeloadAllowed (allow-list check) — both take the config
+// RWMutex, so this exercise must stay race-free.
 func TestCodeloadHandler_RaceFreeUnderConcurrentReload(t *testing.T) {
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{

@@ -745,12 +745,18 @@ type hostDispatchConfig struct {
 }
 
 // newHostDispatch creates a handler that routes requests by Host header.
+//
+// The Host header is normalised to lowercase before comparison: hostnames are
+// case-insensitive (RFC 1035 §2.3.3) and net/http does not lowercase r.Host
+// for us, so without this a client sending "API.GitHub.com" would 404 even
+// though it resolves to the same backend as "api.github.com".
 func newHostDispatch(cfg hostDispatchConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
 		}
+		host = strings.ToLower(host)
 
 		switch {
 		case host == backend.API:

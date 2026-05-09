@@ -40,15 +40,20 @@ func TestHostDispatch(t *testing.T) {
 	}{
 		{"api.github.com", "api"},
 		{"api.github.com:443", "api"},
+		{"API.GitHub.COM", "api"}, // hostnames are case-insensitive (RFC 1035 §2.3.3)
 		{"github.com", "github"},
 		{"github.com:443", "github"},
+		{"GitHub.com:443", "github"},
 		{"codeload.github.com", "codeload"},
 		{"codeload.github.com:443", "codeload"},
+		{"CodeLoad.GitHub.com", "codeload"},
 		{"api.githubcopilot.com", "copilot"},
 		{"copilot.githubcopilot.com", "copilot"},
 		{"githubcopilot.com", "copilot"},
+		{"API.GitHubCopilot.com", "copilot"},
 		{"ghp.example.com", "mgmt"},
 		{"ghp.example.com:443", "mgmt"},
+		{"GHP.Example.COM", "mgmt"},
 		{"unknown.example.com", ""}, // 404 when managementHost is set
 	}
 
