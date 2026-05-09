@@ -219,40 +219,62 @@ func TestCodeloadHandler_NoRedirectToConfigured_PassthroughIsCounted(t *testing.
 }
 
 func TestCodeloadHandler_InvalidRedirectTo_FallsBackToPassthrough(t *testing.T) {
-	var upstreamHits int
-	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		upstreamHits++
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader("ok")),
-			Header:     http.Header{},
-		}, nil
-	})
-
-	cfg := &config.Config{
-		Codeload: config.CodeloadConfig{
-			RedirectTo: "/relative/not-absolute",
-		},
-	}
-	handler := NewCodeloadHandler(cfg, nil, transport)
-
-	before := codeloadCounterValue(t, "actions", "checkout", "tar.gz", "passthrough")
-
-	req := httptest.NewRequest(http.MethodGet, "/actions/checkout/tar.gz/abc123", nil)
-	req.Host = "codeload.github.com"
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200 (fallback to passthrough)", w.Code)
-	}
-	if upstreamHits != 1 {
-		t.Errorf("upstream hits = %d, want 1", upstreamHits)
+	// Anything that isn't a fully-qualified http(s) URL should be rejected at
+	// validation time and the handler should fall back to transparent
+	// passthrough. Each case is independent — the cache that backs
+	// resolveRedirectBase is per-handler, so a fresh handler is constructed
+	// per row.
+	cases := []struct {
+		name       string
+		redirectTo string
+	}{
+		{"relative path", "/relative/not-absolute"},
+		{"file scheme", "file:///tmp/cache"},
+		{"opaque scheme without host", "https:no-host"},
+		{"non-http scheme", "ftp://example.com/cache"},
 	}
 
-	after := codeloadCounterValue(t, "actions", "checkout", "tar.gz", "passthrough")
-	if after-before != 1 {
-		t.Errorf("passthrough counter increment = %f, want 1", after-before)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var upstreamHits int
+			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				upstreamHits++
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader("ok")),
+					Header:     http.Header{},
+				}, nil
+			})
+
+			cfg := &config.Config{
+				Codeload: config.CodeloadConfig{
+					RedirectTo: tc.redirectTo,
+				},
+			}
+			handler := NewCodeloadHandler(cfg, nil, transport)
+
+			before := codeloadCounterValue(t, "actions", "checkout", "tar.gz", "passthrough")
+
+			req := httptest.NewRequest(http.MethodGet, "/actions/checkout/tar.gz/abc123", nil)
+			req.Host = "codeload.github.com"
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Errorf("status = %d, want 200 (fallback to passthrough)", w.Code)
+			}
+			if upstreamHits != 1 {
+				t.Errorf("upstream hits = %d, want 1", upstreamHits)
+			}
+			if loc := w.Header().Get("Location"); loc != "" {
+				t.Errorf("unexpected Location header on rejected redirect_to %q: %q", tc.redirectTo, loc)
+			}
+
+			after := codeloadCounterValue(t, "actions", "checkout", "tar.gz", "passthrough")
+			if after-before != 1 {
+				t.Errorf("passthrough counter increment = %f, want 1", after-before)
+			}
+		})
 	}
 }
 

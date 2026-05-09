@@ -4,8 +4,9 @@
 //   - Opening the database and running/checking migrations
 //   - Initializing encryption, token services, and the GitHub App provider
 //   - Building the host-dispatch handler that routes requests by Host header
-//     to the appropriate backend (API proxy, github.com passthrough, Copilot
-//     passthrough, or management UI)
+//     to the appropriate backend (API proxy, github.com passthrough,
+//     codeload.github.com redirect/passthrough, Copilot passthrough, or
+//     management UI)
 //   - Starting TLS and/or plain HTTP listeners (including systemd socket
 //     activation support)
 //   - Running the dedicated Prometheus metrics server on a separate port

@@ -94,9 +94,15 @@ func NewCodeloadHandler(cfg *config.Config, logger *slog.Logger, transport http.
 			cachedTo = ""
 			return ""
 		}
-		if u, err := url.Parse(base); err != nil || !u.IsAbs() {
+		// Require a parseable absolute URL with an explicit host and an
+		// http(s) scheme. Without these, the synthesised Location header
+		// would be malformed (e.g. "file:///tmp/<path>") or unreachable from
+		// a browser — so log and fall back to passthrough rather than
+		// emitting a redirect that's guaranteed to break the client.
+		u, err := url.Parse(base)
+		if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			if logger != nil {
-				logger.Error("codeload redirect_to must be an absolute URL; falling back to passthrough",
+				logger.Error("codeload redirect_to must be an absolute http(s) URL with a host; falling back to passthrough",
 					"redirect_to", raw)
 			}
 			cachedOk = false
