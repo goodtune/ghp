@@ -25,7 +25,7 @@ Scrape the metrics endpoint at `http(s)://<ghp-server>:9136/metrics` (HTTPS when
 | `ghp_http_request_total` | Counter | Total HTTP requests (labels: `backend`, `method`, `status`) |
 
 The `backend` label distinguishes traffic by virtualhost: `api.github.com`,
-`github.com`, `copilot`, or `management`.
+`github.com`, `codeload.github.com`, `copilot`, or `management`.
 
 #### Proxy Metrics
 
@@ -180,7 +180,7 @@ See [Codeload Redirect](../features/codeload.md) for configuration details.
 
 ## Access Logs
 
-ghp writes structured JSON access logs for every request across all four
+ghp writes structured JSON access logs for every request across all
 virtualhosts. Each log entry typically includes:
 
 - HTTP method, host, URI/path, and status code

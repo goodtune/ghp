@@ -31,7 +31,7 @@ For each request, the proxy:
 
 ## Virtualhost Routing
 
-ghp serves four distinct roles depending on which hostname the request arrives on:
+ghp serves several distinct roles depending on which hostname the request arrives on:
 
 | Hostname | Role |
 |----------|------|

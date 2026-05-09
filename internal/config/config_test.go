@@ -231,6 +231,117 @@ func TestIsReleaseAllowed(t *testing.T) {
 	}
 }
 
+func TestLoadCodeloadFromEnv(t *testing.T) {
+	t.Setenv("GHP_CODELOAD_REDIRECT_TO", "https://codeload.cache.example.com/")
+	t.Setenv("GHP_CODELOAD_ALLOW", "actions,goodtune/ghp")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Codeload.RedirectTo != "https://codeload.cache.example.com/" {
+		t.Errorf("RedirectTo = %q, want %q", cfg.Codeload.RedirectTo, "https://codeload.cache.example.com/")
+	}
+	want := []string{"actions", "goodtune/ghp"}
+	if len(cfg.Codeload.Allow) != len(want) {
+		t.Fatalf("Allow = %v, want %v", cfg.Codeload.Allow, want)
+	}
+	for i, w := range want {
+		if cfg.Codeload.Allow[i] != w {
+			t.Errorf("Allow[%d] = %q, want %q", i, cfg.Codeload.Allow[i], w)
+		}
+	}
+}
+
+func TestLoadCodeloadAllowIndexed(t *testing.T) {
+	t.Setenv("GHP_CODELOAD_ALLOW_COUNT", "2")
+	t.Setenv("GHP_CODELOAD_ALLOW_0", "goodtune/ghp")
+	t.Setenv("GHP_CODELOAD_ALLOW_1", "actions")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"goodtune/ghp", "actions"}
+	if len(cfg.Codeload.Allow) != len(want) {
+		t.Fatalf("Allow = %v, want %v", cfg.Codeload.Allow, want)
+	}
+	for i, w := range want {
+		if cfg.Codeload.Allow[i] != w {
+			t.Errorf("Allow[%d] = %q, want %q", i, cfg.Codeload.Allow[i], w)
+		}
+	}
+}
+
+func TestLoadCodeloadAllowIndexedMissingEntry(t *testing.T) {
+	t.Setenv("GHP_CODELOAD_ALLOW_COUNT", "2")
+	t.Setenv("GHP_CODELOAD_ALLOW_0", "actions")
+	// GHP_CODELOAD_ALLOW_1 is intentionally not set.
+
+	if _, err := Load(""); err == nil {
+		t.Fatal("expected error for missing indexed allow entry, got nil")
+	}
+}
+
+func TestLoadCodeloadAllowIndexedBadCount(t *testing.T) {
+	t.Setenv("GHP_CODELOAD_ALLOW_COUNT", "notanumber")
+
+	if _, err := Load(""); err == nil {
+		t.Fatal("expected error for invalid GHP_CODELOAD_ALLOW_COUNT, got nil")
+	}
+}
+
+func TestLoadCodeloadAllowIndexedNegativeCount(t *testing.T) {
+	t.Setenv("GHP_CODELOAD_ALLOW_COUNT", "-1")
+
+	if _, err := Load(""); err == nil {
+		t.Fatal("expected error for negative GHP_CODELOAD_ALLOW_COUNT, got nil")
+	}
+}
+
+func TestLoadCodeloadAllowIndexedOverridesEnv(t *testing.T) {
+	// Indexed entries should take precedence over the comma-separated env var.
+	t.Setenv("GHP_CODELOAD_ALLOW", "yaml-org")
+	t.Setenv("GHP_CODELOAD_ALLOW_COUNT", "1")
+	t.Setenv("GHP_CODELOAD_ALLOW_0", "indexed-org")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Codeload.Allow) != 1 || cfg.Codeload.Allow[0] != "indexed-org" {
+		t.Errorf("Allow = %v, want [indexed-org]", cfg.Codeload.Allow)
+	}
+}
+
+func TestIsCodeloadAllowed(t *testing.T) {
+	tests := []struct {
+		name    string
+		allow   []string
+		org     string
+		repo    string
+		allowed bool
+	}{
+		{name: "org match", allow: []string{"actions"}, org: "actions", repo: "checkout", allowed: true},
+		{name: "org/repo match", allow: []string{"actions/checkout"}, org: "actions", repo: "checkout", allowed: true},
+		{name: "org no match", allow: []string{"other"}, org: "actions", repo: "checkout", allowed: false},
+		{name: "org/repo no match different repo", allow: []string{"actions/setup-node"}, org: "actions", repo: "checkout", allowed: false},
+		{name: "case insensitive org", allow: []string{"ACTIONS"}, org: "actions", repo: "checkout", allowed: true},
+		{name: "case insensitive org/repo", allow: []string{"Actions/Checkout"}, org: "actions", repo: "checkout", allowed: true},
+		{name: "empty allow list", allow: nil, org: "actions", repo: "checkout", allowed: false},
+		{name: "multiple entries second matches", allow: []string{"other", "actions"}, org: "actions", repo: "checkout", allowed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{Codeload: CodeloadConfig{Allow: tt.allow}}
+			got := cfg.IsCodeloadAllowed(tt.org, tt.repo)
+			if got != tt.allowed {
+				t.Errorf("IsCodeloadAllowed(%q, %q) = %v, want %v", tt.org, tt.repo, got, tt.allowed)
+			}
+		})
+	}
+}
+
 func TestIsTokenBlocked(t *testing.T) {
 	tests := []struct {
 		name    string

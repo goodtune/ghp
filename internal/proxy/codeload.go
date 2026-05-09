@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/metrics"
@@ -40,49 +41,100 @@ func mustParseCodeloadURL(s string) *url.URL {
 // are answered with a 302 to RedirectTo + the original path (and query string).
 // Requests for orgs or org/repo pairs in cfg.Codeload.Allow bypass the redirect
 // and are forwarded to the upstream codeload service. Non-archive paths are
-// always forwarded. When RedirectTo is empty, every request is forwarded
-// transparently to upstream codeload.github.com.
+// always forwarded. When RedirectTo is empty, every archive request is still
+// counted as result="passthrough" before forwarding so operators can see total
+// archive volume even before a mirror is configured.
 //
-// transport is optional; when nil the default RoundTripper is used. It exists
-// to allow tests to intercept upstream requests without making real network
-// calls.
+// cfg is read on every request so SIGUSR1 hot-reload of codeload.redirect_to
+// and codeload.allow takes effect without a server restart. transport is
+// optional; when nil the default RoundTripper is used. It exists to allow
+// tests to intercept upstream requests without making real network calls.
 func NewCodeloadHandler(cfg *config.Config, logger *slog.Logger, transport http.RoundTripper) http.Handler {
 	passthrough := newCodeloadPassthrough(transport)
 
-	// Pre-validate and normalise the redirect base URL once so the per-request
-	// handler avoids repeated TrimRight + url.Parse work.
-	redirectBase := strings.TrimRight(cfg.Codeload.RedirectTo, "/")
-	if redirectBase != "" {
-		if u, err := url.Parse(redirectBase); err != nil || !u.IsAbs() {
+	// Cache the parsed redirect_to keyed by the raw config string so we don't
+	// re-validate the URL on every request, but still pick up changes when
+	// codeload.redirect_to is updated via hot-reload. The "" key represents
+	// "no redirect configured".
+	var (
+		mu       sync.RWMutex
+		cachedIn string
+		cachedOk bool
+		cachedTo string
+	)
+
+	resolveRedirectBase := func() string {
+		raw := cfg.Codeload.RedirectTo
+
+		mu.RLock()
+		if raw == cachedIn {
+			out := cachedTo
+			ok := cachedOk
+			mu.RUnlock()
+			if ok {
+				return out
+			}
+			return ""
+		}
+		mu.RUnlock()
+
+		mu.Lock()
+		defer mu.Unlock()
+		// Re-check under the write lock in case another goroutine populated it.
+		if raw == cachedIn {
+			if cachedOk {
+				return cachedTo
+			}
+			return ""
+		}
+		cachedIn = raw
+		base := strings.TrimRight(raw, "/")
+		if base == "" {
+			cachedOk = false
+			cachedTo = ""
+			return ""
+		}
+		if u, err := url.Parse(base); err != nil || !u.IsAbs() {
 			if logger != nil {
 				logger.Error("codeload redirect_to must be an absolute URL; falling back to passthrough",
-					"redirect_to", cfg.Codeload.RedirectTo)
+					"redirect_to", raw)
 			}
-			redirectBase = ""
+			cachedOk = false
+			cachedTo = ""
+			return ""
 		}
+		cachedOk = true
+		cachedTo = base
+		return base
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if redirectBase == "" {
-			passthrough.ServeHTTP(w, r)
-			return
-		}
-
 		m := codeloadArchiveRe.FindStringSubmatch(r.URL.Path)
 		if m == nil {
+			// Non-archive paths: always passthrough, never counted (the
+			// counter is scoped to archive requests so cardinality stays
+			// predictable).
 			passthrough.ServeHTTP(w, r)
 			return
 		}
 
 		owner, repo, archive := m[1], m[2], m[3]
 
-		if cfg.IsCodeloadAllowed(owner, repo) {
+		redirectBase := resolveRedirectBase()
+		if redirectBase == "" || cfg.IsCodeloadAllowed(owner, repo) {
 			metrics.CodeloadRedirectTotal.WithLabelValues(owner, repo, archive, "passthrough").Inc()
 			passthrough.ServeHTTP(w, r)
 			return
 		}
 
-		target := redirectBase + r.URL.RequestURI()
+		// Build the redirect target from the URL's escaped path and raw query
+		// rather than r.URL.RequestURI() so the result is unambiguous when the
+		// request arrives in absolute-form (e.g. through a forward proxy) — we
+		// only ever want the path/query component appended to redirectBase.
+		target := redirectBase + r.URL.EscapedPath()
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
 		metrics.CodeloadRedirectTotal.WithLabelValues(owner, repo, archive, "redirect").Inc()
 		http.Redirect(w, r, target, http.StatusFound)
 	})

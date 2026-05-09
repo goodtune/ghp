@@ -179,7 +179,7 @@ func TestCodeloadHandler_AllowListPassesThrough(t *testing.T) {
 	}
 }
 
-func TestCodeloadHandler_NoRedirectToConfigured_AlwaysPassthrough(t *testing.T) {
+func TestCodeloadHandler_NoRedirectToConfigured_PassthroughIsCounted(t *testing.T) {
 	var upstreamHits int
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		upstreamHits++
@@ -195,6 +195,8 @@ func TestCodeloadHandler_NoRedirectToConfigured_AlwaysPassthrough(t *testing.T) 
 	}
 	handler := NewCodeloadHandler(cfg, nil, transport)
 
+	before := codeloadCounterValue(t, "actions", "checkout", "tar.gz", "passthrough")
+
 	req := httptest.NewRequest(http.MethodGet, "/actions/checkout/tar.gz/abc123", nil)
 	req.Host = "codeload.github.com"
 	w := httptest.NewRecorder()
@@ -208,6 +210,11 @@ func TestCodeloadHandler_NoRedirectToConfigured_AlwaysPassthrough(t *testing.T) 
 	}
 	if w.Header().Get("Location") != "" {
 		t.Errorf("unexpected Location header on passthrough: %q", w.Header().Get("Location"))
+	}
+
+	after := codeloadCounterValue(t, "actions", "checkout", "tar.gz", "passthrough")
+	if after-before != 1 {
+		t.Errorf("passthrough counter increment = %f, want 1", after-before)
 	}
 }
 
@@ -229,6 +236,8 @@ func TestCodeloadHandler_InvalidRedirectTo_FallsBackToPassthrough(t *testing.T) 
 	}
 	handler := NewCodeloadHandler(cfg, nil, transport)
 
+	before := codeloadCounterValue(t, "actions", "checkout", "tar.gz", "passthrough")
+
 	req := httptest.NewRequest(http.MethodGet, "/actions/checkout/tar.gz/abc123", nil)
 	req.Host = "codeload.github.com"
 	w := httptest.NewRecorder()
@@ -239,6 +248,92 @@ func TestCodeloadHandler_InvalidRedirectTo_FallsBackToPassthrough(t *testing.T) 
 	}
 	if upstreamHits != 1 {
 		t.Errorf("upstream hits = %d, want 1", upstreamHits)
+	}
+
+	after := codeloadCounterValue(t, "actions", "checkout", "tar.gz", "passthrough")
+	if after-before != 1 {
+		t.Errorf("passthrough counter increment = %f, want 1", after-before)
+	}
+}
+
+// TestCodeloadHandler_HotReloadsRedirectTo verifies that mutating
+// cfg.Codeload.RedirectTo after the handler is constructed (as happens on
+// SIGUSR1) takes effect on the next request. This is the scenario described
+// in docs/features/codeload.md and must work without a server restart.
+func TestCodeloadHandler_HotReloadsRedirectTo(t *testing.T) {
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Header:     http.Header{},
+		}, nil
+	})
+
+	cfg := &config.Config{
+		Codeload: config.CodeloadConfig{},
+	}
+	handler := NewCodeloadHandler(cfg, nil, transport)
+
+	// Initially no redirect: archive path passes through.
+	req := httptest.NewRequest(http.MethodGet, "/actions/checkout/tar.gz/abc123", nil)
+	req.Host = "codeload.github.com"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("pre-reload: status = %d, want 200 (passthrough)", w.Code)
+	}
+
+	// Simulate SIGUSR1 hot-reload mutating the config in-place.
+	cfg.Codeload.RedirectTo = "https://codeload.cache.example.com/"
+
+	req = httptest.NewRequest(http.MethodGet, "/actions/checkout/tar.gz/abc123", nil)
+	req.Host = "codeload.github.com"
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusFound {
+		t.Fatalf("post-reload: status = %d, want 302", w.Code)
+	}
+	want := "https://codeload.cache.example.com/actions/checkout/tar.gz/abc123"
+	if got := w.Header().Get("Location"); got != want {
+		t.Errorf("post-reload: Location = %q, want %q", got, want)
+	}
+
+	// Reload again to clear redirect_to and confirm we go back to passthrough.
+	cfg.Codeload.RedirectTo = ""
+
+	req = httptest.NewRequest(http.MethodGet, "/actions/checkout/tar.gz/abc123", nil)
+	req.Host = "codeload.github.com"
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("post-clear: status = %d, want 200 (passthrough)", w.Code)
+	}
+}
+
+// TestCodeloadHandler_AbsoluteFormRequest verifies the redirect target is
+// built from the URL's path/query only, even when the request URL has scheme
+// and host populated (as happens when ghp acts as an HTTP forward proxy).
+func TestCodeloadHandler_AbsoluteFormRequest(t *testing.T) {
+	cfg := &config.Config{
+		Codeload: config.CodeloadConfig{
+			RedirectTo: "https://codeload.cache.example.com/",
+		},
+	}
+	handler := NewCodeloadHandler(cfg, nil, failingTransport(t))
+
+	req := httptest.NewRequest(http.MethodGet, "/actions/checkout/tar.gz/abc123?foo=bar", nil)
+	// Mimic the request shape produced by Go's net/http for an absolute-form
+	// request line (e.g. forward-proxy clients).
+	req.URL.Scheme = "https"
+	req.URL.Host = "codeload.github.com"
+	req.Host = "codeload.github.com"
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	want := "https://codeload.cache.example.com/actions/checkout/tar.gz/abc123?foo=bar"
+	if got := w.Header().Get("Location"); got != want {
+		t.Errorf("Location = %q, want %q (absolute-form must not leak scheme/host into target)", got, want)
 	}
 }
 
