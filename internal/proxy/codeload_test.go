@@ -232,6 +232,8 @@ func TestCodeloadHandler_InvalidRedirectTo_FallsBackToPassthrough(t *testing.T) 
 		{"file scheme", "file:///tmp/cache"},
 		{"opaque scheme without host", "https:no-host"},
 		{"non-http scheme", "ftp://example.com/cache"},
+		{"with query string", "https://mirror.example.com/?token=abc"},
+		{"with fragment", "https://mirror.example.com/#section"},
 	}
 
 	for _, tc := range cases {
@@ -275,6 +277,50 @@ func TestCodeloadHandler_InvalidRedirectTo_FallsBackToPassthrough(t *testing.T) 
 				t.Errorf("passthrough counter increment = %f, want 1", after-before)
 			}
 		})
+	}
+}
+
+// TestCodeloadHandler_LowercasesOwnerAndRepoMetricLabels verifies that the
+// owner/repo Prometheus labels are lowercased before incrementing the counter.
+// GitHub treats owner and repo case-insensitively, so "Actions/Checkout" and
+// "actions/checkout" must collapse to a single time series rather than create
+// duplicate entries that inflate cardinality.
+func TestCodeloadHandler_LowercasesOwnerAndRepoMetricLabels(t *testing.T) {
+	cfg := &config.Config{
+		Codeload: config.CodeloadConfig{
+			RedirectTo: "https://codeload.cache.example.com/",
+		},
+	}
+	handler := NewCodeloadHandler(cfg, nil, failingTransport(t))
+
+	before := codeloadCounterValue(t, "actions", "checkout", "tar.gz", "redirect")
+
+	// Send the path with mixed-case owner/repo.
+	req := httptest.NewRequest(http.MethodGet, "/Actions/Checkout/tar.gz/abc123", nil)
+	req.Host = "codeload.github.com"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", w.Code)
+	}
+	// The Location header preserves the original casing — only the metric
+	// label is normalised.
+	want := "https://codeload.cache.example.com/Actions/Checkout/tar.gz/abc123"
+	if got := w.Header().Get("Location"); got != want {
+		t.Errorf("Location = %q, want %q", got, want)
+	}
+
+	after := codeloadCounterValue(t, "actions", "checkout", "tar.gz", "redirect")
+	if after-before != 1 {
+		t.Errorf("lowercase-labelled counter increment = %f, want 1", after-before)
+	}
+
+	// Confirm the mixed-case label series did not increment (i.e. we did
+	// not split into two time series).
+	mixedCase := codeloadCounterValue(t, "Actions", "Checkout", "tar.gz", "redirect")
+	if mixedCase != 0 {
+		t.Errorf("mixed-case counter has value %f; expected 0 (label should be normalised)", mixedCase)
 	}
 }
 

@@ -99,10 +99,17 @@ func NewCodeloadHandler(cfg *config.Config, logger *slog.Logger, transport http.
 		// would be malformed (e.g. "file:///tmp/<path>") or unreachable from
 		// a browser — so log and fall back to passthrough rather than
 		// emitting a redirect that's guaranteed to break the client.
+		// Also reject values that already carry a query string or fragment:
+		// the redirect target is built by appending the request path/query,
+		// which would produce something like ".../base?x=y/owner/repo/..."
+		// — clearly broken — so make the misconfiguration loud.
 		u, err := url.Parse(base)
-		if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		switch {
+		case err != nil, !u.IsAbs(), u.Host == "",
+			u.Scheme != "http" && u.Scheme != "https",
+			u.RawQuery != "", u.Fragment != "":
 			if logger != nil {
-				logger.Error("codeload redirect_to must be an absolute http(s) URL with a host; falling back to passthrough",
+				logger.Error("codeload redirect_to must be an absolute http(s) URL with a host and no query/fragment; falling back to passthrough",
 					"redirect_to", raw)
 			}
 			cachedOk = false
@@ -124,7 +131,15 @@ func NewCodeloadHandler(cfg *config.Config, logger *slog.Logger, transport http.
 			return
 		}
 
-		owner, repo, archive := m[1], m[2], m[3]
+		// Normalise owner/repo to lowercase before using as Prometheus
+		// labels. GitHub is case-insensitive on owner and repo, so
+		// "Actions/Checkout" and "actions/checkout" must resolve to the
+		// same time series — otherwise clients with inconsistent casing
+		// would split the counter and inflate cardinality. Pattern matches
+		// internal/gitcache/middleware.go.
+		owner := strings.ToLower(m[1])
+		repo := strings.ToLower(m[2])
+		archive := m[3]
 
 		redirectBase := resolveRedirectBase()
 		if redirectBase == "" || cfg.IsCodeloadAllowed(owner, repo) {

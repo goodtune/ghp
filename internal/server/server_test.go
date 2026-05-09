@@ -73,8 +73,8 @@ func TestHostDispatch(t *testing.T) {
 }
 
 // TestServerHeaderAllBackends verifies that the Server and X-GitHub-Proxy-Version
-// response headers are set on all backends (api, github, copilot, mgmt) when
-// ServerHeaderMiddleware wraps the host dispatch handler.
+// response headers are set on all backends (api, github, codeload, copilot, mgmt)
+// when ServerHeaderMiddleware wraps the host dispatch handler.
 func TestServerHeaderAllBackends(t *testing.T) {
 	const version = "1.2.3"
 
@@ -111,6 +111,7 @@ func TestServerHeaderAllBackends(t *testing.T) {
 	}{
 		{"api backend", "api.github.com", "api"},
 		{"github backend", "github.com", "github"},
+		{"codeload backend", "codeload.github.com", "codeload"},
 		{"copilot backend", "api.githubcopilot.com", "copilot"},
 		{"mgmt backend", "ghp.example.com", "mgmt"},
 	}
