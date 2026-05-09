@@ -26,14 +26,23 @@ import (
 // Config represents the complete server configuration.
 //
 // Hot-reloadable fields (Admins, Tokens, Logging, Metrics, Auth, Block,
-// Releases, Codeload, Cache) are protected by mu: ReloadFrom takes the
-// write lock and the accessor methods (IsAdmin, IsTokenBlocked,
-// IsReleaseAllowed, IsCodeloadAllowed, CodeloadSnapshot) take the read
-// lock. Request handlers must read these fields through the accessors —
-// reading the embedded structs directly under concurrent reload is a data
-// race that `go test -race` will flag. Static fields (GitHub, Database,
-// Server, TLS, EncryptionKey, DevMode) are populated once at startup and
-// never mutated, so they're safe to read directly.
+// Releases, Codeload, Cache) are mutated in place by ReloadFrom on SIGUSR1.
+// To make per-request reads race-free with that mutation, an unexported mu
+// guards those fields; ReloadFrom takes the write lock for the duration of
+// the update.
+//
+// Reads on the hot request path should go through the locking accessor
+// methods on this type — IsAdmin, IsTokenBlocked, IsReleaseAllowed,
+// IsCodeloadAllowed, and CodeloadRedirectTo — which take the read lock and
+// return values that are safe to use after the lock is released. Reads of
+// the embedded structs (e.g. cfg.Releases.Mode) are NOT race-free; existing
+// call sites that pre-date this PR fall into that category and should be
+// migrated to accessor methods (or new ones added — see the CodeloadRedirectTo
+// pattern) as they're touched.
+//
+// Static fields (GitHub, Database, Server, TLS, EncryptionKey, DevMode) are
+// populated once at startup and never mutated, so they're safe to read
+// directly.
 type Config struct {
 	// mu guards all hot-reloadable fields below. Held for the duration of
 	// ReloadFrom so a single SIGUSR1 either fully replaces the runtime
@@ -544,22 +553,16 @@ func (c *Config) IsCodeloadAllowed(org, repo string) bool {
 	return false
 }
 
-// CodeloadSnapshot returns a deep copy of the codeload configuration safe to
-// read across hot-reload boundaries. Use this from request handlers that need
-// more than just the allow check (e.g. reading RedirectTo): reading
-// cfg.Codeload directly is a data race against ReloadFrom and will be flagged
-// by `go test -race`.
-//
-// The returned value's slice fields are copies, so callers cannot observe a
-// slice that ReloadFrom is about to replace.
-func (c *Config) CodeloadSnapshot() CodeloadConfig {
+// CodeloadRedirectTo returns the configured codeload redirect base URL. It
+// takes the read lock so callers on the request hot path can read it without
+// racing against ReloadFrom. Returning a string (rather than a snapshot
+// struct) keeps the per-request cost to a single lock + field copy with no
+// allocation, even when codeload.allow is set — the allow check has its own
+// race-free accessor in IsCodeloadAllowed.
+func (c *Config) CodeloadRedirectTo() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	cp := c.Codeload
-	if c.Codeload.Allow != nil {
-		cp.Allow = append([]string(nil), c.Codeload.Allow...)
-	}
-	return cp
+	return c.Codeload.RedirectTo
 }
 
 // WarnInvalidBlockTargets logs a warning for any block configuration targeting
