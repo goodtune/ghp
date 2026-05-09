@@ -133,6 +133,16 @@ See [Token Type Border Policy](../features/border-policy.md) for details.
 
 See [Release Download Controls](../features/release-controls.md) for details.
 
+### Codeload Redirect
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GHP_CODELOAD_REDIRECT_TO` | Base URL to redirect codeload.github.com archive requests to (must be absolute). When unset, requests are forwarded transparently to upstream. | |
+| `GHP_CODELOAD_ALLOW` | Comma-separated org or org/repo entries that bypass the redirect (passthrough to upstream) | |
+| `GHP_CODELOAD_ALLOW_COUNT` | Number of indexed allow entries (use with `GHP_CODELOAD_ALLOW_0`, `GHP_CODELOAD_ALLOW_1`, ...) | |
+
+See [Codeload Redirect](../features/codeload.md) for details.
+
 ### Git Cache
 
 | Variable | Description | Default |
@@ -236,6 +246,11 @@ releases:
   allow:                       # org or org/repo entries exempt from policy
     - "myorg"
     - "trusted/tool"
+
+codeload:
+  redirect_to: ""              # absolute URL base for redirecting codeload archive requests; passthrough when empty
+  allow:                       # org or org/repo entries that pass through to upstream codeload
+    - "myorg"
 
 cache:
   enabled: false               # enable git clone/fetch caching
