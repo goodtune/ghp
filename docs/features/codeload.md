@@ -54,8 +54,15 @@ straightforward:
 - On subsequent requests for the same `(owner, repo, ref)`, serve from
   storage.
 
-Because the (owner, repo, sha) tuple identifies an immutable archive, the
-mirror can cache aggressively — the user is on the hook for the cache policy.
+Cacheability depends on what `ref` resolves to. When `ref` is a **commit
+SHA** (the common case for `actions/checkout@<sha>` and any pinned action
+reference) the `(owner, repo, sha)` tuple identifies an immutable archive
+and the mirror can cache it indefinitely. When `ref` is a **branch or tag
+name**, GitHub resolves it on each fetch and the underlying commit can move
+— mirrors should treat those entries as mutable (e.g. apply a short TTL,
+revalidate against `codeload.github.com`, or serve only SHA refs from
+cache). The redirect itself is opaque to ghp; the cache policy is the
+mirror's responsibility.
 
 ## Configuration
 

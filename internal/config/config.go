@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
@@ -23,7 +24,22 @@ import (
 )
 
 // Config represents the complete server configuration.
+//
+// Hot-reloadable fields (Admins, Tokens, Logging, Metrics, Auth, Block,
+// Releases, Codeload, Cache) are protected by mu: ReloadFrom takes the
+// write lock and the accessor methods (IsAdmin, IsTokenBlocked,
+// IsReleaseAllowed, IsCodeloadAllowed, CodeloadSnapshot) take the read
+// lock. Request handlers must read these fields through the accessors —
+// reading the embedded structs directly under concurrent reload is a data
+// race that `go test -race` will flag. Static fields (GitHub, Database,
+// Server, TLS, EncryptionKey, DevMode) are populated once at startup and
+// never mutated, so they're safe to read directly.
 type Config struct {
+	// mu guards all hot-reloadable fields below. Held for the duration of
+	// ReloadFrom so a single SIGUSR1 either fully replaces the runtime
+	// fields or is invisible to a reader that has the read lock.
+	mu sync.RWMutex
+
 	GitHub   GitHubConfig   `koanf:"github"`
 	Database DatabaseConfig `koanf:"database"`
 	Server   ServerConfig   `koanf:"server"`
@@ -413,11 +429,18 @@ func Load(path string) (*Config, error) {
 // ReloadFrom re-reads a YAML config file and updates hot-reloadable fields
 // in-place. Fields that require a restart (database, server listen addresses,
 // TLS certificates) are not updated.
+//
+// The hot-reloadable field updates are serialised with the read locks held by
+// the accessor methods (IsAdmin, IsTokenBlocked, IsReleaseAllowed,
+// IsCodeloadAllowed, CodeloadSnapshot) so requests in flight either observe
+// the pre-reload or post-reload values consistently — never a torn mix.
 func (c *Config) ReloadFrom(path string) error {
 	fresh, err := Load(path)
 	if err != nil {
 		return err
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.Admins = fresh.Admins
 	c.Tokens = fresh.Tokens
 	c.Logging = fresh.Logging
@@ -446,7 +469,13 @@ func splitCommaSlice(ss []string) []string {
 }
 
 // IsAdmin returns true if the given GitHub username is in the admin list.
+//
+// Safe to call concurrently with ReloadFrom: the read lock is held for the
+// duration of the lookup, so an in-flight reload either fully precedes or
+// fully follows this call.
 func (c *Config) IsAdmin(username string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	for _, admin := range c.Admins {
 		if strings.EqualFold(admin, username) {
 			return true
@@ -458,7 +487,11 @@ func (c *Config) IsAdmin(username string) bool {
 // IsTokenBlocked returns true when the token string's type prefix is blocked by
 // the border policy. Only the five standard GitHub token prefixes are evaluated;
 // ghp's own managed token types (ghx_, gha_) are never considered here.
+//
+// Safe to call concurrently with ReloadFrom.
 func (c *Config) IsTokenBlocked(token string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	switch {
 	case strings.HasPrefix(token, "ghp_"):
 		return c.Block.GHP
@@ -478,7 +511,11 @@ func (c *Config) IsTokenBlocked(token string) bool {
 // appears in the releases allow list, meaning it is exempt from the releases
 // policy (block or redirect). Matching is case-insensitive. An org-only entry
 // (e.g. "goodtune") permits any repository under that org.
+//
+// Safe to call concurrently with ReloadFrom.
 func (c *Config) IsReleaseAllowed(org, repo string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	orgRepo := org + "/" + repo
 	for _, entry := range c.Releases.Allow {
 		if strings.EqualFold(entry, org) || strings.EqualFold(entry, orgRepo) {
@@ -493,7 +530,11 @@ func (c *Config) IsReleaseAllowed(org, repo string) bool {
 // are passed through to upstream rather than redirected to the configured
 // caching mirror. Matching is case-insensitive. An org-only entry (e.g.
 // "goodtune") exempts every repository under that org.
+//
+// Safe to call concurrently with ReloadFrom.
 func (c *Config) IsCodeloadAllowed(org, repo string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	orgRepo := org + "/" + repo
 	for _, entry := range c.Codeload.Allow {
 		if strings.EqualFold(entry, org) || strings.EqualFold(entry, orgRepo) {
@@ -501,6 +542,24 @@ func (c *Config) IsCodeloadAllowed(org, repo string) bool {
 		}
 	}
 	return false
+}
+
+// CodeloadSnapshot returns a deep copy of the codeload configuration safe to
+// read across hot-reload boundaries. Use this from request handlers that need
+// more than just the allow check (e.g. reading RedirectTo): reading
+// cfg.Codeload directly is a data race against ReloadFrom and will be flagged
+// by `go test -race`.
+//
+// The returned value's slice fields are copies, so callers cannot observe a
+// slice that ReloadFrom is about to replace.
+func (c *Config) CodeloadSnapshot() CodeloadConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	cp := c.Codeload
+	if c.Codeload.Allow != nil {
+		cp.Allow = append([]string(nil), c.Codeload.Allow...)
+	}
+	return cp
 }
 
 // WarnInvalidBlockTargets logs a warning for any block configuration targeting

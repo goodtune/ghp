@@ -64,7 +64,9 @@ func NewCodeloadHandler(cfg *config.Config, logger *slog.Logger, transport http.
 	)
 
 	resolveRedirectBase := func() string {
-		raw := cfg.Codeload.RedirectTo
+		// CodeloadSnapshot copies under config.RWMutex so we can't race
+		// with a concurrent SIGUSR1 reload mutating cfg.Codeload.
+		raw := cfg.CodeloadSnapshot().RedirectTo
 
 		mu.RLock()
 		if raw == cachedIn {

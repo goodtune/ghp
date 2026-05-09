@@ -4,8 +4,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -458,4 +462,92 @@ func failingTransport(t *testing.T) http.RoundTripper {
 		t.Errorf("unexpected upstream request to %s %s", req.Method, req.URL)
 		return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})
+}
+
+// TestCodeloadHandler_RaceFreeUnderConcurrentReload drives the handler from
+// many goroutines while ReloadFrom rewrites the codeload section in parallel.
+// Run under `go test -race`: any direct read of cfg.Codeload from the request
+// hot path would be flagged. The accessor (CodeloadSnapshot) and the
+// IsCodeloadAllowed helper take the config RWMutex, so this exercise must
+// stay race-free.
+func TestCodeloadHandler_RaceFreeUnderConcurrentReload(t *testing.T) {
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Header:     http.Header{},
+		}, nil
+	})
+
+	tmp := t.TempDir()
+	configA := filepath.Join(tmp, "a.yaml")
+	configB := filepath.Join(tmp, "b.yaml")
+	if err := os.WriteFile(configA, []byte("codeload:\n  redirect_to: \"https://a.example.com/\"\n  allow:\n    - \"actions\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configB, []byte("codeload:\n  redirect_to: \"https://b.example.com/\"\n  allow: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(configA)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	handler := NewCodeloadHandler(cfg, nil, transport)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Reloader: alternate between the two configs.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		paths := []string{configA, configB}
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if err := cfg.ReloadFrom(paths[i%2]); err != nil {
+				t.Errorf("reload: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Readers: hammer the handler with both an allow-list candidate and a
+	// non-allow-list candidate so we exercise both the IsCodeloadAllowed
+	// path and the snapshot read.
+	const readers = 8
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				path := "/actions/checkout/tar.gz/abc123"
+				if j%2 == 0 {
+					path = "/goodtune/ghp/zip/main"
+				}
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req.Host = "codeload.github.com"
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, req)
+				if w.Code != http.StatusFound && w.Code != http.StatusOK {
+					t.Errorf("unexpected status %d", w.Code)
+					return
+				}
+			}
+		}()
+	}
+
+	// Let the readers run for a fixed window.
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }
