@@ -37,6 +37,12 @@ be upgraded between restarts.`,
 			logger, logWriter, cleanupLogger := newLogger(cfg)
 			defer cleanupLogger()
 
+			// Make the configured logger the global slog default so background
+			// goroutines in internal packages (e.g. token.StartCleanup,
+			// gitcache.StartCleanup) that use bare slog.Info/Error calls route
+			// through the same handler as the rest of the server.
+			slog.SetDefault(logger)
+
 			migrate, _ := cmd.Flags().GetBool("migrate")
 
 			logger.Info("server_start", "msg", "starting ghp server", "version", version)
