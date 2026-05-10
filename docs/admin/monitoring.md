@@ -25,7 +25,7 @@ Scrape the metrics endpoint at `http(s)://<ghp-server>:9136/metrics` (HTTPS when
 | `ghp_http_request_total` | Counter | Total HTTP requests (labels: `backend`, `method`, `status`) |
 
 The `backend` label distinguishes traffic by virtualhost: `api.github.com`,
-`github.com`, `copilot`, or `management`.
+`github.com`, `codeload.github.com`, `copilot`, or `management`.
 
 #### Proxy Metrics
 
@@ -163,9 +163,24 @@ availability probe adds to redirected release downloads.
 See [Release Download Controls](../features/release-controls.md) for
 configuration details.
 
+#### Codeload Redirect Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `ghp_codeload_redirect_total` | Counter | codeload.github.com archive requests handled by the codeload handler (labels: `owner`, `repo`, `archive`, `result`) |
+
+The `archive` label is one of `tar.gz`, `zip`, `legacy.tar.gz`, or
+`legacy.zip`. The `result` label is `redirect` (302 to the configured
+caching mirror) or `passthrough` (forwarded to upstream codeload because the
+org/repo is in the allow list or no `redirect_to` is configured). The full
+ref (SHA, branch, or tag) is intentionally omitted from labels to keep
+cardinality bounded; query the access log for per-ref breakdowns.
+
+See [Codeload Redirect](../features/codeload.md) for configuration details.
+
 ## Access Logs
 
-ghp writes structured JSON access logs for every request across all four
+ghp writes structured JSON access logs for every request across all
 virtualhosts. Each log entry typically includes:
 
 - HTTP method, host, URI/path, and status code

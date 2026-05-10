@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
@@ -23,7 +24,31 @@ import (
 )
 
 // Config represents the complete server configuration.
+//
+// Hot-reloadable fields (Admins, Tokens, Logging, Metrics, Auth, Block,
+// Releases, Codeload, Cache) are mutated in place by ReloadFrom on SIGUSR1.
+// To make per-request reads race-free with that mutation, an unexported mu
+// guards those fields; ReloadFrom takes the write lock for the duration of
+// the update.
+//
+// Reads on the hot request path should go through the locking accessor
+// methods on this type — IsAdmin, IsTokenBlocked, IsReleaseAllowed,
+// IsCodeloadAllowed, and CodeloadRedirectTo — which take the read lock and
+// return values that are safe to use after the lock is released. Reads of
+// the embedded structs (e.g. cfg.Releases.Mode) are NOT race-free; existing
+// call sites that pre-date this PR fall into that category and should be
+// migrated to accessor methods (or new ones added — see the CodeloadRedirectTo
+// pattern) as they're touched.
+//
+// Static fields (GitHub, Database, Server, TLS, EncryptionKey, DevMode) are
+// populated once at startup and never mutated, so they're safe to read
+// directly.
 type Config struct {
+	// mu guards all hot-reloadable fields below. Held for the duration of
+	// ReloadFrom so a single SIGUSR1 either fully replaces the runtime
+	// fields or is invisible to a reader that has the read lock.
+	mu sync.RWMutex
+
 	GitHub   GitHubConfig   `koanf:"github"`
 	Database DatabaseConfig `koanf:"database"`
 	Server   ServerConfig   `koanf:"server"`
@@ -36,6 +61,7 @@ type Config struct {
 	Auth     AuthConfig     `koanf:"auth"`
 	Block    BlockConfig    `koanf:"block"`
 	Releases ReleasesConfig `koanf:"releases"`
+	Codeload CodeloadConfig `koanf:"codeload"`
 
 	Cache CacheConfig `koanf:"cache"`
 
@@ -100,6 +126,29 @@ type ReleasesConfig struct {
 	// Allow is a list of org or org/repo entries that are exempt from the policy.
 	// Entries may be bare org names (e.g. "goodtune") or org/repo pairs
 	// (e.g. "goodtune/ghp"). Matching is case-insensitive.
+	Allow []string `koanf:"allow"`
+}
+
+// CodeloadConfig controls how codeload.github.com archive download requests
+// are handled. The codeload service serves repository archives at paths of the
+// form /{owner}/{repo}/(tar.gz|zip|legacy.tar.gz|legacy.zip)/{ref} — these are
+// highly cacheable (the (org, repo, sha) tuple is immutable) and a common
+// hotspot for build agents that resolve actions like actions/checkout@v4.
+//
+// When RedirectTo is set, matching archive requests are redirected with a 302
+// to RedirectTo + the original path, allowing an internal caching mirror to
+// serve the archive. When RedirectTo is empty, all codeload.github.com traffic
+// is forwarded transparently to the upstream service.
+type CodeloadConfig struct {
+	// RedirectTo is the base URL prepended to the original path when
+	// redirecting archive requests. Must be an absolute URL with scheme + host
+	// (e.g. "https://codeload.cache.example.com/"). When empty, the codeload
+	// handler simply proxies requests through to upstream codeload.github.com.
+	RedirectTo string `koanf:"redirect_to"`
+	// Allow is a list of org or org/repo entries that are exempt from the
+	// redirect (passed through to upstream). Entries may be bare org names
+	// (e.g. "goodtune") or org/repo pairs (e.g. "goodtune/ghp"). Matching is
+	// case-insensitive.
 	Allow []string `koanf:"allow"`
 }
 
@@ -297,7 +346,7 @@ func Load(path string) (*Config, error) {
 			if i := strings.Index(s, "_"); i > 0 {
 				section, field := s[:i], s[i+1:]
 				switch section {
-				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases", "cache":
+				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases", "codeload", "cache":
 					// Handle 3-level nesting for logging.file.*
 					if section == "logging" && strings.HasPrefix(field, "file_") {
 						return "logging.file." + field[len("file_"):], v
@@ -321,6 +370,7 @@ func Load(path string) (*Config, error) {
 	cfg.Admins = splitCommaSlice(cfg.Admins)
 	cfg.Auth.AllowedRedirects = splitCommaSlice(cfg.Auth.AllowedRedirects)
 	cfg.Releases.Allow = splitCommaSlice(cfg.Releases.Allow)
+	cfg.Codeload.Allow = splitCommaSlice(cfg.Codeload.Allow)
 
 	// GHP_RELEASES_ALLOW_COUNT + GHP_RELEASES_ALLOW_N support indexed allow
 	// lists that cannot be expressed as comma-separated values. When set, the
@@ -345,6 +395,29 @@ func Load(path string) (*Config, error) {
 		cfg.Releases.Allow = entries
 	}
 
+	// GHP_CODELOAD_ALLOW_COUNT + GHP_CODELOAD_ALLOW_N support indexed allow
+	// lists that cannot be expressed as comma-separated values. When set, the
+	// indexed entries replace any allow list loaded from YAML or other env vars.
+	if countStr := os.Getenv("GHP_CODELOAD_ALLOW_COUNT"); countStr != "" {
+		count, err := strconv.Atoi(countStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid GHP_CODELOAD_ALLOW_COUNT %q: %w", countStr, err)
+		}
+		if count < 0 {
+			return nil, fmt.Errorf("invalid GHP_CODELOAD_ALLOW_COUNT %q: must be non-negative", countStr)
+		}
+		entries := make([]string, 0, count)
+		for i := 0; i < count; i++ {
+			key := fmt.Sprintf("GHP_CODELOAD_ALLOW_%d", i)
+			v := strings.TrimSpace(os.Getenv(key))
+			if v == "" {
+				return nil, fmt.Errorf("%s not set or empty (GHP_CODELOAD_ALLOW_COUNT=%d)", key, count)
+			}
+			entries = append(entries, v)
+		}
+		cfg.Codeload.Allow = entries
+	}
+
 	// Convenience env vars for the common single-certificate case.
 	// GHP_TLS_CERT_FILE / GHP_TLS_KEY_FILE populate Certificates[0]
 	// when the slice is empty (the koanf env mapper cannot address
@@ -365,11 +438,24 @@ func Load(path string) (*Config, error) {
 // ReloadFrom re-reads a YAML config file and updates hot-reloadable fields
 // in-place. Fields that require a restart (database, server listen addresses,
 // TLS certificates) are not updated.
+//
+// The hot-reloadable field updates are serialised with the read locks held by
+// the accessor methods (IsAdmin, IsTokenBlocked, IsReleaseAllowed,
+// IsCodeloadAllowed, CodeloadRedirectTo). The guarantee is per accessor call:
+// any single accessor invocation observes either the pre-reload or
+// post-reload value of the field it reads — never a torn read of a slice or
+// string. The guarantee does NOT extend across multiple accessor calls;
+// e.g. CodeloadRedirectTo() followed by IsCodeloadAllowed(...) may interleave
+// with a reload between them, so a handler that needs cross-field consistency
+// must add a snapshot accessor that takes the lock once and copies the
+// related fields together.
 func (c *Config) ReloadFrom(path string) error {
 	fresh, err := Load(path)
 	if err != nil {
 		return err
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.Admins = fresh.Admins
 	c.Tokens = fresh.Tokens
 	c.Logging = fresh.Logging
@@ -377,6 +463,7 @@ func (c *Config) ReloadFrom(path string) error {
 	c.Auth = fresh.Auth
 	c.Block = fresh.Block
 	c.Releases = fresh.Releases
+	c.Codeload = fresh.Codeload
 	c.Cache = fresh.Cache
 	return nil
 }
@@ -397,7 +484,13 @@ func splitCommaSlice(ss []string) []string {
 }
 
 // IsAdmin returns true if the given GitHub username is in the admin list.
+//
+// Safe to call concurrently with ReloadFrom: the read lock is held for the
+// duration of the lookup, so an in-flight reload either fully precedes or
+// fully follows this call.
 func (c *Config) IsAdmin(username string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	for _, admin := range c.Admins {
 		if strings.EqualFold(admin, username) {
 			return true
@@ -409,7 +502,11 @@ func (c *Config) IsAdmin(username string) bool {
 // IsTokenBlocked returns true when the token string's type prefix is blocked by
 // the border policy. Only the five standard GitHub token prefixes are evaluated;
 // ghp's own managed token types (ghx_, gha_) are never considered here.
+//
+// Safe to call concurrently with ReloadFrom.
 func (c *Config) IsTokenBlocked(token string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	switch {
 	case strings.HasPrefix(token, "ghp_"):
 		return c.Block.GHP
@@ -429,7 +526,11 @@ func (c *Config) IsTokenBlocked(token string) bool {
 // appears in the releases allow list, meaning it is exempt from the releases
 // policy (block or redirect). Matching is case-insensitive. An org-only entry
 // (e.g. "goodtune") permits any repository under that org.
+//
+// Safe to call concurrently with ReloadFrom.
 func (c *Config) IsReleaseAllowed(org, repo string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	orgRepo := org + "/" + repo
 	for _, entry := range c.Releases.Allow {
 		if strings.EqualFold(entry, org) || strings.EqualFold(entry, orgRepo) {
@@ -437,6 +538,37 @@ func (c *Config) IsReleaseAllowed(org, repo string) bool {
 		}
 	}
 	return false
+}
+
+// IsCodeloadAllowed returns true when the given org or org/repo combination
+// appears in the codeload allow list, meaning archive download requests for it
+// are passed through to upstream rather than redirected to the configured
+// caching mirror. Matching is case-insensitive. An org-only entry (e.g.
+// "goodtune") exempts every repository under that org.
+//
+// Safe to call concurrently with ReloadFrom.
+func (c *Config) IsCodeloadAllowed(org, repo string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	orgRepo := org + "/" + repo
+	for _, entry := range c.Codeload.Allow {
+		if strings.EqualFold(entry, org) || strings.EqualFold(entry, orgRepo) {
+			return true
+		}
+	}
+	return false
+}
+
+// CodeloadRedirectTo returns the configured codeload redirect base URL. It
+// takes the read lock so callers on the request hot path can read it without
+// racing against ReloadFrom. Returning a string (rather than a snapshot
+// struct) keeps the per-request cost to a single lock + field copy with no
+// allocation, even when codeload.allow is set — the allow check has its own
+// race-free accessor in IsCodeloadAllowed.
+func (c *Config) CodeloadRedirectTo() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Codeload.RedirectTo
 }
 
 // WarnInvalidBlockTargets logs a warning for any block configuration targeting

@@ -31,12 +31,13 @@ For each request, the proxy:
 
 ## Virtualhost Routing
 
-ghp serves four distinct roles depending on which hostname the request arrives on:
+ghp serves several distinct roles depending on which hostname the request arrives on:
 
 | Hostname | Role |
 |----------|------|
 | `api.github.com` | **API proxy** — validates tokens, enforces scopes, injects credentials, logs every request |
 | `github.com` | **Git passthrough** — transparent proxy for `git clone`, `git push`, etc. with token interception |
+| `codeload.github.com` | **Codeload redirect/passthrough** — optionally redirects repo archive downloads to a caching mirror (see [Codeload Redirect](features/codeload.md)); transparent passthrough otherwise |
 | `*.githubcopilot.com` | **Copilot passthrough** — forwards Copilot traffic transparently; all requests are logged |
 | Your management host | **Dashboard** — web UI, GitHub OAuth login (web), CLI device-authorization endpoints, token management API |
 
