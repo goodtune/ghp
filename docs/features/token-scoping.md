@@ -76,6 +76,24 @@ an agent legitimately needs broad access and scoping would be too restrictive.
 Open-scoped tokens are the default for proxy tokens created without `--repo`
 and `--scope` flags.
 
+## Unmapped Endpoints
+
+ghp maintains an internal table mapping REST API URL patterns to permission
+categories. When a request targets an endpoint not in this table (for example,
+a newly introduced GitHub API or a path that falls outside the defined rules),
+the behaviour depends on the token's scope:
+
+- **Scoped tokens** — the request is forwarded to GitHub. Because the endpoint
+  cannot be mapped to a permission, ghp cannot reject it locally; GitHub's own
+  token enforcement becomes the backstop.
+- **Open-scoped tokens** — the request is forwarded normally (no restrictions
+  apply regardless).
+
+This means scoped tokens have a two-layer defence: ghp blocks requests that
+match a known permission the token lacks, and GitHub blocks anything the
+underlying credential does not permit. Unmapped endpoints rely on the second
+layer only.
+
 ## GraphQL Limitation
 
 Tokens that are restricted to specific repositories cannot use the GraphQL API.
