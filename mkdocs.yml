@@ -34,6 +34,7 @@ nav:
     - Token Scoping: features/token-scoping.md
     - Token Type Border Policy: features/border-policy.md
     - Release Download Controls: features/release-controls.md
+    - Codeload Redirect: features/codeload.md
     - OAuth Broker: features/oauth-broker.md
   - Administration:
     - Installation: admin/installation.md

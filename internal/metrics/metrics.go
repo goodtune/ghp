@@ -103,6 +103,21 @@ var (
 		Help: "Total number of HEAD checks against the release redirect target, by result.",
 	}, []string{"result"})
 
+	// CodeloadRedirectTotal counts archive download requests handled by the
+	// codeload.github.com handler, labeled by owner, repo, archive format
+	// ("tar.gz", "zip", "legacy.tar.gz", "legacy.zip"), and result:
+	//   "redirect"    — 302 issued to the configured caching mirror
+	//   "passthrough" — request forwarded transparently to upstream codeload
+	//                   (allow list match or no redirect_to configured)
+	//
+	// The full ref (SHA, branch, or tag) is not included as a label to keep
+	// cardinality bounded; it is captured in access logs as part of the URL.
+	// Cardinality: bounded by (cached repos × archive formats × results).
+	CodeloadRedirectTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_codeload_redirect_total",
+		Help: "Total codeload.github.com archive requests handled, by owner, repo, archive format, and result.",
+	}, []string{"owner", "repo", "archive", "result"})
+
 	// BlockAnonymousGitEnabled reflects whether the anonymous git blocking
 	// feature is currently active (1) or inactive (0). Set at server startup
 	// and on config reload (SIGUSR1); not updated per-request.

@@ -4,8 +4,9 @@
 //   - Opening the database and running/checking migrations
 //   - Initializing encryption, token services, and the GitHub App provider
 //   - Building the host-dispatch handler that routes requests by Host header
-//     to the appropriate backend (API proxy, github.com passthrough, Copilot
-//     passthrough, or management UI)
+//     to the appropriate backend (API proxy, github.com passthrough,
+//     codeload.github.com redirect/passthrough, Copilot passthrough, or
+//     management UI)
 //   - Starting TLS and/or plain HTTP listeners (including systemd socket
 //     activation support)
 //   - Running the dedicated Prometheus metrics server on a separate port
@@ -450,6 +451,8 @@ func (s *Server) Run(ctx context.Context) error {
 		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, s.logger, s.cfg)
 	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger)
 
+	codeloadHandler := proxy.NewCodeloadHandler(s.cfg, s.logger, nil)
+
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 
@@ -458,11 +461,12 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Build host dispatch with access logging on all handlers.
 	dispatch := newHostDispatch(hostDispatchConfig{
-		apiHandler:     accessLogHandler(backend.API, proxyHandler, aw),
-		githubHandler:  accessLogHandler(backend.GitHub, githubPassthrough, aw),
-		copilotHandler: accessLogHandler(backend.Copilot, copilotPassthrough, aw),
-		mgmtHandler:    accessLogHandler(backend.Mgmt, web.SessionUsernameMiddleware(authHandler)(web.SecurityHeadersMiddleware(mux)), aw),
-		managementHost: s.cfg.Server.ManagementHost,
+		apiHandler:      accessLogHandler(backend.API, proxyHandler, aw),
+		githubHandler:   accessLogHandler(backend.GitHub, githubPassthrough, aw),
+		codeloadHandler: accessLogHandler(backend.Codeload, codeloadHandler, aw),
+		copilotHandler:  accessLogHandler(backend.Copilot, copilotPassthrough, aw),
+		mgmtHandler:     accessLogHandler(backend.Mgmt, web.SessionUsernameMiddleware(authHandler)(web.SecurityHeadersMiddleware(mux)), aw),
+		managementHost:  s.cfg.Server.ManagementHost,
 	})
 
 	// Wrap dispatch with the Server response header middleware so that every
@@ -732,26 +736,35 @@ func systemdListeners() ([]net.Listener, error) {
 }
 
 type hostDispatchConfig struct {
-	apiHandler     http.Handler
-	githubHandler  http.Handler
-	copilotHandler http.Handler
-	mgmtHandler    http.Handler
-	managementHost string
+	apiHandler      http.Handler
+	githubHandler   http.Handler
+	codeloadHandler http.Handler
+	copilotHandler  http.Handler
+	mgmtHandler     http.Handler
+	managementHost  string
 }
 
 // newHostDispatch creates a handler that routes requests by Host header.
+//
+// The Host header is normalised to lowercase before comparison: hostnames are
+// case-insensitive (RFC 1035 §2.3.3) and net/http does not lowercase r.Host
+// for us, so without this a client sending "API.GitHub.com" would 404 even
+// though it resolves to the same backend as "api.github.com".
 func newHostDispatch(cfg hostDispatchConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
 		}
+		host = strings.ToLower(host)
 
 		switch {
 		case host == backend.API:
 			cfg.apiHandler.ServeHTTP(w, r)
 		case host == backend.GitHub:
 			cfg.githubHandler.ServeHTTP(w, r)
+		case host == backend.Codeload:
+			cfg.codeloadHandler.ServeHTTP(w, r)
 		case host == "githubcopilot.com" || strings.HasSuffix(host, ".githubcopilot.com"):
 			cfg.copilotHandler.ServeHTTP(w, r)
 		case cfg.managementHost == "" || strings.EqualFold(host, cfg.managementHost):

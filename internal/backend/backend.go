@@ -1,4 +1,4 @@
-// Package backend defines the four upstream backend identifiers that ghp routes
+// Package backend defines the upstream backend identifiers that ghp routes
 // traffic to. These constants are used as the canonical labels for host-based
 // request dispatch, Prometheus metric labelling, and structured access logs.
 // Every HTTP request with a recognized/handled Host header is attributed to
@@ -17,6 +17,12 @@ const (
 	// although release downloads may be intercepted or redirected when release
 	// controls (releases.mode) are configured.
 	GitHub = "github.com"
+
+	// Codeload handles requests to codeload.github.com — repository archive
+	// downloads (zip/tarball by ref). Traffic is forwarded transparently to
+	// upstream by default; archive download paths may be redirected to a
+	// configured caching mirror when codeload.redirect_to is set.
+	Codeload = "codeload.github.com"
 
 	// Copilot handles requests to *.githubcopilot.com. Traffic is forwarded
 	// transparently without token interception or scope enforcement; only access
