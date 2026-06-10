@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	ghub "github.com/google/go-github/v86/github"
+	ghub "github.com/google/go-github/v88/github"
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
@@ -590,7 +590,12 @@ func (a *API) handleListUserRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := ghub.NewClient(nil).WithAuthToken(plainToken)
+	client, err := ghub.NewClient(ghub.WithAuthToken(plainToken))
+	if err != nil {
+		a.logger.Error("failed to create GitHub client", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+		return
+	}
 
 	type ghRepo struct {
 		FullName string `json:"full_name"`

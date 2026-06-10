@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
-	ghub "github.com/google/go-github/v86/github"
+	ghub "github.com/google/go-github/v88/github"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/goodtune/ghp/internal/crypto"
 )
@@ -299,12 +299,13 @@ func (p *AppTokenProvider) newAppClient() (*ghub.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := ghub.NewClient(nil).WithAuthToken(signed)
+	opts := []ghub.ClientOptionsFunc{ghub.WithAuthToken(signed)}
 	if p.baseURL != "https://api.github.com" {
-		client, err = client.WithEnterpriseURLs(p.baseURL, p.baseURL)
-		if err != nil {
-			return nil, fmt.Errorf("configuring enterprise URLs: %w", err)
-		}
+		opts = append(opts, ghub.WithEnterpriseURLs(p.baseURL, p.baseURL))
+	}
+	client, err := ghub.NewClient(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("creating GitHub app client: %w", err)
 	}
 	return client, nil
 }
@@ -423,12 +424,13 @@ func (p *AppTokenProvider) ListInstallationRepositories(ctx context.Context, ins
 	}
 
 	// Create a client authenticated as the installation.
-	instClient := ghub.NewClient(nil).WithAuthToken(tok.GetToken())
+	instOpts := []ghub.ClientOptionsFunc{ghub.WithAuthToken(tok.GetToken())}
 	if p.baseURL != "https://api.github.com" {
-		instClient, err = instClient.WithEnterpriseURLs(p.baseURL, p.baseURL)
-		if err != nil {
-			return nil, fmt.Errorf("configuring enterprise URLs: %w", err)
-		}
+		instOpts = append(instOpts, ghub.WithEnterpriseURLs(p.baseURL, p.baseURL))
+	}
+	instClient, err := ghub.NewClient(instOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("creating GitHub installation client: %w", err)
 	}
 
 	var all []InstallationRepository
