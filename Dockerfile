@@ -2,7 +2,7 @@ FROM python:3.14 AS docs
 WORKDIR /src
 COPY mkdocs.yml ./
 COPY docs/ docs/
-RUN pip install uv && uvx --with mkdocs-shadcn mkdocs build --site-dir internal/docs/site
+RUN pip install uv && uvx --with mkdocs-shadcn==0.10.2 mkdocs build --site-dir internal/docs/site
 
 FROM golang:1.26 AS build
 WORKDIR /src

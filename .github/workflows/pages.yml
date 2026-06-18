@@ -26,7 +26,7 @@ jobs:
       - uses: astral-sh/setup-uv@v8.2.0
 
       - name: Build MkDocs site
-        run: uvx --with mkdocs-shadcn mkdocs build
+        run: uvx --with mkdocs-shadcn==0.10.2 mkdocs build
 
       - name: Setup Pages
         uses: actions/configure-pages@v6
