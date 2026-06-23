@@ -199,11 +199,25 @@ logging:
     path: "/var/log/ghp/ghp.log"
 ```
 
-## Server Response Header
+## Server Response Headers
 
-Every response from ghp includes a `Server: GitHub Proxy <version>` header.
-This makes it easy to verify that traffic is flowing through ghp rather than
-directly to GitHub, and to identify which version of ghp is running.
+Every response from ghp includes two identifying headers, set by a
+server-wide middleware regardless of which backend served the request:
+
+- `Server: GitHub Proxy` — a fixed value that overrides any upstream
+  `Server` header (e.g. GitHub's own `server: github.com`), making it easy to
+  verify that traffic is flowing through ghp rather than directly to GitHub.
+- `X-GitHub-Proxy-Version: <version>` — the build version of the running ghp
+  binary, so operators can identify exactly which image a deployment is
+  serving. The header is omitted when no version was compiled in.
+
+You can confirm the deployed version from the command line:
+
+    curl -sI https://ghp.example.com/docs/ | grep -i x-github-proxy-version
+
+The same version string is also displayed beneath the login form in the web
+UI, so managers rolling out a new image can identify the running version at a
+glance without inspecting headers.
 
 ## Health Check
 

@@ -382,7 +382,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 	api := NewAPI(lifecycleCtx, s.cfg, store, tokenSvc, authHandler, enc, concreteATP, appRegistry, proxyTokenResolver, usernameResolver, s.logger, auditWriter)
-	webUI := web.NewHandler(authHandler, store, s.cfg.DevMode, s.logger)
+	webUI := web.NewHandler(authHandler, store, s.cfg.DevMode, s.version, s.logger)
 
 	// Build HTTP mux.
 	mux := http.NewServeMux()

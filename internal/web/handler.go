@@ -27,17 +27,21 @@ type Handler struct {
 	auth      *auth.Handler
 	store     database.Store
 	devMode   bool
+	version   string
 	logger    *slog.Logger
 	templates *template.Template
 }
 
-// NewHandler creates a new web UI handler.
-func NewHandler(ah *auth.Handler, store database.Store, devMode bool, logger *slog.Logger) *Handler {
+// NewHandler creates a new web UI handler. version is the build version string
+// surfaced in the UI (e.g. beneath the login form) so operators can identify
+// which image a deployment is running.
+func NewHandler(ah *auth.Handler, store database.Store, devMode bool, version string, logger *slog.Logger) *Handler {
 	tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
 	return &Handler{
 		auth:      ah,
 		store:     store,
 		devMode:   devMode,
+		version:   version,
 		logger:    logger,
 		templates: tmpl,
 	}
@@ -136,7 +140,10 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.templates.ExecuteTemplate(w, "login.html", nil); err != nil {
+	data := map[string]interface{}{
+		"Version": h.version,
+	}
+	if err := h.templates.ExecuteTemplate(w, "login.html", data); err != nil {
 		h.logger.Error("template execution failed", "error", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 	}
