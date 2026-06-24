@@ -24,7 +24,7 @@ func newTokenCmd() *cobra.Command {
 		Use:   "create",
 		Short: "Create a new proxy token",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadCLIConfig()
+			cfg, err := loadCLIConfigAuthed(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -182,7 +182,7 @@ func newTokenCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List active tokens",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadCLIConfig()
+			cfg, err := loadCLIConfigAuthed(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -269,7 +269,7 @@ func newTokenCmd() *cobra.Command {
 		Short: "Revoke a token",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadCLIConfig()
+			cfg, err := loadCLIConfigAuthed(cmd.Context())
 			if err != nil {
 				return err
 			}
