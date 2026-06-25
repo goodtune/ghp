@@ -29,52 +29,154 @@ var cliHTTPClient = &http.Client{Timeout: 30 * time.Second}
 type cliConfig struct {
 	ServerURL string `yaml:"server_url"`
 	UserToken string `yaml:"user_token"`
+
+	// Dotvault, when set, sources CLI config fields (notably the session
+	// token) from HashiCorp Vault via the dotvault client instead of from
+	// this file. See dotvaultConfig and applyDotvault.
+	Dotvault *dotvaultConfig `yaml:"dotvault,omitempty"`
 }
 
-// loadCLIConfigFile reads the on-disk config file without applying any env
-// var overrides. A missing file yields an empty config and no error; a present
-// but unreadable or malformed file returns an error so callers (notably
-// set-token) can fail loudly rather than silently overwriting existing fields.
-func loadCLIConfigFile() (*cliConfig, error) {
-	cfg := &cliConfig{}
+// systemConfigPathOverride, when non-empty, replaces the computed system
+// config path. Tests set it; production leaves it empty.
+var systemConfigPathOverride string
+
+// systemCLIConfigPath returns the OS-appropriate fleet-wide config file path.
+// It mirrors dotvault's SystemConfigPath convention so an operator deploying
+// both tools uses the same base layout: on Linux /etc/xdg/ghp/config.yaml
+// (honouring XDG_CONFIG_DIRS), %ProgramData%\ghp\config.yaml on Windows, and
+// /Library/Application Support/ghp/config.yaml on macOS. It is merged with the
+// lowest precedence so an operator can deploy shared settings (server_url, a
+// dotvault stanza) fleet-wide and have every user inherit them with zero
+// per-user config.
+func systemCLIConfigPath() string {
+	if systemConfigPathOverride != "" {
+		return systemConfigPathOverride
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return "/Library/Application Support/ghp/config.yaml"
+	case "windows":
+		return filepath.Join(os.Getenv("ProgramData"), "ghp", "config.yaml")
+	default: // linux and others
+		// Honour XDG_CONFIG_DIRS: use the first entry that actually has a
+		// ghp config, falling back to the conventional /etc/xdg location.
+		if dirs := os.Getenv("XDG_CONFIG_DIRS"); dirs != "" {
+			for _, dir := range strings.Split(dirs, ":") {
+				if dir == "" {
+					continue
+				}
+				p := filepath.Join(dir, "ghp", "config.yaml")
+				if _, err := os.Stat(p); err == nil {
+					return p
+				}
+			}
+		}
+		return "/etc/xdg/ghp/config.yaml"
+	}
+}
+
+// userCLIConfigPath returns the per-user config file path, or "" when the home
+// directory cannot be resolved.
+func userCLIConfigPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "ghp", "config.yaml")
+}
+
+// loadCLIConfigFileAt reads a single config file. A missing file (or empty
+// path) yields an empty config and no error; a present but unreadable or
+// malformed file returns an error so callers (notably set-token) can fail
+// loudly rather than silently overwriting existing fields.
+//
+// When checkPerms is true — the user file, which may hold a session token — a
+// warning is printed for permissions looser than 0600. The system file is
+// expected to be world-readable across a fleet and to carry no secrets (the
+// token is sourced per-user via dotvault), so that check is skipped for it.
+func loadCLIConfigFileAt(path string, checkPerms bool) (*cliConfig, error) {
+	cfg := &cliConfig{}
+	if path == "" {
 		return cfg, nil
 	}
-	configPath := filepath.Join(home, ".config", "ghp", "config.yaml")
-	info, err := os.Stat(configPath)
+	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return cfg, nil
 		}
-		return nil, fmt.Errorf("stating %s: %w", configPath, err)
+		return nil, fmt.Errorf("stating %s: %w", path, err)
 	}
-	// 0177 masks owner-execute, group, and other permission bits.
-	const insecurePermsMask = 0177
-	if info.Mode().Perm()&insecurePermsMask != 0 {
-		fmt.Fprintf(os.Stderr, "warning: config file %s has insecure permissions %04o (expected 0600)\n", configPath, info.Mode().Perm())
+	if checkPerms {
+		// 0177 masks owner-execute, group, and other permission bits.
+		const insecurePermsMask = 0177
+		if info.Mode().Perm()&insecurePermsMask != 0 {
+			fmt.Fprintf(os.Stderr, "warning: config file %s has insecure permissions %04o (expected 0600)\n", path, info.Mode().Perm())
+		}
 	}
-	data, err := os.ReadFile(configPath)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", configPath, err)
+		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", configPath, err)
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return cfg, nil
 }
 
+// loadCLIConfigFile reads the per-user config file only. Save paths (auth
+// login, set-token) use it so a transient environment, or the system file, is
+// never written back into the user's config.
+func loadCLIConfigFile() (*cliConfig, error) {
+	return loadCLIConfigFileAt(userCLIConfigPath(), true)
+}
+
+// mergeCLIConfig overlays over onto base: any field set in over wins, otherwise
+// base's value is kept. This lets the per-user config overload the fleet-wide
+// system config field-by-field.
+func mergeCLIConfig(base, over *cliConfig) *cliConfig {
+	merged := *base
+	if over.ServerURL != "" {
+		merged.ServerURL = over.ServerURL
+	}
+	if over.UserToken != "" {
+		merged.UserToken = over.UserToken
+	}
+	if over.Dotvault != nil {
+		merged.Dotvault = over.Dotvault
+	}
+	return &merged
+}
+
+// loadCLIConfig builds the effective CLI config by merging, from lowest to
+// highest precedence: the system file (/etc/ghp/config.yaml), the per-user
+// file (~/.config/ghp/config.yaml), and the GHP_SERVER_URL / GHP_USER_TOKEN
+// environment variables. dotvault-sourced fields override all of these and are
+// resolved separately by loadCLIConfigAuthed.
 func loadCLIConfig() (*cliConfig, error) {
-	// For the env-aware loader, swallow file-level errors: a malformed file
-	// shouldn't stop commands like `auth login` that can still work from env
-	// vars alone. set-token uses loadCLIConfigFile directly and fails fast.
-	cfg, err := loadCLIConfigFile()
+	// Swallow file-level errors at both layers: a malformed file shouldn't
+	// stop commands like `auth login` that can still work from env vars
+	// alone. set-token uses loadCLIConfigFile directly and fails fast.
+	sysCfg, err := loadCLIConfigFileAt(systemCLIConfigPath(), false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
-		cfg = &cliConfig{}
+		sysCfg = &cliConfig{}
 	}
+	// A session token is per-user and the system file is shared and expected to
+	// be world-readable, so a user_token there would hand one user's token to
+	// every local account. Refuse it loudly rather than silently trusting it;
+	// the dotvault stanza is the supported way to source a per-user token from
+	// a fleet-wide config.
+	if sysCfg.UserToken != "" {
+		return nil, fmt.Errorf("system config %s must not set user_token: a session token is per-user but this file is shared/world-readable; source the token per-user with a dotvault stanza instead", systemCLIConfigPath())
+	}
+	userCfg, err := loadCLIConfigFile()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		userCfg = &cliConfig{}
+	}
+	cfg := mergeCLIConfig(sysCfg, userCfg)
 
-	// Environment variable overrides.
+	// Environment variable overrides (highest precedence among static sources).
 	if v := os.Getenv("GHP_SERVER_URL"); v != "" {
 		cfg.ServerURL = v
 	}
@@ -435,7 +537,7 @@ web UI, but the CLI never sees a github.com URL.`,
 		Use:   "status",
 		Short: "Show current authentication status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadCLIConfig()
+			cfg, err := loadCLIConfigAuthed(cmd.Context())
 			if err != nil {
 				return err
 			}
