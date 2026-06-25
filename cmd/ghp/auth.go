@@ -161,6 +161,14 @@ func loadCLIConfig() (*cliConfig, error) {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 		sysCfg = &cliConfig{}
 	}
+	// A session token is per-user and the system file is shared and expected to
+	// be world-readable, so a user_token there would hand one user's token to
+	// every local account. Refuse it loudly rather than silently trusting it;
+	// the dotvault stanza is the supported way to source a per-user token from
+	// a fleet-wide config.
+	if sysCfg.UserToken != "" {
+		return nil, fmt.Errorf("system config %s must not set user_token: a session token is per-user but this file is shared/world-readable; source the token per-user with a dotvault stanza instead", systemCLIConfigPath())
+	}
 	userCfg, err := loadCLIConfigFile()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", err)

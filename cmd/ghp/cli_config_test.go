@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -37,7 +38,7 @@ func TestLoadCLIConfig_SystemFileOnly(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
 	t.Setenv("HOME", t.TempDir()) // no user config written
-	setSystemConfig(t, "server_url: http://sys-server:8080\nuser_token: sys-token\n")
+	setSystemConfig(t, "server_url: http://sys-server:8080\n")
 
 	cfg, err := loadCLIConfig()
 	if err != nil {
@@ -46,9 +47,6 @@ func TestLoadCLIConfig_SystemFileOnly(t *testing.T) {
 	if cfg.ServerURL != "http://sys-server:8080" {
 		t.Errorf("ServerURL = %q, want system value", cfg.ServerURL)
 	}
-	if cfg.UserToken != "sys-token" {
-		t.Errorf("UserToken = %q, want system value", cfg.UserToken)
-	}
 }
 
 func TestLoadCLIConfig_UserOverloadsSystem(t *testing.T) {
@@ -56,9 +54,10 @@ func TestLoadCLIConfig_UserOverloadsSystem(t *testing.T) {
 	t.Setenv("GHP_USER_TOKEN", "")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	setSystemConfig(t, "server_url: http://sys-server:8080\nuser_token: sys-token\n")
-	// User overrides only the server_url; user_token should fall through to system.
-	writeUserConfig(t, home, "server_url: http://user-server:9090\n")
+	// System provides server_url; the user overrides server_url and supplies
+	// its own user_token (a session token is never carried in the system file).
+	setSystemConfig(t, "server_url: http://sys-server:8080\n")
+	writeUserConfig(t, home, "server_url: http://user-server:9090\nuser_token: user-token\n")
 
 	cfg, err := loadCLIConfig()
 	if err != nil {
@@ -67,8 +66,30 @@ func TestLoadCLIConfig_UserOverloadsSystem(t *testing.T) {
 	if cfg.ServerURL != "http://user-server:9090" {
 		t.Errorf("ServerURL = %q, want user override", cfg.ServerURL)
 	}
-	if cfg.UserToken != "sys-token" {
-		t.Errorf("UserToken = %q, want system value to fall through", cfg.UserToken)
+	if cfg.UserToken != "user-token" {
+		t.Errorf("UserToken = %q, want user value", cfg.UserToken)
+	}
+}
+
+// TestLoadCLIConfig_SystemServerURLFallsThrough confirms a system-only field is
+// inherited when the user does not override it.
+func TestLoadCLIConfig_SystemServerURLFallsThrough(t *testing.T) {
+	t.Setenv("GHP_SERVER_URL", "")
+	t.Setenv("GHP_USER_TOKEN", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	setSystemConfig(t, "server_url: http://sys-server:8080\n")
+	writeUserConfig(t, home, "user_token: user-token\n")
+
+	cfg, err := loadCLIConfig()
+	if err != nil {
+		t.Fatalf("loadCLIConfig: %v", err)
+	}
+	if cfg.ServerURL != "http://sys-server:8080" {
+		t.Errorf("ServerURL = %q, want system value to fall through", cfg.ServerURL)
+	}
+	if cfg.UserToken != "user-token" {
+		t.Errorf("UserToken = %q, want user value", cfg.UserToken)
 	}
 }
 
@@ -77,7 +98,7 @@ func TestLoadCLIConfig_EnvOverridesSystemAndUser(t *testing.T) {
 	t.Setenv("GHP_USER_TOKEN", "env-token")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	setSystemConfig(t, "server_url: http://sys-server:8080\nuser_token: sys-token\n")
+	setSystemConfig(t, "server_url: http://sys-server:8080\n")
 	writeUserConfig(t, home, "server_url: http://user-server:9090\nuser_token: user-token\n")
 
 	cfg, err := loadCLIConfig()
@@ -155,5 +176,43 @@ func TestLoadCLIConfig_NoSystemFile(t *testing.T) {
 	}
 	if cfg.ServerURL != "http://user-server:9090" || cfg.UserToken != "user-token" {
 		t.Errorf("cfg = %+v, want user values with absent system file", cfg)
+	}
+}
+
+// TestLoadCLIConfig_SystemUserTokenRejected verifies a user_token in the
+// shared, world-readable system config is rejected loudly rather than handed
+// to every local user.
+func TestLoadCLIConfig_SystemUserTokenRejected(t *testing.T) {
+	t.Setenv("GHP_SERVER_URL", "")
+	t.Setenv("GHP_USER_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+	setSystemConfig(t, "server_url: http://sys-server:8080\nuser_token: shared-token\n")
+
+	_, err := loadCLIConfig()
+	if err == nil || !strings.Contains(err.Error(), "must not set user_token") {
+		t.Fatalf("expected system user_token rejection, got %v", err)
+	}
+}
+
+// TestLoadCLIConfig_SystemDotvaultAllowed confirms the system config may still
+// carry a dotvault stanza (the supported per-user token source) even though a
+// literal user_token is rejected.
+func TestLoadCLIConfig_SystemDotvaultAllowed(t *testing.T) {
+	t.Setenv("GHP_SERVER_URL", "")
+	t.Setenv("GHP_USER_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+	setSystemConfig(t, `server_url: http://sys-server:8080
+dotvault:
+  service: ghp
+  fields:
+    user_token: token
+`)
+
+	cfg, err := loadCLIConfig()
+	if err != nil {
+		t.Fatalf("loadCLIConfig: %v", err)
+	}
+	if cfg.Dotvault == nil || cfg.Dotvault.Service != "ghp" {
+		t.Errorf("Dotvault stanza in system config should be allowed, got %+v", cfg.Dotvault)
 	}
 }

@@ -59,6 +59,14 @@ overload any field in `~/.config/ghp/config.yaml`.
 `ghp auth login` and `ghp auth set-token` always write to the **user** config
 (`~/.config/ghp/config.yaml`), never the system file.
 
+!!! warning "No `user_token` in the system config"
+    A session token is per-user, and the system config is shared and expected
+    to be world-readable. The CLI therefore **rejects** a `user_token` set in
+    the system file (it would otherwise hand one user's token to every local
+    account) — fix it by removing the key. To supply a per-user token from a
+    fleet-wide config, use a `dotvault:` stanza instead (below). For this
+    reason the system file is not permission-checked; the user file still is.
+
 ### Sourcing the token from Vault with dotvault
 
 Rather than storing `user_token` on disk, the CLI can fetch it just-in-time
