@@ -1,80 +1,63 @@
 package server
 
 import (
-	"encoding/json"
-	"io"
-	"sync"
-	"time"
+	"context"
+
+	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/log/noop"
 
 	"github.com/goodtune/ghp/internal/proxy"
 )
 
-// auditLogEntry is a structured JSON audit event, written to the same log
-// stream as access logs but distinguished by the "audit" logger name. This
-// allows log aggregators (Splunk, Elastic, etc.) to index audit events
+// auditLogScope is the OpenTelemetry instrumentation scope name used for audit
+// log records. Aggregators can route on this scope name in the same way they
+// previously keyed on the Caddy "audit" logger name, indexing audit events
 // separately from access logs.
-type auditLogEntry struct {
-	Level        string          `json:"level"`
-	TS           float64         `json:"ts"`
-	Logger       string          `json:"logger"`
-	Msg          string          `json:"msg"`
-	Action       string          `json:"action"`
-	UserID       string          `json:"user_id,omitempty"`
-	Username     string          `json:"username,omitempty"`
-	TokenID      string          `json:"token_id,omitempty"`
-	TokenType    string          `json:"token_type,omitempty"`
-	SessionID    string          `json:"session_id,omitempty"`
-	Method       string          `json:"method,omitempty"`
-	Path         string          `json:"path,omitempty"`
-	Repository   string          `json:"repository,omitempty"`
-	StatusCode   int             `json:"status_code,omitempty"`
-	DurationMS   int             `json:"duration_ms,omitempty"`
-	Metadata     json.RawMessage `json:"metadata,omitempty"`
-}
+const auditLogScope = "github.com/goodtune/ghp/audit"
 
-// auditLogWriter provides thread-safe structured JSON audit log writing.
+// auditLogWriter emits audit events as OpenTelemetry log records.
 type auditLogWriter struct {
-	mu sync.Mutex
-	w  io.Writer
+	logger otellog.Logger
 }
 
-func newAuditLogWriter(w io.Writer) *auditLogWriter {
-	if w == nil {
-		w = io.Discard
+func newAuditLogWriter(logger otellog.Logger) *auditLogWriter {
+	if logger == nil {
+		logger = noop.NewLoggerProvider().Logger(auditLogScope)
 	}
-	return &auditLogWriter{w: w}
+	return &auditLogWriter{logger: logger}
 }
 
 // WriteAuditEntry implements proxy.AuditLogWriter.
 func (a *auditLogWriter) WriteAuditEntry(entry proxy.AuditLogEntry) {
-	a.writeEntry(&auditLogEntry{
-		Msg:        "audit event",
-		Action:     entry.Action,
-		UserID:     entry.UserID,
-		Username:   entry.Username,
-		TokenID:    entry.TokenID,
-		TokenType:  entry.TokenType,
-		SessionID:  entry.SessionID,
-		Method:     entry.Method,
-		Path:       entry.Path,
-		Repository: entry.Repository,
-		StatusCode: entry.StatusCode,
-		DurationMS: entry.DurationMS,
-	})
+	attrs := []otellog.KeyValue{
+		otellog.String(attrGHPAuditAction, entry.Action),
+	}
+	attrs = appendNonEmpty(attrs, attrEndUserID, entry.UserID)
+	attrs = appendNonEmpty(attrs, attrGHPUserName, entry.Username)
+	attrs = appendNonEmpty(attrs, attrGHPTokenID, entry.TokenID)
+	attrs = appendNonEmpty(attrs, attrGHPTokenType, entry.TokenType)
+	attrs = appendNonEmpty(attrs, attrGHPSessionID, entry.SessionID)
+	attrs = appendNonEmpty(attrs, attrHTTPRequestMethod, entry.Method)
+	attrs = appendNonEmpty(attrs, attrURLPath, entry.Path)
+	attrs = appendNonEmpty(attrs, attrGHPRepository, entry.Repository)
+	if entry.StatusCode != 0 {
+		attrs = append(attrs, otellog.Int(attrHTTPResponseStatusCode, entry.StatusCode))
+	}
+	if entry.DurationMS != 0 {
+		attrs = append(attrs, otellog.Float64(attrHTTPServerRequestDuration, float64(entry.DurationMS)/1000))
+	}
+
+	var record otellog.Record
+	record.SetBody(otellog.StringValue("audit event"))
+	record.SetSeverity(otellog.SeverityInfo)
+	record.SetSeverityText(otellog.SeverityInfo.String())
+	record.AddAttributes(attrs...)
+	a.logger.Emit(context.Background(), record)
 }
 
-func (a *auditLogWriter) writeEntry(entry *auditLogEntry) {
-	if entry.TS == 0 {
-		entry.TS = float64(time.Now().UnixNano()) / 1e9
+func appendNonEmpty(attrs []otellog.KeyValue, key, value string) []otellog.KeyValue {
+	if value == "" {
+		return attrs
 	}
-	entry.Level = "info"
-	entry.Logger = "audit"
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return
-	}
-	data = append(data, '\n')
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.w.Write(data) // best-effort; audit log write errors are non-critical
+	return append(attrs, otellog.String(key, value))
 }

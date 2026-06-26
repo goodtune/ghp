@@ -88,12 +88,15 @@ values from the config file.
 
 ### OpenTelemetry
 
-OpenTelemetry tracing is experimental and subject to change.
+ghp emits all logs as OpenTelemetry log records. They are always written to the
+console (per the [Logging](#logging) settings); enabling `otel` additionally
+exports every record to an OTLP collector. See
+[Monitoring → Logging](monitoring.md#logging) for the record format.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GHP_OTEL_ENABLED` | Enable OpenTelemetry tracing | `false` |
-| `GHP_OTEL_ENDPOINT` | OTLP exporter endpoint (e.g. `http://localhost:4317`) | |
+| `GHP_OTEL_ENABLED` | Export log records to an OTLP collector | `false` |
+| `GHP_OTEL_ENDPOINT` | OTLP exporter endpoint (e.g. `http://localhost:4317`). An `http://` scheme disables TLS. | |
 | `GHP_OTEL_PROTOCOL` | OTLP transport protocol: `grpc` or `http` | `grpc` |
 
 ### OAuth Broker
@@ -217,9 +220,9 @@ metrics:
   enabled: true                # set to false to disable
   listen: ":9136"              # dedicated metrics server port
 
-# otel:                        # OpenTelemetry tracing (experimental)
-#   enabled: false
-#   endpoint: ""               # OTLP exporter endpoint (e.g. http://localhost:4317)
+# otel:                        # Export OpenTelemetry log records to an OTLP collector
+#   enabled: false             # logs are always written to the console regardless
+#   endpoint: ""               # OTLP exporter endpoint (e.g. http://localhost:4317); http:// disables TLS
 #   protocol: "grpc"           # "grpc" or "http"
 
 auth:

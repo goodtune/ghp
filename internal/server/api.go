@@ -84,7 +84,7 @@ const maxSessionIDLength = 128
 // API handles the service API endpoints (token management, users).
 type API struct {
 	cfg                *config.Config
-	ctx                context.Context     // server lifecycle context; cancelled on shutdown
+	ctx                context.Context // server lifecycle context; cancelled on shutdown
 	store              database.Store
 	tokenService       *token.Service
 	authHandler        *auth.Handler
@@ -323,8 +323,7 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	// lazily on first use.
 	a.warmTokenUsername(result.ID)
 
-	a.auditLog.writeEntry(&auditLogEntry{
-		Msg:       "audit event",
+	a.auditLog.WriteAuditEntry(proxy.AuditLogEntry{
 		Action:    "token_created",
 		UserID:    session.UserID,
 		Username:  session.Username,
@@ -434,8 +433,7 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	metrics.TokenRevokedTotal.WithLabelValues(ownerID).Inc()
 	metrics.TokenActive.WithLabelValues(ownerID).Dec()
 
-	a.auditLog.writeEntry(&auditLogEntry{
-		Msg:       "audit event",
+	a.auditLog.WriteAuditEntry(proxy.AuditLogEntry{
 		Action:    "token_revoked",
 		UserID:    session.UserID,
 		Username:  session.Username,
@@ -449,7 +447,7 @@ func (a *API) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateTokenScopesRequest struct {
-	Repositories *[]string         `json:"repositories"`
+	Repositories *[]string          `json:"repositories"`
 	Scopes       *map[string]string `json:"scopes"`
 }
 
@@ -531,8 +529,7 @@ func (a *API) handleUpdateTokenScopes(w http.ResponseWriter, r *http.Request) {
 	}
 	a.tokenService.InvalidateByID(id)
 
-	a.auditLog.writeEntry(&auditLogEntry{
-		Msg:       "audit event",
+	a.auditLog.WriteAuditEntry(proxy.AuditLogEntry{
 		Action:    "token_scopes_updated",
 		UserID:    session.UserID,
 		Username:  session.Username,
@@ -735,14 +732,14 @@ func (a *API) handleGetPermissions(w http.ResponseWriter, r *http.Request) {
 func defaultPermissions() map[string]string {
 	return map[string]string{
 		// Core repository permissions
-		"contents":               "write",
-		"pull_requests":          "write",
-		"issues":                 "write",
-		"statuses":               "write",
-		"checks":                 "write",
-		"actions":                "write",
-		"workflows":              "write",
-		"metadata":               "read",
+		"contents":      "write",
+		"pull_requests": "write",
+		"issues":        "write",
+		"statuses":      "write",
+		"checks":        "write",
+		"actions":       "write",
+		"workflows":     "write",
+		"metadata":      "read",
 		// Additional repository permissions
 		"administration":         "write",
 		"deployments":            "write",
@@ -757,7 +754,7 @@ func defaultPermissions() map[string]string {
 		"secret_scanning_alerts": "write",
 		"projects":               "write",
 		// Organisation-level permissions
-		"members":                "write",
+		"members": "write",
 	}
 }
 
