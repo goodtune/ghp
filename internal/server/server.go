@@ -20,7 +20,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -32,6 +31,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/log/noop"
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/backend"
@@ -49,21 +50,23 @@ import (
 
 // Server is the main ghp server.
 type Server struct {
-	cfg        *config.Config
-	configPath string
-	version    string
-	logger     *slog.Logger
-	logWriter  io.Writer
-	store      database.Store
-	migrate    bool
+	cfg         *config.Config
+	configPath  string
+	version     string
+	logger      *slog.Logger
+	logProvider otellog.LoggerProvider
+	store       database.Store
+	migrate     bool
 }
 
-// New creates a new Server.
-func New(cfg *config.Config, configPath string, version string, logger *slog.Logger, logWriter io.Writer, migrate bool) *Server {
-	if logWriter == nil {
-		logWriter = io.Discard
+// New creates a new Server. logProvider is the OpenTelemetry LoggerProvider
+// used to emit the access and audit log streams; a nil provider falls back to a
+// no-op provider so the server is safe to construct in tests.
+func New(cfg *config.Config, configPath string, version string, logger *slog.Logger, logProvider otellog.LoggerProvider, migrate bool) *Server {
+	if logProvider == nil {
+		logProvider = noop.NewLoggerProvider()
 	}
-	return &Server{cfg: cfg, configPath: configPath, version: version, logger: logger, logWriter: logWriter, migrate: migrate}
+	return &Server{cfg: cfg, configPath: configPath, version: version, logger: logger, logProvider: logProvider, migrate: migrate}
 }
 
 // mustParseURL parses a URL and panics on failure. Only for compile-time constants.
@@ -364,8 +367,8 @@ func (s *Server) Run(ctx context.Context) error {
 	usernameResolver.WarmCache(lifecycleCtx, proxyTokenResolver)
 	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, usernameResolver, s.logger)
 
-	// Build audit log writer for structured JSON audit events.
-	auditWriter := newAuditLogWriter(s.logWriter)
+	// Build audit log writer for OpenTelemetry audit log records.
+	auditWriter := newAuditLogWriter(s.logProvider.Logger(auditLogScope))
 	proxyHandler.SetAuditLogWriter(auditWriter)
 
 	// Recover the concrete *github.AppTokenProvider for legacy admin API
@@ -456,8 +459,8 @@ func (s *Server) Run(ctx context.Context) error {
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 
-	// Build access log writer for Caddy-compatible JSON access logs.
-	aw := newAccessLogWriter(s.logWriter)
+	// Build access log writer for OpenTelemetry access log records.
+	aw := newAccessLogWriter(s.logProvider.Logger(accessLogScope))
 
 	// Build host dispatch with access logging on all handlers.
 	dispatch := newHostDispatch(hostDispatchConfig{

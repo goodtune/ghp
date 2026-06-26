@@ -1,17 +1,18 @@
 package server
 
 import (
-	"bytes"
-	"encoding/json"
 	"testing"
+
+	otellog "go.opentelemetry.io/otel/log"
+
+	"github.com/goodtune/ghp/internal/proxy"
 )
 
 func TestAuditLogWriterEntry(t *testing.T) {
-	var buf bytes.Buffer
-	aw := newAuditLogWriter(&buf)
+	logger, exp := newCaptureLogger(t)
+	aw := newAuditLogWriter(logger)
 
-	aw.writeEntry(&auditLogEntry{
-		Msg:        "audit event",
+	aw.WriteAuditEntry(proxy.AuditLogEntry{
 		Action:     "token_created",
 		UserID:     "user-123",
 		Username:   "alice",
@@ -21,39 +22,45 @@ func TestAuditLogWriterEntry(t *testing.T) {
 		Repository: "org/repo",
 	})
 
-	var got auditLogEntry
-	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
-		t.Fatalf("failed to unmarshal audit log entry: %v", err)
+	rec := exp.only(t)
+
+	if rec.scope != "test" {
+		t.Errorf("scope = %q", rec.scope)
 	}
-	if got.Logger != "audit" {
-		t.Errorf("logger = %q, want %q", got.Logger, "audit")
+	if rec.severity != otellog.SeverityInfo {
+		t.Errorf("severity = %v, want Info", rec.severity)
 	}
-	if got.Level != "info" {
-		t.Errorf("level = %q, want %q", got.Level, "info")
+	if rec.body != "audit event" {
+		t.Errorf("body = %q, want %q", rec.body, "audit event")
 	}
-	if got.Action != "token_created" {
-		t.Errorf("action = %q, want %q", got.Action, "token_created")
+	if got := rec.str(t, attrGHPAuditAction); got != "token_created" {
+		t.Errorf("%s = %q, want token_created", attrGHPAuditAction, got)
 	}
-	if got.UserID != "user-123" {
-		t.Errorf("user_id = %q, want %q", got.UserID, "user-123")
+	if got := rec.str(t, attrEndUserID); got != "user-123" {
+		t.Errorf("%s = %q, want user-123", attrEndUserID, got)
 	}
-	if got.Username != "alice" {
-		t.Errorf("username = %q, want %q", got.Username, "alice")
+	if got := rec.str(t, attrGHPUserName); got != "alice" {
+		t.Errorf("%s = %q, want alice", attrGHPUserName, got)
 	}
-	if got.SessionID != "session-1" {
-		t.Errorf("session_id = %q, want %q", got.SessionID, "session-1")
+	if got := rec.str(t, attrGHPSessionID); got != "session-1" {
+		t.Errorf("%s = %q, want session-1", attrGHPSessionID, got)
 	}
-	if got.TS == 0 {
-		t.Error("ts should be non-zero")
+	if got := rec.str(t, attrGHPTokenID); got != "tok-abc" {
+		t.Errorf("%s = %q, want tok-abc", attrGHPTokenID, got)
+	}
+	if got := rec.str(t, attrGHPTokenType); got != "proxy" {
+		t.Errorf("%s = %q, want proxy", attrGHPTokenType, got)
+	}
+	if got := rec.str(t, attrGHPRepository); got != "org/repo" {
+		t.Errorf("%s = %q, want org/repo", attrGHPRepository, got)
 	}
 }
 
 func TestAuditLogWriterProxyRequest(t *testing.T) {
-	var buf bytes.Buffer
-	aw := newAuditLogWriter(&buf)
+	logger, exp := newCaptureLogger(t)
+	aw := newAuditLogWriter(logger)
 
-	aw.writeEntry(&auditLogEntry{
-		Msg:        "audit event",
+	aw.WriteAuditEntry(proxy.AuditLogEntry{
 		Action:     "proxy_request",
 		UserID:     "user-456",
 		Username:   "bob",
@@ -67,29 +74,28 @@ func TestAuditLogWriterProxyRequest(t *testing.T) {
 		DurationMS: 42,
 	})
 
-	var got auditLogEntry
-	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
+	rec := exp.only(t)
+
+	if got := rec.str(t, attrHTTPRequestMethod); got != "GET" {
+		t.Errorf("%s = %q, want GET", attrHTTPRequestMethod, got)
 	}
-	if got.Method != "GET" {
-		t.Errorf("method = %q, want GET", got.Method)
+	if got := rec.str(t, attrURLPath); got != "/repos/org/repo/pulls" {
+		t.Errorf("%s = %q, want /repos/org/repo/pulls", attrURLPath, got)
 	}
-	if got.Path != "/repos/org/repo/pulls" {
-		t.Errorf("path = %q, want /repos/org/repo/pulls", got.Path)
+	if got := rec.int(t, attrHTTPResponseStatusCode); got != 200 {
+		t.Errorf("%s = %d, want 200", attrHTTPResponseStatusCode, got)
 	}
-	if got.StatusCode != 200 {
-		t.Errorf("status_code = %d, want 200", got.StatusCode)
+	// 42ms is recorded as 0.042 seconds under the duration convention.
+	if got := rec.float(t, attrHTTPServerRequestDuration); got != 0.042 {
+		t.Errorf("%s = %v, want 0.042", attrHTTPServerRequestDuration, got)
 	}
-	if got.DurationMS != 42 {
-		t.Errorf("duration_ms = %d, want 42", got.DurationMS)
-	}
-	if got.Repository != "org/repo" {
-		t.Errorf("repository = %q, want org/repo", got.Repository)
+	if got := rec.str(t, attrGHPRepository); got != "org/repo" {
+		t.Errorf("%s = %q, want org/repo", attrGHPRepository, got)
 	}
 }
 
-func TestAuditLogWriterNilWriter(t *testing.T) {
+func TestAuditLogWriterNilLogger(t *testing.T) {
 	aw := newAuditLogWriter(nil)
 	// Should not panic.
-	aw.writeEntry(&auditLogEntry{Action: "test"})
+	aw.WriteAuditEntry(proxy.AuditLogEntry{Action: "test"})
 }

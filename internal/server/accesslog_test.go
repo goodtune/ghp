@@ -1,19 +1,19 @@
 package server
 
 import (
-	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	otellog "go.opentelemetry.io/otel/log"
 
 	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/proxy"
 )
 
 func TestAccessLog(t *testing.T) {
-	var buf bytes.Buffer
-	aw := newAccessLogWriter(&buf)
+	logger, exp := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -34,64 +34,63 @@ func TestAccessLog(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 
-	var entry accessLogEntry
-	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
-		t.Fatalf("failed to unmarshal access log entry: %v\nraw: %s", err, buf.String())
+	rec := exp.only(t)
+
+	// Record-level fields.
+	if rec.severity != otellog.SeverityInfo {
+		t.Errorf("severity: got %v, want Info", rec.severity)
+	}
+	if rec.body != "handled request" {
+		t.Errorf("body: got %q, want %q", rec.body, "handled request")
+	}
+	if rec.scope != "test" {
+		t.Errorf("scope: got %q", rec.scope)
 	}
 
-	// Verify top-level Caddy fields.
-	if entry.Level != "info" {
-		t.Errorf("level: got %q, want %q", entry.Level, "info")
+	// HTTP semantic-convention attributes.
+	if got := rec.int(t, attrHTTPResponseStatusCode); got != 200 {
+		t.Errorf("%s: got %d, want 200", attrHTTPResponseStatusCode, got)
 	}
-	if entry.TS == 0 {
-		t.Error("ts should be non-zero")
+	if got := rec.int(t, attrHTTPResponseBodySize); got != 5 {
+		t.Errorf("%s: got %d, want 5", attrHTTPResponseBodySize, got)
 	}
-	if entry.Logger != "http.log.access" {
-		t.Errorf("logger: got %q, want %q", entry.Logger, "http.log.access")
+	if got := rec.float(t, attrHTTPServerRequestDuration); got <= 0 {
+		t.Errorf("%s should be positive, got %v", attrHTTPServerRequestDuration, got)
 	}
-	if entry.Msg != "handled request" {
-		t.Errorf("msg: got %q, want %q", entry.Msg, "handled request")
+	if got := rec.str(t, attrHTTPRequestMethod); got != "GET" {
+		t.Errorf("%s: got %q, want GET", attrHTTPRequestMethod, got)
 	}
-	if entry.Status != 200 {
-		t.Errorf("status: got %d, want %d", entry.Status, 200)
+	if got := rec.str(t, attrServerAddress); got != "github.com" {
+		t.Errorf("%s: got %q, want github.com", attrServerAddress, got)
 	}
-	if entry.Size != 5 {
-		t.Errorf("size: got %d, want %d", entry.Size, 5)
+	if got := rec.str(t, attrURLPath); got != "/org/repo" {
+		t.Errorf("%s: got %q, want /org/repo", attrURLPath, got)
 	}
-	if entry.Duration <= 0 {
-		t.Error("duration should be positive")
+	if got := rec.str(t, attrClientAddress); got != "192.168.1.1" {
+		t.Errorf("%s: got %q, want 192.168.1.1", attrClientAddress, got)
 	}
-
-	// Verify nested request fields.
-	if entry.Request.Method != "GET" {
-		t.Errorf("request.method: got %q, want %q", entry.Request.Method, "GET")
+	if got := rec.int(t, attrClientPort); got != 12345 {
+		t.Errorf("%s: got %d, want 12345", attrClientPort, got)
 	}
-	if entry.Request.Host != "github.com" {
-		t.Errorf("request.host: got %q, want %q", entry.Request.Host, "github.com")
+	if got := rec.str(t, attrNetworkProtocolVersion); got != "1.1" {
+		t.Errorf("%s: got %q, want 1.1", attrNetworkProtocolVersion, got)
 	}
-	if entry.Request.URI != "/org/repo" {
-		t.Errorf("request.uri: got %q, want %q", entry.Request.URI, "/org/repo")
+	if got := rec.str(t, attrUserAgentOriginal); got != "git/2.40" {
+		t.Errorf("%s: got %q, want git/2.40", attrUserAgentOriginal, got)
 	}
-	if entry.Request.RemoteIP != "192.168.1.1" {
-		t.Errorf("request.remote_ip: got %q, want %q", entry.Request.RemoteIP, "192.168.1.1")
-	}
-	if entry.Request.RemotePort != "12345" {
-		t.Errorf("request.remote_port: got %q, want %q", entry.Request.RemotePort, "12345")
-	}
-	if entry.Request.Proto != "HTTP/1.1" {
-		t.Errorf("request.proto: got %q, want %q", entry.Request.Proto, "HTTP/1.1")
+	if got := rec.str(t, attrGHPBackend); got != backend.GitHub {
+		t.Errorf("%s: got %q, want %q", attrGHPBackend, got, backend.GitHub)
 	}
 
-	// Verify headers are present.
-	ua := entry.Request.Headers["User-Agent"]
-	if len(ua) == 0 || ua[0] != "git/2.40" {
-		t.Errorf("request.headers.User-Agent: got %v, want [\"git/2.40\"]", ua)
+	// Request headers captured under http.request.header.*
+	if ua := rec.slice(t, attrHTTPRequestHeaderPrefix+"user-agent"); len(ua) == 0 || ua[0] != "git/2.40" {
+		t.Errorf("request user-agent header: got %v, want [git/2.40]", ua)
 	}
 }
 
 func TestAccessLog_SensitiveHeadersRedacted(t *testing.T) {
-	var buf bytes.Buffer
-	aw := newAccessLogWriter(&buf)
+	logger, exp := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -106,22 +105,19 @@ func TestAccessLog_SensitiveHeadersRedacted(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	var entry accessLogEntry
-	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
+	rec := exp.only(t)
 
-	if auth := entry.Request.Headers["Authorization"]; len(auth) == 0 || auth[0] != "REDACTED" {
-		t.Errorf("Authorization header should be REDACTED, got %v", auth)
+	if auth := rec.slice(t, attrHTTPRequestHeaderPrefix+"authorization"); len(auth) == 0 || auth[0] != "REDACTED" {
+		t.Errorf("authorization header should be REDACTED, got %v", auth)
 	}
-	if cookie := entry.Request.Headers["Cookie"]; len(cookie) == 0 || cookie[0] != "REDACTED" {
-		t.Errorf("Cookie header should be REDACTED, got %v", cookie)
+	if cookie := rec.slice(t, attrHTTPRequestHeaderPrefix+"cookie"); len(cookie) == 0 || cookie[0] != "REDACTED" {
+		t.Errorf("cookie header should be REDACTED, got %v", cookie)
 	}
 }
 
 func TestAccessLog_ExtendedSensitiveRequestHeadersRedacted(t *testing.T) {
-	var buf bytes.Buffer
-	aw := newAccessLogWriter(&buf)
+	logger, exp := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -138,25 +134,22 @@ func TestAccessLog_ExtendedSensitiveRequestHeadersRedacted(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	var entry accessLogEntry
-	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
+	rec := exp.only(t)
 
-	for _, h := range []string{"X-Auth-Token", "X-Api-Key", "X-Access-Token"} {
-		if v := entry.Request.Headers[h]; len(v) == 0 || v[0] != "REDACTED" {
+	for _, h := range []string{"x-auth-token", "x-api-key", "x-access-token"} {
+		if v := rec.slice(t, attrHTTPRequestHeaderPrefix+h); len(v) == 0 || v[0] != "REDACTED" {
 			t.Errorf("%s header should be REDACTED, got %v", h, v)
 		}
 	}
 	// Non-sensitive headers should pass through.
-	if ua := entry.Request.Headers["User-Agent"]; len(ua) == 0 || ua[0] != "git/2.40" {
-		t.Errorf("User-Agent should not be redacted, got %v", ua)
+	if ua := rec.slice(t, attrHTTPRequestHeaderPrefix+"user-agent"); len(ua) == 0 || ua[0] != "git/2.40" {
+		t.Errorf("user-agent should not be redacted, got %v", ua)
 	}
 }
 
 func TestAccessLog_SetCookieResponseHeaderRedacted(t *testing.T) {
-	var buf bytes.Buffer
-	aw := newAccessLogWriter(&buf)
+	logger, exp := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Set-Cookie", "session=secret; HttpOnly; Secure")
@@ -171,23 +164,20 @@ func TestAccessLog_SetCookieResponseHeaderRedacted(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	var entry accessLogEntry
-	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
+	rec := exp.only(t)
 
-	if v := entry.RespHeaders["Set-Cookie"]; len(v) == 0 || v[0] != "REDACTED" {
-		t.Errorf("Set-Cookie response header should be REDACTED, got %v", v)
+	if v := rec.slice(t, attrHTTPResponseHeaderPrefix+"set-cookie"); len(v) == 0 || v[0] != "REDACTED" {
+		t.Errorf("set-cookie response header should be REDACTED, got %v", v)
 	}
 	// Non-sensitive response headers should pass through.
-	if ct := entry.RespHeaders["Content-Type"]; len(ct) == 0 || ct[0] != "text/plain" {
-		t.Errorf("Content-Type should not be redacted, got %v", ct)
+	if ct := rec.slice(t, attrHTTPResponseHeaderPrefix+"content-type"); len(ct) == 0 || ct[0] != "text/plain" {
+		t.Errorf("content-type should not be redacted, got %v", ct)
 	}
 }
 
 func TestAccessLog_UserIDFromSlot(t *testing.T) {
-	var buf bytes.Buffer
-	aw := newAccessLogWriter(&buf)
+	logger, exp := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxy.SetUserID(r, "user-uuid-123")
@@ -202,20 +192,17 @@ func TestAccessLog_UserIDFromSlot(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	var entry accessLogEntry
-	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
-		t.Fatalf("failed to unmarshal: %v\nraw: %s", err, buf.String())
-	}
+	rec := exp.only(t)
 
-	// user_id should prefer the GitHub username over the internal UUID.
-	if entry.UserID != "alice" {
-		t.Errorf("user_id: got %q, want %q", entry.UserID, "alice")
+	// enduser.id should prefer the GitHub username over the internal UUID.
+	if got := rec.str(t, attrEndUserID); got != "alice" {
+		t.Errorf("%s: got %q, want alice", attrEndUserID, got)
 	}
 }
 
 func TestAccessLog_UserIDFallsBackToUUIDWhenUsernameEmpty(t *testing.T) {
-	var buf bytes.Buffer
-	aw := newAccessLogWriter(&buf)
+	logger, exp := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only set user ID (no username) — simulates requests where
@@ -231,20 +218,17 @@ func TestAccessLog_UserIDFallsBackToUUIDWhenUsernameEmpty(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	var entry accessLogEntry
-	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
-		t.Fatalf("failed to unmarshal: %v\nraw: %s", err, buf.String())
-	}
+	rec := exp.only(t)
 
-	// user_id should fall back to the internal UUID when no username is set.
-	if entry.UserID != "user-uuid-456" {
-		t.Errorf("user_id: got %q, want %q", entry.UserID, "user-uuid-456")
+	// enduser.id should fall back to the internal UUID when no username is set.
+	if got := rec.str(t, attrEndUserID); got != "user-uuid-456" {
+		t.Errorf("%s: got %q, want user-uuid-456", attrEndUserID, got)
 	}
 }
 
 func TestAccessLog_UserIDFallsBackToUsername(t *testing.T) {
-	var buf bytes.Buffer
-	aw := newAccessLogWriter(&buf)
+	logger, exp := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only set username (no user ID) — simulates proxy requests
@@ -260,20 +244,17 @@ func TestAccessLog_UserIDFallsBackToUsername(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	var entry accessLogEntry
-	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
-		t.Fatalf("failed to unmarshal: %v\nraw: %s", err, buf.String())
-	}
+	rec := exp.only(t)
 
-	// user_id should fall back to the username when no user ID is set.
-	if entry.UserID != "alice" {
-		t.Errorf("user_id: got %q, want %q", entry.UserID, "alice")
+	// enduser.id should fall back to the username when no user ID is set.
+	if got := rec.str(t, attrEndUserID); got != "alice" {
+		t.Errorf("%s: got %q, want alice", attrEndUserID, got)
 	}
 }
 
 func TestAccessLog_ErrorLevel(t *testing.T) {
-	var buf bytes.Buffer
-	aw := newAccessLogWriter(&buf)
+	logger, exp := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -286,15 +267,12 @@ func TestAccessLog_ErrorLevel(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	var entry accessLogEntry
-	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
+	rec := exp.only(t)
 
-	if entry.Level != "error" {
-		t.Errorf("level: got %q, want %q for 500 status", entry.Level, "error")
+	if rec.severity != otellog.SeverityError {
+		t.Errorf("severity: got %v, want Error for 500 status", rec.severity)
 	}
-	if entry.Status != 500 {
-		t.Errorf("status: got %d, want %d", entry.Status, 500)
+	if got := rec.int(t, attrHTTPResponseStatusCode); got != 500 {
+		t.Errorf("%s: got %d, want 500", attrHTTPResponseStatusCode, got)
 	}
 }

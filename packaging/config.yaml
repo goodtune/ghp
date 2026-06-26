@@ -30,8 +30,16 @@ tokens:
   max_duration: 168h
 
 logging:
+  # All logs are emitted as OpenTelemetry log records (HTTP semantic
+  # conventions) to the console. "level" filters operational logs; access and
+  # audit records are always emitted.
   output: stdout
   level: info
+
+# otel:                 # Additionally export log records to an OTLP collector
+#   enabled: false      # logs are always written to the console regardless
+#   endpoint: ""        # e.g. http://localhost:4317; http:// disables TLS
+#   protocol: grpc      # "grpc" or "http"
 
 metrics:
   # Prometheus metrics are served on a dedicated port (separate from the proxy

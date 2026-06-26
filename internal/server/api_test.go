@@ -607,7 +607,7 @@ func newTestAPIFull(t *testing.T) *API {
 	return &API{
 		store:        store,
 		tokenService: ts,
-		auditLog:     newAuditLogWriter(io.Discard),
+		auditLog:     newAuditLogWriter(nil),
 		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }

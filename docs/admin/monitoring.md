@@ -178,26 +178,100 @@ cardinality bounded; query the access log for per-ref breakdowns.
 
 See [Codeload Redirect](../features/codeload.md) for configuration details.
 
-## Access Logs
+## Logging
 
-ghp writes structured JSON access logs for every request across all
-virtualhosts. Each log entry typically includes:
+ghp treats **OpenTelemetry log records** as its first-class logging primitive.
+Every log — operational messages, the HTTP access log, and the audit log — is
+emitted as an OTel log record described using OpenTelemetry
+[semantic conventions](https://opentelemetry.io/docs/specs/semconv/) rather than
+the legacy Caddy-style JSON field names. Records are always written to the
+console (stdout or a file) using the OTel stdout exporter, and can additionally
+be shipped to an OTLP collector (see [OpenTelemetry](#opentelemetry) below).
 
-- HTTP method, host, URI/path, and status code
-- Request duration
-- Backend identifier (same values as the `backend` label used in metrics)
-- User identifier (GitHub username when available)
-- Selected request and response headers (sensitive values such as `Authorization` and `Set-Cookie` are redacted)
+Each emitted record carries a `service.name=ghp` resource attribute and an
+**instrumentation scope** that identifies the stream. Aggregators can route on
+the scope name the same way they previously keyed on the Caddy `logger` field:
+
+| Scope name | Stream |
+|---|---|
+| `github.com/goodtune/ghp` | Operational logs (emitted via `log/slog`) |
+| `github.com/goodtune/ghp/access` | HTTP access log |
+| `github.com/goodtune/ghp/audit` | Audit log |
+
+### Access Logs
+
+An access log record is emitted for every request across all virtualhosts, with
+body `handled request`. Attributes use HTTP semantic conventions:
+
+| Attribute | Meaning |
+|---|---|
+| `http.request.method` | HTTP method |
+| `url.path`, `url.query`, `url.scheme` | Request target |
+| `http.response.status_code` | Response status |
+| `http.response.body.size` | Response body bytes |
+| `http.server.request.duration` | Request duration (seconds) |
+| `network.protocol.name` / `network.protocol.version` | e.g. `http` / `1.1` |
+| `client.address` / `client.port` | Remote peer |
+| `server.address` / `server.port` | Host the request targeted |
+| `user_agent.original` | User-Agent header |
+| `enduser.id` | GitHub username when available, otherwise the internal user ID |
+| `http.request.header.<name>` / `http.response.header.<name>` | Selected headers (sensitive values such as `authorization` and `set-cookie` are `REDACTED`) |
+| `ghp.backend` | Backend identifier (same values as the `backend` metric label) |
+| `ghp.cache.state` / `ghp.cache.repo` | Git cache outcome, when applicable |
+
+Records for responses with a 5xx status are emitted at `Error` severity; all
+others at `Info`.
 
 Configure logging output and level:
 
 ```yaml
 logging:
   output: "stdout"         # "stdout" or "file"
-  level: "info"            # "debug", "info", "warn", "error"
+  level: "info"            # "debug", "info", "warn", "error" (operational logs)
   file:
     path: "/var/log/ghp/ghp.log"
 ```
+
+The `level` setting filters operational (`slog`) records; access and audit
+records are always emitted.
+
+### Audit Logs
+
+API proxy requests and token lifecycle events (creation, revocation, scope
+updates) emit audit records under the `github.com/goodtune/ghp/audit` scope with
+body `audit event`. Attributes:
+
+| Attribute | Meaning |
+|---|---|
+| `ghp.audit.action` | Event type (e.g. `proxy_request`, `token_created`, `token_revoked`, `token_scopes_updated`) |
+| `enduser.id` | Internal user ID |
+| `ghp.user.name` | GitHub username |
+| `ghp.token.id` / `ghp.token.type` | Token involved |
+| `ghp.session.id` | Session that created or used the token |
+| `http.request.method` / `url.path` | Request context (proxy requests) |
+| `ghp.repository` | Target repository, when applicable |
+| `http.response.status_code` | Upstream status (proxy requests) |
+| `http.server.request.duration` | Request duration in seconds (proxy requests) |
+
+Token lifecycle events omit the request- and repository-related attributes.
+
+### OpenTelemetry export
+
+In addition to the console exporter, ghp can ship every log record to an OTLP
+collector. Enable it under `otel` (see
+[Configuration → OpenTelemetry](configuration.md#opentelemetry)):
+
+```yaml
+otel:
+  enabled: true
+  endpoint: "http://localhost:4318"   # http:// → TLS disabled (insecure)
+  protocol: "http"                     # "grpc" (default) or "http"
+```
+
+When enabled, records are batched and exported to the collector while still
+being written to the console. Capturing and indexing logs that are only written
+to the console is the responsibility of the deployment environment (e.g. Splunk,
+Elastic, Datadog).
 
 ## Server Response Headers
 
