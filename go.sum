@@ -95,6 +95,8 @@ github.com/golang/protobuf v1.5.4 h1:i7eJL8qZTpSEXOPTxNKhASYpMn+8e5Q6AdndVa1dWek
 github.com/golang/protobuf v1.5.4/go.mod h1:lnTiLA8Wa4RWRcIUkrtSVa5nRhsEGBg48fD6rSs7xps=
 github.com/goodtune/dotvault v0.25.0 h1:C8akgx3bJ5DrXVVfydo32br2oF5dLIDw5q+MOKftxBk=
 github.com/goodtune/dotvault v0.25.0/go.mod h1:vkITA4GwxJraH3Vqz6WNc4t4opMju7nCYgoUCMgFkx8=
+github.com/goodtune/dotvault v0.27.0 h1:mUXDJInDTSDwpvcWdDYmJjMAyTQSpZMPqe3PuinIdls=
+github.com/goodtune/dotvault v0.27.0/go.mod h1:vkITA4GwxJraH3Vqz6WNc4t4opMju7nCYgoUCMgFkx8=
 github.com/google/certificate-transparency-go v1.1.2 h1:4hE0GEId6NAW28dFpC+LrRGwQX5dtmXQGDbg8+/MZOM=
 github.com/google/certificate-transparency-go v1.1.2/go.mod h1:3OL+HKDqHPUfdKrHVQxO6T8nDLO0HF7LRTlkIWXaWvQ=
 github.com/google/gitprotocolio v0.0.0-20210704173409-b5a56823ae52 h1:/a887PZoXM9aLYwXS2ufq+Gnr5KUg5gm8gBoxKjnQuo=
