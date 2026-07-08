@@ -93,8 +93,6 @@ github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 h1:f+oWsMOmNPc8J
 github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8/go.mod h1:wcDNUvekVysuuOpQKo3191zZyTpiI6se1N1ULghS0sw=
 github.com/golang/protobuf v1.5.4 h1:i7eJL8qZTpSEXOPTxNKhASYpMn+8e5Q6AdndVa1dWek=
 github.com/golang/protobuf v1.5.4/go.mod h1:lnTiLA8Wa4RWRcIUkrtSVa5nRhsEGBg48fD6rSs7xps=
-github.com/goodtune/dotvault v0.25.0 h1:C8akgx3bJ5DrXVVfydo32br2oF5dLIDw5q+MOKftxBk=
-github.com/goodtune/dotvault v0.25.0/go.mod h1:vkITA4GwxJraH3Vqz6WNc4t4opMju7nCYgoUCMgFkx8=
 github.com/goodtune/dotvault v0.27.0 h1:mUXDJInDTSDwpvcWdDYmJjMAyTQSpZMPqe3PuinIdls=
 github.com/goodtune/dotvault v0.27.0/go.mod h1:vkITA4GwxJraH3Vqz6WNc4t4opMju7nCYgoUCMgFkx8=
 github.com/google/certificate-transparency-go v1.1.2 h1:4hE0GEId6NAW28dFpC+LrRGwQX5dtmXQGDbg8+/MZOM=
@@ -111,6 +109,7 @@ github.com/google/go-configfs-tsm v0.3.3-0.20240919001351-b4b5b84fdcbc h1:SG12DW
 github.com/google/go-configfs-tsm v0.3.3-0.20240919001351-b4b5b84fdcbc/go.mod h1:EL1GTDFMb5PZQWDviGfZV9n87WeGTR/JUg13RfwkgRo=
 github.com/google/go-eventlog v0.0.3-0.20260416001248-6807b85eecf0 h1:STyioPkz8nqMMIk3+YlyJ/WyEJZxho1YUZXu99uAbQ0=
 github.com/google/go-eventlog v0.0.3-0.20260416001248-6807b85eecf0/go.mod h1:7huE5P8w2NTObSwSJjboHmB7ioBNblkijdzoVa2skfQ=
+github.com/google/go-github/v89 v89.0.0 h1:35bEK5XoEcF3PZrlVbl9XN63f5BcJRA/UGkxeC9xPg0=
 github.com/google/go-github/v89 v89.0.0/go.mod h1:QLcbU0ipeAqQuR5KSg8c2lql4Qk1EwJ2dWz/0rP4Nho=
 github.com/google/go-querystring v1.2.0 h1:yhqkPbu2/OH+V9BfpCVPZkNmUXhb2gBxJArfhIxNtP0=
 github.com/google/go-querystring v1.2.0/go.mod h1:8IFJqpSRITyJ8QhQ13bmbeMBDfmeEJZD5A0egEOmkqU=
