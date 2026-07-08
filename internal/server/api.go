@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	ghub "github.com/google/go-github/v88/github"
+	ghub "github.com/google/go-github/v89/github"
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
