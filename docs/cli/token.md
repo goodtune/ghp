@@ -63,8 +63,8 @@ can be omitted and the installation will be resolved against the default app.
 
     ghp token list
 
-List your active tokens with type, repositories, scopes, session, expiry, and
-request count.
+List your active tokens with ID, type, repositories, scopes, session, and
+expiry.
 
 ### ghp token revoke
 

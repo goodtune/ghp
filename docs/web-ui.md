@@ -15,7 +15,7 @@ directly — no GitHub OAuth required.
 
 After signing in, the dashboard shows:
 
-- **Your Tokens** — active tokens with repository, scopes, expiry, and request count
+- **Your Tokens** — active tokens with repository, scopes, and expiry
 - **Create Token** — form to create a new scoped `ghx_` token
 - **Revoke** — revoke any of your tokens immediately
 
