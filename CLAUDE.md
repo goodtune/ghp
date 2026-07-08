@@ -136,7 +136,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 
 ### Sentinel Errors
 
-New `Store` interface methods that look up a record by ID should return `database.ErrNotFound` (wrapped via `fmt.Errorf("...: %w", database.ErrNotFound)`) when the record does not exist. Prefer this over plain `fmt.Errorf("not found")` strings. API handlers should map `ErrNotFound` → 404 and other store errors → 500. Some older methods (e.g. `RevokeProxyToken`, `UpdateProxyTokenUsage`) predate this convention and use different patterns; align them as they are touched.
+New `Store` interface methods that look up a record by ID should return `database.ErrNotFound` (wrapped via `fmt.Errorf("...: %w", database.ErrNotFound)`) when the record does not exist. Prefer this over plain `fmt.Errorf("not found")` strings. API handlers should map `ErrNotFound` → 404 and other store errors → 500. Some older methods (e.g. `RevokeProxyToken`) predate this convention and use different patterns; align them as they are touched.
 
 ### API Input Validation
 

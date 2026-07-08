@@ -211,9 +211,9 @@ func newTokenCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tTYPE\tREPOS\tSCOPES\tSESSION\tEXPIRES\tREQUESTS")
+			fmt.Fprintln(w, "ID\tTYPE\tREPOS\tSCOPES\tSESSION\tEXPIRES")
 			for _, t := range tokens {
-				prefix := fmt.Sprint(t["token_prefix"])
+				id := fmt.Sprint(t["id"])
 				tokenType := fmt.Sprint(t["token_type"])
 
 				reposStr := ""
@@ -250,13 +250,8 @@ func newTokenCmd() *cobra.Command {
 					}
 				}
 
-				requests := "0"
-				if n, ok := t["request_count"].(float64); ok {
-					requests = fmt.Sprintf("%.0f", n)
-				}
-
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					prefix, tokenType, reposStr, scopeStr, session, expiresStr, requests)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+					id, tokenType, reposStr, scopeStr, session, expiresStr)
 			}
 			w.Flush()
 			return nil

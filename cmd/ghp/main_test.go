@@ -1190,12 +1190,12 @@ func TestTokenListCmd(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]map[string]interface{}{
 			{
-				"token_prefix":  "ghx_abcd",
-				"token_type":    "proxy",
-				"repositories":  []interface{}{"owner/repo"},
-				"session_id":    "sess1",
-				"expires_at":    "2099-01-01T00:00:00Z",
-				"request_count": float64(5),
+				"id":           "11111111-1111-1111-1111-111111111111",
+				"token_prefix": "ghx_abcd",
+				"token_type":   "proxy",
+				"repositories": []interface{}{"owner/repo"},
+				"session_id":   "sess1",
+				"expires_at":   "2099-01-01T00:00:00Z",
 			},
 		})
 	}))
@@ -1215,8 +1215,11 @@ func TestTokenListCmd(t *testing.T) {
 		t.Fatalf("token list error: %v", err)
 	}
 	output := buf.String()
-	if !strings.Contains(output, "ghx_abcd") {
-		t.Errorf("expected token prefix in output, got: %q", output)
+	if !strings.Contains(output, "11111111-1111-1111-1111-111111111111") {
+		t.Errorf("expected token id in output, got: %q", output)
+	}
+	if strings.Contains(output, "ghx_abcd") {
+		t.Errorf("expected token prefix NOT to appear as the ID column, got: %q", output)
 	}
 }
 
