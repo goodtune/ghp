@@ -8,7 +8,6 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/goodtune/dotvault v0.25.0
 	github.com/google/gitprotocolio v0.0.0-20210704173409-b5a56823ae52
-	github.com/google/go-github/v88 v88.0.0
 	github.com/google/go-github/v89 v89.0.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
