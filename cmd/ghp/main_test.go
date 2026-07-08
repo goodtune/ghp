@@ -1221,6 +1221,9 @@ func TestTokenListCmd(t *testing.T) {
 	if strings.Contains(output, "ghx_abcd") {
 		t.Errorf("expected token prefix NOT to appear as the ID column, got: %q", output)
 	}
+	if strings.Contains(output, "REQUESTS") {
+		t.Errorf("expected REQUESTS column to be removed, got: %q", output)
+	}
 }
 
 // TestTokenListCmd_Empty verifies that token list handles empty results gracefully.
