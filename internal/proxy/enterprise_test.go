@@ -41,6 +41,19 @@ func staticUsername(name string) UsernameFunc {
 	return func(context.Context) string { return name }
 }
 
+// fakeViewerResolver returns a UsernameResolver whose GraphQL viewer endpoint
+// is a local httptest server that always answers with the given login.
+func fakeViewerResolver(t *testing.T, login string) *UsernameResolver {
+	t.Helper()
+	viewer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"viewer": map[string]string{"login": login}},
+		})
+	}))
+	t.Cleanup(viewer.Close)
+	return NewUsernameResolver(nil, slog.Default(), WithGraphQLURL(viewer.URL))
+}
+
 func TestEnterpriseTargetFromAPIPath(t *testing.T) {
 	tests := []struct {
 		path      string
@@ -196,7 +209,7 @@ func TestEnterprisePolicy_IdentitySubstitution(t *testing.T) {
 	}, src, slog.Default())
 
 	hdr := http.Header{}
-	tok := p.Apply(context.Background(), hdr, "partner", "tool", nil)
+	tok := p.Apply(context.Background(), hdr, "partner", "tool", staticUsername("alice"))
 	if tok != "ghs_managed" {
 		t.Fatalf("expected managed token, got %q", tok)
 	}
@@ -228,7 +241,7 @@ func TestEnterprisePolicy_IdentityError_FailsClosed(t *testing.T) {
 	}, src, slog.Default())
 
 	hdr := http.Header{}
-	tok := p.Apply(context.Background(), hdr, "partner", "tool", nil)
+	tok := p.Apply(context.Background(), hdr, "partner", "tool", staticUsername("alice"))
 	if tok != "" {
 		t.Fatalf("expected no token on identity error, got %q", tok)
 	}
@@ -249,11 +262,45 @@ func TestEnterprisePolicy_IdentityWithoutRegistry_FailsClosed(t *testing.T) {
 	}, nil, slog.Default())
 
 	hdr := http.Header{}
-	if tok := p.Apply(context.Background(), hdr, "partner", "tool", nil); tok != "" {
+	if tok := p.Apply(context.Background(), hdr, "partner", "tool", staticUsername("alice")); tok != "" {
 		t.Fatalf("expected no token without identity source, got %q", tok)
 	}
 	if got := hdr.Get(enterpriseHeader); got != "acme" {
 		t.Errorf("expected restriction header kept, got %q", got)
+	}
+}
+
+func TestEnterprisePolicy_IdentityAnonymousCaller_FailsClosed(t *testing.T) {
+	// Identity substitution must never fire for a caller whose identity
+	// cannot be resolved — otherwise anonymous clients could act as the
+	// managed App on the excepted target.
+	src := &fakeIdentitySource{token: "ghs_managed"}
+	p := NewEnterprisePolicy(config.GitHubConfig{
+		EnterpriseSlug: "acme",
+		EnterpriseExceptions: []config.EnterpriseException{
+			{
+				Match:    []string{"partner"},
+				Identity: config.EnterpriseExceptionIdentity{AppRecordID: "app-uuid-1"},
+			},
+		},
+	}, src, slog.Default())
+
+	for name, fn := range map[string]UsernameFunc{
+		"nil username func":     nil,
+		"unresolvable identity": staticUsername(""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			hdr := http.Header{}
+			if tok := p.Apply(context.Background(), hdr, "partner", "tool", fn); tok != "" {
+				t.Fatalf("expected no token for unidentified caller, got %q", tok)
+			}
+			if got := hdr.Get(enterpriseHeader); got != "acme" {
+				t.Errorf("expected restriction header kept, got %q", got)
+			}
+		})
+	}
+	if len(src.calls) != 0 {
+		t.Errorf("expected no identity minting for unidentified callers, got %d calls", len(src.calls))
 	}
 }
 
@@ -440,10 +487,11 @@ func TestForwardPassthrough_EnterpriseException_IdentitySubstituted(t *testing.T
 	src := &fakeIdentitySource{token: "ghs_managed"}
 	ct := &captureTransport{}
 	h := &Handler{
-		cfg:        &config.Config{GitHub: gh},
-		logger:     slog.Default(),
-		client:     &http.Client{Transport: ct, Timeout: 5 * time.Second},
-		enterprise: NewEnterprisePolicy(gh, src, slog.Default()),
+		cfg:              &config.Config{GitHub: gh},
+		logger:           slog.Default(),
+		client:           &http.Client{Transport: ct, Timeout: 5 * time.Second},
+		usernameResolver: fakeViewerResolver(t, "alice"),
+		enterprise:       NewEnterprisePolicy(gh, src, slog.Default()),
 	}
 
 	req := httptest.NewRequest("GET", "http://api.github.com/repos/partner/tool/pulls", nil)
@@ -460,6 +508,22 @@ func TestForwardPassthrough_EnterpriseException_IdentitySubstituted(t *testing.T
 	if got := ct.lastReq.Header.Get("Authorization"); got != "token ghs_managed" {
 		t.Errorf("expected substituted identity 'token ghs_managed', got %q", got)
 	}
+
+	// An anonymous request to the same excepted target must NOT receive the
+	// managed identity — the restriction header stays on and no Authorization
+	// is injected.
+	req = httptest.NewRequest("GET", "http://api.github.com/repos/partner/tool/pulls", nil)
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("anonymous: expected 200, got %d", rr.Code)
+	}
+	if got := ct.lastReq.Header.Get(enterpriseHeader); got != "my-enterprise" {
+		t.Errorf("anonymous: expected restriction header kept, got %q", got)
+	}
+	if got := ct.lastReq.Header.Get("Authorization"); got != "" {
+		t.Errorf("anonymous: expected no Authorization injected, got %q", got)
+	}
 }
 
 // TestPassthroughHandler_EnterpriseException covers the github.com git
@@ -469,17 +533,23 @@ func TestPassthroughHandler_EnterpriseException_GitPush(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/partner/tool.git/git-receive-pack":
+			if r.Header.Get("X-Test-Anonymous") == "1" {
+				// Anonymous callers must not receive the managed identity:
+				// the restriction header stays on and no credential is added.
+				if got := r.Header.Get(enterpriseHeader); got != "my-enterprise" {
+					t.Errorf("anonymous: expected restriction header kept, got %q", got)
+				}
+				if got := r.Header.Get("Authorization"); got != "" {
+					t.Errorf("anonymous: expected no Authorization injected, got %q", got)
+				}
+				break
+			}
 			if got := r.Header.Get(enterpriseHeader); got != "" {
 				t.Errorf("expected enterprise header omitted for excluded repo, got %q", got)
 			}
-			// The caller's Bearer scheme is preserved; anonymous callers get
-			// Basic x-access-token credentials.
-			wantAuth := "Bearer ghs_managed"
-			if r.Header.Get("X-Test-Anonymous") == "1" {
-				wantAuth = basicAuthIdentityHeader("ghs_managed")
-			}
-			if got := r.Header.Get("Authorization"); got != wantAuth {
-				t.Errorf("expected managed credential %q, got %q", wantAuth, got)
+			// The caller's Bearer scheme is preserved on substitution.
+			if got := r.Header.Get("Authorization"); got != "Bearer ghs_managed" {
+				t.Errorf("expected managed credential, got %q", got)
 			}
 		case "/other/repo.git/git-receive-pack":
 			if got := r.Header.Get(enterpriseHeader); got != "my-enterprise" {
@@ -505,7 +575,7 @@ func TestPassthroughHandler_EnterpriseException_GitPush(t *testing.T) {
 			},
 		},
 	}, src, slog.Default())
-	handler := NewPassthroughHandler(upstream.URL, nil, policy, nil, nil, tlsTransport(upstream))
+	handler := NewPassthroughHandler(upstream.URL, nil, policy, fakeViewerResolver(t, "alice"), nil, tlsTransport(upstream))
 
 	for _, path := range []string{"/partner/tool.git/git-receive-pack", "/other/repo.git/git-receive-pack"} {
 		req := httptest.NewRequest("POST", "http://github.com"+path, nil)
@@ -517,8 +587,8 @@ func TestPassthroughHandler_EnterpriseException_GitPush(t *testing.T) {
 		}
 	}
 
-	// Anonymous request to the excluded repo: the managed identity is
-	// injected as Basic x-access-token credentials.
+	// Anonymous request to the excluded repo: identity substitution must
+	// fail closed (no credential injected, restriction header kept).
 	req := httptest.NewRequest("POST", "http://github.com/partner/tool.git/git-receive-pack", nil)
 	req.Header.Set("X-Test-Anonymous", "1")
 	rr := httptest.NewRecorder()

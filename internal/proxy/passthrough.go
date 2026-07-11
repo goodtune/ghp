@@ -66,9 +66,11 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterprise *
 					return ur.ResolveFromGitHubTokenSync(ctx, rawToken)
 				}
 				if identityTok := enterprise.Apply(req.Context(), req.Header, owner, repo, usernameFn); identityTok != "" {
-					// Git clients authenticate with Basic; preserve whatever
-					// scheme the request carried, defaulting to Basic
-					// x-access-token for anonymous requests.
+					// Identity substitution only fires for callers whose
+					// credential resolved to a GitHub identity (Apply fails
+					// closed otherwise), so an Authorization header is
+					// present here; preserve its scheme. The Basic fallback
+					// is defensive only.
 					if orig := req.Header.Get("Authorization"); orig != "" {
 						req.Header.Set("Authorization", substituteAuthHeader(orig, identityTok))
 					} else {

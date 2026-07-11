@@ -142,6 +142,10 @@ var (
 	//   "team_denied"          — target matched but the caller is not a member
 	//                            of any required team (or could not be
 	//                            identified); restriction header kept
+	//   "unauthenticated_denied" — target matched an identity-substituting
+	//                            exception but the caller's identity could not
+	//                            be resolved (anonymous or unverifiable
+	//                            credential); restriction header kept
 	//   "identity_error"       — target matched but the managed identity could
 	//                            not be minted; restriction header kept (fail closed)
 	EnterpriseExceptionTotal = promauto.NewCounterVec(prometheus.CounterOpts{

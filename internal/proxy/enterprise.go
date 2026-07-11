@@ -186,14 +186,32 @@ func (p *EnterprisePolicy) evaluate(ctx context.Context, owner, repo string, use
 		return "", false
 	}
 
+	// Resolve the caller's identity once when any gate needs it: team gating
+	// always does, and identity substitution requires a verifiable caller so
+	// that anonymous (or fabricated-credential) requests cannot be escalated
+	// to the managed identity.
+	login := ""
+	if (len(exc.teams) > 0 || exc.hasIdentity) && username != nil {
+		login = username(ctx)
+	}
+
 	if len(exc.teams) > 0 {
-		if !p.callerInTeams(ctx, exc, username) {
+		if login == "" || !p.callerInTeams(ctx, exc, login) {
 			metrics.EnterpriseExceptionTotal.WithLabelValues("team_denied").Inc()
 			return "", false
 		}
 	}
 
 	if exc.hasIdentity {
+		if login == "" {
+			// Fail closed: substituting the managed credential for a caller
+			// GHP cannot identify would let unauthenticated clients act as
+			// the App on the excepted target (privilege escalation).
+			p.logger.Warn("enterprise exception identity substitution denied: caller identity could not be resolved; keeping restriction header",
+				"owner", owner, "repo", repo)
+			metrics.EnterpriseExceptionTotal.WithLabelValues("unauthenticated_denied").Inc()
+			return "", false
+		}
 		if p.identity == nil {
 			p.logger.Error("enterprise exception configures identity substitution but no app registry is available; keeping restriction header",
 				"owner", owner, "repo", repo)
@@ -248,15 +266,10 @@ func (p *EnterprisePolicy) match(owner, repo string) *enterpriseException {
 	return nil
 }
 
-// callerInTeams reports whether the requesting user is an active member of at
-// least one of the exception's required teams. Unresolvable identity fails
-// closed (not a member).
-func (p *EnterprisePolicy) callerInTeams(ctx context.Context, exc *enterpriseException, username UsernameFunc) bool {
-	if p.teams == nil || username == nil {
-		return false
-	}
-	login := username(ctx)
-	if login == "" {
+// callerInTeams reports whether login is an active member of at least one of
+// the exception's required teams. Callers must pass a non-empty login.
+func (p *EnterprisePolicy) callerInTeams(ctx context.Context, exc *enterpriseException, login string) bool {
+	if p.teams == nil {
 		return false
 	}
 	for _, t := range exc.teams {

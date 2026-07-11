@@ -147,8 +147,12 @@ How each request is evaluated:
 4. If the exception has an `identity`, an installation token is minted from
    that app's installation on the target owner (scoped to the target
    repository where known) and silently replaces the caller's credential.
-   The referenced app must be installed on the external account. If minting
-   fails, the exception **fails closed**: the restriction header stays on.
+   The referenced app must be installed on the external account. Identity
+   substitution requires the caller to be identifiable: their credential must
+   resolve to a GitHub identity (anonymous requests and unverifiable
+   credentials never receive the managed identity). If identification or
+   minting fails, the exception **fails closed**: the restriction header
+   stays on and no credential is injected.
 5. Otherwise the header is simply omitted and the caller's own credential is
    forwarded.
 
