@@ -142,7 +142,7 @@ How each request is evaluated:
 3. If an exception with `teams` matches, the caller must be an active member
    of at least one listed team, otherwise the header stays on. Membership is
    checked with an installation token from the **default** GitHub App, which
-   must be installed on the team's organization with the `members: read`
+   must be installed on the team's organization with the `members:read`
    permission. Verdicts are cached for five minutes.
 4. If the exception has an `identity`, an installation token is minted from
    that app's installation on the target owner (scoped to the target
