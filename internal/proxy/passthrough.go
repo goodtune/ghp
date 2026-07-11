@@ -42,17 +42,16 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterprise *
 			req.URL.Host = target.Host
 			req.Host = target.Host
 
-			if resolver != nil {
-				if clientTok, _, rewriteAuth := extractClientToken(req); clientTok != "" {
-					realToken, err := resolver.ResolveToGitHubToken(req.Context(), clientTok)
-					if err != nil {
-						if logger != nil {
-							logger.Warn("passthrough token resolution failed", "error", err)
-						}
-						req.Header.Del("Authorization")
-					} else {
-						req.Header.Set("Authorization", rewriteAuth(realToken))
+			clientTok, _, rewriteAuth := extractClientToken(req)
+			if resolver != nil && clientTok != "" {
+				realToken, err := resolver.ResolveToGitHubToken(req.Context(), clientTok)
+				if err != nil {
+					if logger != nil {
+						logger.Warn("passthrough token resolution failed", "error", err)
 					}
+					req.Header.Del("Authorization")
+				} else {
+					req.Header.Set("Authorization", rewriteAuth(realToken))
 				}
 			}
 
@@ -60,12 +59,16 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterprise *
 			// resolution so team-gated exceptions see the real GitHub
 			// credential rather than the ghx_/gha_ client token.
 			if enterprise != nil {
+				tokenType := ""
+				if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
+					tokenType = string(tt)
+				}
 				owner, repo := enterpriseTargetFromWebPath(req.URL.Path)
 				rawToken := extractRawGitHubToken(req)
 				usernameFn := func(ctx context.Context) string {
 					return ur.ResolveFromGitHubTokenSync(ctx, rawToken)
 				}
-				if identityTok := enterprise.Apply(req.Context(), req.Header, owner, repo, usernameFn); identityTok != "" {
+				if identityTok := enterprise.Apply(req.Context(), req.Header, owner, repo, usernameFn, tokenType); identityTok != "" {
 					// Identity substitution only fires for callers whose
 					// credential resolved to a GitHub identity (Apply fails
 					// closed otherwise), so an Authorization header is

@@ -121,7 +121,7 @@ func TestNewEnterprisePolicy_DisabledWithoutSlug(t *testing.T) {
 
 	// Apply on a nil policy must be a no-op.
 	hdr := http.Header{}
-	if tok := p.Apply(context.Background(), hdr, "torvalds", "linux", nil); tok != "" {
+	if tok := p.Apply(context.Background(), hdr, "torvalds", "linux", nil, ""); tok != "" {
 		t.Errorf("expected no identity token from nil policy, got %q", tok)
 	}
 	if got := hdr.Get(enterpriseHeader); got != "" {
@@ -181,7 +181,7 @@ func TestEnterprisePolicy_Apply_HeaderBehaviour(t *testing.T) {
 			// Pre-set a client-supplied value to verify Apply overrides or
 			// removes it in both directions.
 			hdr.Set(enterpriseHeader, "spoofed")
-			tok := p.Apply(context.Background(), hdr, tt.owner, tt.repo, nil)
+			tok := p.Apply(context.Background(), hdr, tt.owner, tt.repo, nil, "")
 			if tok != "" {
 				t.Errorf("expected no identity token, got %q", tok)
 			}
@@ -209,7 +209,7 @@ func TestEnterprisePolicy_IdentitySubstitution(t *testing.T) {
 	}, src, slog.Default())
 
 	hdr := http.Header{}
-	tok := p.Apply(context.Background(), hdr, "partner", "tool", staticUsername("alice"))
+	tok := p.Apply(context.Background(), hdr, "partner", "tool", staticUsername("alice"), "")
 	if tok != "ghs_managed" {
 		t.Fatalf("expected managed token, got %q", tok)
 	}
@@ -241,7 +241,7 @@ func TestEnterprisePolicy_IdentityError_FailsClosed(t *testing.T) {
 	}, src, slog.Default())
 
 	hdr := http.Header{}
-	tok := p.Apply(context.Background(), hdr, "partner", "tool", staticUsername("alice"))
+	tok := p.Apply(context.Background(), hdr, "partner", "tool", staticUsername("alice"), "")
 	if tok != "" {
 		t.Fatalf("expected no token on identity error, got %q", tok)
 	}
@@ -262,7 +262,7 @@ func TestEnterprisePolicy_IdentityWithoutRegistry_FailsClosed(t *testing.T) {
 	}, nil, slog.Default())
 
 	hdr := http.Header{}
-	if tok := p.Apply(context.Background(), hdr, "partner", "tool", staticUsername("alice")); tok != "" {
+	if tok := p.Apply(context.Background(), hdr, "partner", "tool", staticUsername("alice"), ""); tok != "" {
 		t.Fatalf("expected no token without identity source, got %q", tok)
 	}
 	if got := hdr.Get(enterpriseHeader); got != "acme" {
@@ -291,7 +291,7 @@ func TestEnterprisePolicy_IdentityAnonymousCaller_FailsClosed(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			hdr := http.Header{}
-			if tok := p.Apply(context.Background(), hdr, "partner", "tool", fn); tok != "" {
+			if tok := p.Apply(context.Background(), hdr, "partner", "tool", fn, ""); tok != "" {
 				t.Fatalf("expected no token for unidentified caller, got %q", tok)
 			}
 			if got := hdr.Get(enterpriseHeader); got != "acme" {
@@ -357,7 +357,7 @@ func TestEnterprisePolicy_TeamGate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p, _ := newTeamPolicy(t, memberships)
 			hdr := http.Header{}
-			p.Apply(context.Background(), hdr, "partner", "tool", tt.username)
+			p.Apply(context.Background(), hdr, "partner", "tool", tt.username, "")
 			got := hdr.Get(enterpriseHeader)
 			if tt.wantOmit && got != "" {
 				t.Errorf("expected header omitted for team member, got %q", got)
@@ -377,7 +377,7 @@ func TestEnterprisePolicy_TeamGate_CachesVerdict(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
 		hdr := http.Header{}
-		p.Apply(ctx, hdr, "partner", "tool", staticUsername("alice"))
+		p.Apply(ctx, hdr, "partner", "tool", staticUsername("alice"), "")
 		if got := hdr.Get(enterpriseHeader); got != "" {
 			t.Fatalf("iteration %d: expected header omitted, got %q", i, got)
 		}

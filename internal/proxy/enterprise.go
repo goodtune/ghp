@@ -162,8 +162,12 @@ type UsernameFunc func(ctx context.Context) string
 // credential should be forwarded. Callers must replace the outbound
 // Authorization header when a non-empty token is returned.
 //
+// tokenType labels the stage-duration metric and follows the decision
+// pipeline vocabulary: "proxy" (ghx_), "agent" (gha_), or "" for raw and
+// anonymous credentials (normalised to "unknown").
+//
 // A nil policy leaves hdr untouched and returns "".
-func (p *EnterprisePolicy) Apply(ctx context.Context, hdr http.Header, owner, repo string, username UsernameFunc) string {
+func (p *EnterprisePolicy) Apply(ctx context.Context, hdr http.Header, owner, repo string, username UsernameFunc, tokenType string) string {
 	if p == nil {
 		return ""
 	}
@@ -174,7 +178,7 @@ func (p *EnterprisePolicy) Apply(ctx context.Context, hdr http.Header, owner, re
 	} else {
 		hdr.Set(enterpriseHeader, p.slug)
 	}
-	metrics.ObserveDecision(metrics.StageEnterpriseException, "", time.Since(start))
+	metrics.ObserveDecision(metrics.StageEnterpriseException, tokenType, time.Since(start))
 	return token
 }
 

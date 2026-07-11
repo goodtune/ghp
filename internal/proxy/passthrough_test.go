@@ -845,4 +845,3 @@ func TestScopedPassthrough_NativeToken_RecordsMetrics(t *testing.T) {
 		t.Errorf("expected ProxyRequestTotal to increment by 1, got %f", after-before)
 	}
 }
-

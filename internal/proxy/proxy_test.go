@@ -174,8 +174,8 @@ func TestServeHTTP_GhpToken_WrongRepository(t *testing.T) {
 	// A token scoped to goodtune/ghp must be rejected when used
 	// against a different repository (goodtune/pac-proxy).
 	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
-		"contents": "read",
-		"issues":   "read",
+		"contents":      "read",
+		"issues":        "read",
 		"pull_requests": "read",
 	})
 

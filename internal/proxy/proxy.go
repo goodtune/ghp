@@ -777,6 +777,17 @@ func (h *Handler) refreshGitHubToken(ctx context.Context, gt *database.GitHubTok
 	return tokenResp.AccessToken, nil
 }
 
+// clientTokenType returns the decision-pipeline token type label ("proxy" or
+// "agent") derived from the managed client token on the request, or "" when
+// the request does not carry one.
+func clientTokenType(r *http.Request) string {
+	clientTok, _, _ := extractClientToken(r)
+	if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
+		return string(tt)
+	}
+	return ""
+}
+
 // enterpriseUsername returns a UsernameFunc for team-gated enterprise
 // exceptions. It prefers the username already resolved on the request context
 // and falls back to a blocking GraphQL viewer lookup with the given GitHub
@@ -853,7 +864,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	// covers the request target, in which case a managed identity may also be
 	// substituted for the caller's credential.
 	owner, repoName := enterpriseTargetFromAPIPath(path)
-	if identityTok := h.enterprise.Apply(r.Context(), proxyReq.Header, owner, repoName, h.enterpriseUsername(r, rawToken)); identityTok != "" {
+	if identityTok := h.enterprise.Apply(r.Context(), proxyReq.Header, owner, repoName, h.enterpriseUsername(r, rawToken), ""); identityTok != "" {
 		proxyReq.Header.Set("Authorization", substituteAuthHeader(r.Header.Get("Authorization"), identityTok))
 	}
 
@@ -929,7 +940,7 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 	// covers the request target, in which case a managed identity may also be
 	// substituted for the resolved credential.
 	owner, repoName := enterpriseTargetFromAPIPath(path)
-	if identityTok := h.enterprise.Apply(r.Context(), proxyReq.Header, owner, repoName, h.enterpriseUsername(r, rawTokenFromAuthValue(authHeader))); identityTok != "" {
+	if identityTok := h.enterprise.Apply(r.Context(), proxyReq.Header, owner, repoName, h.enterpriseUsername(r, rawTokenFromAuthValue(authHeader)), clientTokenType(r)); identityTok != "" {
 		proxyReq.Header.Set("Authorization", substituteAuthHeader(authHeader, identityTok))
 	}
 
