@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -878,5 +879,89 @@ func TestUsernameResolver_WarmCache_AgentTokens(t *testing.T) {
 
 	if cached != "warm-bot[bot]" {
 		t.Errorf("expected 'warm-bot[bot]' after cache warm, got %q", cached)
+	}
+}
+
+func TestResolveFromGitHubTokenSync_ConcurrentCallsCoalesce(t *testing.T) {
+	// Concurrent synchronous lookups for the same token must trigger exactly
+	// one GraphQL viewer request: the first caller leads, the rest wait on
+	// the shared flight and receive the leader's result.
+	var callCount atomic.Int32
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":{"viewer":{"login":"herd-user"}}}`))
+	}))
+	defer slow.Close()
+
+	resolver := NewUsernameResolver(nil, nil, WithGraphQLURL(slow.URL))
+
+	const workers = 8
+	results := make([]string, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = resolver.ResolveFromGitHubTokenSync(context.Background(), "gho_herdtoken")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, got := range results {
+		if got != "herd-user" {
+			t.Errorf("worker %d: expected 'herd-user', got %q", i, got)
+		}
+	}
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected exactly 1 upstream lookup for concurrent callers, got %d", n)
+	}
+}
+
+func TestResolveFromGitHubTokenSync_WaiterHonoursContext(t *testing.T) {
+	// A waiter joining an in-progress flight must give up when its own
+	// context is cancelled rather than blocking until the leader finishes.
+	release := make(chan struct{})
+	var callCount atomic.Int32
+	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":{"viewer":{"login":"slow-user"}}}`))
+	}))
+	defer blocked.Close()
+	defer close(release)
+
+	resolver := NewUsernameResolver(nil, nil, WithGraphQLURL(blocked.URL))
+
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		resolver.ResolveFromGitHubTokenSync(context.Background(), "gho_slowtoken")
+	}()
+
+	// Wait for the leader's flight to be registered.
+	key := hashToken("gho_slowtoken")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := resolver.inflight.Load(key); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for leader flight to register")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if got := resolver.ResolveFromGitHubTokenSync(ctx, "gho_slowtoken"); got != "" {
+		t.Errorf("expected cancelled waiter to return empty username, got %q", got)
+	}
+
+	<-leaderDone
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected exactly 1 upstream lookup, got %d", n)
 	}
 }

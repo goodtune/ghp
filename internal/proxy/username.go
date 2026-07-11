@@ -41,12 +41,33 @@ const (
 // Results are kept in a long-lived in-memory cache keyed by a one-way SHA-256
 // hash of the token so the actual credential is never stored.
 type UsernameResolver struct {
-	store      database.Store
-	cache      *expirable.LRU[string, string]
-	logger     *slog.Logger
-	inflight   sync.Map     // tracks in-progress lookups to prevent duplicate goroutines
+	store  database.Store
+	cache  *expirable.LRU[string, string]
+	logger *slog.Logger
+	// inflight maps a token hash to the *usernameFlight coordinating the
+	// lookup currently in progress for it. Async callers use it to avoid
+	// spawning duplicate goroutines; synchronous callers additionally wait
+	// on the flight so concurrent cache misses for the same token trigger
+	// exactly one GraphQL viewer request.
+	inflight   sync.Map
 	graphqlURL string       // GraphQL endpoint URL (overridable for tests)
 	httpClient *http.Client // HTTP client for GraphQL requests
+}
+
+// usernameFlight is a single in-progress username lookup that concurrent
+// callers can wait on. The leader stores the result in username before
+// closing done; waiters must only read username after done is closed.
+type usernameFlight struct {
+	done     chan struct{}
+	username string
+}
+
+// finish records the lookup result, releases any waiters, and removes the
+// flight from the inflight map.
+func (u *UsernameResolver) finish(key string, f *usernameFlight, username string) {
+	f.username = username
+	close(f.done)
+	u.inflight.Delete(key)
 }
 
 // NewUsernameResolver creates a resolver backed by store for database lookups
@@ -176,11 +197,11 @@ func (u *UsernameResolver) warmCacheSync(parentCtx context.Context, resolver Git
 			// warm-up and request-driven resolution for the same token hash
 			// deduplicate consistently and avoid redundant GraphQL calls when
 			// real traffic overlaps with the warm-up pass.
-			if _, loaded := u.inflight.LoadOrStore(key, struct{}{}); loaded {
+			f := &usernameFlight{done: make(chan struct{})}
+			if _, loaded := u.inflight.LoadOrStore(key, f); loaded {
 				return
 			}
-			defer u.inflight.Delete(key)
-			u.resolveAndCacheGitHubUsername(ctx, key, ghToken)
+			u.finish(key, f, u.resolveAndCacheGitHubUsername(ctx, key, ghToken))
 		}()
 	}
 	wg.Wait()
@@ -223,7 +244,8 @@ func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken 
 
 	// Guard against unbounded goroutine spawning: only one in-flight lookup
 	// is allowed per token hash at a time.
-	if _, loaded := u.inflight.LoadOrStore(key, struct{}{}); loaded {
+	f := &usernameFlight{done: make(chan struct{})}
+	if _, loaded := u.inflight.LoadOrStore(key, f); loaded {
 		return ""
 	}
 
@@ -232,8 +254,7 @@ func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken 
 	// stored in the cache for future calls. Use a fresh background context so
 	// the lookup is not cancelled when the triggering request context ends.
 	go func() {
-		defer u.inflight.Delete(key)
-		u.resolveAndCacheGitHubUsername(context.Background(), key, rawToken)
+		u.finish(key, f, u.resolveAndCacheGitHubUsername(context.Background(), key, rawToken))
 	}()
 
 	// Best-effort: if the username is not yet cached, return empty string.
@@ -254,7 +275,24 @@ func (u *UsernameResolver) ResolveFromGitHubTokenSync(ctx context.Context, rawTo
 	if username, ok := u.cache.Get(key); ok {
 		return username
 	}
-	return u.resolveAndCacheGitHubUsername(ctx, key, rawToken)
+
+	// Coalesce concurrent lookups for the same token: the first caller (or an
+	// already-running async lookup) is the leader; everyone else waits on its
+	// flight — bounded by their own context — instead of issuing duplicate
+	// GraphQL viewer requests.
+	f := &usernameFlight{done: make(chan struct{})}
+	if existing, loaded := u.inflight.LoadOrStore(key, f); loaded {
+		ef := existing.(*usernameFlight)
+		select {
+		case <-ef.done:
+			return ef.username
+		case <-ctx.Done():
+			return ""
+		}
+	}
+	username := u.resolveAndCacheGitHubUsername(ctx, key, rawToken)
+	u.finish(key, f, username)
+	return username
 }
 
 // CheckCache returns the cached GitHub username for the given raw token without
