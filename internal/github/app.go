@@ -93,6 +93,16 @@ const installationTokenTTL = 55 * time.Minute
 // held in memory simultaneously.
 const maxCachedInstallationTokens = 1_000
 
+// installationIDCacheTTL is the duration owner→installation-ID lookups are
+// cached. Installation IDs are stable for the lifetime of an installation, so
+// a longer TTL would also be safe; one hour bounds the window during which an
+// uninstall/reinstall cycle could serve a stale ID.
+const installationIDCacheTTL = time.Hour
+
+// maxCachedInstallationIDs is the maximum number of owner→installation-ID
+// entries held in memory simultaneously.
+const maxCachedInstallationIDs = 1_000
+
 // AppTokenProvider generates GitHub App installation tokens.
 type AppTokenProvider struct {
 	appID   int64
@@ -103,6 +113,10 @@ type AppTokenProvider struct {
 	// raw token string. Entries are automatically evicted after
 	// installationTokenTTL via the expirable.LRU TTL mechanism.
 	cache *expirable.LRU[string, string]
+	// installationIDCache maps a lowercase owner login to the installation ID
+	// of this app on that account. Entries are evicted after
+	// installationIDCacheTTL.
+	installationIDCache *expirable.LRU[string, int64]
 }
 
 // NewAppTokenProvider creates a provider from the given config.
@@ -117,11 +131,12 @@ func NewAppTokenProvider(cfg AppConfig) (*AppTokenProvider, error) {
 		baseURL = "https://api.github.com"
 	}
 	return &AppTokenProvider{
-		appID:   cfg.AppID,
-		key:     key,
-		baseURL: baseURL,
-		client:  &http.Client{Timeout: 30 * time.Second},
-		cache:   expirable.NewLRU[string, string](maxCachedInstallationTokens, nil, installationTokenTTL),
+		appID:               cfg.AppID,
+		key:                 key,
+		baseURL:             baseURL,
+		client:              &http.Client{Timeout: 30 * time.Second},
+		cache:               expirable.NewLRU[string, string](maxCachedInstallationTokens, nil, installationTokenTTL),
+		installationIDCache: expirable.NewLRU[string, int64](maxCachedInstallationIDs, nil, installationIDCacheTTL),
 	}, nil
 }
 
@@ -269,6 +284,71 @@ func (p *AppTokenProvider) getInstallationPermissions(ctx context.Context, jwtTo
 	}
 
 	return result.Permissions, nil
+}
+
+// GetInstallationIDForOwner resolves the installation ID of this app on the
+// given user or organization account. The org endpoint is tried first, then
+// the user endpoint (GitHub returns 404 from the org endpoint for user
+// accounts). Results are cached for installationIDCacheTTL, keyed by the
+// lowercase owner login.
+func (p *AppTokenProvider) GetInstallationIDForOwner(ctx context.Context, owner string) (int64, error) {
+	key := strings.ToLower(owner)
+	if id, ok := p.installationIDCache.Get(key); ok {
+		return id, nil
+	}
+
+	signed, err := p.signJWT()
+	if err != nil {
+		return 0, fmt.Errorf("signing JWT: %w", err)
+	}
+
+	var lastErr error
+	for _, path := range []string{
+		fmt.Sprintf("%s/orgs/%s/installation", p.baseURL, owner),
+		fmt.Sprintf("%s/users/%s/installation", p.baseURL, owner),
+	} {
+		id, err := p.fetchInstallationID(ctx, signed, path)
+		if err == nil {
+			p.installationIDCache.Add(key, id)
+			return id, nil
+		}
+		lastErr = err
+	}
+	return 0, fmt.Errorf("no installation of app %d found on %q: %w", p.appID, owner, lastErr)
+}
+
+// fetchInstallationID performs a single installation lookup against the given
+// URL using the provided app JWT.
+func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, jwtToken, url string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("creating installation lookup request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("fetching installation: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return 0, fmt.Errorf("installation lookup failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("decoding installation response: %w", err)
+	}
+	if result.ID == 0 {
+		return 0, fmt.Errorf("installation response missing id")
+	}
+	return result.ID, nil
 }
 
 // Installation represents a GitHub App installation (API response DTO).

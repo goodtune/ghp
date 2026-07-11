@@ -78,6 +78,91 @@ func TestAppTokenProvider_CachesToken(t *testing.T) {
 	}
 }
 
+func TestAppTokenProvider_GetInstallationIDForOwner(t *testing.T) {
+	tests := []struct {
+		name      string
+		owner     string
+		orgStatus int   // status for /orgs/{owner}/installation
+		userID    int64 // id served by /users/{owner}/installation (0 = 404)
+		orgID     int64 // id served by /orgs/{owner}/installation
+		wantID    int64
+		wantErr   bool
+	}{
+		{"org installation", "acme", http.StatusOK, 0, 101, 101, false},
+		{"user installation via fallback", "torvalds", http.StatusNotFound, 202, 0, 202, false},
+		{"no installation anywhere", "ghost", http.StatusNotFound, 0, 0, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/orgs/" + tt.owner + "/installation":
+					if tt.orgStatus != http.StatusOK {
+						w.WriteHeader(tt.orgStatus)
+						return
+					}
+					json.NewEncoder(w).Encode(map[string]int64{"id": tt.orgID})
+				case "/users/" + tt.owner + "/installation":
+					if tt.userID == 0 {
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+					json.NewEncoder(w).Encode(map[string]int64{"id": tt.userID})
+				default:
+					t.Errorf("unexpected path %q", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			provider, err := NewAppTokenProvider(AppConfig{AppID: 1, PrivateKey: testRSAKey, BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := provider.GetInstallationIDForOwner(context.Background(), tt.owner)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if id != tt.wantID {
+				t.Errorf("expected installation ID %d, got %d", tt.wantID, id)
+			}
+		})
+	}
+}
+
+func TestAppTokenProvider_GetInstallationIDForOwner_Cached(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		json.NewEncoder(w).Encode(map[string]int64{"id": 55})
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{AppID: 1, PrivateKey: testRSAKey, BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, owner := range []string{"acme", "ACME", "Acme"} {
+		id, err := provider.GetInstallationIDForOwner(ctx, owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id != 55 {
+			t.Errorf("expected 55, got %d", id)
+		}
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 API call (case-insensitive cache), got %d", callCount)
+	}
+}
+
 func TestInstallationCacheKey(t *testing.T) {
 	// Same inputs → same key.
 	k1 := installationCacheKey(1, []string{"org/repo"}, map[string]string{"contents": "read"})

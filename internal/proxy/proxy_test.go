@@ -50,8 +50,9 @@ func TestForwardRequest_EnterpriseHeader(t *testing.T) {
 				EnterpriseSlug: "my-enterprise",
 			},
 		},
-		logger: slog.Default(),
-		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+		logger:     slog.Default(),
+		client:     &http.Client{Transport: ct, Timeout: 5 * time.Second},
+		enterprise: NewEnterprisePolicy(config.GitHubConfig{EnterpriseSlug: "my-enterprise"}, nil, nil),
 	}
 
 	rr := httptest.NewRecorder()
@@ -81,8 +82,9 @@ func TestServeHTTP_NonGhpTokenPassthrough(t *testing.T) {
 				EnterpriseSlug: "acme",
 			},
 		},
-		logger: slog.Default(),
-		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+		logger:     slog.Default(),
+		client:     &http.Client{Transport: ct, Timeout: 5 * time.Second},
+		enterprise: NewEnterprisePolicy(config.GitHubConfig{EnterpriseSlug: "acme"}, nil, nil),
 	}
 
 	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo/pulls", nil)

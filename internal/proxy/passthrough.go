@@ -27,11 +27,13 @@ type TokenResolver interface {
 // NewPassthroughHandler creates a transparent reverse proxy to the given
 // upstream URL. If a client token (ghx_/gha_) is found in the Authorization
 // header, it is resolved and replaced with the real GitHub credential.
-// If enterpriseSlug is non-empty, the sec-GitHub-allowed-enterprise header
-// is injected on every request.
+// When enterprise is non-nil, the sec-GitHub-allowed-enterprise header is
+// injected unless an exception covers the owner/repo the path addresses, in
+// which case a managed identity may also be substituted (see EnterprisePolicy).
+// ur resolves usernames for team-gated exceptions and may be nil.
 // The transport parameter allows callers to supply a custom RoundTripper
 // (e.g. for test TLS); pass nil to use http.DefaultTransport.
-func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSlug string, logger *slog.Logger, transport http.RoundTripper) http.Handler {
+func NewPassthroughHandler(upstream string, resolver TokenResolver, enterprise *EnterprisePolicy, ur *UsernameResolver, logger *slog.Logger, transport http.RoundTripper) http.Handler {
 	target, _ := url.Parse(upstream)
 
 	proxy := &httputil.ReverseProxy{
@@ -39,10 +41,6 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSl
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
-
-			if enterpriseSlug != "" {
-				req.Header.Set("sec-GitHub-allowed-enterprise", enterpriseSlug)
-			}
 
 			if resolver != nil {
 				if clientTok, _, rewriteAuth := extractClientToken(req); clientTok != "" {
@@ -52,9 +50,30 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSl
 							logger.Warn("passthrough token resolution failed", "error", err)
 						}
 						req.Header.Del("Authorization")
-						return
+					} else {
+						req.Header.Set("Authorization", rewriteAuth(realToken))
 					}
-					req.Header.Set("Authorization", rewriteAuth(realToken))
+				}
+			}
+
+			// Evaluate the enterprise restriction policy after token
+			// resolution so team-gated exceptions see the real GitHub
+			// credential rather than the ghx_/gha_ client token.
+			if enterprise != nil {
+				owner, repo := enterpriseTargetFromWebPath(req.URL.Path)
+				rawToken := extractRawGitHubToken(req)
+				usernameFn := func(ctx context.Context) string {
+					return ur.ResolveFromGitHubTokenSync(ctx, rawToken)
+				}
+				if identityTok := enterprise.Apply(req.Context(), req.Header, owner, repo, usernameFn); identityTok != "" {
+					// Git clients authenticate with Basic; preserve whatever
+					// scheme the request carried, defaulting to Basic
+					// x-access-token for anonymous requests.
+					if orig := req.Header.Get("Authorization"); orig != "" {
+						req.Header.Set("Authorization", substituteAuthHeader(orig, identityTok))
+					} else {
+						req.Header.Set("Authorization", basicAuthIdentityHeader(identityTok))
+					}
 				}
 			}
 		},

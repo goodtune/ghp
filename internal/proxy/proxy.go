@@ -107,12 +107,22 @@ type Handler struct {
 	usernameResolver *UsernameResolver
 	logger           *slog.Logger
 	client           *http.Client
-	auditLog         AuditLogWriter // may be nil
+	auditLog         AuditLogWriter    // may be nil
+	enterprise       *EnterprisePolicy // may be nil (feature disabled)
 }
 
 // SetAuditLogWriter sets the audit log writer for the handler.
 func (h *Handler) SetAuditLogWriter(w AuditLogWriter) {
 	h.auditLog = w
+}
+
+// SetEnterprisePolicy replaces the handler's enterprise restriction policy.
+// NewHandler installs a baseline policy compiled from the config (header
+// injection + exception matching, but no identity substitution or team
+// gating); the server calls this after the app registry is available to
+// enable the full feature set.
+func (h *Handler) SetEnterprisePolicy(p *EnterprisePolicy) {
+	h.enterprise = p
 }
 
 // NewHandler creates a new reverse proxy handler.
@@ -125,6 +135,7 @@ func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc
 		appTokenProvider: atp,
 		usernameResolver: ur,
 		logger:           logger,
+		enterprise:       NewEnterprisePolicy(cfg.GitHub, nil, logger),
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 			// Do not follow redirects. GitHub endpoints (e.g. Actions
@@ -766,6 +777,21 @@ func (h *Handler) refreshGitHubToken(ctx context.Context, gt *database.GitHubTok
 	return tokenResp.AccessToken, nil
 }
 
+// enterpriseUsername returns a UsernameFunc for team-gated enterprise
+// exceptions. It prefers the username already resolved on the request context
+// and falls back to a blocking GraphQL viewer lookup with the given GitHub
+// credential. The blocking lookup only runs when a team-gated exception
+// actually matches the request target, and its result is cached, so steady-state
+// requests do not pay the extra roundtrip.
+func (h *Handler) enterpriseUsername(r *http.Request, githubToken string) UsernameFunc {
+	return func(ctx context.Context) string {
+		if u := GetUsername(r); u != "" {
+			return u
+		}
+		return h.usernameResolver.ResolveFromGitHubTokenSync(ctx, githubToken)
+	}
+}
+
 // forwardPassthrough forwards a request to GitHub transparently, preserving
 // the original Authorization header. Used for non-ghp_ tokens (e.g. gho_*,
 // ghp_* from other systems, or personal access tokens) so they reach GitHub
@@ -823,9 +849,12 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 		}
 	}
 
-	// Inject enterprise access restriction header if configured.
-	if h.cfg.GitHub.EnterpriseSlug != "" {
-		proxyReq.Header.Set("sec-GitHub-allowed-enterprise", h.cfg.GitHub.EnterpriseSlug)
+	// Enterprise access restriction: inject the header unless an exception
+	// covers the request target, in which case a managed identity may also be
+	// substituted for the caller's credential.
+	owner, repoName := enterpriseTargetFromAPIPath(path)
+	if identityTok := h.enterprise.Apply(r.Context(), proxyReq.Header, owner, repoName, h.enterpriseUsername(r, rawToken)); identityTok != "" {
+		proxyReq.Header.Set("Authorization", substituteAuthHeader(r.Header.Get("Authorization"), identityTok))
 	}
 
 	resp, err := h.client.Do(proxyReq)
@@ -896,9 +925,12 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 	// Set the resolved Authorization header (scheme preserved from original request).
 	proxyReq.Header.Set("Authorization", authHeader)
 
-	// Inject enterprise access restriction header if configured.
-	if h.cfg.GitHub.EnterpriseSlug != "" {
-		proxyReq.Header.Set("sec-GitHub-allowed-enterprise", h.cfg.GitHub.EnterpriseSlug)
+	// Enterprise access restriction: inject the header unless an exception
+	// covers the request target, in which case a managed identity may also be
+	// substituted for the resolved credential.
+	owner, repoName := enterpriseTargetFromAPIPath(path)
+	if identityTok := h.enterprise.Apply(r.Context(), proxyReq.Header, owner, repoName, h.enterpriseUsername(r, rawTokenFromAuthValue(authHeader))); identityTok != "" {
+		proxyReq.Header.Set("Authorization", substituteAuthHeader(authHeader, identityTok))
 	}
 
 	resp, err := h.client.Do(proxyReq)

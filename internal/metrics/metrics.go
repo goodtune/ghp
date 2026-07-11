@@ -133,6 +133,22 @@ var (
 		Help: "Total number of anonymous git requests blocked by the anonymous git blocking feature.",
 	})
 
+	// EnterpriseExceptionTotal counts evaluations of enterprise access
+	// restriction exceptions that matched a request's target, labeled by
+	// outcome:
+	//   "header_omitted"       — exception applied; restriction header not injected
+	//   "identity_substituted" — exception applied and the caller's credential
+	//                            was replaced with a managed installation token
+	//   "team_denied"          — target matched but the caller is not a member
+	//                            of any required team (or could not be
+	//                            identified); restriction header kept
+	//   "identity_error"       — target matched but the managed identity could
+	//                            not be minted; restriction header kept (fail closed)
+	EnterpriseExceptionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_enterprise_exception_total",
+		Help: "Total number of enterprise access restriction exception matches, by outcome.",
+	}, []string{"outcome"})
+
 	// decisionBuckets covers internal decision-making stages (typically µs–ms)
 	// as well as the upstream_roundtrip stage, which includes the actual GitHub
 	// API call and can easily exceed 1s under load or on slow networks.
@@ -305,6 +321,7 @@ const (
 	StageRedirectHeadCheck     = "redirect_head_check"
 	StageCacheLookup           = "cache_lookup"
 	StageGraphQLAnalysis       = "graphql_analysis"
+	StageEnterpriseException   = "enterprise_exception"
 )
 
 // ObserveDecision records the duration of a single stage in the proxy

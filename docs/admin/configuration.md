@@ -52,6 +52,7 @@ values from the config file.
 | `GHP_GITHUB_PRIVATE_KEY` | PEM-encoded GitHub App private key content | |
 | `GHP_GITHUB_PRIVATE_KEY_FILE` | Path to GitHub App private key PEM file | |
 | `GHP_GITHUB_ENTERPRISE_SLUG` | Enterprise slug for access restriction header | |
+| — | `github.enterprise_exceptions` (targets exempt from the restriction header) is YAML-only; nested lists cannot be expressed as environment variables | |
 | `GHP_GITHUB_BASE_URL` | GitHub API base URL for GHES deployments (must be HTTPS; e.g. `https://ghes.example.com/api/v3`). Omit or leave empty for github.com. Per-app overrides are set via the admin UI. | `https://api.github.com` |
 
 ### TLS
@@ -172,6 +173,15 @@ github:
   # private_key: ""            # or inline PEM content (useful in containers)
   enterprise_slug: ""
   # base_url: ""               # GHES API base URL (e.g. https://ghes.example.com/api/v3); omit for github.com
+  # enterprise_exceptions:     # exempt targets from the enterprise access restriction header
+  #                            # (YAML only — nested lists cannot be set via environment variables)
+  #   - match:                 # account names ("torvalds", "kubernetes") or owner/repo pairs
+  #       - torvalds
+  #       - kubernetes/website
+  #     teams:                 # optional: restrict who may use this exception (org/team-slug);
+  #       - my-org/oss-team    #   requires the default app installed on the org with members:read
+  #     identity:              # optional: substitute a managed credential for matching requests
+  #       app_record_id: ""    #   database record ID of a GitHub App (see admin UI)
 
 database:
   driver: "sqlite"             # "sqlite", "postgres", or "vault"

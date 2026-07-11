@@ -86,4 +86,82 @@ github:
 ```
 
 This injects the `sec-GitHub-allowed-enterprise` header on all proxied API
-requests.
+requests (api.github.com REST and GraphQL, github.com git smart HTTP, and
+Copilot traffic). GitHub rejects requests carrying this header when they are
+authenticated by an account outside the enterprise, effectively blocking
+interaction with off-enterprise repositories.
+
+### Exceptions
+
+GitHub itself provides no per-repository exception mechanism for this feature —
+its documentation directs proxy operators to inject the header only for the
+traffic they intend to restrict. GHP implements exactly that: the
+`github.enterprise_exceptions` list names owners and repositories for which
+the header is omitted, so the enterprise can deliberately allow contributions
+to specific external projects while keeping the restriction everywhere else.
+
+```yaml
+github:
+  enterprise_slug: "my-enterprise"
+  enterprise_exceptions:
+    # Allow everything owned by these accounts (users or orgs), and one
+    # specific repository. Matching is case-insensitive.
+    - match:
+        - torvalds
+        - kubernetes/website
+
+    # Gate an exception on team membership: only active members of
+    # my-org/oss-contributors may reach this repository. The requesting
+    # user's identity is resolved from their credential; anyone else (or a
+    # request whose identity cannot be resolved) is treated as if the
+    # exception did not exist.
+    - match:
+        - external-org/shared-sdk
+      teams:
+        - my-org/oss-contributors
+
+    # Substitute a managed identity: requests to this repository are
+    # performed with an installation token minted from the referenced
+    # GitHub App (registered via the admin UI), so e.g. pushes are made by
+    # the integration's bot account rather than the user's own credential.
+    - match:
+        - partner-org/integration
+      teams:
+        - my-org/partner-integrators
+      identity:
+        app_record_id: "9f3c2a1e-…"   # database record ID from the admin UI
+```
+
+How each request is evaluated:
+
+1. The request target (owner, and repository where present) is derived from
+   the path: `/repos/{owner}/{repo}/...`, `/users/{username}/...`, and
+   `/orgs/{org}/...` on api.github.com, and `/{owner}/{repo}[.git]/...` on
+   github.com.
+2. If no exception matches, the header is injected as usual.
+3. If an exception with `teams` matches, the caller must be an active member
+   of at least one listed team, otherwise the header stays on. Membership is
+   checked with an installation token from the **default** GitHub App, which
+   must be installed on the team's organization with the `members: read`
+   permission. Verdicts are cached for five minutes.
+4. If the exception has an `identity`, an installation token is minted from
+   that app's installation on the target owner (scoped to the target
+   repository where known) and silently replaces the caller's credential.
+   The referenced app must be installed on the external account. If minting
+   fails, the exception **fails closed**: the restriction header stays on.
+5. Otherwise the header is simply omitted and the caller's own credential is
+   forwarded.
+
+Known limitations:
+
+- **GraphQL requests are never exempted.** The API target cannot be derived
+  from the URL path, so `/graphql` always carries the restriction header.
+  Use the REST API for excepted repositories.
+- **Copilot traffic is never exempted** for the same reason.
+- Team gating identifies callers via their GitHub credential. Requests
+  authenticated by `gha_` agent tokens resolve to the App's bot account,
+  which will not be a team member — team-gated exceptions are therefore
+  effectively human-only.
+- Exceptions are static configuration: changes require a restart.
+- The enterprise accepts data exfiltration risk for excepted targets; audit
+  usage via the `ghp_enterprise_exception_total` metric and access logs.

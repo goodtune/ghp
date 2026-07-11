@@ -246,6 +246,21 @@ func TestReleasesRedirectHeadCheckTotal(t *testing.T) {
 	}
 }
 
+func TestEnterpriseExceptionTotal(t *testing.T) {
+	outcomes := []string{"header_omitted", "identity_substituted", "team_denied", "identity_error"}
+	for _, outcome := range outcomes {
+		t.Run(outcome, func(t *testing.T) {
+			labels := prometheus.Labels{"outcome": outcome}
+			before := getCounterValue(t, EnterpriseExceptionTotal, labels)
+			EnterpriseExceptionTotal.WithLabelValues(outcome).Inc()
+			after := getCounterValue(t, EnterpriseExceptionTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
+	}
+}
+
 func TestCodeloadRedirectTotal(t *testing.T) {
 	tests := []struct {
 		name    string

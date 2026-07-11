@@ -23,6 +23,55 @@ func TestLoadAdminsFromEnv(t *testing.T) {
 	}
 }
 
+func TestLoadEnterpriseExceptionsFromYAML(t *testing.T) {
+	yaml := `
+github:
+  enterprise_slug: "12345"
+  enterprise_exceptions:
+    - match:
+        - torvalds
+        - kubernetes/website
+      teams:
+        - acme-org/oss-contributors
+      identity:
+        app_record_id: "9f3c2a1e-0000-0000-0000-000000000000"
+    - match:
+        - partner
+`
+	path := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GitHub.EnterpriseSlug != "12345" {
+		t.Errorf("EnterpriseSlug = %q, want %q", cfg.GitHub.EnterpriseSlug, "12345")
+	}
+	if len(cfg.GitHub.EnterpriseExceptions) != 2 {
+		t.Fatalf("expected 2 exceptions, got %d", len(cfg.GitHub.EnterpriseExceptions))
+	}
+	first := cfg.GitHub.EnterpriseExceptions[0]
+	if len(first.Match) != 2 || first.Match[0] != "torvalds" || first.Match[1] != "kubernetes/website" {
+		t.Errorf("unexpected match entries: %v", first.Match)
+	}
+	if len(first.Teams) != 1 || first.Teams[0] != "acme-org/oss-contributors" {
+		t.Errorf("unexpected teams entries: %v", first.Teams)
+	}
+	if first.Identity.AppRecordID != "9f3c2a1e-0000-0000-0000-000000000000" {
+		t.Errorf("unexpected app_record_id: %q", first.Identity.AppRecordID)
+	}
+	second := cfg.GitHub.EnterpriseExceptions[1]
+	if len(second.Match) != 1 || second.Match[0] != "partner" {
+		t.Errorf("unexpected match entries: %v", second.Match)
+	}
+	if second.Identity.AppRecordID != "" {
+		t.Errorf("expected empty app_record_id, got %q", second.Identity.AppRecordID)
+	}
+}
+
 func TestLoadAllowedRedirectsFromEnv(t *testing.T) {
 	t.Setenv("GHP_AUTH_ALLOWED_REDIRECTS", "https://a.example.com/cb,*.internal.example.com")
 

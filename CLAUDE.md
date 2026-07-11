@@ -97,6 +97,7 @@ The proxy decision pipeline is broken into individually timed stages so that the
 | `scope_parsing` | JSON unmarshalling of repository and permission scope restrictions |
 | `scope_enforcement` | Repository allowlist check + permission level verification |
 | `github_token_resolution` | Loading, decrypting (or OAuth-refreshing) the real GitHub credential |
+| `enterprise_exception` | Evaluating enterprise access restriction exceptions (target match, team gate, identity minting) before header injection |
 | `upstream_roundtrip` | Proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer) |
 | `redirect_head_check` | HEAD request to the release redirect target to verify asset availability before issuing a 302 (releases handler only) |
 
@@ -117,6 +118,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_github_ratelimit_remaining` / `ghp_github_ratelimit_limit` — GitHub rate limit gauges
 - `ghp_github_token_refresh_total` — OAuth token refresh attempts
 - `ghp_auth_rate_limit_total` — rate limiter rejections
+- `ghp_enterprise_exception_total` — enterprise restriction exception matches by outcome (`header_omitted`, `identity_substituted`, `team_denied`, `identity_error`)
 - `ghp_releases_redirect_head_check_total` — HEAD check outcomes (`found`, `not_found`, `error`) for release redirect targets
 - `ghp_cache_fetch_total` / `ghp_cache_lsrefs_total` / `ghp_cache_warm_total` — cache operation counters
 - `ghp_cache_packfile_total` / `ghp_cache_packfile_bytes_total` — packfile response cache hit/miss counts and bytes served

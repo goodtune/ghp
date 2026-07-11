@@ -367,6 +367,13 @@ func (s *Server) Run(ctx context.Context) error {
 	usernameResolver.WarmCache(lifecycleCtx, proxyTokenResolver)
 	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, usernameResolver, s.logger)
 
+	// Build the enterprise access restriction policy with the app registry as
+	// the identity source so exceptions can substitute managed installation
+	// tokens and verify team membership. NewHandler installed a baseline
+	// policy (matching only); this replaces it with the full-featured one.
+	enterprisePolicy := proxy.NewEnterprisePolicy(s.cfg.GitHub, appRegistry, s.logger)
+	proxyHandler.SetEnterprisePolicy(enterprisePolicy)
+
 	// Build audit log writer for OpenTelemetry audit log records.
 	auditWriter := newAuditLogWriter(s.logProvider.Logger(auditLogScope))
 	proxyHandler.SetAuditLogWriter(auditWriter)
@@ -412,7 +419,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// Create passthrough handlers for github.com and *.githubcopilot.com.
 	// Reuse proxyTokenResolver created above for cache warming to avoid duplication.
 	githubInner := proxy.NewPassthroughHandler(
-		"https://github.com", proxyTokenResolver, s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
+		"https://github.com", proxyTokenResolver, enterprisePolicy, usernameResolver, s.logger, nil)
 
 	// Wrap with git cache handler if enabled. The cache middleware wraps
 	// githubInner (the raw passthrough). The resulting handler is then wrapped
