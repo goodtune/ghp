@@ -87,21 +87,33 @@ func NewRawHandler(cfg *config.Config, enforcer ScopeEnforcer, resolver TokenRes
 	passthrough := newRawPassthrough(transport)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decisionStart := time.Now()
+
 		owner, repo, ok := parseRawPath(r.URL.Path)
 		if !ok {
 			// Not a content path. Forward and leave it to upstream; not
 			// counted, so label cardinality stays bounded by real requests.
+			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
+			upstreamStart := time.Now()
 			passthrough.ServeHTTP(w, r)
+			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 			return
 		}
 
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_method").Inc()
+			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
 			writeError(w, http.StatusForbidden, "Only GET and HEAD are permitted for raw content")
 			return
 		}
 
+		extractStart := time.Now()
 		clientTok, _, _ := extractClientToken(r)
+		extractTokenType := ""
+		if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
+			extractTokenType = string(tt)
+		}
+		metrics.ObserveDecision(metrics.StageTokenExtraction, extractTokenType, time.Since(extractStart))
 		if clientTok != "" {
 			serveRawAuthenticated(w, r, passthrough, enforcer, resolver, ur, logger, owner, repo, clientTok)
 			return
@@ -110,19 +122,26 @@ func NewRawHandler(cfg *config.Config, enforcer ScopeEnforcer, resolver TokenRes
 		if r.URL.Query().Get("token") != "" {
 			if !cfg.RawAllowQueryToken() {
 				metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_policy").Inc()
+				metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
 				writeError(w, http.StatusForbidden,
 					"GitHub-issued query tokens are not permitted (raw.allow_query_token is disabled)")
 				return
 			}
 			metrics.RawRequestTotal.WithLabelValues(owner, repo, "query_token").Inc()
 			SetRawAuth(r, "query_token")
+			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
+			upstreamStart := time.Now()
 			passthrough.ServeHTTP(w, r)
+			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 			return
 		}
 
 		metrics.RawRequestTotal.WithLabelValues(owner, repo, "anonymous").Inc()
 		SetRawAuth(r, "anonymous")
+		metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
+		upstreamStart := time.Now()
 		passthrough.ServeHTTP(w, r)
+		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 	})
 }
 
@@ -212,10 +231,17 @@ func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough h
 	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 	// Strip the GitHub-issued capability before forwarding our own credential.
-	if q := r.URL.Query(); q.Get("token") != "" {
-		q.Del("token")
-		r.URL.RawQuery = q.Encode()
-	}
+	//
+	// Unconditional by design: url.Values.Get cannot be trusted to detect the
+	// parameter. ParseQuery silently discards any &-segment containing a ";",
+	// so "?x=1;token=SECRET" parses to an empty map — guarding the strip on
+	// Get("token") != "" would skip it and forward the smuggled token verbatim
+	// alongside our own credential. Re-encoding an unparseable query drops its
+	// other parameters, which is the correct fail-closed trade. Encode() also
+	// re-orders and re-normalises the parameters it does keep.
+	q := r.URL.Query()
+	q.Del("token")
+	r.URL.RawQuery = q.Encode()
 
 	_, _, rewriteAuth := extractClientToken(r)
 	if rewriteAuth != nil {

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
@@ -249,28 +250,54 @@ func TestRawHandler_ScopeEnforcement(t *testing.T) {
 }
 
 func TestRawHandler_StripsQueryTokenOnAuthenticatedPath(t *testing.T) {
-	var upstreamQuery string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamQuery = r.URL.RawQuery
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	cfg := &config.Config{}
-	cfg.Raw.AllowQueryToken = true
-	enforcer := newFakeScopeEnforcer(t, nil, nil)
-	resolver := &mockTokenResolver{token: "real-github-token"}
-	h := NewRawHandler(cfg, enforcer, resolver, nil, nil, rewriteTransport(t, upstream.URL))
-
-	req := httptest.NewRequest(http.MethodGet, "/goodtune/ghp/main/README.md?token=GITHUBISSUED&ref=x", nil)
-	req.Header.Set("Authorization", "token "+token.PrefixProxy+"testtoken")
-	h.ServeHTTP(httptest.NewRecorder(), req)
-
-	if strings.Contains(upstreamQuery, "GITHUBISSUED") {
-		t.Errorf("upstream query = %q, GitHub-issued token must be stripped", upstreamQuery)
+	tests := []struct {
+		name        string
+		target      string
+		wantAbsent  string
+		wantPresent string
+	}{
+		{
+			name:        "plain token parameter",
+			target:      "/goodtune/ghp/main/README.md?token=GITHUBISSUED&ref=x",
+			wantAbsent:  "GITHUBISSUED",
+			wantPresent: "ref=x",
+		},
+		{
+			// url.Values.Get cannot see a token smuggled behind a semicolon:
+			// ParseQuery discards any &-segment containing ";", so the parsed
+			// map is empty. Stripping must not be conditional on Get("token").
+			name:       "token smuggled behind a semicolon",
+			target:     "/goodtune/ghp/main/README.md?x=1;token=SECRET",
+			wantAbsent: "SECRET",
+		},
 	}
-	if !strings.Contains(upstreamQuery, "ref=x") {
-		t.Errorf("upstream query = %q, unrelated params must be preserved", upstreamQuery)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var upstreamQuery string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamQuery = r.URL.RawQuery
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+
+			cfg := &config.Config{}
+			cfg.Raw.AllowQueryToken = true
+			enforcer := newFakeScopeEnforcer(t, nil, nil)
+			resolver := &mockTokenResolver{token: "real-github-token"}
+			h := NewRawHandler(cfg, enforcer, resolver, nil, nil, rewriteTransport(t, upstream.URL))
+
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			req.Header.Set("Authorization", "token "+token.PrefixProxy+"testtoken")
+			h.ServeHTTP(httptest.NewRecorder(), req)
+
+			if strings.Contains(upstreamQuery, tt.wantAbsent) {
+				t.Errorf("upstream query = %q, GitHub-issued token %q must be stripped", upstreamQuery, tt.wantAbsent)
+			}
+			if tt.wantPresent != "" && !strings.Contains(upstreamQuery, tt.wantPresent) {
+				t.Errorf("upstream query = %q, unrelated params must be preserved (%q)", upstreamQuery, tt.wantPresent)
+			}
+		})
 	}
 }
 
@@ -303,4 +330,80 @@ func TestRawHandler_CountsResults(t *testing.T) {
 	if after != before+1 {
 		t.Errorf("denied_policy counter = %v, want %v", after, before+1)
 	}
+}
+
+// rawStageCount reads the observation count of the decision-pipeline histogram
+// for the given stage and token type.
+func rawStageCount(t *testing.T, stage, tokenType string) uint64 {
+	t.Helper()
+	m := &dto.Metric{}
+	h, err := metrics.ProxyDecisionDuration.GetMetricWith(prometheus.Labels{
+		"stage":      stage,
+		"token_type": tokenType,
+	})
+	if err != nil {
+		t.Fatalf("get histogram for stage %q/%q: %v", stage, tokenType, err)
+	}
+	if err := h.(prometheus.Metric).Write(m); err != nil {
+		t.Fatalf("write histogram for stage %q/%q: %v", stage, tokenType, err)
+	}
+	return m.GetHistogram().GetSampleCount()
+}
+
+// TestRawHandler_ObservesDecisionStages verifies the handler is instrumented on
+// the unattributed paths as well as the enforced one. The unattributed exits
+// record total and upstream_roundtrip under token_type="unknown"; token
+// extraction is timed on every content-path request and carries the real token
+// type when a GHP token is present.
+func TestRawHandler_ObservesDecisionStages(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	newHandler := func() http.Handler {
+		cfg := &config.Config{}
+		cfg.Raw.AllowQueryToken = true
+		return NewRawHandler(cfg, newFakeScopeEnforcer(t, nil, nil),
+			&mockTokenResolver{token: "real-github-token"}, nil, nil,
+			rewriteTransport(t, upstream.URL))
+	}
+
+	t.Run("anonymous records total and upstream_roundtrip as unknown", func(t *testing.T) {
+		beforeTotal := rawStageCount(t, metrics.StageTotal, "unknown")
+		beforeUpstream := rawStageCount(t, metrics.StageUpstreamRoundtrip, "unknown")
+
+		req := httptest.NewRequest(http.MethodGet, "/goodtune/ghp/main/README.md", nil)
+		newHandler().ServeHTTP(httptest.NewRecorder(), req)
+
+		if got := rawStageCount(t, metrics.StageTotal, "unknown"); got != beforeTotal+1 {
+			t.Errorf("total observations = %d, want %d", got, beforeTotal+1)
+		}
+		if got := rawStageCount(t, metrics.StageUpstreamRoundtrip, "unknown"); got != beforeUpstream+1 {
+			t.Errorf("upstream_roundtrip observations = %d, want %d", got, beforeUpstream+1)
+		}
+	})
+
+	t.Run("denied_method records total", func(t *testing.T) {
+		before := rawStageCount(t, metrics.StageTotal, "unknown")
+
+		req := httptest.NewRequest(http.MethodPost, "/goodtune/ghp/main/README.md", nil)
+		newHandler().ServeHTTP(httptest.NewRecorder(), req)
+
+		if got := rawStageCount(t, metrics.StageTotal, "unknown"); got != before+1 {
+			t.Errorf("total observations = %d, want %d", got, before+1)
+		}
+	})
+
+	t.Run("token extraction is timed with the real token type", func(t *testing.T) {
+		before := rawStageCount(t, metrics.StageTokenExtraction, string(token.TokenTypeProxy))
+
+		req := httptest.NewRequest(http.MethodGet, "/goodtune/ghp/main/README.md", nil)
+		req.Header.Set("Authorization", "token "+token.PrefixProxy+"testtoken")
+		newHandler().ServeHTTP(httptest.NewRecorder(), req)
+
+		if got := rawStageCount(t, metrics.StageTokenExtraction, string(token.TokenTypeProxy)); got != before+1 {
+			t.Errorf("token_extraction observations = %d, want %d", got, before+1)
+		}
+	})
 }
