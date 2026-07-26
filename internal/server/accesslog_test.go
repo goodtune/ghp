@@ -253,6 +253,53 @@ func TestAccessLog_UserIDFallsBackToUsername(t *testing.T) {
 	}
 }
 
+func TestAccessLog_RawAuthSlot(t *testing.T) {
+	t.Run("emits ghp.raw.auth when the slot is set", func(t *testing.T) {
+		logger, exp := newCaptureLogger(t)
+		aw := newAccessLogWriter(logger)
+
+		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			proxy.SetRawAuth(r, "query_token")
+			w.WriteHeader(http.StatusOK)
+		})
+
+		handler := accessLogHandler(backend.API, inner, aw)
+
+		req := httptest.NewRequest("GET", "http://ghp.example.com/o/r/main/f.txt", nil)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		rec := exp.only(t)
+
+		if got := rec.str(t, attrGHPRawAuth); got != "query_token" {
+			t.Errorf("%s: got %q, want query_token", attrGHPRawAuth, got)
+		}
+	})
+
+	t.Run("omits ghp.raw.auth when the slot is untouched", func(t *testing.T) {
+		logger, exp := newCaptureLogger(t)
+		aw := newAccessLogWriter(logger)
+
+		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+
+		handler := accessLogHandler(backend.Mgmt, inner, aw)
+
+		req := httptest.NewRequest("GET", "http://ghp.example.com/admin", nil)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		rec := exp.only(t)
+
+		if rec.has(attrGHPRawAuth) {
+			t.Errorf("%s: present, want absent for non-raw backend", attrGHPRawAuth)
+		}
+	})
+}
+
 func TestAccessLog_ErrorLevel(t *testing.T) {
 	logger, exp := newCaptureLogger(t)
 	aw := newAccessLogWriter(logger)

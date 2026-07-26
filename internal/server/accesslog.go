@@ -138,6 +138,9 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) ht
 		if *slots.CacheRepo != "" {
 			attrs = append(attrs, otellog.String(attrGHPCacheRepo, *slots.CacheRepo))
 		}
+		if *slots.RawAuth != "" {
+			attrs = append(attrs, otellog.String(attrGHPRawAuth, *slots.RawAuth))
+		}
 
 		// Request and response headers, redacting sensitive values, captured
 		// under the http.request.header.* / http.response.header.* conventions.
