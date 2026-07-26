@@ -44,6 +44,69 @@ func parseRawPath(p string) (owner, repo string, ok bool) {
 	return strings.ToLower(m[1]), strings.ToLower(m[2]), true
 }
 
+// rawQuerySegments splits a raw query string into its parameter segments,
+// treating both "&" and ";" as separators.
+//
+// url.ParseQuery cannot be used for any security decision about this query:
+// it silently discards any &-segment containing a ";", so "?x=1;token=SECRET"
+// parses to an empty url.Values. Classifying or stripping on the parsed map
+// would let a token smuggled behind a semicolon slip past both the
+// raw.allow_query_token policy check and the strip on the authenticated path.
+// Splitting the raw string ourselves sees every segment a permissive upstream
+// parser might.
+func rawQuerySegments(rawQuery string) []string {
+	if rawQuery == "" {
+		return nil
+	}
+	return strings.FieldsFunc(rawQuery, func(r rune) bool {
+		return r == '&' || r == ';'
+	})
+}
+
+// isRawTokenSegment reports whether a query segment names the "token"
+// parameter. The comparison is case-insensitive because GitHub treats the
+// parameter name that way; an exact-case check would let "?TOKEN=x" through.
+func isRawTokenSegment(seg string) bool {
+	key, _, _ := strings.Cut(seg, "=")
+	// An unescape failure means the key is not a well-formed encoding of
+	// "token", but compare the raw bytes anyway rather than skipping the
+	// segment — deciding "not a token" from a parse error is how the
+	// ParseQuery bypass happened in the first place.
+	if unescaped, err := url.QueryUnescape(key); err == nil {
+		key = unescaped
+	}
+	return strings.EqualFold(key, "token")
+}
+
+// rawQueryHasToken reports whether the raw query carries a "token" parameter.
+func rawQueryHasToken(rawQuery string) bool {
+	for _, seg := range rawQuerySegments(rawQuery) {
+		if isRawTokenSegment(seg) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripRawQueryToken removes every "token" parameter from a raw query,
+// returning the remaining segments joined by "&".
+//
+// Segments are preserved verbatim rather than re-encoded, so unrelated
+// parameters survive a query that url.ParseQuery cannot read. Semicolon
+// separators are normalised to "&": that keeps what we forward unambiguous to
+// upstream, which would otherwise be free to split the query differently than
+// we did.
+func stripRawQueryToken(rawQuery string) string {
+	segs := rawQuerySegments(rawQuery)
+	kept := make([]string, 0, len(segs))
+	for _, seg := range segs {
+		if !isRawTokenSegment(seg) {
+			kept = append(kept, seg)
+		}
+	}
+	return strings.Join(kept, "&")
+}
+
 // newRawPassthrough builds a transparent reverse proxy to upstream
 // raw.githubusercontent.com, preserving the client's Host header so tests and
 // access logs see the value that was sent.
@@ -119,7 +182,7 @@ func NewRawHandler(cfg *config.Config, enforcer ScopeEnforcer, resolver TokenRes
 			return
 		}
 
-		if r.URL.Query().Get("token") != "" {
+		if rawQueryHasToken(r.URL.RawQuery) {
 			if !cfg.RawAllowQueryToken() {
 				metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_policy").Inc()
 				metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
@@ -235,17 +298,10 @@ func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough h
 	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 	// Strip the GitHub-issued capability before forwarding our own credential.
-	//
-	// Unconditional by design: url.Values.Get cannot be trusted to detect the
-	// parameter. ParseQuery silently discards any &-segment containing a ";",
-	// so "?x=1;token=SECRET" parses to an empty map — guarding the strip on
-	// Get("token") != "" would skip it and forward the smuggled token verbatim
-	// alongside our own credential. Re-encoding an unparseable query drops its
-	// other parameters, which is the correct fail-closed trade. Encode() also
-	// re-orders and re-normalises the parameters it does keep.
-	q := r.URL.Query()
-	q.Del("token")
-	r.URL.RawQuery = q.Encode()
+	// stripRawQueryToken works on the raw string, so it also catches a token
+	// smuggled behind a ";" and one spelled in a different case — neither of
+	// which url.Values would remove.
+	r.URL.RawQuery = stripRawQueryToken(r.URL.RawQuery)
 
 	_, _, rewriteAuth := extractClientToken(r)
 	if rewriteAuth != nil {
