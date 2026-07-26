@@ -228,6 +228,10 @@ func redactedQuery(rawQuery string) string {
 	if rawQuery == "" {
 		return ""
 	}
+	// ParseQuery is used only as a validity check; the parsed values are
+	// deliberately discarded. Redaction then works on the raw string so that
+	// parameter order is preserved in the log — reusing the parsed map would
+	// silently sort keys and rewrite encodings.
 	if _, err := url.ParseQuery(rawQuery); err != nil {
 		return "REDACTED"
 	}

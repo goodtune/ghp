@@ -248,8 +248,9 @@ func TestReleasesRedirectHeadCheckTotal(t *testing.T) {
 
 func TestRawRequestTotal(t *testing.T) {
 	results := []string{
-		"authenticated", "query_token", "anonymous",
-		"denied_scope", "denied_policy", "denied_method",
+		"authenticated", "query_token", "foreign_credential", "anonymous",
+		"denied_scope", "denied_token", "denied_policy", "denied_border",
+		"denied_method", "error",
 	}
 	for _, result := range results {
 		t.Run(result, func(t *testing.T) {

@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -102,11 +104,6 @@ func TestRawHandler_UnattributedPaths(t *testing.T) {
 			method: http.MethodPost, target: "/goodtune/ghp/main/README.md",
 			allowQueryToken: true, wantStatus: http.StatusForbidden, wantForwarded: false,
 		},
-		{
-			name:   "non-matching path is forwarded uncounted",
-			method: http.MethodGet, target: "/goodtune/ghp",
-			allowQueryToken: true, wantStatus: http.StatusOK, wantForwarded: true,
-		},
 	}
 
 	for _, tt := range tests {
@@ -139,6 +136,365 @@ func TestRawHandler_UnattributedPaths(t *testing.T) {
 				t.Errorf("upstream query = %q, want %q", upstreamQuery, tt.wantQueryOnUpstream)
 			}
 		})
+	}
+}
+
+// TestRawHandler_NonMatchingPathIsUncounted pins the documented behaviour that
+// a path with fewer than three segments is forwarded without touching
+// RawRequestTotal: the owner/repo labels come from a client-controlled path, so
+// counting requests that were never classified would let a caller mint series
+// for paths that are not repositories at all.
+func TestRawHandler_NonMatchingPathIsUncounted(t *testing.T) {
+	var forwarded bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{}
+	cfg.Raw.AllowQueryToken = true
+	h := NewRawHandler(cfg, nil, nil, nil, nil, rewriteTransport(t, upstream.URL))
+
+	results := []string{
+		"authenticated", "query_token", "anonymous", "foreign_credential",
+		"denied_scope", "denied_policy", "denied_method", "denied_border",
+		"denied_token", "error",
+	}
+	before := make(map[string]float64, len(results))
+	for _, result := range results {
+		before[result] = rawCounterValue(t, "uncounted", "path", result)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/uncounted/path", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !forwarded {
+		t.Error("forwarded = false, want true")
+	}
+	for _, result := range results {
+		if after := rawCounterValue(t, "uncounted", "path", result); after != before[result] {
+			t.Errorf("%s counter = %v, want %v — a non-matching path must not be counted", result, after, before[result])
+		}
+	}
+}
+
+// TestRawHandler_ForeignCredential covers a GitHub credential ghp did not issue
+// (a classic PAT or installation token in Authorization). It is forwarded
+// intact — ghp cannot resolve or scope-check it — but it is a distinct event
+// from a genuinely credential-free request and must be counted separately.
+func TestRawHandler_ForeignCredential(t *testing.T) {
+	tests := []struct {
+		name       string
+		owner      string
+		repo       string
+		authHeader string
+	}{
+		{"classic PAT", "foreigna", "repoa", "token ghp_classicpat"},
+		{"installation token", "foreignb", "repob", "Bearer ghs_installationtoken"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotAuth string
+			var forwarded bool
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				forwarded = true
+				gotAuth = r.Header.Get("Authorization")
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+
+			cfg := &config.Config{}
+			cfg.Raw.AllowQueryToken = true
+			h := NewRawHandler(cfg, nil, nil, nil, nil, rewriteTransport(t, upstream.URL))
+
+			before := rawCounterValue(t, tt.owner, tt.repo, "foreign_credential")
+			anonBefore := rawCounterValue(t, tt.owner, tt.repo, "anonymous")
+
+			req := httptest.NewRequest(http.MethodGet, "/"+tt.owner+"/"+tt.repo+"/main/f.txt", nil)
+			req.Header.Set("Authorization", tt.authHeader)
+			req, slots := PrepareAccessLogSlots(req)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			if !forwarded {
+				t.Fatal("forwarded = false, want true")
+			}
+			if gotAuth != tt.authHeader {
+				t.Errorf("upstream Authorization = %q, want %q — a foreign credential is forwarded intact", gotAuth, tt.authHeader)
+			}
+			if after := rawCounterValue(t, tt.owner, tt.repo, "foreign_credential"); after != before+1 {
+				t.Errorf("foreign_credential counter = %v, want %v", after, before+1)
+			}
+			if after := rawCounterValue(t, tt.owner, tt.repo, "anonymous"); after != anonBefore {
+				t.Errorf("anonymous counter = %v, want %v — a request carrying a credential is not anonymous", after, anonBefore)
+			}
+			if got := *slots.RawAuth; got != "foreign_credential" {
+				t.Errorf("ghp.raw.auth = %q, want %q", got, "foreign_credential")
+			}
+		})
+	}
+}
+
+// TestRawHandler_BorderPolicy verifies the token type border policy is enforced
+// on raw. Before this handler existed, raw.githubusercontent.com did not route
+// anywhere, so block.ghp closed the path by absence; forwarding a blocked
+// credential here would reopen it.
+func TestRawHandler_BorderPolicy(t *testing.T) {
+	tests := []struct {
+		name          string
+		owner         string
+		repo          string
+		authHeader    string
+		blockGHP      bool
+		blockGHS      bool
+		wantStatus    int
+		wantForwarded bool
+		wantResult    string
+	}{
+		{
+			name:  "blocked classic PAT is rejected",
+			owner: "bordera", repo: "repoa",
+			authHeader: "token ghp_classicpat", blockGHP: true,
+			wantStatus: http.StatusForbidden, wantForwarded: false,
+			wantResult: "denied_border",
+		},
+		{
+			name:  "blocked installation token in basic auth is rejected",
+			owner: "borderb", repo: "repob",
+			authHeader: "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:ghs_installationtoken")),
+			blockGHS:   true,
+			wantStatus: http.StatusForbidden, wantForwarded: false,
+			wantResult: "denied_border",
+		},
+		{
+			name:  "unblocked credential is forwarded",
+			owner: "borderc", repo: "repoc",
+			authHeader: "token ghp_classicpat", blockGHP: false,
+			wantStatus: http.StatusOK, wantForwarded: true,
+			wantResult: "foreign_credential",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var forwarded bool
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				forwarded = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+
+			cfg := &config.Config{}
+			cfg.Raw.AllowQueryToken = true
+			cfg.Block.GHP = tt.blockGHP
+			cfg.Block.GHS = tt.blockGHS
+			h := NewRawHandler(cfg, nil, nil, nil, nil, rewriteTransport(t, upstream.URL))
+
+			before := rawCounterValue(t, tt.owner, tt.repo, tt.wantResult)
+			beforeBorder := rawStageCount(t, metrics.StageBorderPolicyCheck, "unknown")
+
+			req := httptest.NewRequest(http.MethodGet, "/"+tt.owner+"/"+tt.repo+"/main/f.txt", nil)
+			req.Header.Set("Authorization", tt.authHeader)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if forwarded != tt.wantForwarded {
+				t.Errorf("forwarded = %v, want %v", forwarded, tt.wantForwarded)
+			}
+			if after := rawCounterValue(t, tt.owner, tt.repo, tt.wantResult); after != before+1 {
+				t.Errorf("%s counter = %v, want %v", tt.wantResult, after, before+1)
+			}
+			if after := rawStageCount(t, metrics.StageBorderPolicyCheck, "unknown"); after != beforeBorder+1 {
+				t.Errorf("border_policy_check observations = %d, want %d", after, beforeBorder+1)
+			}
+		})
+	}
+}
+
+// TestRawHandler_BorderPolicyPrecedesQueryToken pins the ordering: a blocked
+// Authorization credential is rejected even when the request also carries a
+// GitHub-issued ?token= that the query-token branch would otherwise forward.
+func TestRawHandler_BorderPolicyPrecedesQueryToken(t *testing.T) {
+	var forwarded bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{}
+	cfg.Raw.AllowQueryToken = true
+	cfg.Block.GHP = true
+	h := NewRawHandler(cfg, nil, nil, nil, nil, rewriteTransport(t, upstream.URL))
+
+	before := rawCounterValue(t, "borderq", "repoq", "denied_border")
+	queryBefore := rawCounterValue(t, "borderq", "repoq", "query_token")
+
+	req := httptest.NewRequest(http.MethodGet, "/borderq/repoq/main/f.txt?token=ABC", nil)
+	req.Header.Set("Authorization", "token ghp_classicpat")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if forwarded {
+		t.Error("forwarded = true, want false")
+	}
+	if after := rawCounterValue(t, "borderq", "repoq", "denied_border"); after != before+1 {
+		t.Errorf("denied_border counter = %v, want %v", after, before+1)
+	}
+	if after := rawCounterValue(t, "borderq", "repoq", "query_token"); after != queryBefore {
+		t.Errorf("query_token counter = %v, want %v — the border policy is evaluated first", after, queryBefore)
+	}
+}
+
+// errScopeEnforcer fails every resolution, standing in for a revoked, expired,
+// or forged GHP token.
+type errScopeEnforcer struct{ err error }
+
+func (e *errScopeEnforcer) Resolve(ctx context.Context, clientToken string) (*database.ProxyToken, error) {
+	return nil, e.err
+}
+
+// TestRawHandler_CountsDeniedTokenAndError covers the exits that reject or fail
+// a GHP-issued token. An agent presenting a revoked token must move a counter:
+// this backend's stated purpose includes observability, and a silent 401 is
+// exactly the event an operator needs to see.
+func TestRawHandler_CountsDeniedTokenAndError(t *testing.T) {
+	tests := []struct {
+		name       string
+		owner      string
+		repo       string
+		enforcer   ScopeEnforcer
+		resolver   TokenResolver
+		wantStatus int
+		wantResult string
+	}{
+		{
+			name:  "token resolution failure",
+			owner: "exita", repo: "repoa",
+			enforcer:   &errScopeEnforcer{err: errors.New("revoked")},
+			resolver:   &mockTokenResolver{token: "real-github-token"},
+			wantStatus: http.StatusUnauthorized, wantResult: "denied_token",
+		},
+		{
+			name:  "unknown token resolves to nil",
+			owner: "exitb", repo: "repob",
+			enforcer:   &errScopeEnforcer{},
+			resolver:   &mockTokenResolver{token: "real-github-token"},
+			wantStatus: http.StatusUnauthorized, wantResult: "denied_token",
+		},
+		{
+			name:  "corrupt scope JSON",
+			owner: "exitc", repo: "repoc",
+			enforcer: &fakeScopeEnforcer{pt: &database.ProxyToken{
+				TokenType:    string(token.TokenTypeProxy),
+				Repositories: []byte(`{"not":"a list"}`),
+				Scopes:       []byte(`null`),
+			}},
+			resolver:   &mockTokenResolver{token: "real-github-token"},
+			wantStatus: http.StatusInternalServerError, wantResult: "error",
+		},
+		{
+			name:  "GitHub credential resolution failure",
+			owner: "exitd", repo: "repod",
+			enforcer:   newFakeScopeEnforcer(t, nil, nil),
+			resolver:   &mockTokenResolver{err: errors.New("decrypt failed")},
+			wantStatus: http.StatusUnauthorized, wantResult: "denied_token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var forwarded bool
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				forwarded = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+
+			cfg := &config.Config{}
+			cfg.Raw.AllowQueryToken = true
+			h := NewRawHandler(cfg, tt.enforcer, tt.resolver, nil, nil, rewriteTransport(t, upstream.URL))
+
+			before := rawCounterValue(t, tt.owner, tt.repo, tt.wantResult)
+
+			req := httptest.NewRequest(http.MethodGet, "/"+tt.owner+"/"+tt.repo+"/main/f.txt", nil)
+			req.Header.Set("Authorization", "token "+token.PrefixProxy+"testtoken")
+			req, slots := PrepareAccessLogSlots(req)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if forwarded {
+				t.Error("forwarded = true, want false — a rejected token never reaches upstream")
+			}
+			if after := rawCounterValue(t, tt.owner, tt.repo, tt.wantResult); after != before+1 {
+				t.Errorf("%s counter = %v, want %v", tt.wantResult, after, before+1)
+			}
+			if got := *slots.RawAuth; got != tt.wantResult {
+				t.Errorf("ghp.raw.auth = %q, want %q", got, tt.wantResult)
+			}
+		})
+	}
+}
+
+// TestRawHandler_AgentToken covers the gha_ prefix on the enforced path. Every
+// other authenticated test uses ghx_; the two prefixes take the same branch but
+// carry different token types through the decision metrics.
+func TestRawHandler_AgentToken(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{}
+	cfg.Raw.AllowQueryToken = true
+	enforcer := newFakeScopeEnforcer(t, []string{"agentowner/agentrepo"}, map[string]string{"contents": "read"})
+	enforcer.pt.TokenType = string(token.TokenTypeAgent)
+	h := NewRawHandler(cfg, enforcer, &mockTokenResolver{token: "real-github-token"}, nil, nil,
+		rewriteTransport(t, upstream.URL))
+
+	before := rawCounterValue(t, "agentowner", "agentrepo", "authenticated")
+	beforeExtract := rawStageCount(t, metrics.StageTokenExtraction, string(token.TokenTypeAgent))
+
+	req := httptest.NewRequest(http.MethodGet, "/agentowner/agentrepo/main/README.md", nil)
+	req.Header.Set("Authorization", "Bearer "+token.PrefixAgent+"testtoken")
+	req, slots := PrepareAccessLogSlots(req)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotAuth != "Bearer real-github-token" {
+		t.Errorf("upstream Authorization = %q, want %q", gotAuth, "Bearer real-github-token")
+	}
+	if after := rawCounterValue(t, "agentowner", "agentrepo", "authenticated"); after != before+1 {
+		t.Errorf("authenticated counter = %v, want %v", after, before+1)
+	}
+	if after := rawStageCount(t, metrics.StageTokenExtraction, string(token.TokenTypeAgent)); after != beforeExtract+1 {
+		t.Errorf("token_extraction observations for %s = %d, want %d", token.TokenTypeAgent, after, beforeExtract+1)
+	}
+	if got := *slots.RawAuth; got != "proxy_token" {
+		t.Errorf("ghp.raw.auth = %q, want %q", got, "proxy_token")
 	}
 }
 
@@ -180,6 +536,7 @@ func TestRawHandler_ScopeEnforcement(t *testing.T) {
 		wantStatus     int
 		wantForwarded  bool
 		wantAuthHeader string
+		wantResult     string
 	}{
 		{
 			name:        "repo in allowlist is forwarded with real credential",
@@ -188,6 +545,7 @@ func TestRawHandler_ScopeEnforcement(t *testing.T) {
 			target:      "/goodtune/ghp/main/README.md",
 			wantStatus:  http.StatusOK, wantForwarded: true,
 			wantAuthHeader: "token real-github-token",
+			wantResult:     "authenticated",
 		},
 		{
 			name:        "repo outside allowlist is denied",
@@ -195,6 +553,7 @@ func TestRawHandler_ScopeEnforcement(t *testing.T) {
 			tokenScopes: map[string]string{"contents": "read"},
 			target:      "/goodtune/ghp/main/README.md",
 			wantStatus:  http.StatusForbidden, wantForwarded: false,
+			wantResult: "denied_scope",
 		},
 		{
 			name:        "missing contents permission is denied",
@@ -202,6 +561,7 @@ func TestRawHandler_ScopeEnforcement(t *testing.T) {
 			tokenScopes: map[string]string{"issues": "read"},
 			target:      "/goodtune/ghp/main/README.md",
 			wantStatus:  http.StatusForbidden, wantForwarded: false,
+			wantResult: "denied_scope",
 		},
 		{
 			name:       "open scoped token is forwarded",
@@ -209,6 +569,7 @@ func TestRawHandler_ScopeEnforcement(t *testing.T) {
 			target:     "/goodtune/ghp/main/README.md",
 			wantStatus: http.StatusOK, wantForwarded: true,
 			wantAuthHeader: "token real-github-token",
+			wantResult:     "authenticated",
 		},
 	}
 
@@ -231,8 +592,11 @@ func TestRawHandler_ScopeEnforcement(t *testing.T) {
 
 			h := NewRawHandler(cfg, enforcer, resolver, nil, nil, rewriteTransport(t, upstream.URL))
 
+			before := rawCounterValue(t, "goodtune", "ghp", tt.wantResult)
+
 			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
 			req.Header.Set("Authorization", "token "+token.PrefixProxy+"testtoken")
+			req, slots := PrepareAccessLogSlots(req)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 
@@ -244,6 +608,17 @@ func TestRawHandler_ScopeEnforcement(t *testing.T) {
 			}
 			if tt.wantAuthHeader != "" && gotAuth != tt.wantAuthHeader {
 				t.Errorf("upstream Authorization = %q, want %q", gotAuth, tt.wantAuthHeader)
+			}
+			if after := rawCounterValue(t, "goodtune", "ghp", tt.wantResult); after != before+1 {
+				t.Errorf("%s counter = %v, want %v", tt.wantResult, after, before+1)
+			}
+			wantAuth := tt.wantResult
+			if wantAuth == "authenticated" {
+				// The log records the credential kind, the metric the outcome.
+				wantAuth = "proxy_token"
+			}
+			if got := *slots.RawAuth; got != wantAuth {
+				t.Errorf("ghp.raw.auth = %q, want %q", got, wantAuth)
 			}
 		})
 	}

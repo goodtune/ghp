@@ -165,13 +165,14 @@ func NewRawHandler(cfg *config.Config, enforcer ScopeEnforcer, resolver TokenRes
 
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_method").Inc()
+			SetRawAuth(r, "denied_method")
 			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
 			writeError(w, http.StatusForbidden, "Only GET and HEAD are permitted for raw content")
 			return
 		}
 
 		extractStart := time.Now()
-		clientTok, _, _ := extractClientToken(r)
+		clientTok, rawCredential, _ := extractClientToken(r)
 		extractTokenType := ""
 		if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
 			extractTokenType = string(tt)
@@ -182,9 +183,25 @@ func NewRawHandler(cfg *config.Config, enforcer ScopeEnforcer, resolver TokenRes
 			return
 		}
 
+		// The credential is not one GHP issued. Apply the token type border
+		// policy before anything else forwards it: raw is exempt from GitHub's
+		// sec-GitHub-allowed-enterprise restriction, so a blocked token type
+		// reaches raw unless GHP stops it here.
+		borderStart := time.Now()
+		if cfg.IsTokenBlocked(rawCredential) {
+			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+			metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_border").Inc()
+			SetRawAuth(r, "denied_border")
+			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
+			writeError(w, http.StatusForbidden, "Token type is not permitted by the border policy")
+			return
+		}
+		metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+
 		if rawQueryHasToken(r.URL.RawQuery) {
 			if !cfg.RawAllowQueryToken() {
 				metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_policy").Inc()
+				SetRawAuth(r, "denied_policy")
 				metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
 				writeError(w, http.StatusForbidden,
 					"GitHub-issued query tokens are not permitted (raw.allow_query_token is disabled)")
@@ -199,8 +216,15 @@ func NewRawHandler(cfg *config.Config, enforcer ScopeEnforcer, resolver TokenRes
 			return
 		}
 
-		metrics.RawRequestTotal.WithLabelValues(owner, repo, "anonymous").Inc()
-		SetRawAuth(r, "anonymous")
+		// A credential GHP cannot resolve — a classic PAT or installation token
+		// — is forwarded intact, but it is a different event from a request
+		// that carried nothing at all, and operators need the two apart.
+		rawResult := "anonymous"
+		if rawCredential != "" {
+			rawResult = "foreign_credential"
+		}
+		metrics.RawRequestTotal.WithLabelValues(owner, repo, rawResult).Inc()
+		SetRawAuth(r, rawResult)
 		metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
 		upstreamStart := time.Now()
 		passthrough.ServeHTTP(w, r)
@@ -235,6 +259,8 @@ func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough h
 		if err != nil && logger != nil {
 			logger.Warn("raw scope enforcement: token resolution failed", "error", err)
 		}
+		metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_token").Inc()
+		SetRawAuth(r, "denied_token")
 		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(decisionStart))
 		writeError(w, http.StatusUnauthorized, "Invalid token")
 		return
@@ -252,6 +278,8 @@ func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough h
 		if logger != nil {
 			logger.Error("raw scope enforcement: failed to parse token scope", "error", err)
 		}
+		metrics.RawRequestTotal.WithLabelValues(owner, repo, "error").Inc()
+		SetRawAuth(r, "error")
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 		writeError(w, http.StatusInternalServerError, "Internal error")
 		return
@@ -263,6 +291,7 @@ func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough h
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_scope").Inc()
+			SetRawAuth(r, "denied_scope")
 			writeError(w, http.StatusForbidden, fmt.Sprintf("Token is not scoped to %s", repoFull))
 			return
 		}
@@ -270,6 +299,7 @@ func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough h
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_scope").Inc()
+			SetRawAuth(r, "denied_scope")
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for contents:read on %s", repoFull))
 			return
@@ -284,6 +314,8 @@ func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough h
 		if logger != nil {
 			logger.Warn("raw scope enforcement: GitHub token resolution failed", "error", err)
 		}
+		metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_token").Inc()
+		SetRawAuth(r, "denied_token")
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 		writeError(w, http.StatusUnauthorized, "Token resolution failed")
 		return

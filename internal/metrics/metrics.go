@@ -120,19 +120,35 @@ var (
 
 	// RawRequestTotal counts raw.githubusercontent.com requests handled,
 	// labeled by owner, repo, and result:
-	//   "authenticated" — GHP token present; scope enforced; forwarded with
-	//                     the resolved GitHub credential
-	//   "query_token"   — GitHub-issued ?token= present, no GHP token;
-	//                     forwarded unmodified and unattributed
-	//   "anonymous"     — no credential; forwarded unmodified
-	//   "denied_scope"  — GHP token not scoped to the requested repository,
-	//                     or lacking contents:read
-	//   "denied_policy" — query token rejected by raw.allow_query_token=false
-	//   "denied_method" — method other than GET or HEAD
+	//   "authenticated"      — GHP token present; scope enforced; forwarded
+	//                          with the resolved GitHub credential
+	//   "query_token"        — GitHub-issued ?token= present, no GHP token;
+	//                          forwarded unmodified and unattributed
+	//   "foreign_credential" — an Authorization credential GHP did not issue
+	//                          (e.g. ghp_/ghs_) and the border policy permits;
+	//                          forwarded intact and unattributed
+	//   "anonymous"          — no credential at all; forwarded unmodified
+	//   "denied_scope"       — GHP token not scoped to the requested
+	//                          repository, or lacking contents:read
+	//   "denied_token"       — GHP token could not be resolved (revoked,
+	//                          expired, unknown) or its GitHub credential
+	//                          could not be resolved
+	//   "denied_policy"      — query token rejected by
+	//                          raw.allow_query_token=false
+	//   "denied_border"      — credential rejected by the token type border
+	//                          policy (block.ghp and friends)
+	//   "denied_method"      — method other than GET or HEAD
+	//   "error"              — GHP-side fault (corrupt token scope JSON)
 	//
 	// The ref and file path are not included as labels to keep cardinality
 	// bounded; they are captured in access logs as part of the URL.
-	// Cardinality: bounded by (repos seen × results).
+	//
+	// Cardinality: client-controlled on the unauthenticated paths. owner and
+	// repo are taken from the request path, and the anonymous, foreign
+	// credential, and query-token classifications require no credential GHP
+	// issued — so any client that can reach the raw vhost can mint a new
+	// series per invented /owner/repo. Operators fronting ghp with an
+	// untrusted client population should budget metric storage accordingly.
 	RawRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ghp_raw_request_total",
 		Help: "Total raw.githubusercontent.com requests handled, by owner, repo, and result.",

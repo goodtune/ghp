@@ -22,7 +22,11 @@ type AccessLogSlots struct {
 	UserID     *string
 	CacheState *string // "hit", "miss", "rejected", "error", or "" for non-cached
 	CacheRepo  *string // "owner/repo" if request hit a cached repository
-	RawAuth    *string // "proxy_token", "query_token", "anonymous", or "" for non-raw backends
+	// RawAuth is how a raw.githubusercontent.com request authenticated:
+	// "proxy_token", "query_token", "foreign_credential", "anonymous", or one
+	// of the denial reasons "denied_method", "denied_border", "denied_policy",
+	// "denied_scope", "denied_token", "error". Empty for non-raw backends.
+	RawAuth *string
 }
 
 // PrepareAccessLogSlots returns a new request whose context carries mutable
