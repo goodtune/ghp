@@ -146,6 +146,14 @@ See [Release Download Controls](../features/release-controls.md) for details.
 
 See [Codeload Redirect](../features/codeload.md) for details.
 
+### Raw Content
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GHP_RAW_ALLOW_QUERY_TOKEN` | Forward `raw.githubusercontent.com` requests carrying a GitHub-issued `?token=` query parameter when no `ghx_`/`gha_` token is present; `false` rejects them with 403 | `true` |
+
+See [How It Works](../how-it-works.md#rawgithubusercontentcom) for details.
+
 ### Git Cache
 
 | Variable | Description | Default |
@@ -254,6 +262,19 @@ codeload:
   redirect_to: ""              # absolute URL base for redirecting codeload archive requests; passthrough when empty
   allow:                       # org or org/repo entries that pass through to upstream codeload
     - "myorg"
+
+raw:
+  # Whether to forward raw.githubusercontent.com requests carrying a
+  # GitHub-issued ?token= query parameter when no ghx_/gha_ token is present.
+  #
+  # The GitHub contents API returns download_url values containing such a
+  # token. It is opaque to GHP: it cannot be attributed to an agent,
+  # scope-checked, or revoked, and remains valid for days.
+  #
+  # true (default) forwards and logs these requests, trading attribution for
+  # compatibility and visibility. false rejects them with 403, at the cost of
+  # breaking clients that follow download_url without sending their own token.
+  allow_query_token: true
 
 cache:
   enabled: false               # enable git clone/fetch caching

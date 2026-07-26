@@ -141,6 +141,34 @@ func TestServerHeaderAllBackends(t *testing.T) {
 	}
 }
 
+func TestHostDispatch_Raw(t *testing.T) {
+	var hit string
+	mark := func(name string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = name })
+	}
+	d := newHostDispatch(hostDispatchConfig{
+		apiHandler:      mark("api"),
+		githubHandler:   mark("github"),
+		codeloadHandler: mark("codeload"),
+		copilotHandler:  mark("copilot"),
+		rawHandler:      mark("raw"),
+		mgmtHandler:     mark("mgmt"),
+		managementHost:  "ghp.example.com",
+	})
+
+	for _, host := range []string{"raw.githubusercontent.com", "RAW.GithubUserContent.com", "raw.githubusercontent.com:443"} {
+		t.Run(host, func(t *testing.T) {
+			hit = ""
+			req := httptest.NewRequest(http.MethodGet, "/o/r/main/f.txt", nil)
+			req.Host = host
+			d.ServeHTTP(httptest.NewRecorder(), req)
+			if hit != "raw" {
+				t.Errorf("host %q routed to %q, want %q", host, hit, "raw")
+			}
+		})
+	}
+}
+
 func TestHostDispatch_EmptyManagementHost(t *testing.T) {
 	mgmtHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("mgmt"))
