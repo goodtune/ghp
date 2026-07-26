@@ -62,6 +62,7 @@ type Config struct {
 	Block    BlockConfig    `koanf:"block"`
 	Releases ReleasesConfig `koanf:"releases"`
 	Codeload CodeloadConfig `koanf:"codeload"`
+	Raw      RawConfig      `koanf:"raw"`
 
 	Cache CacheConfig `koanf:"cache"`
 
@@ -150,6 +151,26 @@ type CodeloadConfig struct {
 	// (e.g. "goodtune") or org/repo pairs (e.g. "goodtune/ghp"). Matching is
 	// case-insensitive.
 	Allow []string `koanf:"allow"`
+}
+
+// RawConfig controls how raw.githubusercontent.com requests are handled.
+//
+// raw.githubusercontent.com accepts GitHub credentials via the Authorization
+// header, and is explicitly exempt from the sec-GitHub-allowed-enterprise
+// corporate proxy restriction (GitHub scopes that header to github.com,
+// api.github.com and *.githubcopilot.com only). It also returns no
+// X-RateLimit-* headers, so the traffic is invisible to both enterprise
+// network policy and GHP's rate limit telemetry unless proxied.
+type RawConfig struct {
+	// AllowQueryToken controls whether requests carrying a GitHub-issued
+	// ?token= query parameter (as returned in the contents API download_url)
+	// are forwarded when no GHP token is present.
+	//
+	// Such tokens are opaque to GHP: they cannot be attributed to an agent,
+	// scope-checked, or revoked, and remain valid for days. When true
+	// (the default) they are forwarded and logged, trading attribution for
+	// compatibility and visibility. When false they are rejected with 403.
+	AllowQueryToken bool `koanf:"allow_query_token"`
 }
 
 type TLSConfig struct {
@@ -319,6 +340,9 @@ func Defaults() *Config {
 		Cache: CacheConfig{
 			StoragePath: "cache",
 		},
+		Raw: RawConfig{
+			AllowQueryToken: true,
+		},
 	}
 }
 
@@ -441,14 +465,14 @@ func Load(path string) (*Config, error) {
 //
 // The hot-reloadable field updates are serialised with the read locks held by
 // the accessor methods (IsAdmin, IsTokenBlocked, IsReleaseAllowed,
-// IsCodeloadAllowed, CodeloadRedirectTo). The guarantee is per accessor call:
-// any single accessor invocation observes either the pre-reload or
-// post-reload value of the field it reads — never a torn read of a slice or
-// string. The guarantee does NOT extend across multiple accessor calls;
-// e.g. CodeloadRedirectTo() followed by IsCodeloadAllowed(...) may interleave
-// with a reload between them, so a handler that needs cross-field consistency
-// must add a snapshot accessor that takes the lock once and copies the
-// related fields together.
+// IsCodeloadAllowed, CodeloadRedirectTo, RawAllowQueryToken). The guarantee is
+// per accessor call: any single accessor invocation observes either the
+// pre-reload or post-reload value of the field it reads — never a torn read
+// of a slice or string. The guarantee does NOT extend across multiple
+// accessor calls; e.g. CodeloadRedirectTo() followed by
+// IsCodeloadAllowed(...) may interleave with a reload between them, so a
+// handler that needs cross-field consistency must add a snapshot accessor
+// that takes the lock once and copies the related fields together.
 func (c *Config) ReloadFrom(path string) error {
 	fresh, err := Load(path)
 	if err != nil {
@@ -464,6 +488,7 @@ func (c *Config) ReloadFrom(path string) error {
 	c.Block = fresh.Block
 	c.Releases = fresh.Releases
 	c.Codeload = fresh.Codeload
+	c.Raw = fresh.Raw
 	c.Cache = fresh.Cache
 	return nil
 }
@@ -569,6 +594,16 @@ func (c *Config) CodeloadRedirectTo() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.Codeload.RedirectTo
+}
+
+// RawAllowQueryToken reports whether raw.githubusercontent.com requests
+// carrying a GitHub-issued ?token= query parameter are forwarded when no GHP
+// token is present. It takes the read lock so callers on the request hot path
+// can read it without racing against ReloadFrom.
+func (c *Config) RawAllowQueryToken() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Raw.AllowQueryToken
 }
 
 // WarnInvalidBlockTargets logs a warning for any block configuration targeting

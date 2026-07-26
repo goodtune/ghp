@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -442,4 +443,53 @@ func TestLoadVaultK8sFromEnv(t *testing.T) {
 	if cfg.Database.VaultK8sTokenPath != "/run/secrets/projected/token" {
 		t.Errorf("VaultK8sTokenPath = %q, want /run/secrets/projected/token", cfg.Database.VaultK8sTokenPath)
 	}
+}
+
+func TestRawAllowQueryToken(t *testing.T) {
+	t.Run("defaults to true", func(t *testing.T) {
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.RawAllowQueryToken() {
+			t.Error("RawAllowQueryToken() = false, want true by default")
+		}
+	})
+
+	t.Run("honours explicit false", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "cfg.yaml")
+		if err := os.WriteFile(path, []byte("raw:\n  allow_query_token: false\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.RawAllowQueryToken() {
+			t.Error("RawAllowQueryToken() = true, want false")
+		}
+	})
+
+	t.Run("hot reload picks up change", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "cfg.yaml")
+		if err := os.WriteFile(path, []byte("raw:\n  allow_query_token: true\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.RawAllowQueryToken() {
+			t.Fatal("precondition: want true before reload")
+		}
+		if err := os.WriteFile(path, []byte("raw:\n  allow_query_token: false\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if err := cfg.ReloadFrom(path); err != nil {
+			t.Fatalf("ReloadFrom: %v", err)
+		}
+		if cfg.RawAllowQueryToken() {
+			t.Error("RawAllowQueryToken() = true after reload, want false")
+		}
+	})
 }
