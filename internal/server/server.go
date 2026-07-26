@@ -456,6 +456,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 	codeloadHandler := proxy.NewCodeloadHandler(s.cfg, s.logger, nil)
 
+	rawHandler := proxy.NewRawHandler(s.cfg, tokenSvc, proxyTokenResolver, usernameResolver, s.logger, nil)
+
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
 
@@ -468,6 +470,7 @@ func (s *Server) Run(ctx context.Context) error {
 		githubHandler:   accessLogHandler(backend.GitHub, githubPassthrough, aw),
 		codeloadHandler: accessLogHandler(backend.Codeload, codeloadHandler, aw),
 		copilotHandler:  accessLogHandler(backend.Copilot, copilotPassthrough, aw),
+		rawHandler:      accessLogHandler(backend.Raw, rawHandler, aw),
 		mgmtHandler:     accessLogHandler(backend.Mgmt, web.SessionUsernameMiddleware(authHandler)(web.SecurityHeadersMiddleware(mux)), aw),
 		managementHost:  s.cfg.Server.ManagementHost,
 	})
@@ -743,6 +746,7 @@ type hostDispatchConfig struct {
 	githubHandler   http.Handler
 	codeloadHandler http.Handler
 	copilotHandler  http.Handler
+	rawHandler      http.Handler
 	mgmtHandler     http.Handler
 	managementHost  string
 }
@@ -768,6 +772,8 @@ func newHostDispatch(cfg hostDispatchConfig) http.Handler {
 			cfg.githubHandler.ServeHTTP(w, r)
 		case host == backend.Codeload:
 			cfg.codeloadHandler.ServeHTTP(w, r)
+		case host == backend.Raw:
+			cfg.rawHandler.ServeHTTP(w, r)
 		case host == "githubcopilot.com" || strings.HasSuffix(host, ".githubcopilot.com"):
 			cfg.copilotHandler.ServeHTTP(w, r)
 		case cfg.managementHost == "" || strings.EqualFold(host, cfg.managementHost):

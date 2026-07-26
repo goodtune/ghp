@@ -3,6 +3,7 @@ package server
 import (
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -123,7 +124,7 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) ht
 			}
 		}
 		if q := r.URL.RawQuery; q != "" {
-			attrs = append(attrs, otellog.String(attrURLQuery, q))
+			attrs = append(attrs, otellog.String(attrURLQuery, redactedQuery(q)))
 		}
 		if ua := r.UserAgent(); ua != "" {
 			attrs = append(attrs, otellog.String(attrUserAgentOriginal, ua))
@@ -136,6 +137,9 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter) ht
 		}
 		if *slots.CacheRepo != "" {
 			attrs = append(attrs, otellog.String(attrGHPCacheRepo, *slots.CacheRepo))
+		}
+		if *slots.RawAuth != "" {
+			attrs = append(attrs, otellog.String(attrGHPRawAuth, *slots.RawAuth))
 		}
 
 		// Request and response headers, redacting sensitive values, captured
@@ -198,6 +202,51 @@ func redactRequestHeader(name string) bool {
 
 func redactResponseHeader(name string) bool {
 	return name == "set-cookie"
+}
+
+// redactQueryParam reports whether a URL query parameter's value must be
+// redacted from access logs. GitHub's contents API returns download_url
+// values carrying a ?token= blob capability that remains valid for days —
+// logging it verbatim would persist a usable credential in the log stream.
+func redactQueryParam(name string) bool {
+	switch strings.ToLower(name) {
+	case "token", "access_token", "client_secret":
+		return true
+	default:
+		return false
+	}
+}
+
+// redactedQuery returns rawQuery with the values of sensitive parameters
+// replaced by the same placeholder used for headers. Parameter order is
+// preserved so the logged value stays comparable to the request.
+//
+// If rawQuery cannot be parsed, the entire query is redacted rather than
+// emitted verbatim: a malformed query may still carry a credential, and
+// failing closed is cheaper than leaking one.
+func redactedQuery(rawQuery string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	// ParseQuery is used only as a validity check; the parsed values are
+	// deliberately discarded. Redaction then works on the raw string so that
+	// parameter order is preserved in the log — reusing the parsed map would
+	// silently sort keys and rewrite encodings.
+	if _, err := url.ParseQuery(rawQuery); err != nil {
+		return "REDACTED"
+	}
+	parts := strings.Split(rawQuery, "&")
+	for i, part := range parts {
+		name, _, _ := strings.Cut(part, "=")
+		decoded, err := url.QueryUnescape(name)
+		if err != nil {
+			decoded = name
+		}
+		if redactQueryParam(decoded) {
+			parts[i] = name + "=REDACTED"
+		}
+	}
+	return strings.Join(parts, "&")
 }
 
 func requestScheme(r *http.Request) string {

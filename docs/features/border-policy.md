@@ -11,6 +11,23 @@ When a request arrives with a token that is not a ghp-managed token (`ghx_` or
 is blocked in the configuration, the request is rejected with `403 Forbidden`
 before it reaches GitHub.
 
+### Where the policy is enforced
+
+The policy is applied per virtualhost. It is **not** a blanket filter across
+every host ghp serves:
+
+| Virtualhost | Border policy enforced? |
+|---|---|
+| `api.github.com` | Yes |
+| `github.com` | Yes |
+| `raw.githubusercontent.com` | Yes |
+| `codeload.github.com` | **No** — archive downloads are forwarded with their credential intact |
+| `*.githubcopilot.com` | **No** — Copilot clients manage their own credentials, which ghp forwards verbatim |
+
+An agent holding a blocked token type can therefore still use it against
+`codeload.github.com` and `*.githubcopilot.com`. Those requests are logged and
+counted, but not rejected.
+
 GitHub uses these token prefixes:
 
 | Prefix | Token Type | Config Key |
@@ -61,8 +78,11 @@ block:
   anonymous_git: true
 ```
 
-This ensures all agent traffic is subject to ghp's scoping, auditing, and
-expiration controls.
+This ensures agent traffic on the enforcing virtualhosts (`api.github.com`,
+`github.com`, and `raw.githubusercontent.com`) is subject to ghp's scoping,
+auditing, and expiration controls. Traffic to `codeload.github.com` and
+`*.githubcopilot.com` is logged and counted but not rejected — see
+[Where the policy is enforced](#where-the-policy-is-enforced).
 
 ## Hot Reloading
 

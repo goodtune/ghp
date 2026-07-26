@@ -10,6 +10,7 @@ each virtualhost. This is the recommended production mode.
 You need certificates covering:
 
 - `api.github.com` and `github.com`
+- `raw.githubusercontent.com`
 - `*.githubcopilot.com`
 - Your management host (e.g. `ghp.example.com`)
 
@@ -34,9 +35,10 @@ agents run. This can be done via split-horizon DNS, `/etc/hosts`, or a local
 DNS resolver:
 
 ```
-api.github.com      → <ghp-server-ip>
-github.com          → <ghp-server-ip>
-*.githubcopilot.com → <ghp-server-ip>
+api.github.com             → <ghp-server-ip>
+github.com                 → <ghp-server-ip>
+raw.githubusercontent.com  → <ghp-server-ip>
+*.githubcopilot.com        → <ghp-server-ip>
 ```
 
 Agents then connect to ghp transparently — no client configuration beyond

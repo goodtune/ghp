@@ -246,6 +246,30 @@ func TestReleasesRedirectHeadCheckTotal(t *testing.T) {
 	}
 }
 
+func TestRawRequestTotal(t *testing.T) {
+	results := []string{
+		"authenticated", "query_token", "foreign_credential", "anonymous",
+		"denied_scope", "denied_token", "denied_policy", "denied_border",
+		"denied_method", "error",
+	}
+	for _, result := range results {
+		t.Run(result, func(t *testing.T) {
+			owner, repo := "testowner", "testrepo-"+result
+			labels := prometheus.Labels{
+				"owner":  owner,
+				"repo":   repo,
+				"result": result,
+			}
+			before := getCounterValue(t, RawRequestTotal, labels)
+			RawRequestTotal.WithLabelValues(owner, repo, result).Inc()
+			after := getCounterValue(t, RawRequestTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
+	}
+}
+
 func TestCodeloadRedirectTotal(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -33,6 +33,7 @@ const (
 	attrGHPBackend     = "ghp.backend"
 	attrGHPCacheState  = "ghp.cache.state"
 	attrGHPCacheRepo   = "ghp.cache.repo"
+	attrGHPRawAuth     = "ghp.raw.auth"
 	attrGHPAuditAction = "ghp.audit.action"
 	attrGHPUserName    = "ghp.user.name"
 	attrGHPTokenID     = "ghp.token.id"

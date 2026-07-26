@@ -4,6 +4,29 @@
 
 GHP is a GitHub API reverse proxy that issues scoped, auditable tokens (`ghx_`-prefixed) to autonomous coding agents. Single static Go binary, self-hosted.
 
+## Enforcement vs Telemetry
+
+**GHP is an enforcement point for tokens it issued and a telemetry point for
+everything else.**
+
+Handlers may forward traffic GHP cannot attribute or scope-check, provided it
+is logged and counted. This is deliberate, not a gap. Two rules follow:
+
+- **Never imply enforcement that isn't happening.** When a handler observes
+  without enforcing, say so in the docs, and give operators a config switch to
+  refuse the unenforceable traffic if they would rather break clients than
+  allow it. `raw.allow_query_token` is the reference example.
+- **A credential GHP did not issue is never forwarded alongside one it did.**
+  If a request carries both, strip the foreign credential — otherwise it can
+  satisfy a request the scope check denied.
+
+Some GitHub hosts are outside enterprise network policy entirely.
+`raw.githubusercontent.com` accepts `Authorization` headers but is exempt from
+the `sec-GitHub-allowed-enterprise` corporate proxy restriction, which GitHub
+scopes to `github.com`, `api.github.com`, and `*.githubcopilot.com` only. That
+exemption is why proxying these hosts is worth the effort: GHP is the only
+place the traffic can be seen.
+
 ## Tech Stack
 
 - **Language:** Go 1.24
@@ -124,6 +147,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_cache_request_total` — per-repository git requests with cache outcome (`owner`, `repo`, `result` labels)
 - `ghp_cache_eviction_total` — protocol response files evicted by size-limit cleanup (`owner`, `repo` labels)
 - `ghp_cache_response_size_bytes` — current total cached protocol response file size per repo (`owner`, `repo` labels)
+- `ghp_raw_request_total` — `raw.githubusercontent.com` requests by classification result (`owner`, `repo`, `result` labels; `authenticated`, `query_token`, `foreign_credential`, `anonymous`, `denied_policy`, `denied_border`, `denied_method`, `denied_scope`, `denied_token`, `error`)
 
 ## Coding Conventions
 

@@ -38,6 +38,7 @@ ghp serves several distinct roles depending on which hostname the request arrive
 | `api.github.com` | **API proxy** — validates tokens, enforces scopes, injects credentials, logs every request |
 | `github.com` | **Git passthrough** — transparent proxy for `git clone`, `git push`, etc. with token interception |
 | `codeload.github.com` | **Codeload redirect/passthrough** — optionally redirects repo archive downloads to a caching mirror (see [Codeload Redirect](features/codeload.md)); transparent passthrough otherwise |
+| `raw.githubusercontent.com` | **Raw content proxy** — enforces scopes on ghp-issued tokens, forwards and counts everything else (see [raw.githubusercontent.com](#rawgithubusercontentcom)) |
 | `*.githubcopilot.com` | **Copilot passthrough** — forwards Copilot traffic transparently; all requests are logged |
 | Your management host | **Dashboard** — web UI, GitHub OAuth login (web), CLI device-authorization endpoints, token management API |
 
@@ -118,6 +119,70 @@ Traffic to `*.githubcopilot.com` is forwarded transparently. Copilot clients
 manage their own credentials, so ghp does not intercept tokens or enforce
 scopes on this traffic. All Copilot requests are still logged and counted
 in metrics for full visibility.
+
+### raw.githubusercontent.com
+
+GitHub's `sec-GitHub-allowed-enterprise` header — the mechanism corporate
+network policy uses to restrict which host a GitHub credential may be sent
+to — is scoped by GitHub to `github.com`, `api.github.com`, and
+`*.githubcopilot.com` only. `raw.githubusercontent.com` is on GitHub's own
+list of "Endpoints that don't require restriction," so an `Authorization`
+header can reach it regardless of enterprise policy. Raw also returns no
+`X-RateLimit-*` headers. Left unproxied, this traffic is invisible to both
+enterprise network policy and ghp's telemetry — proxying it is how ghp
+becomes the enforcement and observability point that raw itself is exempt
+from.
+
+Requests are classified in order:
+
+| Case | Behaviour | Metric result |
+|---|---|---|
+| GHP-issued token (`ghx_`/`gha_`) in `Authorization` | Resolved, checked against the token's repository allowlist and `contents:read` (unless the token is open-scoped or the corresponding list is empty, in which case that check is skipped), forwarded with the real GitHub credential. Any GitHub-issued `?token=` is stripped first. A failed check is rejected with 403 (`denied_scope`). | `authenticated` or `denied_scope` |
+| A credential ghp did not issue in `Authorization` (e.g. `ghp_`, `ghs_`) whose type is blocked by the [token type border policy](features/border-policy.md) | Rejected with 403 before it reaches raw. | `denied_border` |
+| GitHub-issued `?token=`, no GHP token | Forwarded unmodified when `raw.allow_query_token` is `true` (default); rejected with 403 when `false`. | `query_token` or `denied_policy` |
+| A credential ghp did not issue in `Authorization`, not blocked by the border policy | Forwarded intact and unattributed. | `foreign_credential` |
+| No credential at all | Forwarded unmodified. | `anonymous` |
+
+A GitHub credential ghp did not issue — a personal access token or
+installation token placed directly in `Authorization` rather than a
+`ghx_`/`gha_` token — is subject to the token type border policy: if
+`block.ghp` (or the equivalent for its prefix) is set, the request is
+rejected with 403 before it reaches raw. Otherwise ghp forwards it intact:
+it only recognises the `ghx_`/`gha_` prefixes, so it cannot resolve or
+scope-check anything else. Such requests are counted `foreign_credential`,
+kept separate from `anonymous` so operators can see credentialled traffic
+ghp cannot attribute. `raw.allow_query_token` does not affect this path.
+
+Non-matching paths (fewer than three path segments) pass through uncounted.
+Non-GET/HEAD methods on a matching path are rejected with 403
+(`denied_method`). A ghp-issued token that cannot be resolved — revoked,
+expired, or forged — is rejected with 401 and counted `denied_token`; a
+token whose stored scope JSON is corrupt yields 500 and is counted `error`.
+
+Every outcome is also recorded in the access log as `ghp.raw.auth`. See
+[Monitoring](admin/monitoring.md#raw-content-metrics) for the full result
+and attribute vocabulary.
+
+**Limitation 1 — the query-token path is unenforced.** A token scoped to
+repository A can still fetch repository B's private content through this
+handler if the agent holds a GitHub-issued `?token=` for it — such tokens
+come from the contents API's `download_url` field and are opaque to ghp:
+they cannot be attributed to an agent, scope-checked, or revoked, and stay
+valid for days. Setting `raw.allow_query_token: false` closes this path,
+at the cost of breaking clients that follow `download_url` without
+supplying their own token. For post-hoc attribution instead of blocking,
+operators can correlate a recent REST API request with a subsequent raw
+request from the same user-agent and source IP, using the
+`x-github-request-id` response header as a join key against GitHub's audit
+log.
+
+**Limitation 2 — no rate-limit visibility.** Raw returns no
+`X-RateLimit-*` headers, so this traffic never appears in
+`ghp_github_ratelimit_*`. Quota consumed via raw is invisible to ghp by
+construction.
+
+See [Configuration](admin/configuration.md#raw-content) for the
+`raw.allow_query_token` setting.
 
 ### Git Cache
 
