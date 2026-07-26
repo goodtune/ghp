@@ -115,7 +115,7 @@ func NewRawHandler(cfg *config.Config, enforcer ScopeEnforcer, resolver TokenRes
 		}
 		metrics.ObserveDecision(metrics.StageTokenExtraction, extractTokenType, time.Since(extractStart))
 		if clientTok != "" {
-			serveRawAuthenticated(w, r, passthrough, enforcer, resolver, ur, logger, owner, repo, clientTok)
+			serveRawAuthenticated(w, r, passthrough, enforcer, resolver, ur, logger, owner, repo, clientTok, decisionStart)
 			return
 		}
 
@@ -152,8 +152,12 @@ func NewRawHandler(cfg *config.Config, enforcer ScopeEnforcer, resolver TokenRes
 // Any GitHub-issued ?token= is stripped before forwarding: carrying both a
 // GHP-resolved credential and an independent GitHub capability would let the
 // latter satisfy a request the former was denied.
-func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger, owner, repo, clientTok string) {
-	decisionStart := time.Now()
+//
+// decisionStart is the caller's request-arrival timestamp, not a local one, so
+// that the total stage covers the full pre-forward overhead — path parsing, the
+// method check, and token extraction included — rather than only the work done
+// here.
+func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger, owner, repo, clientTok string, decisionStart time.Time) {
 	repoFull := owner + "/" + repo
 
 	resolveTokenType := ""
