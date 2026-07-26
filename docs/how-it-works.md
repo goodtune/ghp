@@ -136,9 +136,17 @@ Requests are classified in order:
 
 | Case | Behaviour | Metric result |
 |---|---|---|
-| GHP-issued token (`ghx_`/`gha_`) in `Authorization` | Resolved, checked against the token's repository allowlist and `contents:read`, forwarded with the real GitHub credential. Any GitHub-issued `?token=` is stripped first. | `authenticated` |
+| GHP-issued token (`ghx_`/`gha_`) in `Authorization` | Resolved, checked against the token's repository allowlist and `contents:read` (unless the token is open-scoped or the corresponding list is empty, in which case that check is skipped), forwarded with the real GitHub credential. Any GitHub-issued `?token=` is stripped first. A failed check is rejected with 403 (`denied_scope`). | `authenticated` or `denied_scope` |
 | GitHub-issued `?token=`, no GHP token | Forwarded unmodified when `raw.allow_query_token` is `true` (default); rejected with 403 when `false`. | `query_token` or `denied_policy` |
-| Neither | Forwarded anonymously. | `anonymous` |
+| Neither a GHP token nor `?token=` | Forwarded unmodified, including any other credential already present. | `anonymous` |
+
+A GitHub credential GHP did not issue — a personal access token or
+installation token placed directly in `Authorization` rather than a
+`ghx_`/`gha_` token — also falls into the third row: ghp only recognises
+the `ghx_`/`gha_` prefixes, so it cannot resolve or scope-check anything
+else, and forwards it unmodified, counted `anonymous`. There is no config
+switch for this case; unlike the query-token path, it is not something
+`raw.allow_query_token` (or any other setting) can close.
 
 Non-matching paths (fewer than three path segments) pass through uncounted.
 Non-GET/HEAD methods on a matching path are rejected with 403 (`denied_method`).
