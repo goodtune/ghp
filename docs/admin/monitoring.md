@@ -25,7 +25,8 @@ Scrape the metrics endpoint at `http(s)://<ghp-server>:9136/metrics` (HTTPS when
 | `ghp_http_request_total` | Counter | Total HTTP requests (labels: `backend`, `method`, `status`) |
 
 The `backend` label distinguishes traffic by virtualhost: `api.github.com`,
-`github.com`, `codeload.github.com`, `copilot`, or `management`.
+`github.com`, `codeload.github.com`, `raw.githubusercontent.com`, `copilot`,
+or `management`.
 
 #### Proxy Metrics
 
@@ -178,6 +179,42 @@ cardinality bounded; query the access log for per-ref breakdowns.
 
 See [Codeload Redirect](../features/codeload.md) for configuration details.
 
+#### Raw Content Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `ghp_raw_request_total` | Counter | raw.githubusercontent.com requests handled by the raw handler (labels: `owner`, `repo`, `result`) |
+
+The `result` label records how the request was classified:
+
+| `result` | Meaning |
+|---|---|
+| `authenticated` | ghp-issued token present; scope enforced; forwarded with the resolved GitHub credential |
+| `query_token` | GitHub-issued `?token=` present, no ghp token; forwarded unmodified and unattributed |
+| `foreign_credential` | An `Authorization` credential ghp did not issue (e.g. `ghp_`, `ghs_`) that the border policy permits; forwarded intact and unattributed |
+| `anonymous` | No credential at all; forwarded unmodified |
+| `denied_scope` | ghp token not scoped to the requested repository, or lacking `contents:read` |
+| `denied_token` | ghp token could not be resolved (revoked, expired, unknown), or its GitHub credential could not be resolved |
+| `denied_policy` | Query token rejected because `raw.allow_query_token` is `false` |
+| `denied_border` | Credential rejected by the [token type border policy](../features/border-policy.md) |
+| `denied_method` | Method other than GET or HEAD |
+| `error` | ghp-side fault (corrupt token scope JSON) |
+
+Requests whose path has fewer than three segments are forwarded without being
+counted — they are not repository content paths, so there is no meaningful
+`owner`/`repo` to label them with.
+
+!!! warning "Cardinality is client-controlled"
+    `owner` and `repo` are taken from the request path, and the `anonymous`,
+    `foreign_credential`, and `query_token` classifications require no
+    ghp-issued credential. Any client that can reach the raw virtualhost can
+    therefore create a new time series per invented `/owner/repo`. Budget
+    metric storage accordingly, or restrict network access to the raw
+    virtualhost.
+
+See [How It Works — raw.githubusercontent.com](../how-it-works.md#rawgithubusercontentcom)
+for the classification rules.
+
 ## Logging
 
 ghp treats **OpenTelemetry log records** as its first-class logging primitive.
@@ -218,6 +255,15 @@ body `handled request`. Attributes use HTTP semantic conventions:
 | `http.request.header.<name>` / `http.response.header.<name>` | Selected headers (sensitive values such as `authorization` and `set-cookie` are `REDACTED`) |
 | `ghp.backend` | Backend identifier (same values as the `backend` metric label) |
 | `ghp.cache.state` / `ghp.cache.repo` | Git cache outcome, when applicable |
+| `ghp.raw.auth` | How a raw.githubusercontent.com request authenticated, when applicable |
+
+`ghp.raw.auth` takes one of `proxy_token`, `query_token`, `foreign_credential`,
+`anonymous`, or a denial reason (`denied_method`, `denied_border`,
+`denied_policy`, `denied_scope`, `denied_token`, `error`). These match the
+`ghp_raw_request_total` `result` values with one exception: a request
+authenticated with a ghp-issued token logs `ghp.raw.auth=proxy_token` but is
+counted as `result="authenticated"` — the log records the kind of credential
+presented, the metric the outcome of the decision.
 
 Records for responses with a 5xx status are emitted at `Error` severity; all
 others at `Info`.

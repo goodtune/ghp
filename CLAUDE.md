@@ -147,7 +147,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_cache_request_total` — per-repository git requests with cache outcome (`owner`, `repo`, `result` labels)
 - `ghp_cache_eviction_total` — protocol response files evicted by size-limit cleanup (`owner`, `repo` labels)
 - `ghp_cache_response_size_bytes` — current total cached protocol response file size per repo (`owner`, `repo` labels)
-- `ghp_raw_request_total` — `raw.githubusercontent.com` requests by classification result (`owner`, `repo`, `result` labels; `authenticated`, `query_token`, `anonymous`, `denied_policy`, `denied_method`, `denied_scope`)
+- `ghp_raw_request_total` — `raw.githubusercontent.com` requests by classification result (`owner`, `repo`, `result` labels; `authenticated`, `query_token`, `foreign_credential`, `anonymous`, `denied_policy`, `denied_border`, `denied_method`, `denied_scope`, `denied_token`, `error`)
 
 ## Coding Conventions
 

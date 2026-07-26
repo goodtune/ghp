@@ -38,6 +38,7 @@ ghp serves several distinct roles depending on which hostname the request arrive
 | `api.github.com` | **API proxy** — validates tokens, enforces scopes, injects credentials, logs every request |
 | `github.com` | **Git passthrough** — transparent proxy for `git clone`, `git push`, etc. with token interception |
 | `codeload.github.com` | **Codeload redirect/passthrough** — optionally redirects repo archive downloads to a caching mirror (see [Codeload Redirect](features/codeload.md)); transparent passthrough otherwise |
+| `raw.githubusercontent.com` | **Raw content proxy** — enforces scopes on ghp-issued tokens, forwards and counts everything else (see [raw.githubusercontent.com](#rawgithubusercontentcom)) |
 | `*.githubcopilot.com` | **Copilot passthrough** — forwards Copilot traffic transparently; all requests are logged |
 | Your management host | **Dashboard** — web UI, GitHub OAuth login (web), CLI device-authorization endpoints, token management API |
 
@@ -137,19 +138,30 @@ Requests are classified in order:
 | Case | Behaviour | Metric result |
 |---|---|---|
 | GHP-issued token (`ghx_`/`gha_`) in `Authorization` | Resolved, checked against the token's repository allowlist and `contents:read` (unless the token is open-scoped or the corresponding list is empty, in which case that check is skipped), forwarded with the real GitHub credential. Any GitHub-issued `?token=` is stripped first. A failed check is rejected with 403 (`denied_scope`). | `authenticated` or `denied_scope` |
+| A credential ghp did not issue in `Authorization` (e.g. `ghp_`, `ghs_`) whose type is blocked by the [token type border policy](features/border-policy.md) | Rejected with 403 before it reaches raw. | `denied_border` |
 | GitHub-issued `?token=`, no GHP token | Forwarded unmodified when `raw.allow_query_token` is `true` (default); rejected with 403 when `false`. | `query_token` or `denied_policy` |
-| Neither a GHP token nor `?token=` | Forwarded unmodified, including any other credential already present. | `anonymous` |
+| A credential ghp did not issue in `Authorization`, not blocked by the border policy | Forwarded intact and unattributed. | `foreign_credential` |
+| No credential at all | Forwarded unmodified. | `anonymous` |
 
-A GitHub credential GHP did not issue — a personal access token or
+A GitHub credential ghp did not issue — a personal access token or
 installation token placed directly in `Authorization` rather than a
-`ghx_`/`gha_` token — also falls into the third row: ghp only recognises
-the `ghx_`/`gha_` prefixes, so it cannot resolve or scope-check anything
-else, and forwards it unmodified, counted `anonymous`. There is no config
-switch for this case; unlike the query-token path, it is not something
-`raw.allow_query_token` (or any other setting) can close.
+`ghx_`/`gha_` token — is subject to the token type border policy: if
+`block.ghp` (or the equivalent for its prefix) is set, the request is
+rejected with 403 before it reaches raw. Otherwise ghp forwards it intact:
+it only recognises the `ghx_`/`gha_` prefixes, so it cannot resolve or
+scope-check anything else. Such requests are counted `foreign_credential`,
+kept separate from `anonymous` so operators can see credentialled traffic
+ghp cannot attribute. `raw.allow_query_token` does not affect this path.
 
 Non-matching paths (fewer than three path segments) pass through uncounted.
-Non-GET/HEAD methods on a matching path are rejected with 403 (`denied_method`).
+Non-GET/HEAD methods on a matching path are rejected with 403
+(`denied_method`). A ghp-issued token that cannot be resolved — revoked,
+expired, or forged — is rejected with 401 and counted `denied_token`; a
+token whose stored scope JSON is corrupt yields 500 and is counted `error`.
+
+Every outcome is also recorded in the access log as `ghp.raw.auth`. See
+[Monitoring](admin/monitoring.md#raw-content-metrics) for the full result
+and attribute vocabulary.
 
 **Limitation 1 — the query-token path is unenforced.** A token scoped to
 repository A can still fetch repository B's private content through this

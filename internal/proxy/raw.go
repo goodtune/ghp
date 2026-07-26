@@ -127,18 +127,24 @@ func newRawPassthrough(transport http.RoundTripper) http.Handler {
 
 // NewRawHandler returns an http.Handler for raw.githubusercontent.com requests.
 //
-// Requests are classified into three paths, evaluated in order:
+// Requests are classified in this order:
 //
 //   - A GHP-issued token (ghx_/gha_) in the Authorization header: the token is
 //     resolved, contents:read is enforced against the repository allowlist, any
 //     GitHub-issued ?token= is stripped, and the request is forwarded with the
 //     real credential. This is the only enforced path.
+//   - A credential GHP did not issue whose type is blocked by the token type
+//     border policy (cfg.Block): rejected with 403.
 //   - A GitHub-issued ?token= with no GHP token: forwarded unmodified when
 //     raw.allow_query_token is true (the default), rejected with 403 otherwise.
 //     GHP cannot attribute, scope-check, or revoke such tokens.
-//   - Neither: forwarded anonymously. Anonymous requests cannot reach private
-//     content — GitHub returns 404 without a credential — so blocking them buys
-//     no confidentiality and breaks ordinary public-content tooling.
+//   - A credential GHP did not issue that the border policy permits: forwarded
+//     intact, counted foreign_credential — GHP recognises only the ghx_/gha_
+//     prefixes, so it can observe but not attribute such traffic.
+//   - No credential at all: forwarded anonymously. Anonymous requests cannot
+//     reach private content — GitHub returns 404 without a credential — so
+//     blocking them buys no confidentiality and breaks ordinary public-content
+//     tooling.
 //
 // This asymmetry is deliberate: GHP is an enforcement point for tokens it
 // issued and a telemetry point for everything else.
