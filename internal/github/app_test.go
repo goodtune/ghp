@@ -78,6 +78,28 @@ func TestAppTokenProvider_CachesToken(t *testing.T) {
 	}
 }
 
+func TestAppTokenProvider_GetInstallationToken_EmptyTokenRejected(t *testing.T) {
+	// A 201 response whose body lacks a token must produce an error, not an
+	// empty credential that callers would treat as a successful mint.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{AppID: 1, PrivateKey: testRSAKey, BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := provider.GetInstallationToken(context.Background(), 123, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for empty token in 201 response, got nil")
+	}
+	if tok != "" {
+		t.Errorf("expected empty token on error, got %q", tok)
+	}
+}
+
 func TestAppTokenProvider_GetInstallationIDForOwner(t *testing.T) {
 	tests := []struct {
 		name      string

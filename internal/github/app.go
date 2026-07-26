@@ -20,10 +20,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2/expirable"
-	ghub "github.com/google/go-github/v89/github"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/goodtune/ghp/internal/crypto"
+	ghub "github.com/google/go-github/v89/github"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
 // userAgent identifies this proxy in outbound GitHub API requests. GitHub
@@ -244,6 +244,11 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("decoding response: %w", err)
+	}
+	if result.Token == "" {
+		// Never return (or cache) an empty credential from a 201 response —
+		// callers treat a nil error as a usable token.
+		return "", fmt.Errorf("installation token response missing token")
 	}
 
 	// Cache the token. The LRU TTL handles expiry; we rely on installationTokenTTL
@@ -535,7 +540,6 @@ func (p *AppTokenProvider) ListInstallationRepositories(ctx context.Context, ins
 	return all, nil
 }
 
-
 // signJWT creates a signed JWT for GitHub App authentication.
 func (p *AppTokenProvider) signJWT() (string, error) {
 	now := time.Now()
@@ -547,4 +551,3 @@ func (p *AppTokenProvider) signJWT() (string, error) {
 	jwtToken := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	return jwtToken.SignedString(p.key)
 }
-

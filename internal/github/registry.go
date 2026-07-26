@@ -309,4 +309,3 @@ func NewRegistryWithState(providerIDs []string, defaultID string) *AppRegistry {
 	}
 	return r
 }
-

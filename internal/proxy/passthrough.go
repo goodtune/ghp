@@ -58,6 +58,13 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterprise *
 			// Evaluate the enterprise restriction policy after token
 			// resolution so team-gated exceptions see the real GitHub
 			// credential rather than the ghx_/gha_ client token.
+			//
+			// Identity here is derived exclusively from the Authorization
+			// header. Cookie-authenticated github.com web requests carry no
+			// resolvable credential, so team-gated and identity-substituting
+			// exceptions fail closed for them by design; only plain
+			// (ungated) exceptions apply to browser traffic. Documented in
+			// docs/admin/github-app.md.
 			if enterprise != nil {
 				tokenType := ""
 				if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {

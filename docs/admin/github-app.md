@@ -166,6 +166,14 @@ Known limitations:
   authenticated by `gha_` agent tokens resolve to the App's bot account,
   which will not be a team member — team-gated exceptions are therefore
   effectively human-only.
+- **Team-gated and identity-substituting exceptions require token
+  authentication.** The caller must present a GitHub token the proxy can
+  resolve to an identity (`gho_`, `ghp_`, `ghu_`, `ghs_`, `github_pat_`, or a
+  GHP client token). Browser requests to github.com web pages authenticate
+  with session cookies, which the proxy cannot attribute to a user, so these
+  exception types always fail closed for cookie-authenticated web traffic.
+  Plain (ungated, no-identity) exceptions are unaffected and apply to web
+  paths as documented.
 - Exceptions are static configuration: changes require a restart.
 - The enterprise accepts data exfiltration risk for excepted targets; audit
   usage via the `ghp_enterprise_exception_total` metric and access logs.

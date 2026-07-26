@@ -227,6 +227,13 @@ func (p *EnterprisePolicy) evaluate(ctx context.Context, owner, repo string, use
 			repos = []string{repo}
 		}
 		token, err := p.identity.InstallationTokenForOwner(ctx, exc.appRecordID, owner, repos, nil)
+		if err == nil && token == "" {
+			// An empty token with a nil error must not count as a successful
+			// substitution: omitting the header while forwarding the caller's
+			// own credential would violate the documented fail-closed
+			// behaviour for identity-substituting exceptions.
+			err = fmt.Errorf("identity source returned an empty token")
+		}
 		if err != nil {
 			// Fail closed: the operator asked for a managed identity on this
 			// target; forwarding the caller's own credential with the header
@@ -244,27 +251,29 @@ func (p *EnterprisePolicy) evaluate(ctx context.Context, owner, repo string, use
 	return "", true
 }
 
-// match returns the first exception covering owner (and optionally owner/repo),
-// or nil. Matching is case-insensitive; an owner entry covers every repository
-// under that account.
+// match returns the exception covering owner (and optionally owner/repo), or
+// nil. Matching is case-insensitive; an owner entry covers every repository
+// under that account. Exact owner/repo entries take precedence over owner-wide
+// entries regardless of configuration order, so a stricter repository rule
+// (e.g. team-gated or identity-substituting) cannot be shadowed by an earlier
+// broad owner rule. Within the same specificity, the first configured
+// exception wins.
 func (p *EnterprisePolicy) match(owner, repo string) *enterpriseException {
 	if owner == "" {
 		return nil
 	}
 	owner = strings.ToLower(owner)
-	ownerRepo := ""
 	if repo != "" {
-		ownerRepo = owner + "/" + strings.ToLower(repo)
+		ownerRepo := owner + "/" + strings.ToLower(repo)
+		for i := range p.exceptions {
+			if _, ok := p.exceptions[i].repos[ownerRepo]; ok {
+				return &p.exceptions[i]
+			}
+		}
 	}
 	for i := range p.exceptions {
-		exc := &p.exceptions[i]
-		if _, ok := exc.owners[owner]; ok {
-			return exc
-		}
-		if ownerRepo != "" {
-			if _, ok := exc.repos[ownerRepo]; ok {
-				return exc
-			}
+		if _, ok := p.exceptions[i].owners[owner]; ok {
+			return &p.exceptions[i]
 		}
 	}
 	return nil

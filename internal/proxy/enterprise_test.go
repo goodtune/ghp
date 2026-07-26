@@ -196,6 +196,60 @@ func TestEnterprisePolicy_Apply_HeaderBehaviour(t *testing.T) {
 	}
 }
 
+func TestEnterprisePolicy_Match_RepoRuleTakesPrecedenceOverOwnerRule(t *testing.T) {
+	// An ungated owner-wide rule listed first must not shadow a stricter
+	// owner/repo rule listed later: the repository rule (here team-gated)
+	// wins on specificity, so a non-member keeps the restriction header for
+	// the sensitive repo while still enjoying the broad rule elsewhere.
+	src := &fakeIdentitySource{token: "ghs_members"}
+	p := NewEnterprisePolicy(config.GitHubConfig{
+		EnterpriseSlug: "acme",
+		EnterpriseExceptions: []config.EnterpriseException{
+			{Match: []string{"partner-org"}},
+			{Match: []string{"partner-org/sensitive-repo"}, Teams: []string{"acme-org/trusted"}},
+		},
+	}, src, slog.Default())
+
+	// Non-member targeting the sensitive repo: the team-gated repo rule
+	// applies (not the broad owner rule) and fails closed.
+	hdr := http.Header{}
+	p.Apply(context.Background(), hdr, "partner-org", "sensitive-repo", staticUsername(""), "")
+	if got := hdr.Get(enterpriseHeader); got != "acme" {
+		t.Errorf("sensitive repo: expected restriction header kept for non-member, got %q", got)
+	}
+
+	// The broad owner rule still covers every other repository ungated.
+	hdr = http.Header{}
+	p.Apply(context.Background(), hdr, "partner-org", "other-repo", nil, "")
+	if got := hdr.Get(enterpriseHeader); got != "" {
+		t.Errorf("other repo: expected header omitted by owner rule, got %q", got)
+	}
+}
+
+func TestEnterprisePolicy_EmptyIdentityToken_FailsClosed(t *testing.T) {
+	// An identity source returning ("", nil) must be treated as an identity
+	// error: the restriction header stays on and the caller's credential is
+	// never forwarded with the header omitted.
+	src := &fakeIdentitySource{token: ""}
+	p := NewEnterprisePolicy(config.GitHubConfig{
+		EnterpriseSlug: "acme",
+		EnterpriseExceptions: []config.EnterpriseException{
+			{
+				Match:    []string{"partner"},
+				Identity: config.EnterpriseExceptionIdentity{AppRecordID: "app-uuid-1"},
+			},
+		},
+	}, src, slog.Default())
+
+	hdr := http.Header{}
+	if tok := p.Apply(context.Background(), hdr, "partner", "tool", staticUsername("alice"), ""); tok != "" {
+		t.Fatalf("expected no token, got %q", tok)
+	}
+	if got := hdr.Get(enterpriseHeader); got != "acme" {
+		t.Errorf("expected restriction header kept on empty identity token, got %q", got)
+	}
+}
+
 func TestEnterprisePolicy_IdentitySubstitution(t *testing.T) {
 	src := &fakeIdentitySource{token: "ghs_managed"}
 	p := NewEnterprisePolicy(config.GitHubConfig{
@@ -418,6 +472,7 @@ func TestRawTokenFromAuthValue(t *testing.T) {
 	}{
 		{"bearer gho", "Bearer gho_abc", "gho_abc"},
 		{"token ghp", "token ghp_abc", "ghp_abc"},
+		{"fine-grained pat", "Bearer github_pat_abc", "github_pat_abc"},
 		{"basic token password", basic, "ghs_pass"},
 		{"unresolvable", "Bearer ghx_client", ""},
 		{"empty", "", ""},
