@@ -118,6 +118,26 @@ var (
 		Help: "Total codeload.github.com archive requests handled, by owner, repo, archive format, and result.",
 	}, []string{"owner", "repo", "archive", "result"})
 
+	// RawRequestTotal counts raw.githubusercontent.com requests handled,
+	// labeled by owner, repo, and result:
+	//   "authenticated" — GHP token present; scope enforced; forwarded with
+	//                     the resolved GitHub credential
+	//   "query_token"   — GitHub-issued ?token= present, no GHP token;
+	//                     forwarded unmodified and unattributed
+	//   "anonymous"     — no credential; forwarded unmodified
+	//   "denied_scope"  — GHP token not scoped to the requested repository,
+	//                     or lacking contents:read
+	//   "denied_policy" — query token rejected by raw.allow_query_token=false
+	//   "denied_method" — method other than GET or HEAD
+	//
+	// The ref and file path are not included as labels to keep cardinality
+	// bounded; they are captured in access logs as part of the URL.
+	// Cardinality: bounded by (repos seen × results).
+	RawRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_raw_request_total",
+		Help: "Total raw.githubusercontent.com requests handled, by owner, repo, and result.",
+	}, []string{"owner", "repo", "result"})
+
 	// BlockAnonymousGitEnabled reflects whether the anonymous git blocking
 	// feature is currently active (1) or inactive (0). Set at server startup
 	// and on config reload (SIGUSR1); not updated per-request.
