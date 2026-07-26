@@ -492,4 +492,15 @@ func TestRawAllowQueryToken(t *testing.T) {
 			t.Error("RawAllowQueryToken() = true after reload, want false")
 		}
 	})
+
+	t.Run("honours env var override", func(t *testing.T) {
+		t.Setenv("GHP_RAW_ALLOW_QUERY_TOKEN", "false")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.RawAllowQueryToken() {
+			t.Error("RawAllowQueryToken() = true, want false from GHP_RAW_ALLOW_QUERY_TOKEN")
+		}
+	})
 }

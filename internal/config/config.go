@@ -370,7 +370,7 @@ func Load(path string) (*Config, error) {
 			if i := strings.Index(s, "_"); i > 0 {
 				section, field := s[:i], s[i+1:]
 				switch section {
-				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases", "codeload", "cache":
+				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases", "codeload", "raw", "cache":
 					// Handle 3-level nesting for logging.file.*
 					if section == "logging" && strings.HasPrefix(field, "file_") {
 						return "logging.file." + field[len("file_"):], v
