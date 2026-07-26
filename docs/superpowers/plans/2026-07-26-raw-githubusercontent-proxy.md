@@ -544,9 +544,9 @@ attributable traffic from traffic GHP only observed."
 
 ---
 
-### Task 5: Raw handler — routing, path parsing, and the unattributed paths
+### Task 5: Raw handler — routing, path parsing, classification, and scope enforcement
 
-Builds the handler covering the two paths that carry no GHP credential. The GHP-token path is added in Task 6, so this task's handler treats a GHP token as `anonymous` for now — Task 6 replaces that branch.
+Builds the complete handler: path parsing, all three classification paths, and `contents:read` enforcement on the GHP-token path.
 
 **Files:**
 - Modify: `internal/backend/backend.go` (add `Raw` const)
@@ -554,8 +554,10 @@ Builds the handler covering the two paths that carry no GHP credential. The GHP-
 - Test: `internal/proxy/raw_test.go`
 
 **Interfaces:**
-- Consumes: `config.RawAllowQueryToken()` (Task 2), `metrics.RawRequestTotal` (Task 3), `proxy.SetRawAuth` (Task 4).
+- Consumes: `config.RawAllowQueryToken()` (Task 2), `metrics.RawRequestTotal` (Task 3), `proxy.SetRawAuth` (Task 4). Existing in `internal/proxy`: `ScopeEnforcer.Resolve`, `TokenResolver.ResolveToGitHubToken`, `extractClientToken`, `parseScopeInfo`, `si.isOpenScoped()`, `si.repoAllowed(repo)`, `si.Scopes.HasPermission(permission, level)`, `writeError`, `SetUserID`, `SetUsername`.
 - Produces: `backend.Raw = "raw.githubusercontent.com"`. `func NewRawHandler(cfg *config.Config, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger, transport http.RoundTripper) http.Handler`. `func parseRawPath(p string) (owner, repo string, ok bool)` — lowercases owner and repo; returns `ok=false` when fewer than three non-empty segments.
+
+The permission enforced is `contents:read`, matching `GET /repos/{owner}/{repo}/contents/…` at `internal/proxy/scope.go:29`. Follow the flow in `NewScopedPassthroughHandler` (`passthrough.go:210-300`) — same ordering, same decision stages.
 
 - [ ] **Step 1: Write the failing path-parsing test**
 
@@ -856,8 +858,7 @@ func NewRawHandler(cfg *config.Config, enforcer ScopeEnforcer, resolver TokenRes
 
 		clientTok, _, _ := extractClientToken(r)
 		if clientTok != "" {
-			// Enforced path — implemented in Task 6.
-			serveRawAuthenticated(w, r, passthrough, cfg, enforcer, resolver, ur, logger, owner, repo, clientTok)
+			serveRawAuthenticated(w, r, passthrough, enforcer, resolver, ur, logger, owner, repo, clientTok)
 			return
 		}
 
@@ -881,82 +882,125 @@ func NewRawHandler(cfg *config.Config, enforcer ScopeEnforcer, resolver TokenRes
 }
 ```
 
-For this task only, add a temporary stub so the package compiles — Task 6 replaces its body:
+- [ ] **Step 9: Implement the enforced path**
+
+Append to `internal/proxy/raw.go`:
 
 ```go
-// serveRawAuthenticated handles the GHP-token path. Implemented in Task 6.
-func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough http.Handler, cfg *config.Config, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger, owner, repo, clientTok string) {
-	metrics.RawRequestTotal.WithLabelValues(owner, repo, "anonymous").Inc()
-	SetRawAuth(r, "anonymous")
+// serveRawAuthenticated handles requests bearing a GHP-issued token. The
+// token's repository allowlist and contents:read permission are enforced
+// before the request is forwarded with the resolved GitHub credential.
+//
+// Any GitHub-issued ?token= is stripped before forwarding: carrying both a
+// GHP-resolved credential and an independent GitHub capability would let the
+// latter satisfy a request the former was denied.
+func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger, owner, repo, clientTok string) {
+	decisionStart := time.Now()
+	repoFull := owner + "/" + repo
+
+	resolveTokenType := ""
+	if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
+		resolveTokenType = string(tt)
+	}
+
+	resolveStart := time.Now()
+	pt, err := enforcer.Resolve(r.Context(), clientTok)
+	metrics.ObserveDecision(metrics.StageTokenResolution, resolveTokenType, time.Since(resolveStart))
+	if err != nil || pt == nil {
+		if err != nil && logger != nil {
+			logger.Warn("raw scope enforcement: token resolution failed", "error", err)
+		}
+		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(decisionStart))
+		writeError(w, http.StatusUnauthorized, "Invalid token")
+		return
+	}
+
+	tokenType := pt.TokenType
+	if pt.UserID != nil {
+		SetUserID(r, *pt.UserID)
+	}
+
+	scopeParseStart := time.Now()
+	si, err := parseScopeInfo(pt)
+	metrics.ObserveDecision(metrics.StageScopeParsing, tokenType, time.Since(scopeParseStart))
+	if err != nil {
+		if logger != nil {
+			logger.Error("raw scope enforcement: failed to parse token scope", "error", err)
+		}
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+		writeError(w, http.StatusInternalServerError, "Internal error")
+		return
+	}
+
+	if !si.isOpenScoped() {
+		scopeEnforceStart := time.Now()
+		if len(si.Repos) > 0 && !si.repoAllowed(repoFull) {
+			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+			metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_scope").Inc()
+			writeError(w, http.StatusForbidden, fmt.Sprintf("Token is not scoped to %s", repoFull))
+			return
+		}
+		if len(si.Scopes) > 0 && !si.Scopes.HasPermission("contents", "read") {
+			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+			metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_scope").Inc()
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("Token does not have permission for contents:read on %s", repoFull))
+			return
+		}
+		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+	}
+
+	ghTokenStart := time.Now()
+	realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
+	metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
+	if err != nil {
+		if logger != nil {
+			logger.Warn("raw scope enforcement: GitHub token resolution failed", "error", err)
+		}
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+		writeError(w, http.StatusUnauthorized, "Token resolution failed")
+		return
+	}
+
+	usernameStart := time.Now()
+	if ur != nil {
+		if u := ur.ResolveFromGitHubToken(r.Context(), realToken); u != "" {
+			SetUsername(r, u)
+		}
+	}
+	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
+
+	// Strip the GitHub-issued capability before forwarding our own credential.
+	if q := r.URL.Query(); q.Get("token") != "" {
+		q.Del("token")
+		r.URL.RawQuery = q.Encode()
+	}
+
+	_, _, rewriteAuth := extractClientToken(r)
+	if rewriteAuth != nil {
+		r.Header.Set("Authorization", rewriteAuth(realToken))
+	}
+
+	metrics.RawRequestTotal.WithLabelValues(owner, repo, "authenticated").Inc()
+	SetRawAuth(r, "proxy_token")
+	metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+
+	upstreamStart := time.Now()
 	passthrough.ServeHTTP(w, r)
+	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 }
 ```
 
-- [ ] **Step 9: Run test to verify it passes**
+Add `"fmt"`, `"time"`, and `"github.com/goodtune/ghp/internal/token"` to the imports in `raw.go`.
 
-Run: `go test ./internal/proxy/ -run TestRawHandler -v`
+- [ ] **Step 10: Run the unattributed-path tests**
+
+Run: `go test ./internal/proxy/ -run TestRawHandler_UnattributedPaths -v`
 Expected: PASS (all six subtests)
 
-- [ ] **Step 10: Add the metrics assertions test**
-
-Add to `internal/proxy/raw_test.go`:
-
-```go
-func TestRawHandler_CountsResults(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	cfg := &config.Config{}
-	cfg.Raw.AllowQueryToken = false
-	h := NewRawHandler(cfg, nil, nil, nil, nil, rewriteTransport(t, upstream.URL))
-
-	before := rawCounterValue(t, "metricsowner", "metricsrepo", "denied_policy")
-	req := httptest.NewRequest(http.MethodGet, "/MetricsOwner/MetricsRepo/main/f.txt?token=X", nil)
-	h.ServeHTTP(httptest.NewRecorder(), req)
-	after := rawCounterValue(t, "metricsowner", "metricsrepo", "denied_policy")
-
-	if after != before+1 {
-		t.Errorf("denied_policy counter = %v, want %v", after, before+1)
-	}
-}
-```
-
-Add `rawCounterValue` mirroring `codeloadCounterValue` (`codeload_test.go:22`) — copy that helper's implementation and change the label arity to `(owner, repo, result)`.
-
-- [ ] **Step 11: Run the full proxy suite**
-
-Run: `make check`
-Expected: PASS
-
-- [ ] **Step 12: Commit**
-
-```bash
-git add internal/backend/backend.go internal/proxy/raw.go internal/proxy/raw_test.go
-git commit -m "feat(proxy): add raw.githubusercontent.com handler
-
-Parses owner/repo from the first two path segments, which keeps both
-the classic /{owner}/{repo}/{ref}/{path} and the newer refs/heads form
-unambiguous. Handles the query-token and anonymous paths; the enforced
-GHP-token path follows."
-```
-
----
-
-### Task 6: Raw handler — the enforced GHP-token path
-
-**Files:**
-- Modify: `internal/proxy/raw.go` (replace the `serveRawAuthenticated` stub)
-- Test: `internal/proxy/raw_test.go`
-
-**Interfaces:**
-- Consumes: `serveRawAuthenticated` signature from Task 5; `ScopeEnforcer.Resolve`, `TokenResolver.ResolveToGitHubToken`, `parseScopeInfo`, `si.isOpenScoped()`, `si.repoAllowed(repo)`, `si.Scopes.HasPermission(permission, level)` (all existing in `internal/proxy`).
-- Produces: nothing new; completes the handler.
-
-The permission enforced is `contents:read`, matching `GET /repos/{owner}/{repo}/contents/…` at `internal/proxy/scope.go:29`. Follow the flow in `NewScopedPassthroughHandler` (`passthrough.go:210-300`) — same ordering, same decision stages.
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 11: Write the failing scope enforcement test**
 
 Add to `internal/proxy/raw_test.go`. Use whatever `ScopeEnforcer` / `TokenResolver` fakes already exist in the package's test files (`passthrough_test.go` has them); if their names differ, use theirs rather than defining duplicates.
 
@@ -1068,149 +1112,64 @@ func TestRawHandler_StripsQueryTokenOnAuthenticatedPath(t *testing.T) {
 
 Stripping matters: forwarding both a GHP-resolved credential and a GitHub-issued capability means the enforcement decision could be bypassed by the query token if the two disagree.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 12: Run test to verify it fails**
 
 Run: `go test ./internal/proxy/ -run TestRawHandler_Scope -v`
-Expected: FAIL — assertions fail (the stub forwards unconditionally without enforcement)
+Expected: FAIL if enforcement is missing or misordered
 
-- [ ] **Step 3: Implement the enforced path**
+- [ ] **Step 13: Add the metrics assertions test**
 
-Replace the `serveRawAuthenticated` stub in `internal/proxy/raw.go`:
+Add to `internal/proxy/raw_test.go`:
 
 ```go
-// serveRawAuthenticated handles requests bearing a GHP-issued token. The
-// token's repository allowlist and contents:read permission are enforced
-// before the request is forwarded with the resolved GitHub credential.
-//
-// Any GitHub-issued ?token= is stripped before forwarding: carrying both a
-// GHP-resolved credential and an independent GitHub capability would let the
-// latter satisfy a request the former was denied.
-func serveRawAuthenticated(w http.ResponseWriter, r *http.Request, passthrough http.Handler, cfg *config.Config, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger, owner, repo, clientTok string) {
-	decisionStart := time.Now()
-	repoFull := owner + "/" + repo
+func TestRawHandler_CountsResults(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
 
-	resolveTokenType := ""
-	if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
-		resolveTokenType = string(tt)
+	cfg := &config.Config{}
+	cfg.Raw.AllowQueryToken = false
+	h := NewRawHandler(cfg, nil, nil, nil, nil, rewriteTransport(t, upstream.URL))
+
+	before := rawCounterValue(t, "metricsowner", "metricsrepo", "denied_policy")
+	req := httptest.NewRequest(http.MethodGet, "/MetricsOwner/MetricsRepo/main/f.txt?token=X", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	after := rawCounterValue(t, "metricsowner", "metricsrepo", "denied_policy")
+
+	if after != before+1 {
+		t.Errorf("denied_policy counter = %v, want %v", after, before+1)
 	}
-
-	resolveStart := time.Now()
-	pt, err := enforcer.Resolve(r.Context(), clientTok)
-	metrics.ObserveDecision(metrics.StageTokenResolution, resolveTokenType, time.Since(resolveStart))
-	if err != nil || pt == nil {
-		if err != nil && logger != nil {
-			logger.Warn("raw scope enforcement: token resolution failed", "error", err)
-		}
-		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(decisionStart))
-		writeError(w, http.StatusUnauthorized, "Invalid token")
-		return
-	}
-
-	tokenType := pt.TokenType
-	if pt.UserID != nil {
-		SetUserID(r, *pt.UserID)
-	}
-
-	scopeParseStart := time.Now()
-	si, err := parseScopeInfo(pt)
-	metrics.ObserveDecision(metrics.StageScopeParsing, tokenType, time.Since(scopeParseStart))
-	if err != nil {
-		if logger != nil {
-			logger.Error("raw scope enforcement: failed to parse token scope", "error", err)
-		}
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
-		writeError(w, http.StatusInternalServerError, "Internal error")
-		return
-	}
-
-	if !si.isOpenScoped() {
-		scopeEnforceStart := time.Now()
-		if len(si.Repos) > 0 && !si.repoAllowed(repoFull) {
-			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
-			metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_scope").Inc()
-			writeError(w, http.StatusForbidden, fmt.Sprintf("Token is not scoped to %s", repoFull))
-			return
-		}
-		if len(si.Scopes) > 0 && !si.Scopes.HasPermission("contents", "read") {
-			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
-			metrics.RawRequestTotal.WithLabelValues(owner, repo, "denied_scope").Inc()
-			writeError(w, http.StatusForbidden,
-				fmt.Sprintf("Token does not have permission for contents:read on %s", repoFull))
-			return
-		}
-		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
-	}
-
-	ghTokenStart := time.Now()
-	realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
-	metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
-	if err != nil {
-		if logger != nil {
-			logger.Warn("raw scope enforcement: GitHub token resolution failed", "error", err)
-		}
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
-		writeError(w, http.StatusUnauthorized, "Token resolution failed")
-		return
-	}
-
-	usernameStart := time.Now()
-	if ur != nil {
-		if u := ur.ResolveFromGitHubToken(r.Context(), realToken); u != "" {
-			SetUsername(r, u)
-		}
-	}
-	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
-
-	// Strip the GitHub-issued capability before forwarding our own credential.
-	if q := r.URL.Query(); q.Get("token") != "" {
-		q.Del("token")
-		r.URL.RawQuery = q.Encode()
-	}
-
-	_, _, rewriteAuth := extractClientToken(r)
-	if rewriteAuth != nil {
-		r.Header.Set("Authorization", rewriteAuth(realToken))
-	}
-
-	metrics.RawRequestTotal.WithLabelValues(owner, repo, "authenticated").Inc()
-	SetRawAuth(r, "proxy_token")
-	metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
-
-	upstreamStart := time.Now()
-	passthrough.ServeHTTP(w, r)
-	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 }
 ```
 
-Add `"fmt"`, `"time"`, and `"github.com/goodtune/ghp/internal/token"` to the imports in `raw.go`.
+Add `rawCounterValue` mirroring `codeloadCounterValue` (`codeload_test.go:22`) — copy that helper's implementation and change the label arity to `(owner, repo, result)`.
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `go test ./internal/proxy/ -run TestRawHandler -v`
-Expected: PASS
-
-- [ ] **Step 5: Run the full suite**
+- [ ] **Step 14: Run the full suite**
 
 Run: `make check`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 15: Commit**
 
 ```bash
-git add internal/proxy/raw.go internal/proxy/raw_test.go
-git commit -m "feat(proxy): enforce contents:read on authenticated raw requests
+git add internal/backend/backend.go internal/proxy/raw.go internal/proxy/raw_test.go
+git commit -m "feat(proxy): add raw.githubusercontent.com handler
 
-Resolves the GHP token, checks the repository allowlist and
-contents:read permission, and forwards with the real credential. Any
-GitHub-issued ?token= is stripped so it cannot satisfy a request the
-scope check denied."
+Parses owner/repo from the first two path segments, which keeps both
+the classic /{owner}/{repo}/{ref}/{path} and the newer refs/heads form
+unambiguous.
+
+Requests bearing a GHP token are scope-enforced against the repository
+allowlist and contents:read, then forwarded with the resolved
+credential; any GitHub-issued ?token= is stripped so it cannot satisfy
+a request the scope check denied. Query-token and anonymous requests
+are forwarded unmodified and counted, but not attributed."
 ```
 
 ---
 
-### Task 7: Wire into host dispatch, document, and record the principle
+### Task 6: Wire into host dispatch, document, and record the principle
 
 **Files:**
 - Modify: `internal/server/server.go` (`hostDispatchConfig`, `newHostDispatch`, handler construction)
@@ -1220,7 +1179,7 @@ scope check denied."
 - Test: `internal/server/server_test.go`
 
 **Interfaces:**
-- Consumes: `backend.Raw`, `proxy.NewRawHandler` (Tasks 5-6).
+- Consumes: `backend.Raw`, `proxy.NewRawHandler` (Task 5).
 - Produces: nothing new.
 
 - [ ] **Step 1: Write the failing dispatch test**
