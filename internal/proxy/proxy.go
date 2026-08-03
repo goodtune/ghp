@@ -201,10 +201,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
-		metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
-		upstreamStart := time.Now()
+		// forwardPassthrough records StageTotal (after enterprise exception
+		// evaluation) and StageUpstreamRoundtrip (around the actual roundtrip
+		// and response streaming) itself.
 		h.forwardPassthrough(w, r, apiPath, start)
-		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 		return
 	}
 
@@ -276,11 +276,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 		repo := ExtractRepoFromPath(apiPath)
 		authHeader := rewriteAuth(githubToken)
-		// Record total decision time (everything before forwarding to GitHub).
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-		upstreamStart := time.Now()
-		status := h.forwardRequest(w, r, apiPath, authHeader)
-		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+		// forwardRequest records StageTotal and StageUpstreamRoundtrip.
+		status := h.forwardRequest(w, r, apiPath, authHeader, start, tokenType)
 		// Re-check the cache after the roundtrip; the async lookup triggered
 		// by resolveTokenUsername may have completed during the upstream wait.
 		h.checkCacheAfterRoundtrip(r, githubToken, pt)
@@ -349,13 +346,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Prepare the Authorization header for the upstream request.
 	authHeader := rewriteAuth(githubToken)
 
-	// Record total decision time (everything before forwarding to GitHub).
-	metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-
-	// Forward the request to GitHub.
-	upstreamStart := time.Now()
-	status := h.forwardRequest(w, r, apiPath, authHeader, scopeOverride)
-	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+	// Forward the request to GitHub. forwardRequest records StageTotal and
+	// StageUpstreamRoundtrip.
+	status := h.forwardRequest(w, r, apiPath, authHeader, start, tokenType, scopeOverride)
 
 	// Re-check the cache after the roundtrip; the async lookup triggered
 	// by resolveTokenUsername may have completed during the upstream wait.
@@ -590,11 +583,8 @@ func (h *Handler) forwardGraphQL(w http.ResponseWriter, r *http.Request, pt *dat
 
 	authHeader := rewriteAuth(githubToken)
 
-	metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-
-	upstreamStart := time.Now()
-	status := h.forwardRequest(w, r, "/graphql", authHeader)
-	metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+	// forwardRequest records StageTotal and StageUpstreamRoundtrip.
+	status := h.forwardRequest(w, r, "/graphql", authHeader, start, tokenType)
 
 	h.checkCacheAfterRoundtrip(r, githubToken, pt)
 
@@ -777,17 +767,6 @@ func (h *Handler) refreshGitHubToken(ctx context.Context, gt *database.GitHubTok
 	return tokenResp.AccessToken, nil
 }
 
-// clientTokenType returns the decision-pipeline token type label ("proxy" or
-// "agent") derived from the managed client token on the request, or "" when
-// the request does not carry one.
-func clientTokenType(r *http.Request) string {
-	clientTok, _, _ := extractClientToken(r)
-	if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
-		return string(tt)
-	}
-	return ""
-}
-
 // enterpriseUsername returns a UsernameFunc for team-gated enterprise
 // exceptions. It prefers the username already resolved on the request context
 // and falls back to a blocking GraphQL viewer lookup with the given GitHub
@@ -834,6 +813,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
+		metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
 		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusInternalServerError, time.Since(start), apiType, passthroughTokenType(rawToken), GetUsername(r))
 		writeError(w, http.StatusInternalServerError, "Failed to create upstream request")
 		return
@@ -868,14 +848,22 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 		proxyReq.Header.Set("Authorization", substituteAuthHeader(r.Header.Get("Authorization"), identityTok))
 	}
 
+	// Pre-forward work (including enterprise evaluation) is complete.
+	metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
+	upstreamStart := time.Now()
+
 	resp, err := h.client.Do(proxyReq)
 	if err != nil {
+		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 		h.logger.Error("upstream passthrough request failed", "error", err)
 		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusBadGateway, time.Since(start), apiType, passthroughTokenType(rawToken), GetUsername(r))
 		writeError(w, http.StatusBadGateway, "Upstream request failed")
 		return
 	}
 	defer resp.Body.Close()
+	defer func() {
+		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
+	}()
 
 	// Copy response headers, filtering out hop-by-hop headers.
 	for key, vals := range resp.Header {
@@ -906,7 +894,14 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 // as the Authorization value. The optional overrideHeaders map is applied after
 // copying upstream response headers, allowing callers to inject or replace
 // specific response headers (e.g. X-OAuth-Scopes) before the response is sent.
-func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader string, overrideHeaders ...map[string]string) int {
+//
+// forwardRequest owns the StageTotal and StageUpstreamRoundtrip observations:
+// total is recorded once all pre-forward work — including enterprise
+// restriction exception evaluation, which can block on identity/team lookups —
+// has completed, and upstream_roundtrip covers only the actual GitHub
+// round-trip plus response streaming. start is the request arrival time and
+// tokenType the decision-pipeline label ("proxy", "agent", or "").
+func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader string, start time.Time, tokenType string, overrideHeaders ...map[string]string) int {
 	targetURL := githubAPIBase + path
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
@@ -922,6 +917,7 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
+		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
 		errWriter(w, http.StatusInternalServerError, "Failed to create upstream request")
 		return http.StatusInternalServerError
 	}
@@ -940,17 +936,25 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 	// covers the request target, in which case a managed identity may also be
 	// substituted for the resolved credential.
 	owner, repoName := enterpriseTargetFromAPIPath(path)
-	if identityTok := h.enterprise.Apply(r.Context(), proxyReq.Header, owner, repoName, h.enterpriseUsername(r, rawTokenFromAuthValue(authHeader)), clientTokenType(r)); identityTok != "" {
+	if identityTok := h.enterprise.Apply(r.Context(), proxyReq.Header, owner, repoName, h.enterpriseUsername(r, rawTokenFromAuthValue(authHeader)), tokenType); identityTok != "" {
 		proxyReq.Header.Set("Authorization", substituteAuthHeader(authHeader, identityTok))
 	}
 
+	// Pre-forward work (including enterprise evaluation) is complete.
+	metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+	upstreamStart := time.Now()
+
 	resp, err := h.client.Do(proxyReq)
 	if err != nil {
+		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 		h.logger.Error("upstream request failed", "error", err)
 		errWriter(w, http.StatusBadGateway, "Upstream request failed")
 		return http.StatusBadGateway
 	}
 	defer resp.Body.Close()
+	defer func() {
+		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+	}()
 
 	// Copy rate limit headers for observability and update Prometheus metrics.
 	for _, key := range []string{

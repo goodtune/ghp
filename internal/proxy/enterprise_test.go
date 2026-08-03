@@ -8,10 +8,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/crypto"
+	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/token"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // fakeIdentitySource is a test double for ExceptionIdentitySource that records
@@ -507,7 +512,7 @@ func TestForwardRequest_EnterpriseException_HeaderOmitted(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://localhost/repos/torvalds/linux/pulls", nil)
-	if status := h.forwardRequest(rr, req, "/repos/torvalds/linux/pulls", "Bearer gho_x"); status != http.StatusOK {
+	if status := h.forwardRequest(rr, req, "/repos/torvalds/linux/pulls", "Bearer gho_x", time.Now(), ""); status != http.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
 	if _, ok := ct.lastReq.Header[http.CanonicalHeaderKey(enterpriseHeader)]; ok {
@@ -517,7 +522,7 @@ func TestForwardRequest_EnterpriseException_HeaderOmitted(t *testing.T) {
 	// A non-excluded repo on the same handler keeps the header.
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest("GET", "http://localhost/repos/golang/go/pulls", nil)
-	if status := h.forwardRequest(rr, req, "/repos/golang/go/pulls", "Bearer gho_x"); status != http.StatusOK {
+	if status := h.forwardRequest(rr, req, "/repos/golang/go/pulls", "Bearer gho_x", time.Now(), ""); status != http.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
 	if got := ct.lastReq.Header.Get(enterpriseHeader); got != "my-enterprise" {
@@ -630,7 +635,8 @@ func TestPassthroughHandler_EnterpriseException_GitPush(t *testing.T) {
 			},
 		},
 	}, src, slog.Default())
-	handler := NewPassthroughHandler(upstream.URL, nil, policy, fakeViewerResolver(t, "alice"), nil, tlsTransport(upstream))
+	inner := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, nil, nil, fakeViewerResolver(t, "alice"), policy, slog.Default())
 
 	for _, path := range []string{"/partner/tool.git/git-receive-pack", "/other/repo.git/git-receive-pack"} {
 		req := httptest.NewRequest("POST", "http://github.com"+path, nil)
@@ -651,4 +657,194 @@ func TestPassthroughHandler_EnterpriseException_GitPush(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("anonymous: expected 200, got %d", rr.Code)
 	}
+}
+
+// TestServeHTTP_BorderPolicy_BlocksFineGrainedPAT verifies that recognising
+// github_pat_ as a resolvable credential did not open a border-policy bypass:
+// with block.github_pat enabled, a fine-grained PAT is rejected before it
+// egresses to GitHub.
+func TestServeHTTP_BorderPolicy_BlocksFineGrainedPAT(t *testing.T) {
+	ct := &captureTransport{}
+	h := &Handler{
+		cfg:    &config.Config{Block: config.BlockConfig{GithubPat: true}},
+		logger: slog.Default(),
+		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+	}
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo", nil)
+	req.Header.Set("Authorization", "Bearer github_pat_11ABCDEF0123456789")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for blocked fine-grained PAT, got %d", rr.Code)
+	}
+	if ct.lastReq != nil {
+		t.Error("blocked request must not reach upstream")
+	}
+}
+
+func TestEnterprisePolicy_TeamGate_CoalescesConcurrentLookups(t *testing.T) {
+	// A burst of concurrent requests for the same (org, team, user) after
+	// cache expiry must trigger exactly one members:read token mint and one
+	// membership API request; the other callers wait on the leader's verdict.
+	var apiCalls atomic.Int32
+	teamAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCalls.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		json.NewEncoder(w).Encode(map[string]string{"state": "active"})
+	}))
+	t.Cleanup(teamAPI.Close)
+
+	src := &fakeIdentitySource{token: "ghs_members"}
+	p := NewEnterprisePolicy(config.GitHubConfig{
+		EnterpriseSlug: "acme",
+		EnterpriseExceptions: []config.EnterpriseException{
+			{Match: []string{"partner"}, Teams: []string{"acme-org/oss"}},
+		},
+	}, src, slog.Default(), WithTeamAPIBaseURL(teamAPI.URL))
+
+	const workers = 8
+	var wg sync.WaitGroup
+	results := make([]string, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			hdr := http.Header{}
+			p.Apply(context.Background(), hdr, "partner", "tool", staticUsername("alice"), "")
+			results[i] = hdr.Get(enterpriseHeader)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, got := range results {
+		if got != "" {
+			t.Errorf("worker %d: expected header omitted for team member, got %q", i, got)
+		}
+	}
+	if n := apiCalls.Load(); n != 1 {
+		t.Errorf("expected 1 membership API call for concurrent burst, got %d", n)
+	}
+	src.mu.Lock()
+	identityCalls := len(src.calls)
+	src.mu.Unlock()
+	if identityCalls != 1 {
+		t.Errorf("expected 1 members:read token mint for concurrent burst, got %d", identityCalls)
+	}
+}
+
+// enterpriseStageSampleCount returns the observation count of the
+// enterprise_exception decision stage histogram for the given token type.
+func enterpriseStageSampleCount(t *testing.T, tokenType string) uint64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "ghp_proxy_decision_duration_seconds" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				labels[lp.GetName()] = lp.GetValue()
+			}
+			if labels["stage"] == "enterprise_exception" && labels["token_type"] == tokenType {
+				return m.GetHistogram().GetSampleCount()
+			}
+		}
+	}
+	return 0
+}
+
+// TestScopedPassthrough_EnterpriseStage_LabelsProxyTokenType drives the real
+// production chain (scoped handler wrapping the reverse proxy) with a ghx_
+// token and asserts the enterprise_exception stage is labeled with the
+// managed token type rather than "unknown" — the scoped handler evaluates the
+// policy before Authorization is rewritten out of client-token form.
+func TestScopedPassthrough_EnterpriseStage_LabelsProxyTokenType(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(enterpriseHeader); got != "" {
+			t.Errorf("expected enterprise header omitted for excluded repo, got %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	policy := NewEnterprisePolicy(config.GitHubConfig{
+		EnterpriseSlug: "my-enterprise",
+		EnterpriseExceptions: []config.EnterpriseException{
+			{Match: []string{"partner/tool"}},
+		},
+	}, nil, slog.Default())
+
+	inner := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
+	handler, ghxToken := newScopedPassthroughWithPolicy(t, inner, policy)
+
+	before := enterpriseStageSampleCount(t, "proxy")
+
+	req := httptest.NewRequest("POST", "http://github.com/partner/tool.git/git-upload-pack", nil)
+	req.Header.Set("Authorization", "Bearer "+ghxToken)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	after := enterpriseStageSampleCount(t, "proxy")
+	if after-before != 1 {
+		t.Errorf("expected enterprise_exception stage observed once with token_type=proxy, got %d", after-before)
+	}
+}
+
+// newScopedPassthroughWithPolicy builds a scoped passthrough handler over the
+// given inner handler with the given enterprise policy, backed by a real
+// token.Service, and returns the handler plus a plaintext open-scoped ghx_
+// token.
+func newScopedPassthroughWithPolicy(t *testing.T, inner http.Handler, policy *EnterprisePolicy) (http.Handler, string) {
+	t.Helper()
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 1, GitHubUsername: "testuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("gho_realgithubtoken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
+	result, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Duration:      24 * time.Hour,
+		SessionID:     "enterprise-stage-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
+	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, policy, slog.Default())
+	return handler, result.Token
 }

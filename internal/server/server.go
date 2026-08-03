@@ -419,7 +419,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// Create passthrough handlers for github.com and *.githubcopilot.com.
 	// Reuse proxyTokenResolver created above for cache warming to avoid duplication.
 	githubInner := proxy.NewPassthroughHandler(
-		"https://github.com", proxyTokenResolver, enterprisePolicy, usernameResolver, s.logger, nil)
+		"https://github.com", proxyTokenResolver, s.logger, nil)
 
 	// Wrap with git cache handler if enabled. The cache middleware wraps
 	// githubInner (the raw passthrough). The resulting handler is then wrapped
@@ -458,7 +458,7 @@ func (s *Server) Run(ctx context.Context) error {
 	token.StartCleanup(lifecycleCtx, store, s.cfg)
 
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
-		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, s.logger, s.cfg)
+		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, enterprisePolicy, s.logger, s.cfg)
 	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger)
 
 	codeloadHandler := proxy.NewCodeloadHandler(s.cfg, s.logger, nil)

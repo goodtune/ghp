@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goodtune/ghp/internal/config"
@@ -302,7 +303,20 @@ type teamChecker struct {
 	baseURL  string
 	client   *http.Client
 	cache    *expirable.LRU[string, bool]
-	logger   *slog.Logger
+	// flights maps a membership cache key to the *membershipFlight
+	// coordinating the lookup currently in progress for it, so concurrent
+	// cache misses for the same (org, team, user) trigger exactly one
+	// installation-token mint and membership request.
+	flights sync.Map
+	logger  *slog.Logger
+}
+
+// membershipFlight is a single in-progress membership lookup that concurrent
+// callers can wait on. The leader stores the verdict in member before closing
+// done; waiters must only read member after done is closed.
+type membershipFlight struct {
+	done   chan struct{}
+	member bool
 }
 
 func newTeamChecker(identity ExceptionIdentitySource, logger *slog.Logger) *teamChecker {
@@ -318,14 +332,30 @@ func newTeamChecker(identity ExceptionIdentitySource, logger *slog.Logger) *team
 // isMember reports whether username is an active member of org/teamSlug.
 // Any error (token minting, network, non-200) fails closed and is cached as a
 // negative verdict so a misconfigured team does not add API latency to every
-// request.
+// request. Concurrent cache misses for the same key are coalesced: the first
+// caller performs the lookup and everyone else waits on its verdict, bounded
+// by their own context (fail closed on cancellation).
 func (c *teamChecker) isMember(ctx context.Context, org, teamSlug, username string) bool {
 	key := strings.ToLower(org) + "/" + strings.ToLower(teamSlug) + "/" + strings.ToLower(username)
 	if member, ok := c.cache.Get(key); ok {
 		return member
 	}
+
+	f := &membershipFlight{done: make(chan struct{})}
+	if existing, loaded := c.flights.LoadOrStore(key, f); loaded {
+		ef := existing.(*membershipFlight)
+		select {
+		case <-ef.done:
+			return ef.member
+		case <-ctx.Done():
+			return false
+		}
+	}
 	member := c.lookupMembership(ctx, org, teamSlug, username)
 	c.cache.Add(key, member)
+	f.member = member
+	close(f.done)
+	c.flights.Delete(key)
 	return member
 }
 

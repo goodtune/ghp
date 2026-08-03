@@ -119,6 +119,7 @@ See [OAuth Broker](../features/oauth-broker.md) for integration details.
 | `GHP_BLOCK_GHU` | Block GitHub user-to-server tokens (`ghu_`) | `false` |
 | `GHP_BLOCK_GHS` | Block GitHub server-to-server tokens (`ghs_`) | `false` |
 | `GHP_BLOCK_GHR` | Block GitHub refresh tokens (`ghr_`) | `false` |
+| `GHP_BLOCK_GITHUB_PAT` | Block GitHub fine-grained personal access tokens (`github_pat_`) | `false` |
 | `GHP_BLOCK_ANONYMOUS_GIT` | Block unauthenticated git smart HTTP requests | `false` |
 
 See [Token Type Border Policy](../features/border-policy.md) for details.

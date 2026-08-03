@@ -84,11 +84,12 @@ type Config struct {
 // produce a warning at startup — those tokens are managed internally
 // and never reach the passthrough path.
 type BlockConfig struct {
-	GHP          bool `koanf:"ghp"`           // GitHub personal access tokens (ghp_)
+	GHP          bool `koanf:"ghp"`           // Classic personal access tokens (ghp_)
 	GHO          bool `koanf:"gho"`           // OAuth access tokens (gho_)
 	GHU          bool `koanf:"ghu"`           // GitHub user-to-server tokens (ghu_)
 	GHS          bool `koanf:"ghs"`           // GitHub server-to-server tokens (ghs_)
 	GHR          bool `koanf:"ghr"`           // Refresh tokens (ghr_)
+	GithubPat    bool `koanf:"github_pat"`    // Fine-grained personal access tokens (github_pat_)
 	AnonymousGit bool `koanf:"anonymous_git"` // Block anonymous git smart HTTP requests (identified by Git-Protocol header + no auth)
 }
 
@@ -547,7 +548,7 @@ func (c *Config) IsAdmin(username string) bool {
 }
 
 // IsTokenBlocked returns true when the token string's type prefix is blocked by
-// the border policy. Only the five standard GitHub token prefixes are evaluated;
+// the border policy. Only the standard GitHub token prefixes are evaluated;
 // ghp's own managed token types (ghx_, gha_) are never considered here.
 //
 // Safe to call concurrently with ReloadFrom.
@@ -565,6 +566,8 @@ func (c *Config) IsTokenBlocked(token string) bool {
 		return c.Block.GHS
 	case strings.HasPrefix(token, "ghr_"):
 		return c.Block.GHR
+	case strings.HasPrefix(token, "github_pat_"):
+		return c.Block.GithubPat
 	}
 	return false
 }

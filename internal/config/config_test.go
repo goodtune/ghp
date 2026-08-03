@@ -90,6 +90,34 @@ func TestLoadAllowedRedirectsFromEnv(t *testing.T) {
 	}
 }
 
+func TestLoadBlockGithubPatFromEnv(t *testing.T) {
+	t.Setenv("GHP_BLOCK_GITHUB_PAT", "true")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Block.GithubPat {
+		t.Error("expected Block.GithubPat to be true")
+	}
+	if !cfg.IsTokenBlocked("github_pat_11ABCDEF0123456789") {
+		t.Error("expected fine-grained PAT to be blocked")
+	}
+	if cfg.IsTokenBlocked("ghp_classic123") {
+		t.Error("blocking github_pat_ must not block classic ghp_ tokens")
+	}
+}
+
+func TestIsTokenBlocked_GithubPatDisabledByDefault(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.IsTokenBlocked("github_pat_11ABCDEF0123456789") {
+		t.Error("fine-grained PATs must not be blocked by default")
+	}
+}
+
 func TestLoadTLSCertFromEnv(t *testing.T) {
 	t.Setenv("GHP_TLS_CERT_FILE", "/tmp/test.crt")
 	t.Setenv("GHP_TLS_KEY_FILE", "/tmp/test.key")
