@@ -341,6 +341,11 @@ func TestRedactedQuery(t *testing.T) {
 		{"repeated param", "token=a&token=b", "token=REDACTED&token=REDACTED"},
 		{"valueless param", "token", "token=REDACTED"},
 		{"unparseable is redacted wholesale", "%zz&token=abc", "REDACTED"},
+		// Go's url.ParseQuery has rejected ";" as a separator since Go 1.17
+		// (https://go.dev/issue/25192), so a semicolon-separated query never
+		// reaches the "&"-based split below — it fails ParseQuery and is
+		// redacted wholesale by the branch above.
+		{"semicolon separator is redacted wholesale", "x=1;token=SECRET", "REDACTED"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
