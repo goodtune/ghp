@@ -6,10 +6,10 @@ import (
 
 func TestEndpointScope(t *testing.T) {
 	tests := []struct {
-		method     string
-		path       string
-		wantPerm   string
-		wantLevel  string
+		method    string
+		path      string
+		wantPerm  string
+		wantLevel string
 	}{
 		{"GET", "/repos/org/repo/pulls", "pull_requests", "read"},
 		{"POST", "/repos/org/repo/pulls", "pull_requests", "write"},

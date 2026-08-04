@@ -50,14 +50,15 @@ func TestForwardRequest_EnterpriseHeader(t *testing.T) {
 				EnterpriseSlug: "my-enterprise",
 			},
 		},
-		logger: slog.Default(),
-		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+		logger:     slog.Default(),
+		client:     &http.Client{Transport: ct, Timeout: 5 * time.Second},
+		enterprise: NewEnterprisePolicy(config.GitHubConfig{EnterpriseSlug: "my-enterprise"}, nil, nil),
 	}
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://localhost/repos/org/repo", nil)
 
-	status := h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token")
+	status := h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token", time.Now(), "")
 
 	if status != http.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
@@ -81,8 +82,9 @@ func TestServeHTTP_NonGhpTokenPassthrough(t *testing.T) {
 				EnterpriseSlug: "acme",
 			},
 		},
-		logger: slog.Default(),
-		client: &http.Client{Transport: ct, Timeout: 5 * time.Second},
+		logger:     slog.Default(),
+		client:     &http.Client{Transport: ct, Timeout: 5 * time.Second},
+		enterprise: NewEnterprisePolicy(config.GitHubConfig{EnterpriseSlug: "acme"}, nil, nil),
 	}
 
 	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo/pulls", nil)
@@ -148,7 +150,7 @@ func TestForwardRequest_NoEnterpriseHeader(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://localhost/repos/org/repo", nil)
 
-	h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token")
+	h.forwardRequest(rr, req, "/repos/org/repo", "test-github-token", time.Now(), "")
 
 	if ct.lastReq == nil {
 		t.Fatal("no request captured")
@@ -172,8 +174,8 @@ func TestServeHTTP_GhpToken_WrongRepository(t *testing.T) {
 	// A token scoped to goodtune/ghp must be rejected when used
 	// against a different repository (goodtune/pac-proxy).
 	h, ghpToken := newScopedHandler(t, "goodtune/ghp", map[string]string{
-		"contents": "read",
-		"issues":   "read",
+		"contents":      "read",
+		"issues":        "read",
 		"pull_requests": "read",
 	})
 
@@ -321,7 +323,7 @@ func TestForwardRequest_RateLimitMetrics(t *testing.T) {
 	req, _ = PrepareUsernameSlot(req)
 	SetUsername(req, "ratelimit-testuser")
 
-	h.forwardRequest(rr, req, "/repos/org/repo", "test-token")
+	h.forwardRequest(rr, req, "/repos/org/repo", "test-token", time.Now(), "")
 
 	// Verify GitHubRateLimitRemaining was set from the response header.
 	var m io_prometheus_client.Metric
@@ -1359,7 +1361,7 @@ func TestForwardRequest_UpstreamRedirect_PassedThrough(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://localhost/repos/org/repo/actions/jobs/65822562466/logs", nil)
 
-	status := h.forwardRequest(rr, req, "/repos/org/repo/actions/jobs/65822562466/logs", "token ghp_faketoken")
+	status := h.forwardRequest(rr, req, "/repos/org/repo/actions/jobs/65822562466/logs", "token ghp_faketoken", time.Now(), "")
 
 	if status != http.StatusFound {
 		t.Fatalf("expected 302, got %d", status)

@@ -43,7 +43,7 @@ func TestPassthroughHandler_NoAuth(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
+	handler := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
 	rr := httptest.NewRecorder()
@@ -93,7 +93,7 @@ func TestPassthroughHandler_GhpToken_SchemePreserved(t *testing.T) {
 			defer upstream.Close()
 
 			resolver := &mockTokenResolver{token: "real-github-token"}
-			handler := NewPassthroughHandler(upstream.URL, resolver, "", nil, tlsTransport(upstream))
+			handler := NewPassthroughHandler(upstream.URL, resolver, nil, tlsTransport(upstream))
 
 			req := httptest.NewRequest("GET", "http://github.com/org/repo.git/info/refs", nil)
 			req.Header.Set("Authorization", tt.authHeader)
@@ -118,7 +118,9 @@ func TestPassthroughHandler_EnterpriseHeader(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler := NewPassthroughHandler(upstream.URL, nil, "my-enterprise", nil, tlsTransport(upstream))
+	policy := NewEnterprisePolicy(config.GitHubConfig{EnterpriseSlug: "my-enterprise"}, nil, nil)
+	inner := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, policy, slog.Default())
 
 	req := httptest.NewRequest("GET", "http://github.com/", nil)
 	rr := httptest.NewRecorder()
@@ -228,8 +230,8 @@ func newScopedPassthrough(t *testing.T, repo string, scopes map[string]string) (
 	t.Cleanup(upstream.Close)
 
 	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
-	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
-	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, slog.Default())
+	inner := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, nil, slog.Default())
 
 	return handler, result.Token
 }
@@ -465,8 +467,8 @@ func newOpenScopedPassthrough(t *testing.T) (http.Handler, string) {
 	t.Cleanup(upstream.Close)
 
 	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
-	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
-	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, slog.Default())
+	inner := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, nil, slog.Default())
 
 	return handler, result.Token
 }
@@ -522,8 +524,8 @@ func newRepoOnlyPassthrough(t *testing.T, repo string) (http.Handler, string) {
 	t.Cleanup(upstream.Close)
 
 	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
-	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
-	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, slog.Default())
+	inner := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, nil, slog.Default())
 
 	return handler, result.Token
 }
@@ -579,8 +581,8 @@ func newScopeOnlyPassthrough(t *testing.T, scopes map[string]string) (http.Handl
 	t.Cleanup(upstream.Close)
 
 	resolver := NewProxyTokenResolver(tokenSvc, store, enc, nil)
-	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
-	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, slog.Default())
+	inner := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, nil, slog.Default())
 
 	return handler, result.Token
 }
@@ -663,8 +665,8 @@ func TestScopedPassthrough_BorderPolicy_BlocksRawToken(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := &config.Config{Block: config.BlockConfig{GHS: true}}
-	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
-	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, slog.Default(), cfg)
+	inner := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, nil, slog.Default(), cfg)
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req.Header.Set("Authorization", "Bearer ghs_servertoken")
@@ -685,8 +687,8 @@ func TestScopedPassthrough_BorderPolicy_AllowsUnblockedRawToken(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := &config.Config{Block: config.BlockConfig{GHS: true}}
-	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
-	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, slog.Default(), cfg)
+	inner := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, nil, slog.Default(), cfg)
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req.Header.Set("Authorization", "Bearer gho_oauthtoken")
@@ -716,8 +718,8 @@ func newAnonymousGitPassthrough(t *testing.T, cfg *config.Config) (http.Handler,
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(upstream.Close)
-	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
-	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, slog.Default(), cfg)
+	inner := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, nil, slog.Default(), cfg)
 	return handler, upstream
 }
 
@@ -814,8 +816,8 @@ func TestScopedPassthrough_NativeToken_RecordsMetrics(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	inner := NewPassthroughHandler(upstream.URL, nil, "", nil, tlsTransport(upstream))
-	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, slog.Default())
+	inner := NewPassthroughHandler(upstream.URL, nil, nil, tlsTransport(upstream))
+	handler := NewScopedPassthroughHandler(inner, nil, nil, nil, nil, slog.Default())
 
 	labels := prometheus.Labels{
 		"backend":    "github.com",
@@ -844,4 +846,3 @@ func TestScopedPassthrough_NativeToken_RecordsMetrics(t *testing.T) {
 		t.Errorf("expected ProxyRequestTotal to increment by 1, got %f", after-before)
 	}
 }
-

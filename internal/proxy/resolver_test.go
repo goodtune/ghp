@@ -103,4 +103,3 @@ func newTestStore(t *testing.T) database.Store {
 	}
 	return store
 }
-

@@ -27,11 +27,14 @@ type TokenResolver interface {
 // NewPassthroughHandler creates a transparent reverse proxy to the given
 // upstream URL. If a client token (ghx_/gha_) is found in the Authorization
 // header, it is resolved and replaced with the real GitHub credential.
-// If enterpriseSlug is non-empty, the sec-GitHub-allowed-enterprise header
-// is injected on every request.
+// Enterprise access restriction enforcement lives in
+// NewScopedPassthroughHandler (the production wrapper for this handler) so
+// that its evaluation is charged to pre-forward decision time rather than
+// the upstream roundtrip, and so the managed client token type is still
+// known when the policy runs.
 // The transport parameter allows callers to supply a custom RoundTripper
 // (e.g. for test TLS); pass nil to use http.DefaultTransport.
-func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSlug string, logger *slog.Logger, transport http.RoundTripper) http.Handler {
+func NewPassthroughHandler(upstream string, resolver TokenResolver, logger *slog.Logger, transport http.RoundTripper) http.Handler {
 	target, _ := url.Parse(upstream)
 
 	proxy := &httputil.ReverseProxy{
@@ -39,10 +42,6 @@ func NewPassthroughHandler(upstream string, resolver TokenResolver, enterpriseSl
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
-
-			if enterpriseSlug != "" {
-				req.Header.Set("sec-GitHub-allowed-enterprise", enterpriseSlug)
-			}
 
 			if resolver != nil {
 				if clientTok, _, rewriteAuth := extractClientToken(req); clientTok != "" {
@@ -86,7 +85,14 @@ type ScopeEnforcer interface {
 // The optional usernameResolver is used to resolve GitHub usernames for both
 // client tokens (via the database) and raw GitHub tokens (via the GitHub API)
 // so that they appear in metrics and access logs.
-func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger, cfg ...*config.Config) http.Handler {
+//
+// When enterprise is non-nil, the enterprise access restriction policy is
+// applied to the request (header injection or exception-driven omission,
+// optionally substituting a managed identity) after token resolution and
+// scope enforcement, immediately before the upstream forward — so its
+// evaluation is charged to pre-forward decision time and labeled with the
+// managed client token type.
+func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, enterprise *EnterprisePolicy, logger *slog.Logger, cfg ...*config.Config) http.Handler {
 	var blockCfg *config.Config
 	if len(cfg) > 0 {
 		blockCfg = cfg[0]
@@ -100,6 +106,38 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			extractTokenType = string(tt)
 		}
 		metrics.ObserveDecision(metrics.StageTokenExtraction, extractTokenType, time.Since(extractStart))
+
+		// applyEnterprise evaluates the enterprise restriction policy against
+		// the request's target, mutating r.Header (the reverse proxy copies
+		// it to the outbound request). githubToken is the resolved credential
+		// used to identify the caller for team-gated and identity-substituting
+		// exceptions; identity is derived exclusively from it, so
+		// cookie-authenticated github.com web requests fail those exception
+		// types closed by design (see docs/admin/github-app.md).
+		applyEnterprise := func(githubToken string) {
+			if enterprise == nil {
+				return
+			}
+			owner, repo := enterpriseTargetFromWebPath(r.URL.Path)
+			usernameFn := func(ctx context.Context) string {
+				if u := GetUsername(r); u != "" {
+					return u
+				}
+				return ur.ResolveFromGitHubTokenSync(ctx, githubToken)
+			}
+			if identityTok := enterprise.Apply(r.Context(), r.Header, owner, repo, usernameFn, extractTokenType); identityTok != "" {
+				// Identity substitution only fires for callers whose
+				// credential resolved to a GitHub identity (Apply fails
+				// closed otherwise), so an Authorization header is present
+				// here; preserve its scheme. The Basic fallback is defensive
+				// only.
+				if orig := r.Header.Get("Authorization"); orig != "" {
+					r.Header.Set("Authorization", substituteAuthHeader(orig, identityTok))
+				} else {
+					r.Header.Set("Authorization", basicAuthIdentityHeader(identityTok))
+				}
+			}
+		}
 		if clientTok == "" {
 			// Check the token type border policy before forwarding.
 			borderStart := time.Now()
@@ -127,6 +165,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			if ur != nil && raw != "" {
 				ur.ResolveFromGitHubToken(r.Context(), raw)
 			}
+			applyEnterprise(raw)
 			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			upstreamStart := time.Now()
@@ -162,6 +201,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 				return
 			}
 			r.Header.Set("Authorization", rewriteAuth(realToken))
+			applyEnterprise(realToken)
 			metrics.ObserveDecision(metrics.StageTotal, extractTokenType, time.Since(decisionStart))
 			upstreamStart := time.Now()
 			inner.ServeHTTP(w, r)
@@ -247,6 +287,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 			}
 			metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 			r.Header.Set("Authorization", rewriteAuth(realToken))
+			applyEnterprise(realToken)
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			upstreamStart := time.Now()
 			inner.ServeHTTP(rec, r)
@@ -298,6 +339,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		}
 		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 		r.Header.Set("Authorization", rewriteAuth(realToken))
+		applyEnterprise(realToken)
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 		upstreamStart := time.Now()
 		inner.ServeHTTP(rec, r)
