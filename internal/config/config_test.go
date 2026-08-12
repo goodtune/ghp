@@ -520,3 +520,68 @@ func TestLoadVaultK8sFromEnv(t *testing.T) {
 		t.Errorf("VaultK8sTokenPath = %q, want /run/secrets/projected/token", cfg.Database.VaultK8sTokenPath)
 	}
 }
+
+func TestLoadClientIPHeaderFromEnv(t *testing.T) {
+	t.Setenv("GHP_SERVER_CLIENT_IP_HEADER", "X-Forwarded-For")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.ClientIPHeader != "x-forwarded-for" {
+		t.Errorf("ClientIPHeader = %q, want %q", cfg.Server.ClientIPHeader, "x-forwarded-for")
+	}
+}
+
+func TestLoadClientIPHeaderDefaultsEmpty(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.ClientIPHeader != "" {
+		t.Errorf("ClientIPHeader = %q, want empty", cfg.Server.ClientIPHeader)
+	}
+}
+
+func TestLoadClientIPHeaderInvalid(t *testing.T) {
+	t.Setenv("GHP_SERVER_CLIENT_IP_HEADER", "cf-connecting-ip")
+
+	if _, err := Load(""); err == nil {
+		t.Fatal("expected error for unsupported client_ip_header")
+	}
+}
+
+type warnRecorder struct {
+	messages []string
+}
+
+func (w *warnRecorder) Warn(msg string, args ...any) {
+	w.messages = append(w.messages, msg)
+}
+
+func TestWarnMissingClientIPHeader(t *testing.T) {
+	tests := []struct {
+		name              string
+		trustProxyHeaders bool
+		clientIPHeader    string
+		wantWarn          bool
+	}{
+		{name: "trust set without client ip header warns", trustProxyHeaders: true, wantWarn: true},
+		{name: "trust set with client ip header", trustProxyHeaders: true, clientIPHeader: "x-forwarded-for"},
+		{name: "trust unset without client ip header"},
+		{name: "trust unset with client ip header", clientIPHeader: "x-forwarded-for"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{Server: ServerConfig{
+				TrustProxyHeaders: tt.trustProxyHeaders,
+				ClientIPHeader:    tt.clientIPHeader,
+			}}
+			rec := &warnRecorder{}
+			cfg.WarnMissingClientIPHeader(rec)
+			if got := len(rec.messages) > 0; got != tt.wantWarn {
+				t.Errorf("warned = %v, want %v (messages: %v)", got, tt.wantWarn, rec.messages)
+			}
+		})
+	}
+}

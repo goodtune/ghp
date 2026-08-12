@@ -21,6 +21,8 @@ import (
 	"github.com/knadh/koanf/providers/env/v2"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/goodtune/ghp/internal/netutil"
 )
 
 // Config represents the complete server configuration.
@@ -265,7 +267,8 @@ type ServerConfig struct {
 	// headers and influence generated URLs (host-header injection). The
 	// preferred deployment pattern is to set base_url explicitly so the
 	// fallback path is never exercised.
-	TrustProxyHeaders bool `koanf:"trust_proxy_headers"`
+	TrustProxyHeaders bool   `koanf:"trust_proxy_headers"`
+	ClientIPHeader    string `koanf:"client_ip_header"`
 }
 
 type TokensConfig struct {
@@ -411,6 +414,12 @@ func Load(path string) (*Config, error) {
 	if err := k.Unmarshal("", cfg); err != nil {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
+
+	clientIPHeader, err := netutil.ParseIPHeader(cfg.Server.ClientIPHeader)
+	if err != nil {
+		return nil, fmt.Errorf("server.client_ip_header: %w", err)
+	}
+	cfg.Server.ClientIPHeader = string(clientIPHeader)
 
 	// Comma-separated list env vars for slice fields. koanf unmarshals
 	// a single env var string into a one-element slice, so we split on
@@ -628,6 +637,14 @@ func (c *Config) CodeloadRedirectTo() string {
 // and GHP_BLOCK_GHPR environment variables which a configuration mistake might
 // introduce. Note: GHP_BLOCK_GHPR targets ghp's own session token prefix (ghpr_),
 // which is distinct from GitHub's refresh token prefix (ghr_) handled by GHP_BLOCK_GHR.
+func (c *Config) WarnMissingClientIPHeader(logger interface {
+	Warn(msg string, args ...any)
+}) {
+	if c.Server.TrustProxyHeaders && c.Server.ClientIPHeader == "" {
+		logger.Warn("server.trust_proxy_headers is set but server.client_ip_header is not: client attribution and per-IP rate limits will key on the proxy address, so all clients behind the proxy share one rate-limit bucket; set server.client_ip_header to the forwarded header your proxy sets")
+	}
+}
+
 func (c *Config) WarnInvalidBlockTargets(logger interface {
 	Warn(msg string, args ...any)
 }) {
