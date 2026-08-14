@@ -22,7 +22,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/goodtune/ghp/internal/crypto"
-	ghub "github.com/google/go-github/v89/github"
+	ghub "github.com/google/go-github/v90/github"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
