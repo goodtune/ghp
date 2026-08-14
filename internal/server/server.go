@@ -43,6 +43,7 @@ import (
 	"github.com/goodtune/ghp/internal/gitcache"
 	"github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/metrics"
+	"github.com/goodtune/ghp/internal/netutil"
 	"github.com/goodtune/ghp/internal/proxy"
 	"github.com/goodtune/ghp/internal/token"
 	"github.com/goodtune/ghp/internal/web"
@@ -259,6 +260,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// Warn if the operator has set environment variables for token types
 	// that ghp manages internally and cannot be blocked via border policy.
 	s.cfg.WarnInvalidBlockTargets(s.logger)
+	s.cfg.WarnMissingClientIPHeader(s.logger)
 
 	// Initialise the anonymous git blocking gauge to reflect the startup config.
 	s.syncBlockMetrics()
@@ -470,12 +472,13 @@ func (s *Server) Run(ctx context.Context) error {
 	aw := newAccessLogWriter(s.logProvider.Logger(accessLogScope))
 
 	// Build host dispatch with access logging on all handlers.
+	clientIPHeader := netutil.IPHeader(s.cfg.Server.ClientIPHeader)
 	dispatch := newHostDispatch(hostDispatchConfig{
-		apiHandler:      accessLogHandler(backend.API, proxyHandler, aw),
-		githubHandler:   accessLogHandler(backend.GitHub, githubPassthrough, aw),
-		codeloadHandler: accessLogHandler(backend.Codeload, codeloadHandler, aw),
-		copilotHandler:  accessLogHandler(backend.Copilot, copilotPassthrough, aw),
-		mgmtHandler:     accessLogHandler(backend.Mgmt, web.SessionUsernameMiddleware(authHandler)(web.SecurityHeadersMiddleware(mux)), aw),
+		apiHandler:      accessLogHandler(backend.API, proxyHandler, aw, clientIPHeader),
+		githubHandler:   accessLogHandler(backend.GitHub, githubPassthrough, aw, clientIPHeader),
+		codeloadHandler: accessLogHandler(backend.Codeload, codeloadHandler, aw, clientIPHeader),
+		copilotHandler:  accessLogHandler(backend.Copilot, copilotPassthrough, aw, clientIPHeader),
+		mgmtHandler:     accessLogHandler(backend.Mgmt, web.SessionUsernameMiddleware(authHandler)(web.SecurityHeadersMiddleware(mux)), aw, clientIPHeader),
 		managementHost:  s.cfg.Server.ManagementHost,
 	})
 

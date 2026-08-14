@@ -24,6 +24,7 @@ import (
 	"github.com/goodtune/ghp/internal/gitcache"
 	ghpgithub "github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/metrics"
+	"github.com/goodtune/ghp/internal/netutil"
 	"github.com/goodtune/ghp/internal/proxy"
 	"github.com/goodtune/ghp/internal/token"
 )
@@ -119,7 +120,7 @@ func NewAPI(ctx context.Context, cfg *config.Config, store database.Store, ts *t
 		logger:             logger,
 		httpClient:         &http.Client{Timeout: 10 * time.Second},
 		auditLog:           aw,
-		tokenCreateLimiter: auth.NewIPRateLimiter(20, time.Minute, "/api/tokens", logger),
+		tokenCreateLimiter: auth.NewIPRateLimiter(20, time.Minute, "/api/tokens", netutil.IPHeader(cfg.Server.ClientIPHeader), logger),
 	}
 }
 

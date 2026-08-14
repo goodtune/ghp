@@ -63,3 +63,4 @@ test-results/
 # Editor/IDE
 # .idea/
 # .vscode/
+.envrc
