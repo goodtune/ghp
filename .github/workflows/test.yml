@@ -125,7 +125,12 @@ jobs:
           retention-days: 14
 
       - name: Comment on PR
-        if: always() && github.event_name == 'pull_request'
+        # GITHUB_TOKEN is forced read-only for pull_request runs triggered from
+        # a fork, so issues.createComment/updateComment always 403 there. Skip
+        # the comment (test results still show in the job summary and the
+        # "Fail if tests failed" step below still gates the job) rather than
+        # letting an unrelated 403 mark the whole job as failed.
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v9
         env:
           PLAYWRIGHT_OUTCOME: ${{ steps.playwright.outcome }}
