@@ -4,7 +4,7 @@ go 1.25.6
 
 require (
 	github.com/go-git/go-billy/v5 v5.9.1
-	github.com/go-git/go-git/v5 v5.19.1
+	github.com/go-git/go-git/v5 v5.19.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/goodtune/dotvault v0.29.0
 	github.com/google/gitprotocolio v0.0.0-20210704173409-b5a56823ae52
