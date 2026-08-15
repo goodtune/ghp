@@ -1625,7 +1625,7 @@ func testForwardProxyRulesetCRUD(t *testing.T, store Store) {
 		},
 		Rules: []ForwardProxyRule{
 			{Type: ForwardProxyRuleNet, Value: "10.42.0.0/16"},
-			{Type: ForwardProxyRuleSystem},
+			{Type: ForwardProxyRuleControl, IncludeNonGitHub: true},
 		},
 		Enabled: true,
 	}
@@ -1677,8 +1677,11 @@ func testForwardProxyRulesetCRUD(t *testing.T, store Store) {
 	if got.Rules[0].Type != ForwardProxyRuleNet || got.Rules[0].Value != "10.42.0.0/16" {
 		t.Errorf("rules[0] = %+v, want {net 10.42.0.0/16}", got.Rules[0])
 	}
-	if got.Rules[1].Type != ForwardProxyRuleSystem || got.Rules[1].Value != "" {
-		t.Errorf("rules[1] = %+v, want {system }", got.Rules[1])
+	if got.Rules[1].Type != ForwardProxyRuleControl || got.Rules[1].Value != "" || !got.Rules[1].IncludeNonGitHub {
+		t.Errorf("rules[1] = %+v, want {control include_non_github=true}", got.Rules[1])
+	}
+	if got.Rules[0].IncludeNonGitHub {
+		t.Errorf("rules[0].IncludeNonGitHub = true, want false")
 	}
 	if !got.Enabled {
 		t.Error("expected enabled = true")

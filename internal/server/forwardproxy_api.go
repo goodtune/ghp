@@ -134,6 +134,9 @@ func validateForwardProxyRules(rules []database.ForwardProxyRule) error {
 		return fmt.Errorf("at most %d rules are allowed", maxForwardProxyRules)
 	}
 	for i, rule := range rules {
+		if rule.IncludeNonGitHub && rule.Type != database.ForwardProxyRuleControl {
+			return fmt.Errorf("rules[%d]: include_non_github is only valid on control rules", i)
+		}
 		switch rule.Type {
 		case database.ForwardProxyRuleSystem, database.ForwardProxyRuleControl:
 			if rule.Value != "" {

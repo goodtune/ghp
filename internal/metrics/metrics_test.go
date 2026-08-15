@@ -613,6 +613,7 @@ func TestForwardProxySelectTotal(t *testing.T) {
 		{"default", "system"},
 		{"control-plane", "control"},
 		{"", "ambient"},
+		{"", "direct"},
 	}
 	for _, c := range cases {
 		t.Run(c.layer, func(t *testing.T) {

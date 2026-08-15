@@ -160,6 +160,7 @@ func TestForwardProxyRulesets_CreateValidation(t *testing.T) {
 		{"token rule not uuid", `{"name":"ok","algorithm":"round_robin","proxies":[{"url":"http://p:1"}],"rules":[{"type":"token","value":"not-a-uuid"}]}`},
 		{"system rule with value", `{"name":"ok","algorithm":"round_robin","proxies":[{"url":"http://p:1"}],"rules":[{"type":"system","value":"x"}]}`},
 		{"control rule with value", `{"name":"ok","algorithm":"round_robin","proxies":[{"url":"http://p:1"}],"rules":[{"type":"control","value":"x"}]}`},
+		{"include_non_github on non-control rule", `{"name":"ok","algorithm":"round_robin","proxies":[{"url":"http://p:1"}],"rules":[{"type":"system","include_non_github":true}]}`},
 		{"invalid json", `{`},
 	}
 	for _, tt := range tests {
@@ -180,6 +181,24 @@ func TestForwardProxyRulesets_CreateValidation(t *testing.T) {
 	a.handleCreateForwardProxyRuleset(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("control rule create: expected %d, got %d: %s", http.StatusCreated, w.Code, w.Body.String())
+	}
+
+	// include_non_github is valid on a control rule and round-trips.
+	req = httptest.NewRequest("POST", "/api/forward-proxy-rulesets",
+		strings.NewReader(`{"name":"control-ngh","algorithm":"round_robin","proxies":[{"url":"http://p:1"}],"rules":[{"type":"control","include_non_github":true}]}`)).WithContext(adminCtx())
+	w = httptest.NewRecorder()
+	a.handleCreateForwardProxyRuleset(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("control include_non_github create: expected %d, got %d: %s", http.StatusCreated, w.Code, w.Body.String())
+	}
+	var resp struct {
+		Rules []map[string]interface{} `json:"rules"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Rules) != 1 || resp.Rules[0]["include_non_github"] != true {
+		t.Fatalf("rules = %v, want include_non_github=true", resp.Rules)
 	}
 }
 

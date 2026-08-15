@@ -485,7 +485,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
 		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, enterprisePolicy, s.logger, s.cfg)
-	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger, forwardProxyControlTransport)
+	// Release HEAD probes target the operator's redirect mirror, not GitHub;
+	// they go direct unless a control rule opts them in via include_non_github.
+	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger, proxy.NewForwardProxyNonGitHubControlTransport(forwardProxyRouter))
 
 	codeloadHandler := proxy.NewCodeloadHandler(s.cfg, s.logger, forwardProxyTransport)
 

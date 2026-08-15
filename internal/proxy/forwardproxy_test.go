@@ -340,3 +340,60 @@ func TestForwardProxyRouter_ControlTransportAndContext(t *testing.T) {
 		t.Fatalf("ProxyFunc(control ctx) = (%v, %v), want control-proxy:3128", u, err)
 	}
 }
+
+func TestForwardProxyRouter_NonGitHubControlDirectByDefault(t *testing.T) {
+	// No rules at all → direct.
+	empty := reloadedRouter(t)
+	req := httptest.NewRequest(http.MethodHead, "https://mirror.internal/org/repo/releases/download/v1/a.tgz", nil)
+	if u, err := empty.nonGitHubControlProxy(req); err != nil || u != nil {
+		t.Fatalf("nonGitHubControlProxy(no rules) = (%v, %v), want direct (nil, nil)", u, err)
+	}
+
+	// Control rule without include_non_github → still direct, even though
+	// GitHub-destined control traffic is routed.
+	fr := reloadedRouter(t,
+		&database.ForwardProxyRuleset{
+			Name: "control-rs", Algorithm: database.ForwardProxyAlgoRoundRobin, Enabled: true,
+			Proxies: []database.ForwardProxyEntry{{URL: "http://control-proxy:3128"}},
+			Rules:   []database.ForwardProxyRule{{Type: database.ForwardProxyRuleControl}},
+		},
+	)
+	if u, err := fr.nonGitHubControlProxy(req); err != nil || u != nil {
+		t.Fatalf("nonGitHubControlProxy(control without flag) = (%v, %v), want direct", u, err)
+	}
+	if u, _, _ := fr.SelectControl(); u == nil || u.Host != "control-proxy:3128" {
+		t.Fatalf("SelectControl() = %v, want control-proxy (GitHub-destined control still routed)", u)
+	}
+
+	// System rule alone never captures non-GitHub control calls.
+	sys := reloadedRouter(t,
+		&database.ForwardProxyRuleset{
+			Name: "sys-rs", Algorithm: database.ForwardProxyAlgoRoundRobin, Enabled: true,
+			Proxies: []database.ForwardProxyEntry{{URL: "http://sys-proxy:3128"}},
+			Rules:   []database.ForwardProxyRule{{Type: database.ForwardProxyRuleSystem}},
+		},
+	)
+	if u, err := sys.nonGitHubControlProxy(req); err != nil || u != nil {
+		t.Fatalf("nonGitHubControlProxy(system only) = (%v, %v), want direct", u, err)
+	}
+}
+
+func TestForwardProxyRouter_NonGitHubControlOptIn(t *testing.T) {
+	fr := reloadedRouter(t,
+		&database.ForwardProxyRuleset{
+			Name: "control-rs", Algorithm: database.ForwardProxyAlgoRoundRobin, Enabled: true,
+			Proxies: []database.ForwardProxyEntry{{URL: "http://control-proxy:3128"}},
+			Rules:   []database.ForwardProxyRule{{Type: database.ForwardProxyRuleControl, IncludeNonGitHub: true}},
+		},
+	)
+	req := httptest.NewRequest(http.MethodHead, "https://mirror.internal/org/repo/releases/download/v1/a.tgz", nil)
+	if u, err := fr.nonGitHubControlProxy(req); err != nil || u == nil || u.Host != "control-proxy:3128" {
+		t.Fatalf("nonGitHubControlProxy(opt-in) = (%v, %v), want control-proxy:3128", u, err)
+	}
+
+	// The transport constructor wires the same behaviour.
+	nt := NewForwardProxyNonGitHubControlTransport(fr)
+	if u, err := nt.Proxy(req); err != nil || u == nil || u.Host != "control-proxy:3128" {
+		t.Fatalf("non-GitHub control transport Proxy() = (%v, %v), want control-proxy:3128", u, err)
+	}
+}

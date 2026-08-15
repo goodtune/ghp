@@ -29,6 +29,11 @@ const (
 	ForwardProxyLayerSystem  = "system"
 	ForwardProxyLayerControl = "control"
 	ForwardProxyLayerAmbient = "ambient"
+	// ForwardProxyLayerDirect marks non-GitHub control calls (release HEAD
+	// probes against the operator's mirror) sent with no proxy at all — the
+	// default for those calls unless a control rule opts them in via
+	// include_non_github.
+	ForwardProxyLayerDirect = "direct"
 )
 
 // compiledTarget is a validated upstream forward proxy within a ruleset.
@@ -63,6 +68,10 @@ type routeTable struct {
 	byNet   []netRule // sorted most-specific prefix first
 	system  *compiledRuleset
 	control *compiledRuleset // ghp's own control-plane traffic
+	// controlNonGitHub extends the control ruleset to ghp control calls
+	// targeting non-GitHub hosts; set from the winning control rule's
+	// include_non_github flag.
+	controlNonGitHub bool
 }
 
 // ForwardProxyRouter selects which upstream forward proxy (if any) an
@@ -163,12 +172,15 @@ func (fr *ForwardProxyRouter) Reload(ctx context.Context) error {
 				table.system = compiled
 				bound = true
 			case database.ForwardProxyRuleControl:
-				if table.control != nil {
+				if table.control != nil && table.control != compiled {
 					fr.logger.Warn("forward proxy: multiple control rulesets; first by name wins",
 						"kept", table.control.name, "ignored", rs.Name)
 					continue
 				}
 				table.control = compiled
+				if rule.IncludeNonGitHub {
+					table.controlNonGitHub = true
+				}
 				bound = true
 			default:
 				fr.logger.Warn("forward proxy: skipping unknown rule type",
@@ -380,10 +392,32 @@ func (fr *ForwardProxyRouter) controlProxy(req *http.Request) (*url.URL, error) 
 
 // ControlProxyFunc returns a proxy selection function that always routes as
 // control-plane traffic, regardless of request context. Use it for internal
-// clients that are not tied to a proxied request (App installation token
-// minting, username resolution, OAuth login flows, release HEAD probes).
+// clients whose destination is GitHub (App installation token minting,
+// username resolution, OAuth login flows).
 func (fr *ForwardProxyRouter) ControlProxyFunc() func(*http.Request) (*url.URL, error) {
 	return fr.controlProxy
+}
+
+// nonGitHubControlProxy resolves the egress proxy for ghp control calls that
+// target non-GitHub hosts (release redirect HEAD probes against the
+// operator's mirror). Those hosts are typically internal, so the default is
+// DIRECT — no proxy at all, not even the ambient environment. A control rule
+// with include_non_github=true opts them into the control ruleset instead.
+func (fr *ForwardProxyRouter) nonGitHubControlProxy(_ *http.Request) (*url.URL, error) {
+	fr.mu.RLock()
+	table := fr.table
+	fr.mu.RUnlock()
+
+	start := time.Now()
+	if table.control != nil && table.controlNonGitHub {
+		u := table.control.pick("")
+		metrics.ObserveDecision(metrics.StageForwardProxySelection, "", time.Since(start))
+		metrics.ForwardProxySelectTotal.WithLabelValues(table.control.name, ForwardProxyLayerControl).Inc()
+		return u, nil
+	}
+	metrics.ObserveDecision(metrics.StageForwardProxySelection, "", time.Since(start))
+	metrics.ForwardProxySelectTotal.WithLabelValues("", ForwardProxyLayerDirect).Inc()
+	return nil, nil
 }
 
 // NewForwardProxyTransport returns an http.Transport cloned from
@@ -404,5 +438,15 @@ func NewForwardProxyTransport(fr *ForwardProxyRouter) *http.Transport {
 func NewForwardProxyControlTransport(fr *ForwardProxyRouter) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = fr.ControlProxyFunc()
+	return t
+}
+
+// NewForwardProxyNonGitHubControlTransport returns a transport for ghp
+// control calls whose destination is not GitHub (release redirect HEAD
+// probes). Requests are sent direct unless a control rule sets
+// include_non_github, in which case they follow the control ruleset.
+func NewForwardProxyNonGitHubControlTransport(fr *ForwardProxyRouter) *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = fr.nonGitHubControlProxy
 	return t
 }

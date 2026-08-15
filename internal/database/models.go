@@ -150,11 +150,20 @@ type ForwardProxyEntry struct {
 }
 
 // ForwardProxyRule binds a ruleset to matching traffic. Value is empty for
-// "system" rules, an App record UUID for "app" rules, a ProxyToken UUID for
-// "token" rules, and a CIDR (e.g. "10.1.0.0/16") for "net" rules.
+// "system" and "control" rules, an App record UUID for "app" rules, a
+// ProxyToken UUID for "token" rules, and a CIDR (e.g. "10.1.0.0/16") for
+// "net" rules.
+//
+// IncludeNonGitHub is only meaningful on "control" rules: when true, ghp's
+// control calls that target non-GitHub hosts (currently release redirect
+// HEAD probes against the operator's mirror) are routed through the control
+// ruleset like GitHub-destined control traffic. When false (the default),
+// those calls are sent direct — mirrors are typically internal, so no
+// forward proxy (not even the ambient environment) is applied.
 type ForwardProxyRule struct {
-	Type  string `json:"type"`
-	Value string `json:"value,omitempty"`
+	Type             string `json:"type"`
+	Value            string `json:"value,omitempty"`
+	IncludeNonGitHub bool   `json:"include_non_github,omitempty"`
 }
 
 // ForwardProxyRuleset groups a set of upstream forward proxies with a routing

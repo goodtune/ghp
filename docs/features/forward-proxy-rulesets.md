@@ -34,7 +34,7 @@ A **ruleset** groups:
 | `app` | app record UUID | Requests from agent tokens minted against that GitHub App |
 | `net` | CIDR (e.g. `10.42.0.0/16`) | Requests whose client source IP falls in the network — cheap to evaluate and not tied to tokens, ideal when CI runners live in known subnets |
 | `system` | *(empty)* | All proxied traffic not matched by a more specific rule |
-| `control` | *(empty)* | ghp's own control-plane traffic: OAuth login flows and token refresh, App installation token minting, username resolution lookups, and release redirect HEAD probes |
+| `control` | *(empty)* | ghp's own control-plane traffic: OAuth login flows and token refresh, App installation token minting, username resolution lookups. Set `include_non_github: true` on the rule to also cover control calls to non-GitHub hosts (release redirect HEAD probes), which otherwise go direct |
 
 ### Layering
 
@@ -67,10 +67,16 @@ controlled egress path, isolated from the heavy proxied load:
 }
 ```
 
-Note that release redirect HEAD probes target your configured redirect
-mirror, not GitHub — if that mirror is only reachable directly, keep it
-reachable from the control path (or leave control unrouted so probes use the
-ambient environment).
+**Non-GitHub control destinations go direct by default.** Release redirect
+HEAD probes target your configured redirect mirror, not GitHub — and mirrors
+are typically internal, so those probes are sent with no forward proxy at all
+(not even the ambient environment). To give non-GitHub control calls the same
+treatment as GitHub-destined control traffic, set `include_non_github` on the
+control rule:
+
+```json
+{"rules": [{"type": "control", "include_non_github": true}]}
+```
 
 ### Routing algorithms
 
@@ -147,8 +153,9 @@ without deleting it.
 ## Observability
 
 - `ghp_forward_proxy_select_total{ruleset, layer}` — routing decisions
-  (`layer` ∈ `token`, `app`, `net`, `system`, `control`, `ambient`);
-  `layer="ambient"` counts requests that fell through to the environment.
+  (`layer` ∈ `token`, `app`, `net`, `system`, `control`, `ambient`,
+  `direct`); `ambient` counts requests that fell through to the
+  environment, `direct` counts non-GitHub control calls sent with no proxy.
 - `ghp_forward_proxy_rulesets_active` — enabled rulesets currently compiled
   into the route table.
 - `ghp_proxy_decision_duration_seconds{stage="forward_proxy_selection"}` —
@@ -164,5 +171,6 @@ without deleting it.
   `net` rules for that traffic.
 - Admin-UI convenience lookups that list installations/repositories through
   the GitHub SDK use the ambient environment; the request-path control calls
-  (token minting, OAuth exchange/refresh, username resolution, HEAD probes)
-  all follow control-layer routing.
+  (token minting, OAuth exchange/refresh, username resolution) all follow
+  control-layer routing, and release HEAD probes follow it only with
+  `include_non_github`.

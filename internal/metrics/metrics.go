@@ -310,9 +310,10 @@ var (
 
 	// ForwardProxySelectTotal counts forward proxy routing decisions on
 	// outbound GitHub requests, labeled by the matched ruleset name and the
-	// layer that matched ("token", "app", "net", "system", "control", or
+	// layer that matched ("token", "app", "net", "system", "control";
 	// "ambient" when no ruleset applied and the environment default was
-	// used; ruleset is empty for ambient decisions).
+	// used; "direct" for non-GitHub control calls sent with no proxy;
+	// ruleset is empty for ambient and direct decisions).
 	ForwardProxySelectTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ghp_forward_proxy_select_total",
 		Help: "Total forward proxy routing decisions by matched ruleset and layer.",
