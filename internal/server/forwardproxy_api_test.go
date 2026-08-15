@@ -121,6 +121,17 @@ func TestForwardProxyRulesetsCRUD(t *testing.T) {
 		t.Errorf("patched proxies len = %d, want 2 (field was omitted)", n)
 	}
 
+	// Patch: clearing proxies is rejected (a ruleset must keep at least one
+	// target), unlike rules which may be cleared.
+	req = httptest.NewRequest("PATCH", "/api/forward-proxy-rulesets/"+id,
+		strings.NewReader(`{"proxies":[]}`)).WithContext(adminCtx())
+	req.SetPathValue("id", id)
+	w = httptest.NewRecorder()
+	a.handleUpdateForwardProxyRuleset(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("patch empty proxies: expected %d, got %d: %s", http.StatusBadRequest, w.Code, w.Body.String())
+	}
+
 	// Delete
 	req = httptest.NewRequest("DELETE", "/api/forward-proxy-rulesets/"+id, nil).WithContext(adminCtx())
 	req.SetPathValue("id", id)

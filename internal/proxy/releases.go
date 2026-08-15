@@ -170,8 +170,9 @@ func (c *netrcCreds) setBasicAuth(req *http.Request) {
 // unchanged. The allow list check is always performed before applying the
 // policy, so explicitly listed orgs and repos are never affected.
 // The optional transport parameter overrides the HEAD-check probe client's
-// transport (e.g. the forward proxy control transport, so probes follow the
-// control-layer egress routing); pass none to use the default transport.
+// transport (the server passes the non-GitHub control transport, which sends
+// probes direct unless a control rule sets include_non_github); pass none to
+// use the default transport.
 func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger, transport ...http.RoundTripper) http.Handler {
 	var creds *netrcCreds
 	if cfg.Releases.RedirectHeadCheckNetrc != "" {

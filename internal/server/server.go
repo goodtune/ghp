@@ -297,13 +297,16 @@ func (s *Server) Run(ctx context.Context) error {
 	// Forward proxy rulesets: runtime egress routing loaded from the store.
 	// All outbound GitHub transports (API proxy, github.com passthrough,
 	// codeload, Copilot) share one transport whose per-request Proxy function
-	// consults the router; ghp's own control traffic (OAuth flows and token
-	// refresh, installation token minting, username resolution, release HEAD
-	// probes) uses the control transport, which routes control rule → system
-	// rule → ambient. When no ruleset matches, the ambient environment
-	// (HTTPS_PROXY et al.) applies as before. Admin API mutations reload the
-	// route table immediately on this instance; the periodic refresh
-	// propagates changes to other instances in HA deployments.
+	// consults the router; ghp's own GitHub-destined control traffic (OAuth
+	// flows and token refresh, installation token minting, username
+	// resolution) uses the control transport, which routes control rule →
+	// system rule → ambient. Release HEAD probes target the operator's
+	// mirror, not GitHub, and use the non-GitHub control transport: direct
+	// unless a control rule sets include_non_github. When no ruleset
+	// matches, the ambient environment (HTTPS_PROXY et al.) applies as
+	// before. Admin API mutations reload the route table immediately on this
+	// instance; the periodic refresh propagates changes to other instances
+	// in HA deployments.
 	forwardProxyRouter := proxy.NewForwardProxyRouter(store, s.logger)
 	if err := forwardProxyRouter.Reload(ctx); err != nil {
 		s.logger.Warn("forward proxy ruleset load failed; egress uses ambient environment until reload succeeds", "error", err)
@@ -383,14 +386,17 @@ func (s *Server) Run(ctx context.Context) error {
 	// Periodically purge expired sessions, oauth_states, and
 	// cli_device_authorizations rows so the tables don't grow unbounded.
 	authHandler.StartCleanup(lifecycleCtx)
+	// Install the control transport on the resolver before WarmCache spawns
+	// its background lookups: setting it later would race with in-flight
+	// requests and let warm-cache traffic bypass control-layer routing.
 	usernameResolver := proxy.NewUsernameResolver(store, s.logger)
+	usernameResolver.SetTransport(forwardProxyControlTransport)
+	authHandler.SetTransport(forwardProxyControlTransport)
 	proxyTokenResolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc, appTokenProvider)
 	usernameResolver.WarmCache(lifecycleCtx, proxyTokenResolver)
 	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, usernameResolver, s.logger)
 	proxyHandler.SetTransport(forwardProxyTransport)
 	forwardProxyRouter.StartRefresh(lifecycleCtx, time.Minute)
-	authHandler.SetTransport(forwardProxyControlTransport)
-	usernameResolver.SetTransport(forwardProxyControlTransport)
 
 	// Build the enterprise access restriction policy with the app registry as
 	// the identity source so exceptions can substitute managed installation
@@ -499,25 +505,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Build host dispatch with access logging on all handlers.
 	clientIPHeader := netutil.IPHeader(s.cfg.Server.ClientIPHeader)
-	// Seed the forward proxy route-info slot (client IP; token identity is
-	// filled in later by the token-resolving handlers) on every proxied
-	// backend so the shared transport can select an egress proxy per request.
-	// Client-selected proxy headers are validated and stripped here — they
-	// must never reach the upstream — and only honoured when
-	// forward_proxy.allow_request_header is enabled.
 	withRouteInfo := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			clientProxy, err := proxy.ExtractClientForwardProxy(r, s.cfg.ForwardProxy.AllowRequestHeader)
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
-				return
-			}
-			r = proxy.PrepareForwardProxyInfo(r, netutil.ClientIP(r, clientIPHeader))
-			if clientProxy != nil {
-				proxy.SetForwardProxyClientChoice(r, clientProxy)
-			}
-			next.ServeHTTP(w, r)
-		})
+		return forwardProxyRouteInfoMiddleware(next, s.cfg, clientIPHeader)
 	}
 	dispatch := newHostDispatch(hostDispatchConfig{
 		apiHandler:      accessLogHandler(backend.API, withRouteInfo(proxyHandler), aw, clientIPHeader),
@@ -792,6 +781,27 @@ func systemdListeners() ([]net.Listener, error) {
 		listeners = append(listeners, ln)
 	}
 	return listeners, nil
+}
+
+// forwardProxyRouteInfoMiddleware seeds the forward proxy route-info slot
+// (client IP; token identity is filled in later by the token-resolving
+// handlers) on every proxied backend so the shared transport can select an
+// egress proxy per request. Client-selected proxy headers are validated and
+// stripped here — they must never reach the upstream — and only honoured
+// when forward_proxy.allow_request_header is enabled.
+func forwardProxyRouteInfoMiddleware(next http.Handler, cfg *config.Config, clientIPHeader netutil.IPHeader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientProxy, err := proxy.ExtractClientForwardProxy(r, cfg.ForwardProxy.AllowRequestHeader)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+			return
+		}
+		r = proxy.PrepareForwardProxyInfo(r, netutil.ClientIP(r, clientIPHeader))
+		if clientProxy != nil {
+			proxy.SetForwardProxyClientChoice(r, clientProxy)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 type hostDispatchConfig struct {

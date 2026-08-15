@@ -418,6 +418,15 @@ func Load(path string) (*Config, error) {
 						return "logging.file." + field[len("file_"):], v
 					}
 					return section + "." + field, v
+				case "forward":
+					// The forward_proxy section contains an underscore, so the
+					// first-underscore split yields section "forward" with the
+					// real field after the "proxy_" prefix
+					// (GHP_FORWARD_PROXY_ALLOW_REQUEST_HEADER ->
+					// forward_proxy.allow_request_header).
+					if strings.HasPrefix(field, "proxy_") {
+						return "forward_proxy." + field[len("proxy_"):], v
+					}
 				}
 			}
 			return s, v

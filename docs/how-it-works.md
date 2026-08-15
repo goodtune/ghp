@@ -140,9 +140,11 @@ so an IP ban never takes down interactive users.
 Rulesets bind proxy targets and a routing algorithm (round robin, weighted,
 sticky-by-source-IP) to traffic selected by token, app, source network (CIDR),
 system-wide, or control rules; more specific layers win. Control rules cover
-ghp's own outbound calls (OAuth flows and token refresh, installation token
-minting, username resolution, release HEAD probes) so the proxy's
-control-plane traffic can be pinned to a dedicated egress path. They are managed via the admin
+ghp's own GitHub-destined calls (OAuth flows and token refresh, installation
+token minting, username resolution) so the proxy's control-plane traffic can
+be pinned to a dedicated egress path; release HEAD probes target the
+operator's mirror and go direct unless the control rule opts them in via
+`include_non_github`. They are managed via the admin
 API (`/api/forward-proxy-rulesets`) and take effect without a restart.
 Anything not matched by a ruleset continues to use the ambient environment.
 

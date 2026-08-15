@@ -154,11 +154,16 @@ curl -H "Authorization: Bearer ghx_..." \
 
 Rules of engagement:
 
-- **Off by default.** Honouring the headers lets any client direct ghp to
+- **Off by default.** Honouring the headers lets a client direct ghp to
   open connections to an arbitrary proxy endpoint, so the feature is gated
   behind `forward_proxy.allow_request_header: true`
   (`GHP_FORWARD_PROXY_ALLOW_REQUEST_HEADER`). When disabled, the headers
   are stripped and ignored.
+- **Authenticated requests only.** The header is honoured only after a
+  ghx_/gha_ token has been resolved for the request; anonymous traffic and
+  raw GitHub credentials on the passthrough path fall through to normal
+  ruleset selection. This keeps every client-directed egress attributable
+  to a token identity and closes the unauthenticated SSRF vector.
 - A client-specified proxy **beats every ruleset layer** — the request still
   flows through ghp, so token scoping, audit logging, and metrics all apply
   as usual.
@@ -215,3 +220,11 @@ Rules of engagement:
   (token minting, OAuth exchange/refresh, username resolution) all follow
   control-layer routing, and release HEAD probes follow it only with
   `include_non_github`.
+- `token` and `app` rule values are stored as opaque references: deleting
+  the referenced token or app leaves the rule in place, silently matching
+  nothing. Prune stale rules when retiring tokens or apps.
+- On the Vault backend, ruleset create/rename name-uniqueness is
+  check-then-write without compare-and-set: concurrent creates of the same
+  name can race. Ruleset administration is a low-frequency operator action,
+  so this is accepted; SQL backends enforce uniqueness with a database
+  constraint.

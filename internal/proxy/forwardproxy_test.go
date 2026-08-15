@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/goodtune/ghp/internal/database"
 )
@@ -499,4 +500,76 @@ func TestForwardProxyRouter_ClientChoiceBeatsRulesets(t *testing.T) {
 	if err != nil || u == nil || u.Host != "team-proxy:3128" {
 		t.Fatalf("ProxyFunc(client choice) = (%v, %v), want team-proxy:3128 over token ruleset", u, err)
 	}
+}
+
+func TestForwardProxyRouter_ClientChoiceRequiresToken(t *testing.T) {
+	fr := reloadedRouter(t,
+		&database.ForwardProxyRuleset{
+			Name: "sys-rs", Algorithm: database.ForwardProxyAlgoRoundRobin, Enabled: true,
+			Proxies: []database.ForwardProxyEntry{{URL: "http://sys-proxy:3128"}},
+			Rules:   []database.ForwardProxyRule{{Type: database.ForwardProxyRuleSystem}},
+		},
+	)
+
+	// Client proxy present but no resolved token: the header must be
+	// ignored (anti-SSRF gate) and normal ruleset selection applies.
+	r := httptest.NewRequest(http.MethodGet, "https://api.github.com/", nil)
+	r = PrepareForwardProxyInfo(r, "10.0.0.1")
+	team, _ := url.Parse("http://team-proxy:3128")
+	SetForwardProxyClientChoice(r, team)
+
+	out, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/user", nil)
+	u, err := fr.ProxyFunc()(out)
+	if err != nil || u == nil || u.Host != "sys-proxy:3128" {
+		t.Fatalf("ProxyFunc(unauthenticated client choice) = (%v, %v), want sys-proxy:3128 (header ignored)", u, err)
+	}
+}
+
+func TestForwardProxyRouter_IPv6NetRule(t *testing.T) {
+	fr := reloadedRouter(t,
+		&database.ForwardProxyRuleset{
+			Name: "v6", Algorithm: database.ForwardProxyAlgoRoundRobin, Enabled: true,
+			Proxies: []database.ForwardProxyEntry{{URL: "http://v6-proxy:3128"}},
+			Rules:   []database.ForwardProxyRule{{Type: database.ForwardProxyRuleNet, Value: "2001:db8::/32"}},
+		},
+	)
+
+	if u, _, layer := fr.Select("2001:db8::1", "", ""); u == nil || u.Host != "v6-proxy:3128" || layer != ForwardProxyLayerNet {
+		t.Fatalf("Select(v6 in range) = (%v, %q), want v6-proxy via net", u, layer)
+	}
+	if u, _, layer := fr.Select("2001:db9::1", "", ""); u != nil || layer != ForwardProxyLayerAmbient {
+		t.Fatalf("Select(v6 out of range) = (%v, %q), want ambient", u, layer)
+	}
+}
+
+func TestForwardProxyRouter_StartRefresh(t *testing.T) {
+	store := &fpStore{}
+	fr := NewForwardProxyRouter(store, nil)
+	if err := fr.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if u, _, _ := fr.Select("", "", ""); u != nil {
+		t.Fatalf("expected empty table before refresh, got %v", u)
+	}
+
+	// Populate the store after the initial load; the periodic refresh must
+	// pick it up without an explicit Reload call.
+	store.rulesets = []*database.ForwardProxyRuleset{{
+		Name: "sys", Algorithm: database.ForwardProxyAlgoRoundRobin, Enabled: true,
+		Proxies: []database.ForwardProxyEntry{{URL: "http://sys-proxy:3128"}},
+		Rules:   []database.ForwardProxyRule{{Type: database.ForwardProxyRuleSystem}},
+	}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fr.StartRefresh(ctx, 5*time.Millisecond)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if u, _, _ := fr.Select("", "", ""); u != nil && u.Host == "sys-proxy:3128" {
+			return // refresh applied
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("periodic refresh never applied the new ruleset")
 }

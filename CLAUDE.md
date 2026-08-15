@@ -98,7 +98,7 @@ The proxy decision pipeline is broken into individually timed stages so that the
 | `scope_enforcement` | Repository allowlist check + permission level verification |
 | `github_token_resolution` | Loading, decrypting (or OAuth-refreshing) the real GitHub credential |
 | `enterprise_exception` | Evaluating enterprise access restriction exceptions (target match, team gate, identity minting) before header injection |
-| `forward_proxy_selection` | Selecting the upstream forward proxy for the outbound request (ruleset lookup: token → app → net → system layers) |
+| `forward_proxy_selection` | Selecting the upstream forward proxy for the outbound request (ruleset lookup: token → app → net → system layers for proxied traffic; control → system for control-plane calls, labeled `token_type="unknown"`) |
 | `upstream_roundtrip` | Proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer) |
 | `redirect_head_check` | HEAD request to the release redirect target to verify asset availability before issuing a 302 (releases handler only) |
 

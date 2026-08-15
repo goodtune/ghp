@@ -307,11 +307,17 @@ func (fr *ForwardProxyRouter) Reload(ctx context.Context) error {
 // compile validates a ruleset's targets and returns nil when none are usable.
 func (fr *ForwardProxyRouter) compile(rs *database.ForwardProxyRuleset) *compiledRuleset {
 	c := &compiledRuleset{name: rs.Name, algorithm: rs.Algorithm}
-	for _, p := range rs.Proxies {
+	for i, p := range rs.Proxies {
 		u, err := url.Parse(p.URL)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "socks5" && u.Scheme != "socks5h") {
+			// Log a redacted form only: target URLs may embed proxy
+			// credentials in the userinfo component.
+			redacted := "(unparseable)"
+			if err == nil {
+				redacted = u.Redacted()
+			}
 			fr.logger.Warn("forward proxy: skipping invalid proxy target",
-				"ruleset", rs.Name, "url", p.URL)
+				"ruleset", rs.Name, "index", i, "url", redacted)
 			continue
 		}
 		w := p.Weight
@@ -454,14 +460,16 @@ func (fr *ForwardProxyRouter) ProxyFunc() func(*http.Request) (*url.URL, error) 
 		}
 		// A client-specified proxy (validated at the edge, feature-gated by
 		// forward_proxy.allow_request_header) beats every ruleset layer —
-		// the client may know something the operator's rules cannot.
-		if info.ClientProxy != nil {
+		// the client may know something the operator's rules cannot. It is
+		// only honoured once a ghx_/gha_ token has been resolved: without
+		// the identity gate, an unauthenticated caller on the passthrough
+		// path could use the header to make ghp dial arbitrary internal
+		// host:port targets (SSRF/port-scan). Unauthenticated requests fall
+		// through to normal ruleset selection.
+		if info.ClientProxy != nil && info.TokenID != "" {
+			metrics.ObserveDecision(metrics.StageForwardProxySelection, info.TokenType, 0)
 			metrics.ForwardProxySelectTotal.WithLabelValues("", ForwardProxyLayerHeader).Inc()
-			tokenType := info.TokenType
-			if tokenType == "" {
-				tokenType = "unknown"
-			}
-			metrics.ForwardProxyClientSpecifiedTotal.WithLabelValues(info.ClientProxy.Scheme, tokenType).Inc()
+			metrics.ForwardProxyClientSpecifiedTotal.WithLabelValues(info.ClientProxy.Scheme, info.TokenType).Inc()
 			return info.ClientProxy, nil
 		}
 		start := time.Now()

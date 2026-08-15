@@ -1124,7 +1124,11 @@ func (s *VaultStore) CreateForwardProxyRuleset(ctx context.Context, rs *ForwardP
 		rs.Rules = []ForwardProxyRule{}
 	}
 
-	// Check name uniqueness before writing the record to avoid orphaned entries.
+	// Check name uniqueness before writing the record to avoid orphaned
+	// entries. This is check-then-write without CAS, so concurrent creates
+	// of the same name can race — accepted for this admin-driven,
+	// low-frequency surface (documented in
+	// docs/features/forward-proxy-rulesets.md known limitations).
 	indexPath := "forward-proxy-rulesets/by-name/" + rs.Name
 	existing, err := s.kvRead(ctx, indexPath)
 	if err != nil {
