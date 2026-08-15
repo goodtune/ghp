@@ -120,6 +120,97 @@ type CachedRepository struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+// Forward proxy ruleset routing algorithms. The DB CHECK constraint enforces
+// these values; keep them in sync.
+const (
+	ForwardProxyAlgoRoundRobin = "round_robin"
+	ForwardProxyAlgoWeighted   = "weighted"
+	ForwardProxyAlgoSticky     = "sticky"
+)
+
+// Forward proxy rule types. A rule binds a ruleset to the traffic it should
+// route: the whole system, a GitHub App record, a specific proxy token, or a
+// client source network.
+const (
+	ForwardProxyRuleSystem = "system"
+	ForwardProxyRuleApp    = "app"
+	ForwardProxyRuleToken  = "token"
+	ForwardProxyRuleNet    = "net"
+)
+
+// ForwardProxyEntry is a single upstream forward proxy target within a
+// ruleset. Weight is only meaningful for the weighted and sticky algorithms;
+// a zero weight is normalized to 1 at validation time.
+type ForwardProxyEntry struct {
+	URL    string `json:"url"`
+	Weight int    `json:"weight"`
+}
+
+// ForwardProxyRule binds a ruleset to matching traffic. Value is empty for
+// "system" rules, an App record UUID for "app" rules, a ProxyToken UUID for
+// "token" rules, and a CIDR (e.g. "10.1.0.0/16") for "net" rules.
+type ForwardProxyRule struct {
+	Type  string `json:"type"`
+	Value string `json:"value,omitempty"`
+}
+
+// ForwardProxyRuleset groups a set of upstream forward proxies with a routing
+// algorithm and the rules that select which traffic egresses through them.
+// Rulesets are runtime configuration: they live in the database and are
+// managed through the admin API, not the config file.
+type ForwardProxyRuleset struct {
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Algorithm   string              `json:"algorithm"`
+	Proxies     []ForwardProxyEntry `json:"proxies"`
+	Rules       []ForwardProxyRule  `json:"rules"`
+	Enabled     bool                `json:"enabled"`
+	CreatedAt   time.Time           `json:"created_at"`
+	UpdatedAt   time.Time           `json:"updated_at"`
+}
+
+// encodeForwardProxyFields serializes the Proxies and Rules slices to JSON for
+// SQL storage. Nil slices encode as "[]" so the columns never hold SQL NULL or
+// the JSON literal null.
+func encodeForwardProxyFields(rs *ForwardProxyRuleset) (proxies string, rules string, err error) {
+	p := rs.Proxies
+	if p == nil {
+		p = []ForwardProxyEntry{}
+	}
+	r := rs.Rules
+	if r == nil {
+		r = []ForwardProxyRule{}
+	}
+	pb, err := json.Marshal(p)
+	if err != nil {
+		return "", "", err
+	}
+	rb, err := json.Marshal(r)
+	if err != nil {
+		return "", "", err
+	}
+	return string(pb), string(rb), nil
+}
+
+// decodeForwardProxyFields populates the Proxies and Rules slices from their
+// JSON column values. Missing/empty values decode to empty (non-nil) slices.
+func decodeForwardProxyFields(rs *ForwardProxyRuleset, proxies, rules string) error {
+	rs.Proxies = make([]ForwardProxyEntry, 0)
+	rs.Rules = make([]ForwardProxyRule, 0)
+	if proxies != "" {
+		if err := json.Unmarshal([]byte(proxies), &rs.Proxies); err != nil {
+			return err
+		}
+	}
+	if rules != "" {
+		if err := json.Unmarshal([]byte(rules), &rs.Rules); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Session represents a persisted browser/CLI session. The bearer token
 // presented in the Authorization header (or the ghp_session cookie) is
 // hashed with SHA-256 before being looked up here, so the database never
@@ -237,6 +328,27 @@ type Store interface {
 	ListCachedRepositories(ctx context.Context) ([]*CachedRepository, error)
 	UpdateCachedRepository(ctx context.Context, repo *CachedRepository) error
 	DeleteCachedRepository(ctx context.Context, id string) error
+
+	// Forward proxy rulesets (runtime egress routing configuration).
+	//
+	// CreateForwardProxyRuleset inserts a new ruleset. The Name must be
+	// unique; violations surface as a backend-specific unique-constraint or
+	// "already exists" error.
+	CreateForwardProxyRuleset(ctx context.Context, rs *ForwardProxyRuleset) error
+	// GetForwardProxyRulesetByID returns the ruleset with the given ID, or
+	// (nil, nil) if it does not exist.
+	GetForwardProxyRulesetByID(ctx context.Context, id string) (*ForwardProxyRuleset, error)
+	// GetForwardProxyRulesetByName returns the ruleset with the given name,
+	// or (nil, nil) if it does not exist.
+	GetForwardProxyRulesetByName(ctx context.Context, name string) (*ForwardProxyRuleset, error)
+	// ListForwardProxyRulesets returns all rulesets ordered by name.
+	ListForwardProxyRulesets(ctx context.Context) ([]*ForwardProxyRuleset, error)
+	// UpdateForwardProxyRuleset persists all mutable fields of rs. Returns
+	// ErrNotFound if the ruleset does not exist.
+	UpdateForwardProxyRuleset(ctx context.Context, rs *ForwardProxyRuleset) error
+	// DeleteForwardProxyRuleset removes a ruleset by ID. Returns ErrNotFound
+	// if the ruleset does not exist.
+	DeleteForwardProxyRuleset(ctx context.Context, id string) error
 
 	// Sessions (browser cookie / CLI bearer).
 	//

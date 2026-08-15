@@ -98,6 +98,7 @@ The proxy decision pipeline is broken into individually timed stages so that the
 | `scope_enforcement` | Repository allowlist check + permission level verification |
 | `github_token_resolution` | Loading, decrypting (or OAuth-refreshing) the real GitHub credential |
 | `enterprise_exception` | Evaluating enterprise access restriction exceptions (target match, team gate, identity minting) before header injection |
+| `forward_proxy_selection` | Selecting the upstream forward proxy for the outbound request (ruleset lookup: token → app → net → system layers) |
 | `upstream_roundtrip` | Proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer) |
 | `redirect_head_check` | HEAD request to the release redirect target to verify asset availability before issuing a 302 (releases handler only) |
 
@@ -121,6 +122,8 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_auth_rate_limit_total` — rate limiter rejections
 - `ghp_enterprise_exception_total` — enterprise restriction exception matches by outcome (`header_omitted`, `identity_substituted`, `team_denied`, `unauthenticated_denied`, `identity_error`)
 - `ghp_releases_redirect_head_check_total` — HEAD check outcomes (`found`, `not_found`, `error`) for release redirect targets
+- `ghp_forward_proxy_select_total` — forward proxy routing decisions by matched `ruleset` and `layer` (`token`, `app`, `net`, `system`, `ambient`)
+- `ghp_forward_proxy_rulesets_active` — gauge of enabled forward proxy rulesets compiled into the route table
 - `ghp_cache_fetch_total` / `ghp_cache_lsrefs_total` / `ghp_cache_warm_total` — cache operation counters
 - `ghp_cache_packfile_total` / `ghp_cache_packfile_bytes_total` — packfile response cache hit/miss counts and bytes served
 - `ghp_cache_repos_active` — gauge of cache-enabled repositories

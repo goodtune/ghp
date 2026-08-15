@@ -126,3 +126,42 @@ func SetTokenType(r *http.Request, tokenType string) {
 		*slot = tokenType
 	}
 }
+
+var forwardProxyCtxKey = &contextKey{"forward-proxy-route"}
+
+// ForwardProxyRouteInfo carries the request identity the forward proxy
+// router selects on. The struct is mutable: the server middleware seeds the
+// client IP before dispatch, and the token-resolving handlers fill in the
+// token/app identity once known. Outbound requests built from the inbound
+// request context inherit the same pointer, so http.Transport.Proxy sees the
+// final values at roundtrip time.
+type ForwardProxyRouteInfo struct {
+	ClientIP  string
+	TokenID   string // proxy token record UUID, "" when no ghx_/gha_ token resolved
+	AppID     string // GitHub App record UUID (agent tokens only), "" otherwise
+	TokenType string // "proxy", "agent", or "" — used for metrics labeling only
+}
+
+// PrepareForwardProxyInfo returns a request whose context carries a mutable
+// forward proxy route-info slot seeded with the client IP.
+func PrepareForwardProxyInfo(r *http.Request, clientIP string) *http.Request {
+	info := &ForwardProxyRouteInfo{ClientIP: clientIP}
+	return r.WithContext(context.WithValue(r.Context(), forwardProxyCtxKey, info))
+}
+
+// SetForwardProxyIdentity records the resolved token/app identity in the
+// request's route-info slot. It is a no-op if no slot was prepared.
+func SetForwardProxyIdentity(r *http.Request, tokenID, appID, tokenType string) {
+	if info, ok := r.Context().Value(forwardProxyCtxKey).(*ForwardProxyRouteInfo); ok {
+		info.TokenID = tokenID
+		info.AppID = appID
+		info.TokenType = tokenType
+	}
+}
+
+// ForwardProxyInfoFromContext returns the route-info slot from ctx, or nil
+// when none was prepared.
+func ForwardProxyInfoFromContext(ctx context.Context) *ForwardProxyRouteInfo {
+	info, _ := ctx.Value(forwardProxyCtxKey).(*ForwardProxyRouteInfo)
+	return info
+}

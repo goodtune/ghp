@@ -308,6 +308,23 @@ var (
 		Help: "Total number of CLI device-authorization requests that reached a terminal state.",
 	}, []string{"result"})
 
+	// ForwardProxySelectTotal counts forward proxy routing decisions on
+	// outbound GitHub requests, labeled by the matched ruleset name and the
+	// layer that matched ("token", "app", "net", "system", or "ambient" when
+	// no ruleset applied and the environment default was used; ruleset is
+	// empty for ambient decisions).
+	ForwardProxySelectTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_forward_proxy_select_total",
+		Help: "Total forward proxy routing decisions by matched ruleset and layer.",
+	}, []string{"ruleset", "layer"})
+
+	// ForwardProxyRulesetsActive is a gauge reflecting how many enabled
+	// forward proxy rulesets are currently compiled into the route table.
+	ForwardProxyRulesetsActive = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ghp_forward_proxy_rulesets_active",
+		Help: "Number of enabled forward proxy rulesets currently active in the route table.",
+	})
+
 	// BuildInfo is a gauge with a constant value of 1 labeled by build
 	// metadata. It follows the node_exporter_build_info convention.
 	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -331,6 +348,7 @@ const (
 	StageCacheLookup           = "cache_lookup"
 	StageGraphQLAnalysis       = "graphql_analysis"
 	StageEnterpriseException   = "enterprise_exception"
+	StageForwardProxySelection = "forward_proxy_selection"
 )
 
 // ObserveDecision records the duration of a single stage in the proxy

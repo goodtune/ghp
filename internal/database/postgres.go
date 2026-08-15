@@ -672,6 +672,117 @@ func (s *PostgresStore) DeleteCachedRepository(ctx context.Context, id string) e
 	return nil
 }
 
+// --- Forward proxy rulesets ---
+
+func (s *PostgresStore) CreateForwardProxyRuleset(ctx context.Context, rs *ForwardProxyRuleset) error {
+	if rs.ID == "" {
+		rs.ID = uuid.New().String()
+	}
+	proxies, rules, err := encodeForwardProxyFields(rs)
+	if err != nil {
+		return fmt.Errorf("encoding forward proxy ruleset: %w", err)
+	}
+	now := time.Now().UTC()
+	return s.db.QueryRowContext(ctx, `
+		INSERT INTO forward_proxy_rulesets (id, name, description, algorithm, proxies, rules, enabled, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING created_at, updated_at
+	`, rs.ID, rs.Name, rs.Description, rs.Algorithm, proxies, rules, rs.Enabled, now, now,
+	).Scan(&rs.CreatedAt, &rs.UpdatedAt)
+}
+
+func scanPostgresForwardProxyRuleset(scan func(dest ...interface{}) error) (*ForwardProxyRuleset, error) {
+	rs := &ForwardProxyRuleset{}
+	var proxies, rules string
+	if err := scan(&rs.ID, &rs.Name, &rs.Description, &rs.Algorithm, &proxies, &rules, &rs.Enabled, &rs.CreatedAt, &rs.UpdatedAt); err != nil {
+		return nil, err
+	}
+	if err := decodeForwardProxyFields(rs, proxies, rules); err != nil {
+		return nil, err
+	}
+	return rs, nil
+}
+
+const postgresForwardProxyRulesetColumns = `id, name, description, algorithm, proxies, rules, enabled, created_at, updated_at`
+
+func (s *PostgresStore) GetForwardProxyRulesetByID(ctx context.Context, id string) (*ForwardProxyRuleset, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+postgresForwardProxyRulesetColumns+` FROM forward_proxy_rulesets WHERE id = $1`, id)
+	rs, err := scanPostgresForwardProxyRuleset(row.Scan)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return rs, err
+}
+
+func (s *PostgresStore) GetForwardProxyRulesetByName(ctx context.Context, name string) (*ForwardProxyRuleset, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+postgresForwardProxyRulesetColumns+` FROM forward_proxy_rulesets WHERE name = $1`, name)
+	rs, err := scanPostgresForwardProxyRuleset(row.Scan)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return rs, err
+}
+
+func (s *PostgresStore) ListForwardProxyRulesets(ctx context.Context) ([]*ForwardProxyRuleset, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+postgresForwardProxyRulesetColumns+` FROM forward_proxy_rulesets ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var rulesets []*ForwardProxyRuleset
+	for rows.Next() {
+		rs, err := scanPostgresForwardProxyRuleset(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		rulesets = append(rulesets, rs)
+	}
+	return rulesets, rows.Err()
+}
+
+func (s *PostgresStore) UpdateForwardProxyRuleset(ctx context.Context, rs *ForwardProxyRuleset) error {
+	proxies, rules, err := encodeForwardProxyFields(rs)
+	if err != nil {
+		return fmt.Errorf("encoding forward proxy ruleset: %w", err)
+	}
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE forward_proxy_rulesets SET name = $1, description = $2, algorithm = $3, proxies = $4, rules = $5, enabled = $6, updated_at = $7
+		WHERE id = $8
+	`, rs.Name, rs.Description, rs.Algorithm, proxies, rules, rs.Enabled, now, rs.ID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("forward proxy ruleset %s: %w", rs.ID, ErrNotFound)
+	}
+	rs.UpdatedAt = now
+	return nil
+}
+
+func (s *PostgresStore) DeleteForwardProxyRuleset(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM forward_proxy_rulesets WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("forward proxy ruleset %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // --- Sessions ---
 
 func (s *PostgresStore) CreateSession(ctx context.Context, sess *Session) error {

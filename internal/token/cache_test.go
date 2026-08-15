@@ -48,28 +48,46 @@ func (m *mockStore) CreateProxyToken(_ context.Context, pt *database.ProxyToken)
 }
 
 // The remaining Store interface methods are unused by the cache tests.
-func (m *mockStore) UpsertUser(_ context.Context, _ *database.User) error                          { return nil }
-func (m *mockStore) GetUserByGitHubID(_ context.Context, _ int64) (*database.User, error)          { return nil, nil }
-func (m *mockStore) GetUserByID(_ context.Context, _ string) (*database.User, error)               { return nil, nil }
-func (m *mockStore) ListUsers(_ context.Context) ([]*database.User, error)                         { return nil, nil }
-func (m *mockStore) SyncAdminRoles(_ context.Context, _ []string) error                            { return nil }
-func (m *mockStore) UpsertGitHubToken(_ context.Context, _ *database.GitHubToken) error            { return nil }
-func (m *mockStore) GetGitHubToken(_ context.Context, _ string) (*database.GitHubToken, error)     { return nil, nil }
-func (m *mockStore) GetGitHubTokenByID(_ context.Context, _ string) (*database.GitHubToken, error) { return nil, nil }
-func (m *mockStore) GetProxyTokenByID(_ context.Context, _ string) (*database.ProxyToken, error)   { return nil, nil }
-func (m *mockStore) ListProxyTokens(_ context.Context, _ string) ([]*database.ProxyToken, error)   { return nil, nil }
-func (m *mockStore) ListAllProxyTokens(_ context.Context) ([]*database.ProxyToken, error)          { return nil, nil }
-func (m *mockStore) UpdateProxyTokenAppID(_ context.Context, _ string, _ string) error              { return nil }
-func (m *mockStore) UpdateProxyTokenScopes(_ context.Context, _ string, _ json.RawMessage, _ json.RawMessage) error { return nil }
-func (m *mockStore) DeleteExpiredProxyTokens(_ context.Context, _ time.Duration) (int64, error)     { return 0, nil }
-func (m *mockStore) GetDefaultApp(_ context.Context) (*database.App, error)                        { return nil, nil }
-func (m *mockStore) SetDefaultApp(_ context.Context, _ string) error                              { return nil }
-func (m *mockStore) CreateApp(_ context.Context, _ *database.App) error                            { return nil }
-func (m *mockStore) GetAppByID(_ context.Context, _ string) (*database.App, error)                 { return nil, nil }
-func (m *mockStore) ListApps(_ context.Context) ([]*database.App, error)                           { return nil, nil }
-func (m *mockStore) UpdateApp(_ context.Context, _ *database.App) error                            { return nil }
-func (m *mockStore) DeleteApp(_ context.Context, _ string) error                                   { return nil }
-func (m *mockStore) CreateCachedRepository(_ context.Context, _ *database.CachedRepository) error  { return nil }
+func (m *mockStore) UpsertUser(_ context.Context, _ *database.User) error { return nil }
+func (m *mockStore) GetUserByGitHubID(_ context.Context, _ int64) (*database.User, error) {
+	return nil, nil
+}
+func (m *mockStore) GetUserByID(_ context.Context, _ string) (*database.User, error)    { return nil, nil }
+func (m *mockStore) ListUsers(_ context.Context) ([]*database.User, error)              { return nil, nil }
+func (m *mockStore) SyncAdminRoles(_ context.Context, _ []string) error                 { return nil }
+func (m *mockStore) UpsertGitHubToken(_ context.Context, _ *database.GitHubToken) error { return nil }
+func (m *mockStore) GetGitHubToken(_ context.Context, _ string) (*database.GitHubToken, error) {
+	return nil, nil
+}
+func (m *mockStore) GetGitHubTokenByID(_ context.Context, _ string) (*database.GitHubToken, error) {
+	return nil, nil
+}
+func (m *mockStore) GetProxyTokenByID(_ context.Context, _ string) (*database.ProxyToken, error) {
+	return nil, nil
+}
+func (m *mockStore) ListProxyTokens(_ context.Context, _ string) ([]*database.ProxyToken, error) {
+	return nil, nil
+}
+func (m *mockStore) ListAllProxyTokens(_ context.Context) ([]*database.ProxyToken, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdateProxyTokenAppID(_ context.Context, _ string, _ string) error { return nil }
+func (m *mockStore) UpdateProxyTokenScopes(_ context.Context, _ string, _ json.RawMessage, _ json.RawMessage) error {
+	return nil
+}
+func (m *mockStore) DeleteExpiredProxyTokens(_ context.Context, _ time.Duration) (int64, error) {
+	return 0, nil
+}
+func (m *mockStore) GetDefaultApp(_ context.Context) (*database.App, error)        { return nil, nil }
+func (m *mockStore) SetDefaultApp(_ context.Context, _ string) error               { return nil }
+func (m *mockStore) CreateApp(_ context.Context, _ *database.App) error            { return nil }
+func (m *mockStore) GetAppByID(_ context.Context, _ string) (*database.App, error) { return nil, nil }
+func (m *mockStore) ListApps(_ context.Context) ([]*database.App, error)           { return nil, nil }
+func (m *mockStore) UpdateApp(_ context.Context, _ *database.App) error            { return nil }
+func (m *mockStore) DeleteApp(_ context.Context, _ string) error                   { return nil }
+func (m *mockStore) CreateCachedRepository(_ context.Context, _ *database.CachedRepository) error {
+	return nil
+}
 func (m *mockStore) GetCachedRepositoryByID(_ context.Context, _ string) (*database.CachedRepository, error) {
 	return nil, nil
 }
@@ -79,14 +97,16 @@ func (m *mockStore) GetCachedRepositoryByOwnerName(_ context.Context, _, _ strin
 func (m *mockStore) ListCachedRepositories(_ context.Context) ([]*database.CachedRepository, error) {
 	return nil, nil
 }
-func (m *mockStore) UpdateCachedRepository(_ context.Context, _ *database.CachedRepository) error { return nil }
-func (m *mockStore) DeleteCachedRepository(_ context.Context, _ string) error                     { return nil }
-func (m *mockStore) CreateSession(_ context.Context, _ *database.Session) error                   { return nil }
+func (m *mockStore) UpdateCachedRepository(_ context.Context, _ *database.CachedRepository) error {
+	return nil
+}
+func (m *mockStore) DeleteCachedRepository(_ context.Context, _ string) error   { return nil }
+func (m *mockStore) CreateSession(_ context.Context, _ *database.Session) error { return nil }
 func (m *mockStore) GetSessionByTokenHash(_ context.Context, _ string) (*database.Session, error) {
 	return nil, database.ErrNotFound
 }
-func (m *mockStore) DeleteSession(_ context.Context, _ string) error             { return nil }
-func (m *mockStore) DeleteExpiredSessions(_ context.Context) (int64, error)      { return 0, nil }
+func (m *mockStore) DeleteSession(_ context.Context, _ string) error                  { return nil }
+func (m *mockStore) DeleteExpiredSessions(_ context.Context) (int64, error)           { return 0, nil }
 func (m *mockStore) CreateOAuthState(_ context.Context, _ *database.OAuthState) error { return nil }
 func (m *mockStore) ConsumeOAuthState(_ context.Context, _, _ string) (*database.OAuthState, error) {
 	return nil, database.ErrNotFound
@@ -102,7 +122,23 @@ func (m *mockStore) GetDeviceAuthByUserCode(_ context.Context, _ string) (*datab
 func (m *mockStore) UpdateDeviceAuth(_ context.Context, _ *database.DeviceAuth) error { return nil }
 func (m *mockStore) DeleteDeviceAuth(_ context.Context, _ string) error               { return nil }
 func (m *mockStore) DeleteExpiredDeviceAuths(_ context.Context) (int64, error)        { return 0, nil }
-func (m *mockStore) Close() error                                                     { return nil }
+func (m *mockStore) CreateForwardProxyRuleset(_ context.Context, _ *database.ForwardProxyRuleset) error {
+	return nil
+}
+func (m *mockStore) GetForwardProxyRulesetByID(_ context.Context, _ string) (*database.ForwardProxyRuleset, error) {
+	return nil, nil
+}
+func (m *mockStore) GetForwardProxyRulesetByName(_ context.Context, _ string) (*database.ForwardProxyRuleset, error) {
+	return nil, nil
+}
+func (m *mockStore) ListForwardProxyRulesets(_ context.Context) ([]*database.ForwardProxyRuleset, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdateForwardProxyRuleset(_ context.Context, _ *database.ForwardProxyRuleset) error {
+	return nil
+}
+func (m *mockStore) DeleteForwardProxyRuleset(_ context.Context, _ string) error { return nil }
+func (m *mockStore) Close() error                                                { return nil }
 
 // newTestToken creates a valid proxy token for testing with the given hash, ID,
 // and expiry.

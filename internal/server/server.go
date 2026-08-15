@@ -369,6 +369,21 @@ func (s *Server) Run(ctx context.Context) error {
 	usernameResolver.WarmCache(lifecycleCtx, proxyTokenResolver)
 	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, usernameResolver, s.logger)
 
+	// Forward proxy rulesets: runtime egress routing loaded from the store.
+	// All outbound GitHub transports (API proxy, github.com passthrough,
+	// codeload, Copilot) share one transport whose per-request Proxy function
+	// consults the router; when no ruleset matches, the ambient environment
+	// (HTTPS_PROXY et al.) applies as before. Admin API mutations reload the
+	// route table immediately on this instance; the periodic refresh
+	// propagates changes to other instances in HA deployments.
+	forwardProxyRouter := proxy.NewForwardProxyRouter(store, s.logger)
+	if err := forwardProxyRouter.Reload(lifecycleCtx); err != nil {
+		s.logger.Warn("forward proxy ruleset load failed; egress uses ambient environment until reload succeeds", "error", err)
+	}
+	forwardProxyRouter.StartRefresh(lifecycleCtx, time.Minute)
+	forwardProxyTransport := proxy.NewForwardProxyTransport(forwardProxyRouter)
+	proxyHandler.SetTransport(forwardProxyTransport)
+
 	// Build the enterprise access restriction policy with the app registry as
 	// the identity source so exceptions can substitute managed installation
 	// tokens and verify team membership. NewHandler installed a baseline
@@ -394,6 +409,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 	api := NewAPI(lifecycleCtx, s.cfg, store, tokenSvc, authHandler, enc, concreteATP, appRegistry, proxyTokenResolver, usernameResolver, s.logger, auditWriter)
+	api.SetForwardProxyRouter(forwardProxyRouter)
 	webUI := web.NewHandler(authHandler, store, s.cfg.DevMode, s.version, s.logger)
 
 	// Build HTTP mux.
@@ -421,7 +437,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// Create passthrough handlers for github.com and *.githubcopilot.com.
 	// Reuse proxyTokenResolver created above for cache warming to avoid duplication.
 	githubInner := proxy.NewPassthroughHandler(
-		"https://github.com", proxyTokenResolver, s.logger, nil)
+		"https://github.com", proxyTokenResolver, s.logger, forwardProxyTransport)
 
 	// Wrap with git cache handler if enabled. The cache middleware wraps
 	// githubInner (the raw passthrough). The resulting handler is then wrapped
@@ -463,21 +479,30 @@ func (s *Server) Run(ctx context.Context) error {
 		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, enterprisePolicy, s.logger, s.cfg)
 	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger)
 
-	codeloadHandler := proxy.NewCodeloadHandler(s.cfg, s.logger, nil)
+	codeloadHandler := proxy.NewCodeloadHandler(s.cfg, s.logger, forwardProxyTransport)
 
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
-		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, nil)
+		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, forwardProxyTransport)
 
 	// Build access log writer for OpenTelemetry access log records.
 	aw := newAccessLogWriter(s.logProvider.Logger(accessLogScope))
 
 	// Build host dispatch with access logging on all handlers.
 	clientIPHeader := netutil.IPHeader(s.cfg.Server.ClientIPHeader)
+	// Seed the forward proxy route-info slot (client IP; token identity is
+	// filled in later by the token-resolving handlers) on every proxied
+	// backend so the shared transport can select an egress proxy per request.
+	withRouteInfo := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r = proxy.PrepareForwardProxyInfo(r, netutil.ClientIP(r, clientIPHeader))
+			next.ServeHTTP(w, r)
+		})
+	}
 	dispatch := newHostDispatch(hostDispatchConfig{
-		apiHandler:      accessLogHandler(backend.API, proxyHandler, aw, clientIPHeader),
-		githubHandler:   accessLogHandler(backend.GitHub, githubPassthrough, aw, clientIPHeader),
-		codeloadHandler: accessLogHandler(backend.Codeload, codeloadHandler, aw, clientIPHeader),
-		copilotHandler:  accessLogHandler(backend.Copilot, copilotPassthrough, aw, clientIPHeader),
+		apiHandler:      accessLogHandler(backend.API, withRouteInfo(proxyHandler), aw, clientIPHeader),
+		githubHandler:   accessLogHandler(backend.GitHub, withRouteInfo(githubPassthrough), aw, clientIPHeader),
+		codeloadHandler: accessLogHandler(backend.Codeload, withRouteInfo(codeloadHandler), aw, clientIPHeader),
+		copilotHandler:  accessLogHandler(backend.Copilot, withRouteInfo(copilotPassthrough), aw, clientIPHeader),
 		mgmtHandler:     accessLogHandler(backend.Mgmt, web.SessionUsernameMiddleware(authHandler)(web.SecurityHeadersMiddleware(mux)), aw, clientIPHeader),
 		managementHost:  s.cfg.Server.ManagementHost,
 	})

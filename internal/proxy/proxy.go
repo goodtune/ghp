@@ -151,6 +151,14 @@ func NewHandler(cfg *config.Config, ts *token.Service, store database.Store, enc
 	}
 }
 
+// SetTransport sets the transport used for upstream GitHub requests (and the
+// OAuth token refresh endpoint). The server installs the forward proxy
+// router's transport here so ruleset-based egress selection applies to API
+// proxy traffic.
+func (h *Handler) SetTransport(rt http.RoundTripper) {
+	h.client.Transport = rt
+}
+
 // ServeHTTP handles proxied requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -234,6 +242,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenType := pt.TokenType
+
+	// Record the resolved token identity for forward proxy routing: outbound
+	// requests inherit this context, so the transport's per-request proxy
+	// selection can match token- and app-bound rulesets.
+	tokenAppID := ""
+	if pt.AppID != nil {
+		tokenAppID = *pt.AppID
+	}
+	SetForwardProxyIdentity(r, pt.ID, tokenAppID, tokenType)
 
 	// Inject the token creator's user ID into the request context for auditing.
 	// Username resolution happens later, after the real GitHub token is obtained,

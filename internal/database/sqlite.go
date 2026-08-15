@@ -815,6 +815,123 @@ func (s *SQLiteStore) DeleteCachedRepository(ctx context.Context, id string) err
 	return nil
 }
 
+// --- Forward proxy rulesets ---
+
+func (s *SQLiteStore) CreateForwardProxyRuleset(ctx context.Context, rs *ForwardProxyRuleset) error {
+	if rs.ID == "" {
+		rs.ID = uuid.New().String()
+	}
+	proxies, rules, err := encodeForwardProxyFields(rs)
+	if err != nil {
+		return fmt.Errorf("encoding forward proxy ruleset: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO forward_proxy_rulesets (id, name, description, algorithm, proxies, rules, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, rs.ID, rs.Name, rs.Description, rs.Algorithm, proxies, rules, rs.Enabled, now, now)
+	if err != nil {
+		return err
+	}
+	rs.CreatedAt = parseTime(now)
+	rs.UpdatedAt = parseTime(now)
+	return nil
+}
+
+func scanForwardProxyRuleset(scan func(dest ...interface{}) error) (*ForwardProxyRuleset, error) {
+	rs := &ForwardProxyRuleset{}
+	var proxies, rules, createdStr, updatedStr string
+	if err := scan(&rs.ID, &rs.Name, &rs.Description, &rs.Algorithm, &proxies, &rules, &rs.Enabled, &createdStr, &updatedStr); err != nil {
+		return nil, err
+	}
+	if err := decodeForwardProxyFields(rs, proxies, rules); err != nil {
+		return nil, err
+	}
+	rs.CreatedAt = parseTime(createdStr)
+	rs.UpdatedAt = parseTime(updatedStr)
+	return rs, nil
+}
+
+const sqliteForwardProxyRulesetColumns = `id, name, description, algorithm, proxies, rules, enabled, created_at, updated_at`
+
+func (s *SQLiteStore) GetForwardProxyRulesetByID(ctx context.Context, id string) (*ForwardProxyRuleset, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+sqliteForwardProxyRulesetColumns+` FROM forward_proxy_rulesets WHERE id = ?`, id)
+	rs, err := scanForwardProxyRuleset(row.Scan)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return rs, err
+}
+
+func (s *SQLiteStore) GetForwardProxyRulesetByName(ctx context.Context, name string) (*ForwardProxyRuleset, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+sqliteForwardProxyRulesetColumns+` FROM forward_proxy_rulesets WHERE name = ?`, name)
+	rs, err := scanForwardProxyRuleset(row.Scan)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return rs, err
+}
+
+func (s *SQLiteStore) ListForwardProxyRulesets(ctx context.Context) ([]*ForwardProxyRuleset, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+sqliteForwardProxyRulesetColumns+` FROM forward_proxy_rulesets ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var rulesets []*ForwardProxyRuleset
+	for rows.Next() {
+		rs, err := scanForwardProxyRuleset(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		rulesets = append(rulesets, rs)
+	}
+	return rulesets, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateForwardProxyRuleset(ctx context.Context, rs *ForwardProxyRuleset) error {
+	proxies, rules, err := encodeForwardProxyFields(rs)
+	if err != nil {
+		return fmt.Errorf("encoding forward proxy ruleset: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE forward_proxy_rulesets SET name = ?, description = ?, algorithm = ?, proxies = ?, rules = ?, enabled = ?, updated_at = ?
+		WHERE id = ?
+	`, rs.Name, rs.Description, rs.Algorithm, proxies, rules, rs.Enabled, now, rs.ID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("forward proxy ruleset %s: %w", rs.ID, ErrNotFound)
+	}
+	rs.UpdatedAt = parseTime(now)
+	return nil
+}
+
+func (s *SQLiteStore) DeleteForwardProxyRuleset(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM forward_proxy_rulesets WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("forward proxy ruleset %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // --- Sessions ---
 
 func (s *SQLiteStore) CreateSession(ctx context.Context, sess *Session) error {
