@@ -294,8 +294,26 @@ func (s *Server) Run(ctx context.Context) error {
 		s.logger.Warn("default app seeding failed", "error", err)
 	}
 
+	// Forward proxy rulesets: runtime egress routing loaded from the store.
+	// All outbound GitHub transports (API proxy, github.com passthrough,
+	// codeload, Copilot) share one transport whose per-request Proxy function
+	// consults the router; ghp's own control traffic (OAuth flows and token
+	// refresh, installation token minting, username resolution, release HEAD
+	// probes) uses the control transport, which routes control rule → system
+	// rule → ambient. When no ruleset matches, the ambient environment
+	// (HTTPS_PROXY et al.) applies as before. Admin API mutations reload the
+	// route table immediately on this instance; the periodic refresh
+	// propagates changes to other instances in HA deployments.
+	forwardProxyRouter := proxy.NewForwardProxyRouter(store, s.logger)
+	if err := forwardProxyRouter.Reload(ctx); err != nil {
+		s.logger.Warn("forward proxy ruleset load failed; egress uses ambient environment until reload succeeds", "error", err)
+	}
+	forwardProxyTransport := proxy.NewForwardProxyTransport(forwardProxyRouter)
+	forwardProxyControlTransport := proxy.NewForwardProxyControlTransport(forwardProxyRouter)
+
 	// Build the AppRegistry with all apps from the store.
 	appRegistry := github.NewAppRegistry(store, enc, s.logger)
+	appRegistry.SetTransport(forwardProxyControlTransport)
 	loadAllFailed := false
 	if err := appRegistry.LoadAll(ctx); err != nil {
 		s.logger.Warn("failed to load app registry", "error", err)
@@ -342,6 +360,7 @@ func (s *Server) Run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("initializing GitHub App token provider: %w", err)
 			}
+			atp.SetTransport(forwardProxyControlTransport)
 			appTokenProvider = atp
 			s.logger.Info("github app token provider initialized (config fallback)", "app_id", s.cfg.GitHub.AppID)
 		}
@@ -368,21 +387,10 @@ func (s *Server) Run(ctx context.Context) error {
 	proxyTokenResolver := proxy.NewProxyTokenResolver(tokenSvc, store, enc, appTokenProvider)
 	usernameResolver.WarmCache(lifecycleCtx, proxyTokenResolver)
 	proxyHandler := proxy.NewHandler(s.cfg, tokenSvc, store, enc, appTokenProvider, usernameResolver, s.logger)
-
-	// Forward proxy rulesets: runtime egress routing loaded from the store.
-	// All outbound GitHub transports (API proxy, github.com passthrough,
-	// codeload, Copilot) share one transport whose per-request Proxy function
-	// consults the router; when no ruleset matches, the ambient environment
-	// (HTTPS_PROXY et al.) applies as before. Admin API mutations reload the
-	// route table immediately on this instance; the periodic refresh
-	// propagates changes to other instances in HA deployments.
-	forwardProxyRouter := proxy.NewForwardProxyRouter(store, s.logger)
-	if err := forwardProxyRouter.Reload(lifecycleCtx); err != nil {
-		s.logger.Warn("forward proxy ruleset load failed; egress uses ambient environment until reload succeeds", "error", err)
-	}
-	forwardProxyRouter.StartRefresh(lifecycleCtx, time.Minute)
-	forwardProxyTransport := proxy.NewForwardProxyTransport(forwardProxyRouter)
 	proxyHandler.SetTransport(forwardProxyTransport)
+	forwardProxyRouter.StartRefresh(lifecycleCtx, time.Minute)
+	authHandler.SetTransport(forwardProxyControlTransport)
+	usernameResolver.SetTransport(forwardProxyControlTransport)
 
 	// Build the enterprise access restriction policy with the app registry as
 	// the identity source so exceptions can substitute managed installation
@@ -477,7 +485,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	githubPassthrough := proxy.NewScopedPassthroughHandler(
 		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, enterprisePolicy, s.logger, s.cfg)
-	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger)
+	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger, forwardProxyControlTransport)
 
 	codeloadHandler := proxy.NewCodeloadHandler(s.cfg, s.logger, forwardProxyTransport)
 

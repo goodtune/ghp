@@ -611,6 +611,7 @@ func TestForwardProxySelectTotal(t *testing.T) {
 		{"ci-egress", "app"},
 		{"ci-egress", "net"},
 		{"default", "system"},
+		{"control-plane", "control"},
 		{"", "ambient"},
 	}
 	for _, c := range cases {

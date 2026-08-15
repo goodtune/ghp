@@ -267,3 +267,76 @@ func TestForwardProxyRouter_ReloadSwapsTable(t *testing.T) {
 		t.Fatalf("Select after swap = (%v, %q), want ambient", u, layer)
 	}
 }
+
+func TestForwardProxyRouter_ControlLayer(t *testing.T) {
+	fr := reloadedRouter(t,
+		&database.ForwardProxyRuleset{
+			Name: "control-rs", Algorithm: database.ForwardProxyAlgoRoundRobin, Enabled: true,
+			Proxies: []database.ForwardProxyEntry{{URL: "http://control-proxy:3128"}},
+			Rules:   []database.ForwardProxyRule{{Type: database.ForwardProxyRuleControl}},
+		},
+		&database.ForwardProxyRuleset{
+			Name: "sys-rs", Algorithm: database.ForwardProxyAlgoRoundRobin, Enabled: true,
+			Proxies: []database.ForwardProxyEntry{{URL: "http://sys-proxy:3128"}},
+			Rules:   []database.ForwardProxyRule{{Type: database.ForwardProxyRuleSystem}},
+		},
+	)
+
+	// Control traffic uses the control rule ahead of system.
+	u, ruleset, layer := fr.SelectControl()
+	if u == nil || u.Host != "control-proxy:3128" || layer != ForwardProxyLayerControl || ruleset != "control-rs" {
+		t.Fatalf("SelectControl() = (%v, %q, %q), want control-proxy via control layer", u, ruleset, layer)
+	}
+
+	// Regular traffic never matches the control rule.
+	if u, _, layer := fr.Select("10.0.0.1", "", ""); u == nil || u.Host != "sys-proxy:3128" || layer != ForwardProxyLayerSystem {
+		t.Fatalf("Select() = (%v, %q), want sys-proxy via system layer", u, layer)
+	}
+}
+
+func TestForwardProxyRouter_ControlFallsBackToSystem(t *testing.T) {
+	fr := reloadedRouter(t,
+		&database.ForwardProxyRuleset{
+			Name: "sys-rs", Algorithm: database.ForwardProxyAlgoRoundRobin, Enabled: true,
+			Proxies: []database.ForwardProxyEntry{{URL: "http://sys-proxy:3128"}},
+			Rules:   []database.ForwardProxyRule{{Type: database.ForwardProxyRuleSystem}},
+		},
+	)
+	if u, _, layer := fr.SelectControl(); u == nil || u.Host != "sys-proxy:3128" || layer != ForwardProxyLayerSystem {
+		t.Fatalf("SelectControl() = (%v, %q), want system fallback", u, layer)
+	}
+
+	empty := reloadedRouter(t)
+	if u, _, layer := empty.SelectControl(); u != nil || layer != ForwardProxyLayerAmbient {
+		t.Fatalf("SelectControl() on empty table = (%v, %q), want ambient", u, layer)
+	}
+}
+
+func TestForwardProxyRouter_ControlTransportAndContext(t *testing.T) {
+	fr := reloadedRouter(t,
+		&database.ForwardProxyRuleset{
+			Name: "control-rs", Algorithm: database.ForwardProxyAlgoRoundRobin, Enabled: true,
+			Proxies: []database.ForwardProxyEntry{{URL: "http://control-proxy:3128"}},
+			Rules:   []database.ForwardProxyRule{{Type: database.ForwardProxyRuleControl}},
+		},
+	)
+	fr.ambient = func(*http.Request) (*url.URL, error) { return nil, nil }
+
+	// The dedicated control transport routes without any context marker.
+	ct := NewForwardProxyControlTransport(fr)
+	bare := httptest.NewRequest(http.MethodGet, "https://api.github.com/app/installations", nil)
+	if u, err := ct.Proxy(bare); err != nil || u == nil || u.Host != "control-proxy:3128" {
+		t.Fatalf("control transport Proxy() = (%v, %v), want control-proxy:3128", u, err)
+	}
+
+	// WithForwardProxyControl overrides request-derived route info on the
+	// shared transport (e.g. OAuth refresh inside a proxied request).
+	r := httptest.NewRequest(http.MethodGet, "https://api.github.com/", nil)
+	r = PrepareForwardProxyInfo(r, "10.0.0.1")
+	SetForwardProxyIdentity(r, "tok-1", "", "proxy")
+	ctlCtx := WithForwardProxyControl(r.Context())
+	out, _ := http.NewRequestWithContext(ctlCtx, http.MethodPost, "https://github.com/login/oauth/access_token", nil)
+	if u, err := fr.ProxyFunc()(out); err != nil || u == nil || u.Host != "control-proxy:3128" {
+		t.Fatalf("ProxyFunc(control ctx) = (%v, %v), want control-proxy:3128", u, err)
+	}
+}

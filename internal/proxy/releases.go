@@ -169,7 +169,10 @@ func (c *netrcCreds) setBasicAuth(req *http.Request) {
 // Any other mode value or an empty mode passes all requests through to inner
 // unchanged. The allow list check is always performed before applying the
 // policy, so explicitly listed orgs and repos are never affected.
-func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger) http.Handler {
+// The optional transport parameter overrides the HEAD-check probe client's
+// transport (e.g. the forward proxy control transport, so probes follow the
+// control-layer egress routing); pass none to use the default transport.
+func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Logger, transport ...http.RoundTripper) http.Handler {
 	var creds *netrcCreds
 	if cfg.Releases.RedirectHeadCheckNetrc != "" {
 		var err error
@@ -181,7 +184,13 @@ func NewReleasesHandler(inner http.Handler, cfg *config.Config, logger *slog.Log
 			}
 		}
 	}
-	return NewReleasesHandlerWithClient(inner, cfg, logger, headCheckClient, creds)
+	client := headCheckClient
+	if len(transport) > 0 && transport[0] != nil {
+		c := *headCheckClient
+		c.Transport = transport[0]
+		client = &c
+	}
+	return NewReleasesHandlerWithClient(inner, cfg, logger, client, creds)
 }
 
 // NewReleasesHandlerWithClient is like NewReleasesHandler but accepts a custom

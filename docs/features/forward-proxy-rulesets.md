@@ -34,6 +34,7 @@ A **ruleset** groups:
 | `app` | app record UUID | Requests from agent tokens minted against that GitHub App |
 | `net` | CIDR (e.g. `10.42.0.0/16`) | Requests whose client source IP falls in the network — cheap to evaluate and not tied to tokens, ideal when CI runners live in known subnets |
 | `system` | *(empty)* | All proxied traffic not matched by a more specific rule |
+| `control` | *(empty)* | ghp's own control-plane traffic: OAuth login flows and token refresh, App installation token minting, username resolution lookups, and release redirect HEAD probes |
 
 ### Layering
 
@@ -48,6 +49,28 @@ Selection is most-specific-first. The first layer with a matching rule wins:
 Token and app rules only apply on paths where ghp resolves the client token
 (the API proxy and git smart-HTTP passthrough). Traffic carrying raw GitHub
 credentials or no credentials is still covered by net and system rules.
+
+**Control traffic is layered separately.** ghp's own outbound calls are some
+of the most important traffic it emits — losing OAuth refresh or installation
+token minting to a banned egress IP takes down every client behind the proxy.
+Control traffic resolves `control` rule → `system` rule → ambient; token,
+app, and net layers never apply to it (it is not attributable to a client).
+A dedicated control ruleset lets you pin this traffic to its own tightly
+controlled egress path, isolated from the heavy proxied load:
+
+```json
+{
+  "name": "control-plane",
+  "algorithm": "round_robin",
+  "proxies": [{"url": "http://egress-quiet.internal:3128"}],
+  "rules": [{"type": "control"}]
+}
+```
+
+Note that release redirect HEAD probes target your configured redirect
+mirror, not GitHub — if that mirror is only reachable directly, keep it
+reachable from the control path (or leave control unrouted so probes use the
+ambient environment).
 
 ### Routing algorithms
 
@@ -103,7 +126,7 @@ without deleting it.
   credentials allowed, query strings and fragments rejected); weight 0–10000
   (0 normalizes to 1).
 - `rules` — up to 128; `app`/`token` values must be well-formed UUIDs, `net`
-  values valid CIDRs, `system` rules carry no value.
+  values valid CIDRs, `system` and `control` rules carry no value.
 
 ## Behaviour and failure modes
 
@@ -123,7 +146,8 @@ without deleting it.
 
 ## Observability
 
-- `ghp_forward_proxy_select_total{ruleset, layer}` — routing decisions;
+- `ghp_forward_proxy_select_total{ruleset, layer}` — routing decisions
+  (`layer` ∈ `token`, `app`, `net`, `system`, `control`, `ambient`);
   `layer="ambient"` counts requests that fell through to the environment.
 - `ghp_forward_proxy_rulesets_active` — enabled rulesets currently compiled
   into the route table.
@@ -138,6 +162,7 @@ without deleting it.
 - Token- and app-layer rules require ghp to resolve the client token, so they
   do not apply to passthrough traffic bearing raw GitHub credentials — use
   `net` rules for that traffic.
-- Internal calls that are not tied to a proxied request (OAuth token refresh,
-  GitHub App installation token minting, release redirect HEAD checks) use
-  the ambient environment.
+- Admin-UI convenience lookups that list installations/repositories through
+  the GitHub SDK use the ambient environment; the request-path control calls
+  (token minting, OAuth exchange/refresh, username resolution, HEAD probes)
+  all follow control-layer routing.

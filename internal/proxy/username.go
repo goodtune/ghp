@@ -87,6 +87,13 @@ func NewUsernameResolver(store database.Store, logger *slog.Logger, opts ...func
 	return r
 }
 
+// SetTransport sets the transport used for GraphQL viewer lookups. The server
+// installs the forward proxy control transport here so username resolution —
+// ghp control traffic — follows the control-layer egress routing.
+func (u *UsernameResolver) SetTransport(rt http.RoundTripper) {
+	u.httpClient.Transport = rt
+}
+
 // WithGraphQLURL returns an option that overrides the GitHub GraphQL endpoint
 // URL. This is primarily intended for testing with mock servers.
 func WithGraphQLURL(url string) func(*UsernameResolver) {

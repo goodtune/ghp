@@ -159,6 +159,7 @@ func TestForwardProxyRulesets_CreateValidation(t *testing.T) {
 		{"app rule not uuid", `{"name":"ok","algorithm":"round_robin","proxies":[{"url":"http://p:1"}],"rules":[{"type":"app","value":"not-a-uuid"}]}`},
 		{"token rule not uuid", `{"name":"ok","algorithm":"round_robin","proxies":[{"url":"http://p:1"}],"rules":[{"type":"token","value":"not-a-uuid"}]}`},
 		{"system rule with value", `{"name":"ok","algorithm":"round_robin","proxies":[{"url":"http://p:1"}],"rules":[{"type":"system","value":"x"}]}`},
+		{"control rule with value", `{"name":"ok","algorithm":"round_robin","proxies":[{"url":"http://p:1"}],"rules":[{"type":"control","value":"x"}]}`},
 		{"invalid json", `{`},
 	}
 	for _, tt := range tests {
@@ -170,6 +171,15 @@ func TestForwardProxyRulesets_CreateValidation(t *testing.T) {
 				t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, w.Code, w.Body.String())
 			}
 		})
+	}
+
+	// A bare control rule (no value) is valid.
+	req := httptest.NewRequest("POST", "/api/forward-proxy-rulesets",
+		strings.NewReader(`{"name":"control-ok","algorithm":"round_robin","proxies":[{"url":"http://p:1"}],"rules":[{"type":"control"}]}`)).WithContext(adminCtx())
+	w := httptest.NewRecorder()
+	a.handleCreateForwardProxyRuleset(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("control rule create: expected %d, got %d: %s", http.StatusCreated, w.Code, w.Body.String())
 	}
 }
 

@@ -129,13 +129,16 @@ const (
 )
 
 // Forward proxy rule types. A rule binds a ruleset to the traffic it should
-// route: the whole system, a GitHub App record, a specific proxy token, or a
-// client source network.
+// route: the whole system, a GitHub App record, a specific proxy token, a
+// client source network, or ghp's own control-plane traffic (OAuth flows and
+// token refresh, App installation token minting, username resolution, release
+// redirect HEAD probes).
 const (
-	ForwardProxyRuleSystem = "system"
-	ForwardProxyRuleApp    = "app"
-	ForwardProxyRuleToken  = "token"
-	ForwardProxyRuleNet    = "net"
+	ForwardProxyRuleSystem  = "system"
+	ForwardProxyRuleApp     = "app"
+	ForwardProxyRuleToken   = "token"
+	ForwardProxyRuleNet     = "net"
+	ForwardProxyRuleControl = "control"
 )
 
 // ForwardProxyEntry is a single upstream forward proxy target within a

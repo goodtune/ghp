@@ -140,6 +140,7 @@ type ForwardProxyRouteInfo struct {
 	TokenID   string // proxy token record UUID, "" when no ghx_/gha_ token resolved
 	AppID     string // GitHub App record UUID (agent tokens only), "" otherwise
 	TokenType string // "proxy", "agent", or "" — used for metrics labeling only
+	Control   bool   // ghp-originated control traffic: route via the control layer only
 }
 
 // PrepareForwardProxyInfo returns a request whose context carries a mutable
@@ -157,6 +158,16 @@ func SetForwardProxyIdentity(r *http.Request, tokenID, appID, tokenType string) 
 		info.AppID = appID
 		info.TokenType = tokenType
 	}
+}
+
+// WithForwardProxyControl returns a context whose route-info slot marks the
+// traffic as ghp-originated control traffic (control rule → system rule →
+// ambient). It shadows any request-derived route info already on the context,
+// so internal calls made with a proxied request's context (e.g. OAuth token
+// refresh) are classified as control rather than inheriting the client's
+// token/app/net routing.
+func WithForwardProxyControl(ctx context.Context) context.Context {
+	return context.WithValue(ctx, forwardProxyCtxKey, &ForwardProxyRouteInfo{Control: true})
 }
 
 // ForwardProxyInfoFromContext returns the route-info slot from ctx, or nil

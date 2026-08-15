@@ -715,6 +715,10 @@ type tokenRefreshResponse struct {
 // GitHub's OAuth token endpoint. On success it persists the new encrypted
 // tokens and returns the new plaintext access token.
 func (h *Handler) refreshGitHubToken(ctx context.Context, gt *database.GitHubToken) (string, error) {
+	// Token refresh is ghp control traffic: route it via the control layer
+	// rather than inheriting the triggering request's token/app/net routing.
+	ctx = WithForwardProxyControl(ctx)
+
 	refreshPlaintext, err := h.encryptor.Decrypt(gt.RefreshToken)
 	if err != nil {
 		return "", fmt.Errorf("decrypting refresh token: %w", err)

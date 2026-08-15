@@ -135,9 +135,9 @@ func validateForwardProxyRules(rules []database.ForwardProxyRule) error {
 	}
 	for i, rule := range rules {
 		switch rule.Type {
-		case database.ForwardProxyRuleSystem:
+		case database.ForwardProxyRuleSystem, database.ForwardProxyRuleControl:
 			if rule.Value != "" {
-				return fmt.Errorf("rules[%d]: system rules must not carry a value", i)
+				return fmt.Errorf("rules[%d]: %s rules must not carry a value", i, rule.Type)
 			}
 		case database.ForwardProxyRuleApp:
 			if !isValidUUID(rule.Value) {
@@ -152,7 +152,7 @@ func validateForwardProxyRules(rules []database.ForwardProxyRule) error {
 				return fmt.Errorf("rules[%d]: net rules require a valid CIDR (e.g. 10.0.0.0/16)", i)
 			}
 		default:
-			return fmt.Errorf("rules[%d]: type must be one of system, app, token, net", i)
+			return fmt.Errorf("rules[%d]: type must be one of system, app, token, net, control", i)
 		}
 	}
 	return nil

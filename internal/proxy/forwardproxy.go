@@ -27,6 +27,7 @@ const (
 	ForwardProxyLayerApp     = "app"
 	ForwardProxyLayerNet     = "net"
 	ForwardProxyLayerSystem  = "system"
+	ForwardProxyLayerControl = "control"
 	ForwardProxyLayerAmbient = "ambient"
 )
 
@@ -61,6 +62,7 @@ type routeTable struct {
 	byApp   map[string]*compiledRuleset
 	byNet   []netRule // sorted most-specific prefix first
 	system  *compiledRuleset
+	control *compiledRuleset // ghp's own control-plane traffic
 }
 
 // ForwardProxyRouter selects which upstream forward proxy (if any) an
@@ -160,6 +162,14 @@ func (fr *ForwardProxyRouter) Reload(ctx context.Context) error {
 				}
 				table.system = compiled
 				bound = true
+			case database.ForwardProxyRuleControl:
+				if table.control != nil {
+					fr.logger.Warn("forward proxy: multiple control rulesets; first by name wins",
+						"kept", table.control.name, "ignored", rs.Name)
+					continue
+				}
+				table.control = compiled
+				bound = true
 			default:
 				fr.logger.Warn("forward proxy: skipping unknown rule type",
 					"ruleset", rs.Name, "type", rule.Type)
@@ -191,7 +201,8 @@ func (fr *ForwardProxyRouter) Reload(ctx context.Context) error {
 		"token_rules", len(table.byToken),
 		"app_rules", len(table.byApp),
 		"net_rules", len(table.byNet),
-		"system_rule", table.system != nil)
+		"system_rule", table.system != nil,
+		"control_rule", table.control != nil)
 	return nil
 }
 
@@ -277,6 +288,25 @@ func (fr *ForwardProxyRouter) Select(clientIP, tokenID, appID string) (*url.URL,
 	return nil, "", ForwardProxyLayerAmbient
 }
 
+// SelectControl returns the forward proxy URL for ghp's own control-plane
+// traffic (OAuth flows and token refresh, App installation token minting,
+// username resolution, release redirect HEAD probes). Precedence: control
+// rule → system rule → ambient. Token, app, and net layers never apply —
+// control traffic is not attributable to a client.
+func (fr *ForwardProxyRouter) SelectControl() (*url.URL, string, string) {
+	fr.mu.RLock()
+	table := fr.table
+	fr.mu.RUnlock()
+
+	if table.control != nil {
+		return table.control.pick(""), table.control.name, ForwardProxyLayerControl
+	}
+	if table.system != nil {
+		return table.system.pick(""), table.system.name, ForwardProxyLayerSystem
+	}
+	return nil, "", ForwardProxyLayerAmbient
+}
+
 // pick chooses a target according to the ruleset's algorithm. clientIP is
 // only consulted by the sticky algorithm.
 func (c *compiledRuleset) pick(clientIP string) *url.URL {
@@ -321,6 +351,9 @@ func (fr *ForwardProxyRouter) ProxyFunc() func(*http.Request) (*url.URL, error) 
 		if info == nil {
 			return fr.ambient(req)
 		}
+		if info.Control {
+			return fr.controlProxy(req)
+		}
 		start := time.Now()
 		u, ruleset, layer := fr.Select(info.ClientIP, info.TokenID, info.AppID)
 		metrics.ObserveDecision(metrics.StageForwardProxySelection, info.TokenType, time.Since(start))
@@ -332,6 +365,27 @@ func (fr *ForwardProxyRouter) ProxyFunc() func(*http.Request) (*url.URL, error) 
 	}
 }
 
+// controlProxy resolves the egress proxy for a control-plane request and
+// records the routing decision.
+func (fr *ForwardProxyRouter) controlProxy(req *http.Request) (*url.URL, error) {
+	start := time.Now()
+	u, ruleset, layer := fr.SelectControl()
+	metrics.ObserveDecision(metrics.StageForwardProxySelection, "", time.Since(start))
+	metrics.ForwardProxySelectTotal.WithLabelValues(ruleset, layer).Inc()
+	if u == nil {
+		return fr.ambient(req)
+	}
+	return u, nil
+}
+
+// ControlProxyFunc returns a proxy selection function that always routes as
+// control-plane traffic, regardless of request context. Use it for internal
+// clients that are not tied to a proxied request (App installation token
+// minting, username resolution, OAuth login flows, release HEAD probes).
+func (fr *ForwardProxyRouter) ControlProxyFunc() func(*http.Request) (*url.URL, error) {
+	return fr.controlProxy
+}
+
 // NewForwardProxyTransport returns an http.Transport cloned from
 // http.DefaultTransport whose Proxy function consults the router per request.
 // All outbound GitHub transports (API proxy, github.com passthrough,
@@ -340,5 +394,15 @@ func (fr *ForwardProxyRouter) ProxyFunc() func(*http.Request) (*url.URL, error) 
 func NewForwardProxyTransport(fr *ForwardProxyRouter) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = fr.ProxyFunc()
+	return t
+}
+
+// NewForwardProxyControlTransport returns a transport that routes every
+// request as control-plane traffic (control rule → system rule → ambient).
+// It is installed on ghp's internal clients so operators can pin the proxy's
+// own GitHub traffic to a dedicated egress path.
+func NewForwardProxyControlTransport(fr *ForwardProxyRouter) *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = fr.ControlProxyFunc()
 	return t
 }

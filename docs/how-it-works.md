@@ -139,7 +139,10 @@ so an IP ban never takes down interactive users.
 
 Rulesets bind proxy targets and a routing algorithm (round robin, weighted,
 sticky-by-source-IP) to traffic selected by token, app, source network (CIDR),
-or system-wide rules; more specific layers win. They are managed via the admin
+system-wide, or control rules; more specific layers win. Control rules cover
+ghp's own outbound calls (OAuth flows and token refresh, installation token
+minting, username resolution, release HEAD probes) so the proxy's
+control-plane traffic can be pinned to a dedicated egress path. They are managed via the admin
 API (`/api/forward-proxy-rulesets`) and take effect without a restart.
 Anything not matched by a ruleset continues to use the ambient environment.
 
