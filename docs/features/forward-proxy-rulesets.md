@@ -134,6 +134,45 @@ without deleting it.
 - `rules` — up to 128; `app`/`token` values must be well-formed UUIDs, `net`
   values valid CIDRs, `system` and `control` rules carry no value.
 
+## Per-request client selection
+
+Sometimes a client knows something the operator's rules can't express — a
+team with its own egress path (IP allow-listing on the far side, say) that
+only needs it on particular requests. With the feature enabled, a client may
+select the forward proxy for a single request via headers:
+
+| Header | Accepted schemes |
+|---|---|
+| `X-GitHub-Proxy-Forward-HTTP` / `X-GitHub-Proxy-Forward-HTTPS` | `http`, `https` |
+| `X-GitHub-Proxy-Forward-SOCKS` | `socks5`, `socks5h` |
+
+```bash
+curl -H "Authorization: Bearer ghx_..." \
+  -H "X-GitHub-Proxy-Forward-HTTPS: http://team-egress.internal:3128" \
+  https://ghp.example.com/api/v3/user
+```
+
+Rules of engagement:
+
+- **Off by default.** Honouring the headers lets any client direct ghp to
+  open connections to an arbitrary proxy endpoint, so the feature is gated
+  behind `forward_proxy.allow_request_header: true`
+  (`GHP_FORWARD_PROXY_ALLOW_REQUEST_HEADER`). When disabled, the headers
+  are stripped and ignored.
+- A client-specified proxy **beats every ruleset layer** — the request still
+  flows through ghp, so token scoping, audit logging, and metrics all apply
+  as usual.
+- At most one proxy may be specified per request; conflicting headers or
+  invalid values are rejected with 400. Credentials in the proxy URL
+  (`http://user:pass@host:port`) are allowed; query strings and fragments
+  are not.
+- The headers are always stripped before the request is forwarded upstream —
+  they never reach GitHub.
+- Each use is counted in
+  `ghp_forward_proxy_client_specified_total{scheme, token_type}` and shows
+  as `layer="header"` in `ghp_forward_proxy_select_total`. The proxy URL is
+  deliberately never used as a metric label (client-controlled, unbounded).
+
 ## Behaviour and failure modes
 
 - **Fail-open to ambient.** A disabled ruleset, an invalid proxy URL, a
@@ -153,9 +192,11 @@ without deleting it.
 ## Observability
 
 - `ghp_forward_proxy_select_total{ruleset, layer}` — routing decisions
-  (`layer` ∈ `token`, `app`, `net`, `system`, `control`, `ambient`,
-  `direct`); `ambient` counts requests that fell through to the
+  (`layer` ∈ `header`, `token`, `app`, `net`, `system`, `control`,
+  `ambient`, `direct`); `ambient` counts requests that fell through to the
   environment, `direct` counts non-GitHub control calls sent with no proxy.
+- `ghp_forward_proxy_client_specified_total{scheme, token_type}` — requests
+  routed through a client-specified proxy header.
 - `ghp_forward_proxy_rulesets_active` — enabled rulesets currently compiled
   into the route table.
 - `ghp_proxy_decision_duration_seconds{stage="forward_proxy_selection"}` —

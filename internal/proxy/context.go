@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"net/http"
+	"net/url"
 )
 
 // contextKey is an unexported type used for context keys in this package
@@ -141,6 +142,10 @@ type ForwardProxyRouteInfo struct {
 	AppID     string // GitHub App record UUID (agent tokens only), "" otherwise
 	TokenType string // "proxy", "agent", or "" — used for metrics labeling only
 	Control   bool   // ghp-originated control traffic: route via the control layer only
+	// ClientProxy is a per-request forward proxy the client selected via
+	// the X-GitHub-Proxy-Forward-* headers (validated and feature-gated at
+	// the edge). Non-nil beats every ruleset layer.
+	ClientProxy *url.URL
 }
 
 // PrepareForwardProxyInfo returns a request whose context carries a mutable
@@ -157,6 +162,14 @@ func SetForwardProxyIdentity(r *http.Request, tokenID, appID, tokenType string) 
 		info.TokenID = tokenID
 		info.AppID = appID
 		info.TokenType = tokenType
+	}
+}
+
+// SetForwardProxyClientChoice records a client-selected forward proxy in the
+// request's route-info slot. It is a no-op if no slot was prepared.
+func SetForwardProxyClientChoice(r *http.Request, u *url.URL) {
+	if info, ok := r.Context().Value(forwardProxyCtxKey).(*ForwardProxyRouteInfo); ok {
+		info.ClientProxy = u
 	}
 }
 

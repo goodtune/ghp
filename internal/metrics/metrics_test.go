@@ -614,6 +614,7 @@ func TestForwardProxySelectTotal(t *testing.T) {
 		{"control-plane", "control"},
 		{"", "ambient"},
 		{"", "direct"},
+		{"", "header"},
 	}
 	for _, c := range cases {
 		t.Run(c.layer, func(t *testing.T) {
@@ -636,5 +637,24 @@ func TestForwardProxyRulesetsActive_Gauge(t *testing.T) {
 	ForwardProxyRulesetsActive.Set(0)
 	if got := getGaugeValue(t, ForwardProxyRulesetsActive); got != 0 {
 		t.Errorf("expected gauge value 0, got %f", got)
+	}
+}
+
+func TestForwardProxyClientSpecifiedTotal(t *testing.T) {
+	cases := []struct{ scheme, tokenType string }{
+		{"http", "proxy"},
+		{"socks5", "agent"},
+		{"https", "unknown"},
+	}
+	for _, c := range cases {
+		t.Run(c.scheme+"_"+c.tokenType, func(t *testing.T) {
+			labels := prometheus.Labels{"scheme": c.scheme, "token_type": c.tokenType}
+			before := getCounterValue(t, ForwardProxyClientSpecifiedTotal, labels)
+			ForwardProxyClientSpecifiedTotal.WithLabelValues(c.scheme, c.tokenType).Inc()
+			after := getCounterValue(t, ForwardProxyClientSpecifiedTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
 	}
 }

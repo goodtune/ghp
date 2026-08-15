@@ -311,13 +311,25 @@ var (
 	// ForwardProxySelectTotal counts forward proxy routing decisions on
 	// outbound GitHub requests, labeled by the matched ruleset name and the
 	// layer that matched ("token", "app", "net", "system", "control";
+	// "header" when the client selected the proxy via request headers;
 	// "ambient" when no ruleset applied and the environment default was
 	// used; "direct" for non-GitHub control calls sent with no proxy;
-	// ruleset is empty for ambient and direct decisions).
+	// ruleset is empty for header, ambient, and direct decisions).
 	ForwardProxySelectTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ghp_forward_proxy_select_total",
 		Help: "Total forward proxy routing decisions by matched ruleset and layer.",
 	}, []string{"ruleset", "layer"})
+
+	// ForwardProxyClientSpecifiedTotal counts requests whose forward proxy
+	// was selected by the client via the X-GitHub-Proxy-Forward-* request
+	// headers (feature-gated by forward_proxy.allow_request_header),
+	// labeled by the proxy URL scheme and the client token type. The proxy
+	// URL itself is never used as a label — it is client-controlled and
+	// unbounded.
+	ForwardProxyClientSpecifiedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_forward_proxy_client_specified_total",
+		Help: "Total requests routed through a client-specified forward proxy via request headers.",
+	}, []string{"scheme", "token_type"})
 
 	// ForwardProxyRulesetsActive is a gauge reflecting how many enabled
 	// forward proxy rulesets are currently compiled into the route table.

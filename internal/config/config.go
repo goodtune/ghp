@@ -67,11 +67,26 @@ type Config struct {
 
 	Cache CacheConfig `koanf:"cache"`
 
+	ForwardProxy ForwardProxyConfig `koanf:"forward_proxy"`
+
 	EncryptionKey string `koanf:"encryption_key"`
 
 	// DevMode enables test-only endpoints (e.g. /auth/test-login).
 	// Must never be enabled in production.
 	DevMode bool `koanf:"dev_mode"`
+}
+
+// ForwardProxyConfig gates forward proxy behaviours that are configured
+// statically rather than through the runtime ruleset API.
+type ForwardProxyConfig struct {
+	// AllowRequestHeader enables per-request client selection of the
+	// upstream forward proxy via the X-GitHub-Proxy-Forward-HTTP,
+	// X-GitHub-Proxy-Forward-HTTPS, and X-GitHub-Proxy-Forward-SOCKS
+	// request headers. Off by default: honouring the headers lets any
+	// client direct ghp to open connections to an arbitrary proxy
+	// endpoint, so operators must opt in deliberately. When disabled the
+	// headers are stripped and ignored.
+	AllowRequestHeader bool `koanf:"allow_request_header"`
 }
 
 // BlockConfig defines which GitHub token prefixes are blocked from

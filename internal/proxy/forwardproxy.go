@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"math/rand/v2"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,7 +36,91 @@ const (
 	// default for those calls unless a control rule opts them in via
 	// include_non_github.
 	ForwardProxyLayerDirect = "direct"
+	// ForwardProxyLayerHeader marks requests whose forward proxy was chosen
+	// by the client via the X-GitHub-Proxy-Forward-* request headers
+	// (requires forward_proxy.allow_request_header). Client choice beats
+	// every ruleset layer.
+	ForwardProxyLayerHeader = "header"
 )
+
+// Request headers a client may use to select the upstream forward proxy for
+// a single request, when forward_proxy.allow_request_header is enabled.
+// The HTTP and HTTPS headers are aliases accepting http:// or https:// proxy
+// URLs; the SOCKS header accepts socks5:// or socks5h:// URLs. The headers
+// are always stripped before the request is forwarded upstream.
+const (
+	ForwardProxyHeaderHTTP  = "X-GitHub-Proxy-Forward-HTTP"
+	ForwardProxyHeaderHTTPS = "X-GitHub-Proxy-Forward-HTTPS"
+	ForwardProxyHeaderSOCKS = "X-GitHub-Proxy-Forward-SOCKS"
+)
+
+// ExtractClientForwardProxy reads and strips the X-GitHub-Proxy-Forward-*
+// headers from r. When enabled is false the headers are stripped and ignored
+// (nil, nil). When enabled, at most one proxy may be specified across the
+// three headers (duplicate identical values are tolerated); the value must
+// be a valid proxy URL with a scheme matching its header family, a host, and
+// no query string or fragment. A non-nil error means the request should be
+// rejected with 400.
+func ExtractClientForwardProxy(r *http.Request, enabled bool) (*url.URL, error) {
+	type headerVal struct {
+		header  string
+		value   string
+		schemes []string
+	}
+	vals := []headerVal{
+		{ForwardProxyHeaderHTTP, r.Header.Get(ForwardProxyHeaderHTTP), []string{"http", "https"}},
+		{ForwardProxyHeaderHTTPS, r.Header.Get(ForwardProxyHeaderHTTPS), []string{"http", "https"}},
+		{ForwardProxyHeaderSOCKS, r.Header.Get(ForwardProxyHeaderSOCKS), []string{"socks5", "socks5h"}},
+	}
+	// Always strip: the headers are ghp-internal routing hints and must
+	// never reach GitHub or any other upstream.
+	r.Header.Del(ForwardProxyHeaderHTTP)
+	r.Header.Del(ForwardProxyHeaderHTTPS)
+	r.Header.Del(ForwardProxyHeaderSOCKS)
+
+	if !enabled {
+		return nil, nil
+	}
+
+	var chosen *headerVal
+	for i := range vals {
+		v := &vals[i]
+		if v.value == "" {
+			continue
+		}
+		if chosen != nil && chosen.value != v.value {
+			return nil, fmt.Errorf("conflicting forward proxy headers: %s and %s specify different proxies", chosen.header, v.header)
+		}
+		if chosen == nil {
+			chosen = v
+		}
+	}
+	if chosen == nil {
+		return nil, nil
+	}
+
+	u, err := url.Parse(chosen.value)
+	if err != nil {
+		return nil, fmt.Errorf("%s: malformed proxy URL", chosen.header)
+	}
+	schemeOK := false
+	for _, s := range chosen.schemes {
+		if u.Scheme == s {
+			schemeOK = true
+			break
+		}
+	}
+	if !schemeOK {
+		return nil, fmt.Errorf("%s: scheme must be one of %s", chosen.header, strings.Join(chosen.schemes, ", "))
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("%s: host is required", chosen.header)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("%s: query string and fragment are not allowed", chosen.header)
+	}
+	return u, nil
+}
 
 // compiledTarget is a validated upstream forward proxy within a ruleset.
 type compiledTarget struct {
@@ -365,6 +451,18 @@ func (fr *ForwardProxyRouter) ProxyFunc() func(*http.Request) (*url.URL, error) 
 		}
 		if info.Control {
 			return fr.controlProxy(req)
+		}
+		// A client-specified proxy (validated at the edge, feature-gated by
+		// forward_proxy.allow_request_header) beats every ruleset layer —
+		// the client may know something the operator's rules cannot.
+		if info.ClientProxy != nil {
+			metrics.ForwardProxySelectTotal.WithLabelValues("", ForwardProxyLayerHeader).Inc()
+			tokenType := info.TokenType
+			if tokenType == "" {
+				tokenType = "unknown"
+			}
+			metrics.ForwardProxyClientSpecifiedTotal.WithLabelValues(info.ClientProxy.Scheme, tokenType).Inc()
+			return info.ClientProxy, nil
 		}
 		start := time.Now()
 		u, ruleset, layer := fr.Select(info.ClientIP, info.TokenID, info.AppID)

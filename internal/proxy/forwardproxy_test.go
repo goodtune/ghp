@@ -397,3 +397,106 @@ func TestForwardProxyRouter_NonGitHubControlOptIn(t *testing.T) {
 		t.Fatalf("non-GitHub control transport Proxy() = (%v, %v), want control-proxy:3128", u, err)
 	}
 }
+
+func TestExtractClientForwardProxy(t *testing.T) {
+	mk := func(headers map[string]string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "https://api.github.com/user", nil)
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+		return r
+	}
+
+	t.Run("disabled strips and ignores", func(t *testing.T) {
+		r := mk(map[string]string{ForwardProxyHeaderHTTPS: "http://team-proxy:3128"})
+		u, err := ExtractClientForwardProxy(r, false)
+		if err != nil || u != nil {
+			t.Fatalf("got (%v, %v), want (nil, nil)", u, err)
+		}
+		if r.Header.Get(ForwardProxyHeaderHTTPS) != "" {
+			t.Error("header not stripped when disabled")
+		}
+	})
+
+	t.Run("no headers", func(t *testing.T) {
+		u, err := ExtractClientForwardProxy(mk(nil), true)
+		if err != nil || u != nil {
+			t.Fatalf("got (%v, %v), want (nil, nil)", u, err)
+		}
+	})
+
+	valid := []struct {
+		name, header, value, wantHost, wantScheme string
+	}{
+		{"https header with http proxy", ForwardProxyHeaderHTTPS, "http://team-proxy:3128", "team-proxy:3128", "http"},
+		{"http header alias", ForwardProxyHeaderHTTP, "https://team-proxy:443", "team-proxy:443", "https"},
+		{"socks header", ForwardProxyHeaderSOCKS, "socks5://egress:1080", "egress:1080", "socks5"},
+		{"socks5h", ForwardProxyHeaderSOCKS, "socks5h://egress:1080", "egress:1080", "socks5h"},
+		{"credentials allowed", ForwardProxyHeaderHTTPS, "http://user:pass@team-proxy:3128", "team-proxy:3128", "http"},
+	}
+	for _, tt := range valid {
+		t.Run(tt.name, func(t *testing.T) {
+			r := mk(map[string]string{tt.header: tt.value})
+			u, err := ExtractClientForwardProxy(r, true)
+			if err != nil || u == nil || u.Host != tt.wantHost || u.Scheme != tt.wantScheme {
+				t.Fatalf("got (%v, %v), want %s://%s", u, err, tt.wantScheme, tt.wantHost)
+			}
+			for _, h := range []string{ForwardProxyHeaderHTTP, ForwardProxyHeaderHTTPS, ForwardProxyHeaderSOCKS} {
+				if r.Header.Get(h) != "" {
+					t.Errorf("header %s not stripped", h)
+				}
+			}
+		})
+	}
+
+	invalid := []struct {
+		name    string
+		headers map[string]string
+	}{
+		{"socks scheme on https header", map[string]string{ForwardProxyHeaderHTTPS: "socks5://egress:1080"}},
+		{"http scheme on socks header", map[string]string{ForwardProxyHeaderSOCKS: "http://team-proxy:3128"}},
+		{"missing host", map[string]string{ForwardProxyHeaderHTTPS: "http://"}},
+		{"query string", map[string]string{ForwardProxyHeaderHTTPS: "http://p:3128?x=1"}},
+		{"conflicting headers", map[string]string{ForwardProxyHeaderHTTPS: "http://a:3128", ForwardProxyHeaderSOCKS: "socks5://b:1080"}},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			if u, err := ExtractClientForwardProxy(mk(tt.headers), true); err == nil {
+				t.Fatalf("got (%v, nil), want error", u)
+			}
+		})
+	}
+
+	t.Run("duplicate identical values tolerated", func(t *testing.T) {
+		r := mk(map[string]string{
+			ForwardProxyHeaderHTTP:  "http://team-proxy:3128",
+			ForwardProxyHeaderHTTPS: "http://team-proxy:3128",
+		})
+		u, err := ExtractClientForwardProxy(r, true)
+		if err != nil || u == nil || u.Host != "team-proxy:3128" {
+			t.Fatalf("got (%v, %v), want team-proxy:3128", u, err)
+		}
+	})
+}
+
+func TestForwardProxyRouter_ClientChoiceBeatsRulesets(t *testing.T) {
+	fr := reloadedRouter(t,
+		&database.ForwardProxyRuleset{
+			Name: "tok-rs", Algorithm: database.ForwardProxyAlgoRoundRobin, Enabled: true,
+			Proxies: []database.ForwardProxyEntry{{URL: "http://tok-proxy:3128"}},
+			Rules:   []database.ForwardProxyRule{{Type: database.ForwardProxyRuleToken, Value: "tok-1"}},
+		},
+	)
+
+	r := httptest.NewRequest(http.MethodGet, "https://api.github.com/", nil)
+	r = PrepareForwardProxyInfo(r, "10.0.0.1")
+	SetForwardProxyIdentity(r, "tok-1", "", "proxy")
+	team, _ := url.Parse("http://team-proxy:3128")
+	SetForwardProxyClientChoice(r, team)
+
+	out, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/user", nil)
+	u, err := fr.ProxyFunc()(out)
+	if err != nil || u == nil || u.Host != "team-proxy:3128" {
+		t.Fatalf("ProxyFunc(client choice) = (%v, %v), want team-proxy:3128 over token ruleset", u, err)
+	}
+}

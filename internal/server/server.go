@@ -502,9 +502,20 @@ func (s *Server) Run(ctx context.Context) error {
 	// Seed the forward proxy route-info slot (client IP; token identity is
 	// filled in later by the token-resolving handlers) on every proxied
 	// backend so the shared transport can select an egress proxy per request.
+	// Client-selected proxy headers are validated and stripped here — they
+	// must never reach the upstream — and only honoured when
+	// forward_proxy.allow_request_header is enabled.
 	withRouteInfo := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			clientProxy, err := proxy.ExtractClientForwardProxy(r, s.cfg.ForwardProxy.AllowRequestHeader)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+				return
+			}
 			r = proxy.PrepareForwardProxyInfo(r, netutil.ClientIP(r, clientIPHeader))
+			if clientProxy != nil {
+				proxy.SetForwardProxyClientChoice(r, clientProxy)
+			}
 			next.ServeHTTP(w, r)
 		})
 	}
