@@ -347,8 +347,8 @@ type Store interface {
 	// unique; violations surface as a backend-specific unique-constraint or
 	// "already exists" error.
 	CreateForwardProxyRuleset(ctx context.Context, rs *ForwardProxyRuleset) error
-	// GetForwardProxyRulesetByID returns the ruleset with the given ID, or
-	// (nil, nil) if it does not exist.
+	// GetForwardProxyRulesetByID returns the ruleset with the given ID.
+	// Returns wrapped ErrNotFound if it does not exist.
 	GetForwardProxyRulesetByID(ctx context.Context, id string) (*ForwardProxyRuleset, error)
 	// GetForwardProxyRulesetByName returns the ruleset with the given name,
 	// or (nil, nil) if it does not exist.

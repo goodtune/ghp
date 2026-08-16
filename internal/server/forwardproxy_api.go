@@ -285,12 +285,12 @@ func (a *API) handleGetForwardProxyRuleset(w http.ResponseWriter, r *http.Reques
 	}
 	rs, err := a.store.GetForwardProxyRulesetByID(r.Context(), id)
 	if err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "Forward proxy ruleset not found"})
+			return
+		}
 		a.logger.Error("failed to get forward proxy ruleset", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
-		return
-	}
-	if rs == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Forward proxy ruleset not found"})
 		return
 	}
 	writeJSON(w, http.StatusOK, forwardProxyRulesetToResponse(rs))
@@ -326,12 +326,12 @@ func (a *API) handleUpdateForwardProxyRuleset(w http.ResponseWriter, r *http.Req
 
 	existing, err := a.store.GetForwardProxyRulesetByID(r.Context(), id)
 	if err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "Forward proxy ruleset not found"})
+			return
+		}
 		a.logger.Error("failed to get forward proxy ruleset", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
-		return
-	}
-	if existing == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Forward proxy ruleset not found"})
 		return
 	}
 

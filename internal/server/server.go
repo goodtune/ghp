@@ -403,6 +403,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// tokens and verify team membership. NewHandler installed a baseline
 	// policy (matching only); this replaces it with the full-featured one.
 	enterprisePolicy := proxy.NewEnterprisePolicy(s.cfg.GitHub, appRegistry, s.logger)
+	enterprisePolicy.SetTransport(forwardProxyControlTransport)
 	proxyHandler.SetEnterprisePolicy(enterprisePolicy)
 
 	// Build audit log writer for OpenTelemetry audit log records.
@@ -444,9 +445,14 @@ func (s *Server) Run(ctx context.Context) error {
 		http.Redirect(w, r, "/docs/", http.StatusMovedPermanently)
 	})
 
-	// Proxy routes — these catch /api/v3/* and /api/graphql.
-	mux.Handle("/api/v3/", proxyHandler)
-	mux.Handle("/api/graphql", proxyHandler)
+	// Proxy routes — these catch /api/v3/* and /api/graphql. These mux
+	// registrations serve GHE-style API paths on the management host, which
+	// bypasses the host-dispatch wrapping below, so the forward proxy
+	// route-info middleware must be applied here too or these requests
+	// would silently fall back to ambient egress.
+	mgmtProxyHandler := forwardProxyRouteInfoMiddleware(proxyHandler, s.cfg, netutil.IPHeader(s.cfg.Server.ClientIPHeader))
+	mux.Handle("/api/v3/", mgmtProxyHandler)
+	mux.Handle("/api/graphql", mgmtProxyHandler)
 
 	// Create passthrough handlers for github.com and *.githubcopilot.com.
 	// Reuse proxyTokenResolver created above for cache warming to avoid duplication.
@@ -480,6 +486,9 @@ func (s *Server) Run(ctx context.Context) error {
 			"https://github.com",
 			s.cfg.Cache.StoragePath,
 		)
+		// Cached-repo git traffic must follow the same ruleset egress
+		// selection as the raw passthrough it intercepts.
+		cacheHandler.SetTransport(forwardProxyTransport)
 		githubInner = gitcache.NewCacheLookup(githubInner, cacheHandler, store, s.logger)
 		gitcache.SyncCacheReposMetric(lifecycleCtx, store)
 		gitcache.StartCleanup(lifecycleCtx, s.cfg.Cache.StoragePath, store, 10*time.Minute)

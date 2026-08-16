@@ -1699,9 +1699,10 @@ func testForwardProxyRulesetCRUD(t *testing.T, store Store) {
 		t.Fatalf("GetForwardProxyRulesetByName = %+v, want ID %s", byName, rs.ID)
 	}
 
-	// Missing lookups return (nil, nil).
-	if missing, err := store.GetForwardProxyRulesetByID(ctx, newUUIDString()); err != nil || missing != nil {
-		t.Errorf("GetForwardProxyRulesetByID(missing) = (%+v, %v), want (nil, nil)", missing, err)
+	// Missing ID lookups return wrapped ErrNotFound; name lookups are
+	// existence probes and return (nil, nil).
+	if _, err := store.GetForwardProxyRulesetByID(ctx, newUUIDString()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetForwardProxyRulesetByID(missing) err = %v, want ErrNotFound", err)
 	}
 	if missing, err := store.GetForwardProxyRulesetByName(ctx, "no-such-ruleset"); err != nil || missing != nil {
 		t.Errorf("GetForwardProxyRulesetByName(missing) = (%+v, %v), want (nil, nil)", missing, err)
@@ -1758,8 +1759,8 @@ func testForwardProxyRulesetCRUD(t *testing.T, store Store) {
 	if err := store.DeleteForwardProxyRuleset(ctx, rs.ID); err != nil {
 		t.Fatalf("DeleteForwardProxyRuleset: %v", err)
 	}
-	if gone, err := store.GetForwardProxyRulesetByID(ctx, rs.ID); err != nil || gone != nil {
-		t.Errorf("GetForwardProxyRulesetByID after delete = (%+v, %v), want (nil, nil)", gone, err)
+	if _, err := store.GetForwardProxyRulesetByID(ctx, rs.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetForwardProxyRulesetByID after delete err = %v, want ErrNotFound", err)
 	}
 	if err := store.DeleteForwardProxyRuleset(ctx, newUUIDString()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("DeleteForwardProxyRuleset(missing) = %v, want ErrNotFound", err)

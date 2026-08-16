@@ -223,8 +223,7 @@ Rules of engagement:
 - `token` and `app` rule values are stored as opaque references: deleting
   the referenced token or app leaves the rule in place, silently matching
   nothing. Prune stale rules when retiring tokens or apps.
-- On the Vault backend, ruleset create/rename name-uniqueness is
-  check-then-write without compare-and-set: concurrent creates of the same
-  name can race. Ruleset administration is a low-frequency operator action,
-  so this is accepted; SQL backends enforce uniqueness with a database
+- On the Vault backend, ruleset name-uniqueness is enforced by an atomic
+  KV v2 compare-and-set claim on the name index (with rollback if the
+  record write fails); SQL backends enforce uniqueness with a database
   constraint.

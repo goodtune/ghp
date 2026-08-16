@@ -859,7 +859,7 @@ func (s *SQLiteStore) GetForwardProxyRulesetByID(ctx context.Context, id string)
 		`SELECT `+sqliteForwardProxyRulesetColumns+` FROM forward_proxy_rulesets WHERE id = ?`, id)
 	rs, err := scanForwardProxyRuleset(row.Scan)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, fmt.Errorf("forward proxy ruleset %s: %w", id, ErrNotFound)
 	}
 	return rs, err
 }

@@ -1124,30 +1124,30 @@ func (s *VaultStore) CreateForwardProxyRuleset(ctx context.Context, rs *ForwardP
 		rs.Rules = []ForwardProxyRule{}
 	}
 
-	// Check name uniqueness before writing the record to avoid orphaned
-	// entries. This is check-then-write without CAS, so concurrent creates
-	// of the same name can race — accepted for this admin-driven,
-	// low-frequency surface (documented in
-	// docs/features/forward-proxy-rulesets.md known limitations).
+	// Claim the name first with an atomic KV v2 CAS create, then write the
+	// record. Claiming first means a concurrent create of the same name
+	// loses the CAS race cleanly, and a failed record write can roll the
+	// claim back — no sequence leaves a listed record without an index.
 	indexPath := "forward-proxy-rulesets/by-name/" + rs.Name
-	existing, err := s.kvRead(ctx, indexPath)
-	if err != nil {
+	if err := s.kvCreate(ctx, indexPath, map[string]interface{}{"id": rs.ID}); err != nil {
+		if errors.Is(err, errKVAlreadyExists) {
+			return fmt.Errorf("forward proxy ruleset %q already exists", rs.Name)
+		}
 		return err
-	}
-	if existing != nil {
-		return fmt.Errorf("forward proxy ruleset %q already exists", rs.Name)
 	}
 
 	data, err := marshalToMap(rs)
 	if err != nil {
+		_ = s.kvDelete(ctx, indexPath)
 		return fmt.Errorf("marshaling forward proxy ruleset: %w", err)
 	}
 	if err := s.kvWrite(ctx, "forward-proxy-rulesets/"+rs.ID, data); err != nil {
+		// Roll back the name claim so a retry does not hit a phantom
+		// duplicate.
+		_ = s.kvDelete(ctx, indexPath)
 		return err
 	}
-	return s.kvWrite(ctx, indexPath, map[string]interface{}{
-		"id": rs.ID,
-	})
+	return nil
 }
 
 func (s *VaultStore) GetForwardProxyRulesetByID(ctx context.Context, id string) (*ForwardProxyRuleset, error) {
@@ -1156,7 +1156,7 @@ func (s *VaultStore) GetForwardProxyRulesetByID(ctx context.Context, id string) 
 		return nil, err
 	}
 	if data == nil {
-		return nil, nil
+		return nil, fmt.Errorf("forward proxy ruleset %s: %w", id, ErrNotFound)
 	}
 	var rs ForwardProxyRuleset
 	if err := unmarshalFromMap(data, &rs); err != nil {
@@ -1183,7 +1183,12 @@ func (s *VaultStore) GetForwardProxyRulesetByName(ctx context.Context, name stri
 	if !ok {
 		return nil, nil
 	}
-	return s.GetForwardProxyRulesetByID(ctx, id)
+	rs, err := s.GetForwardProxyRulesetByID(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		// Stale index entry: treat as missing for this read-style lookup.
+		return nil, nil
+	}
+	return rs, err
 }
 
 func (s *VaultStore) ListForwardProxyRulesets(ctx context.Context) ([]*ForwardProxyRuleset, error) {
@@ -1198,6 +1203,9 @@ func (s *VaultStore) ListForwardProxyRulesets(ctx context.Context) ([]*ForwardPr
 			continue
 		}
 		rs, err := s.GetForwardProxyRulesetByID(ctx, key)
+		if errors.Is(err, ErrNotFound) {
+			continue // deleted concurrently with the list
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1212,21 +1220,21 @@ func (s *VaultStore) ListForwardProxyRulesets(ctx context.Context) ([]*ForwardPr
 func (s *VaultStore) UpdateForwardProxyRuleset(ctx context.Context, rs *ForwardProxyRuleset) error {
 	existing, err := s.GetForwardProxyRulesetByID(ctx, rs.ID)
 	if err != nil {
-		return err
-	}
-	if existing == nil {
-		return fmt.Errorf("forward proxy ruleset %s: %w", rs.ID, ErrNotFound)
+		return err // wraps ErrNotFound when the ruleset does not exist
 	}
 
-	// If the name changed, check for conflicts before writing anything.
+	// On rename, claim the new name atomically (KV v2 CAS create) before
+	// touching the record, and roll the claim back if the record write
+	// fails; the old index is removed only after the record is persisted.
 	nameChanged := existing.Name != rs.Name
 	if nameChanged {
-		conflicting, err := s.kvRead(ctx, "forward-proxy-rulesets/by-name/"+rs.Name)
-		if err != nil {
+		if err := s.kvCreate(ctx, "forward-proxy-rulesets/by-name/"+rs.Name, map[string]interface{}{
+			"id": rs.ID,
+		}); err != nil {
+			if errors.Is(err, errKVAlreadyExists) {
+				return fmt.Errorf("forward proxy ruleset %q already exists", rs.Name)
+			}
 			return err
-		}
-		if conflicting != nil {
-			return fmt.Errorf("forward proxy ruleset %q already exists", rs.Name)
 		}
 	}
 
@@ -1239,18 +1247,16 @@ func (s *VaultStore) UpdateForwardProxyRuleset(ctx context.Context, rs *ForwardP
 		rs.Rules = []ForwardProxyRule{}
 	}
 	data, err := marshalToMap(rs)
-	if err != nil {
-		return fmt.Errorf("marshaling forward proxy ruleset: %w", err)
+	if err == nil {
+		err = s.kvWrite(ctx, "forward-proxy-rulesets/"+rs.ID, data)
 	}
-	if err := s.kvWrite(ctx, "forward-proxy-rulesets/"+rs.ID, data); err != nil {
-		return err
+	if err != nil {
+		if nameChanged {
+			_ = s.kvDelete(ctx, "forward-proxy-rulesets/by-name/"+rs.Name)
+		}
+		return fmt.Errorf("persisting forward proxy ruleset: %w", err)
 	}
 	if nameChanged {
-		if err := s.kvWrite(ctx, "forward-proxy-rulesets/by-name/"+rs.Name, map[string]interface{}{
-			"id": rs.ID,
-		}); err != nil {
-			return err
-		}
 		_ = s.kvDelete(ctx, "forward-proxy-rulesets/by-name/"+existing.Name)
 	}
 	return nil
@@ -1259,10 +1265,7 @@ func (s *VaultStore) UpdateForwardProxyRuleset(ctx context.Context, rs *ForwardP
 func (s *VaultStore) DeleteForwardProxyRuleset(ctx context.Context, id string) error {
 	existing, err := s.GetForwardProxyRulesetByID(ctx, id)
 	if err != nil {
-		return err
-	}
-	if existing == nil {
-		return fmt.Errorf("forward proxy ruleset %s: %w", id, ErrNotFound)
+		return err // wraps ErrNotFound when the ruleset does not exist
 	}
 	// Delete the name index entry.
 	_ = s.kvDelete(ctx, "forward-proxy-rulesets/by-name/"+existing.Name)
