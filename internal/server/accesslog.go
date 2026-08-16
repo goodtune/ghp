@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/noop"
 
@@ -101,43 +102,43 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter, cl
 			userID = *slots.UserID
 		}
 
-		attrs := []otellog.KeyValue{
-			otellog.String(attrHTTPRequestMethod, r.Method),
-			otellog.String(attrURLPath, r.URL.Path),
-			otellog.String(attrURLScheme, requestScheme(r)),
-			otellog.Int(attrHTTPResponseStatusCode, rec.status),
-			otellog.Int(attrHTTPResponseBodySize, rec.size),
-			otellog.String(attrNetworkProtocolName, "http"),
-			otellog.String(attrNetworkProtocolVersion, protocolVersion(r.Proto)),
-			otellog.String(attrClientAddress, clientIP),
-			otellog.String(attrServerAddress, serverHost),
-			otellog.Float64(attrHTTPServerRequestDuration, dur.Seconds()),
-			otellog.String(attrGHPBackend, backend),
+		attrs := []attribute.KeyValue{
+			attribute.String(attrHTTPRequestMethod, r.Method),
+			attribute.String(attrURLPath, r.URL.Path),
+			attribute.String(attrURLScheme, requestScheme(r)),
+			attribute.Int(attrHTTPResponseStatusCode, rec.status),
+			attribute.Int(attrHTTPResponseBodySize, rec.size),
+			attribute.String(attrNetworkProtocolName, "http"),
+			attribute.String(attrNetworkProtocolVersion, protocolVersion(r.Proto)),
+			attribute.String(attrClientAddress, clientIP),
+			attribute.String(attrServerAddress, serverHost),
+			attribute.Float64(attrHTTPServerRequestDuration, dur.Seconds()),
+			attribute.String(attrGHPBackend, backend),
 		}
 		if remotePort != "" && clientIP == remoteIP {
 			if p, err := strconv.Atoi(remotePort); err == nil {
-				attrs = append(attrs, otellog.Int(attrClientPort, p))
+				attrs = append(attrs, attribute.Int(attrClientPort, p))
 			}
 		}
 		if serverPort != "" {
 			if p, err := strconv.Atoi(serverPort); err == nil {
-				attrs = append(attrs, otellog.Int(attrServerPort, p))
+				attrs = append(attrs, attribute.Int(attrServerPort, p))
 			}
 		}
 		if q := r.URL.RawQuery; q != "" {
-			attrs = append(attrs, otellog.String(attrURLQuery, q))
+			attrs = append(attrs, attribute.String(attrURLQuery, q))
 		}
 		if ua := r.UserAgent(); ua != "" {
-			attrs = append(attrs, otellog.String(attrUserAgentOriginal, ua))
+			attrs = append(attrs, attribute.String(attrUserAgentOriginal, ua))
 		}
 		if userID != "" {
-			attrs = append(attrs, otellog.String(attrEndUserID, userID))
+			attrs = append(attrs, attribute.String(attrEndUserID, userID))
 		}
 		if *slots.CacheState != "" {
-			attrs = append(attrs, otellog.String(attrGHPCacheState, *slots.CacheState))
+			attrs = append(attrs, attribute.String(attrGHPCacheState, *slots.CacheState))
 		}
 		if *slots.CacheRepo != "" {
-			attrs = append(attrs, otellog.String(attrGHPCacheRepo, *slots.CacheRepo))
+			attrs = append(attrs, attribute.String(attrGHPCacheRepo, *slots.CacheRepo))
 		}
 
 		// Request and response headers, redacting sensitive values, captured
@@ -152,7 +153,7 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter, cl
 
 		var record otellog.Record
 		record.SetTimestamp(start)
-		record.SetBody(otellog.StringValue("handled request"))
+		record.SetBody(attribute.StringValue("handled request"))
 		record.SetSeverity(severity)
 		record.SetSeverityText(severity.String())
 		record.AddAttributes(attrs...)
@@ -168,23 +169,23 @@ func accessLogHandler(backend string, next http.Handler, aw *accessLogWriter, cl
 // http.{request,response}.header.<lowercase-name> convention. The redact
 // function maps a lowercased header name to true when its values must be
 // replaced with "REDACTED".
-func headerAttrs(prefix string, h http.Header, redact func(string) bool) []otellog.KeyValue {
+func headerAttrs(prefix string, h http.Header, redact func(string) bool) []attribute.KeyValue {
 	if len(h) == 0 {
 		return nil
 	}
-	out := make([]otellog.KeyValue, 0, len(h))
+	out := make([]attribute.KeyValue, 0, len(h))
 	for k, v := range h {
 		name := strings.ToLower(k)
-		var vals []otellog.Value
+		var vals []attribute.Value
 		if redact(name) {
-			vals = []otellog.Value{otellog.StringValue("REDACTED")}
+			vals = []attribute.Value{attribute.StringValue("REDACTED")}
 		} else {
-			vals = make([]otellog.Value, 0, len(v))
+			vals = make([]attribute.Value, 0, len(v))
 			for _, vv := range v {
-				vals = append(vals, otellog.StringValue(vv))
+				vals = append(vals, attribute.StringValue(vv))
 			}
 		}
-		out = append(out, otellog.Slice(prefix+name, vals...))
+		out = append(out, attribute.Slice(prefix+name, vals...))
 	}
 	return out
 }
