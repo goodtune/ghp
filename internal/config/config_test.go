@@ -585,3 +585,25 @@ func TestWarnMissingClientIPHeader(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadForwardProxyAllowRequestHeaderFromEnv(t *testing.T) {
+	t.Setenv("GHP_FORWARD_PROXY_ALLOW_REQUEST_HEADER", "true")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ForwardProxy.AllowRequestHeader {
+		t.Error("expected ForwardProxy.AllowRequestHeader to be true")
+	}
+}
+
+func TestForwardProxyAllowRequestHeaderDefaultsFalse(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ForwardProxy.AllowRequestHeader {
+		t.Error("expected ForwardProxy.AllowRequestHeader to default to false")
+	}
+}

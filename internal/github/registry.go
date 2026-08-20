@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sort"
 	"sync"
 
@@ -20,6 +21,7 @@ type AppRegistry struct {
 	store     database.Store
 	encryptor *crypto.Encryptor
 	logger    *slog.Logger
+	transport http.RoundTripper // applied to every provider; nil = default transport
 }
 
 // NewAppRegistry creates a new registry. Call LoadAll to populate it.
@@ -29,6 +31,20 @@ func NewAppRegistry(store database.Store, enc *crypto.Encryptor, logger *slog.Lo
 		store:     store,
 		encryptor: enc,
 		logger:    logger,
+	}
+}
+
+// SetTransport sets the transport applied to every loaded provider's GitHub
+// App API client (current and future loads). The server installs the forward
+// proxy control transport here so installation token minting — ghp control
+// traffic — follows the control-layer egress routing. Call before LoadAll for
+// full coverage; providers already loaded are updated in place.
+func (r *AppRegistry) SetTransport(rt http.RoundTripper) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.transport = rt
+	for _, p := range r.providers {
+		p.SetTransport(rt)
 	}
 }
 
@@ -106,6 +122,9 @@ func (r *AppRegistry) loadAppLocked(app *database.App) error {
 	})
 	if err != nil {
 		return fmt.Errorf("creating provider: %w", err)
+	}
+	if r.transport != nil {
+		provider.SetTransport(r.transport)
 	}
 
 	r.providers[app.ID] = provider

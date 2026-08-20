@@ -97,6 +97,7 @@ type API struct {
 	logger             *slog.Logger
 	httpClient         *http.Client // used for outbound GitHub API calls
 	auditLog           *auditLogWriter
+	forwardProxyRouter *proxy.ForwardProxyRouter // nil when ruleset routing is not wired (tests)
 
 	tokenCreateLimiter *auth.IPRateLimiter // POST /api/tokens
 }
@@ -122,6 +123,12 @@ func NewAPI(ctx context.Context, cfg *config.Config, store database.Store, ts *t
 		auditLog:           aw,
 		tokenCreateLimiter: auth.NewIPRateLimiter(20, time.Minute, "/api/tokens", netutil.IPHeader(cfg.Server.ClientIPHeader), logger),
 	}
+}
+
+// SetForwardProxyRouter wires the forward proxy router so ruleset mutations
+// via the admin API rebuild the route table immediately.
+func (a *API) SetForwardProxyRouter(fr *proxy.ForwardProxyRouter) {
+	a.forwardProxyRouter = fr
 }
 
 // RegisterRoutes adds API routes to the given mux.
@@ -151,6 +158,13 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/apps/{id}/installations/{iid}/repositories", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListAppInstallationRepos)))
 
 	// Cached repository management routes.
+	// Forward proxy rulesets (admin, runtime egress routing).
+	mux.Handle("GET /api/forward-proxy-rulesets", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListForwardProxyRulesets)))
+	mux.Handle("POST /api/forward-proxy-rulesets", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleCreateForwardProxyRuleset)))
+	mux.Handle("GET /api/forward-proxy-rulesets/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleGetForwardProxyRuleset)))
+	mux.Handle("PATCH /api/forward-proxy-rulesets/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleUpdateForwardProxyRuleset)))
+	mux.Handle("DELETE /api/forward-proxy-rulesets/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleDeleteForwardProxyRuleset)))
+
 	mux.Handle("GET /api/cached-repos", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListCachedRepos)))
 	mux.Handle("POST /api/cached-repos", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleCreateCachedRepo)))
 	mux.Handle("GET /api/cached-repos/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleGetCachedRepo)))

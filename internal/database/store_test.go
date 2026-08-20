@@ -7,9 +7,16 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func timePtr(t time.Time) *time.Time { return &t }
+
+// newUUIDString returns a fresh random UUID for non-existent record lookups.
+// Postgres UUID columns reject arbitrary strings, so tests must always use
+// well-formed UUIDs for missing-record probes.
+func newUUIDString() string { return uuid.New().String() }
 
 // testStoreContract runs the full CRUD test suite against any Store implementation.
 // Each backend test file calls this with its own Store instance.
@@ -25,6 +32,7 @@ func testStoreContract(t *testing.T, store Store) {
 	t.Run("GitHubTokenAppID", func(t *testing.T) { testGitHubTokenAppID(t, store) })
 	t.Run("SyncAdminRoles", func(t *testing.T) { testSyncAdminRoles(t, store) })
 	t.Run("CachedRepositoryCRUD", func(t *testing.T) { testCachedRepositoryCRUD(t, store) })
+	t.Run("ForwardProxyRulesetCRUD", func(t *testing.T) { testForwardProxyRulesetCRUD(t, store) })
 	t.Run("DeleteExpiredProxyTokens", func(t *testing.T) { testDeleteExpiredProxyTokens(t, store) })
 	t.Run("SessionCRUD", func(t *testing.T) { testSessionCRUD(t, store) })
 	t.Run("OAuthStateConsume", func(t *testing.T) { testOAuthStateConsume(t, store) })
@@ -1600,5 +1608,161 @@ func testDeviceAuthCRUD(t *testing.T, store Store) {
 	}
 	if n < 1 {
 		t.Errorf("DeleteExpiredDeviceAuths removed %d, want >= 1", n)
+	}
+}
+
+func testForwardProxyRulesetCRUD(t *testing.T, store Store) {
+	ctx := context.Background()
+
+	// Create.
+	rs := &ForwardProxyRuleset{
+		Name:        "ci-egress",
+		Description: "CI traffic egress split",
+		Algorithm:   ForwardProxyAlgoWeighted,
+		Proxies: []ForwardProxyEntry{
+			{URL: "http://proxy-a.internal:3128", Weight: 80},
+			{URL: "http://proxy-b.internal:3128", Weight: 20},
+		},
+		Rules: []ForwardProxyRule{
+			{Type: ForwardProxyRuleNet, Value: "10.42.0.0/16"},
+			{Type: ForwardProxyRuleControl, IncludeNonGitHub: true},
+		},
+		Enabled: true,
+	}
+	if err := store.CreateForwardProxyRuleset(ctx, rs); err != nil {
+		t.Fatalf("CreateForwardProxyRuleset: %v", err)
+	}
+	if rs.ID == "" {
+		t.Fatal("expected ID to be set")
+	}
+	if rs.CreatedAt.IsZero() || rs.UpdatedAt.IsZero() {
+		t.Fatal("expected CreatedAt/UpdatedAt to be set")
+	}
+
+	// Duplicate name must be rejected.
+	dup := &ForwardProxyRuleset{Name: "ci-egress", Algorithm: ForwardProxyAlgoRoundRobin}
+	if err := store.CreateForwardProxyRuleset(ctx, dup); err == nil {
+		t.Error("expected duplicate name create to fail")
+	}
+
+	// Get by ID — every field round-trips.
+	got, err := store.GetForwardProxyRulesetByID(ctx, rs.ID)
+	if err != nil {
+		t.Fatalf("GetForwardProxyRulesetByID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected ruleset, got nil")
+	}
+	if got.Name != "ci-egress" {
+		t.Errorf("name = %q, want ci-egress", got.Name)
+	}
+	if got.Description != "CI traffic egress split" {
+		t.Errorf("description = %q, want CI traffic egress split", got.Description)
+	}
+	if got.Algorithm != ForwardProxyAlgoWeighted {
+		t.Errorf("algorithm = %q, want %q", got.Algorithm, ForwardProxyAlgoWeighted)
+	}
+	if len(got.Proxies) != 2 {
+		t.Fatalf("proxies len = %d, want 2", len(got.Proxies))
+	}
+	if got.Proxies[0].URL != "http://proxy-a.internal:3128" || got.Proxies[0].Weight != 80 {
+		t.Errorf("proxies[0] = %+v, want {http://proxy-a.internal:3128 80}", got.Proxies[0])
+	}
+	if got.Proxies[1].URL != "http://proxy-b.internal:3128" || got.Proxies[1].Weight != 20 {
+		t.Errorf("proxies[1] = %+v, want {http://proxy-b.internal:3128 20}", got.Proxies[1])
+	}
+	if len(got.Rules) != 2 {
+		t.Fatalf("rules len = %d, want 2", len(got.Rules))
+	}
+	if got.Rules[0].Type != ForwardProxyRuleNet || got.Rules[0].Value != "10.42.0.0/16" {
+		t.Errorf("rules[0] = %+v, want {net 10.42.0.0/16}", got.Rules[0])
+	}
+	if got.Rules[1].Type != ForwardProxyRuleControl || got.Rules[1].Value != "" || !got.Rules[1].IncludeNonGitHub {
+		t.Errorf("rules[1] = %+v, want {control include_non_github=true}", got.Rules[1])
+	}
+	if got.Rules[0].IncludeNonGitHub {
+		t.Errorf("rules[0].IncludeNonGitHub = true, want false")
+	}
+	if !got.Enabled {
+		t.Error("expected enabled = true")
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Error("expected CreatedAt/UpdatedAt to be set on retrieved ruleset")
+	}
+
+	// Get by name.
+	byName, err := store.GetForwardProxyRulesetByName(ctx, "ci-egress")
+	if err != nil {
+		t.Fatalf("GetForwardProxyRulesetByName: %v", err)
+	}
+	if byName == nil || byName.ID != rs.ID {
+		t.Fatalf("GetForwardProxyRulesetByName = %+v, want ID %s", byName, rs.ID)
+	}
+
+	// Missing ID lookups return wrapped ErrNotFound; name lookups are
+	// existence probes and return (nil, nil).
+	if _, err := store.GetForwardProxyRulesetByID(ctx, newUUIDString()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetForwardProxyRulesetByID(missing) err = %v, want ErrNotFound", err)
+	}
+	if missing, err := store.GetForwardProxyRulesetByName(ctx, "no-such-ruleset"); err != nil || missing != nil {
+		t.Errorf("GetForwardProxyRulesetByName(missing) = (%+v, %v), want (nil, nil)", missing, err)
+	}
+
+	// List.
+	rulesets, err := store.ListForwardProxyRulesets(ctx)
+	if err != nil {
+		t.Fatalf("ListForwardProxyRulesets: %v", err)
+	}
+	if len(rulesets) != 1 {
+		t.Errorf("ListForwardProxyRulesets returned %d, want 1", len(rulesets))
+	}
+
+	// Update (including rename and clearing to empty slices).
+	rs.Name = "ci-egress-v2"
+	rs.Description = "renamed"
+	rs.Algorithm = ForwardProxyAlgoSticky
+	rs.Proxies = []ForwardProxyEntry{{URL: "socks5://egress.internal:1080", Weight: 1}}
+	rs.Rules = []ForwardProxyRule{}
+	rs.Enabled = false
+	if err := store.UpdateForwardProxyRuleset(ctx, rs); err != nil {
+		t.Fatalf("UpdateForwardProxyRuleset: %v", err)
+	}
+	got2, err := store.GetForwardProxyRulesetByID(ctx, rs.ID)
+	if err != nil {
+		t.Fatalf("GetForwardProxyRulesetByID after update: %v", err)
+	}
+	if got2.Name != "ci-egress-v2" || got2.Description != "renamed" || got2.Algorithm != ForwardProxyAlgoSticky || got2.Enabled {
+		t.Errorf("updated ruleset = %+v, want renamed sticky disabled", got2)
+	}
+	if len(got2.Proxies) != 1 || got2.Proxies[0].URL != "socks5://egress.internal:1080" {
+		t.Errorf("updated proxies = %+v, want single socks5 entry", got2.Proxies)
+	}
+	if got2.Rules == nil || len(got2.Rules) != 0 {
+		t.Errorf("updated rules = %+v, want empty non-nil slice", got2.Rules)
+	}
+
+	// Old name is released, new name resolves.
+	if old, err := store.GetForwardProxyRulesetByName(ctx, "ci-egress"); err != nil || old != nil {
+		t.Errorf("GetForwardProxyRulesetByName(old) = (%+v, %v), want (nil, nil)", old, err)
+	}
+	if renamed, err := store.GetForwardProxyRulesetByName(ctx, "ci-egress-v2"); err != nil || renamed == nil {
+		t.Errorf("GetForwardProxyRulesetByName(new) = (%+v, %v), want ruleset", renamed, err)
+	}
+
+	// Update of a non-existent ruleset returns ErrNotFound.
+	ghost := &ForwardProxyRuleset{ID: newUUIDString(), Name: "ghost", Algorithm: ForwardProxyAlgoRoundRobin}
+	if err := store.UpdateForwardProxyRuleset(ctx, ghost); !errors.Is(err, ErrNotFound) {
+		t.Errorf("UpdateForwardProxyRuleset(missing) = %v, want ErrNotFound", err)
+	}
+
+	// Delete.
+	if err := store.DeleteForwardProxyRuleset(ctx, rs.ID); err != nil {
+		t.Fatalf("DeleteForwardProxyRuleset: %v", err)
+	}
+	if _, err := store.GetForwardProxyRulesetByID(ctx, rs.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetForwardProxyRulesetByID after delete err = %v, want ErrNotFound", err)
+	}
+	if err := store.DeleteForwardProxyRuleset(ctx, newUUIDString()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("DeleteForwardProxyRuleset(missing) = %v, want ErrNotFound", err)
 	}
 }

@@ -35,6 +35,7 @@ nav:
     - Token Type Border Policy: features/border-policy.md
     - Release Download Controls: features/release-controls.md
     - Codeload Redirect: features/codeload.md
+    - Forward Proxy Rulesets: features/forward-proxy-rulesets.md
     - OAuth Broker: features/oauth-broker.md
   - Administration:
     - Installation: admin/installation.md

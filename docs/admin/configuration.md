@@ -149,6 +149,15 @@ See [Release Download Controls](../features/release-controls.md) for details.
 
 See [Codeload Redirect](../features/codeload.md) for details.
 
+### Forward Proxy
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GHP_FORWARD_PROXY_ALLOW_REQUEST_HEADER` | Allow clients to select the upstream forward proxy per request via the `X-GitHub-Proxy-Forward-HTTP`/`-HTTPS`/`-SOCKS` headers. When disabled the headers are stripped and ignored. | `false` |
+
+Forward proxy *rulesets* are runtime configuration managed via the admin API,
+not this file. See [Forward Proxy Rulesets](../features/forward-proxy-rulesets.md).
+
 ### Git Cache
 
 | Variable | Description | Default |
@@ -274,6 +283,9 @@ codeload:
   redirect_to: ""              # absolute URL base for redirecting codeload archive requests; passthrough when empty
   allow:                       # org or org/repo entries that pass through to upstream codeload
     - "myorg"
+
+forward_proxy:
+  allow_request_header: false  # honour X-GitHub-Proxy-Forward-* client headers (rulesets are managed via the admin API)
 
 cache:
   enabled: false               # enable git clone/fetch caching
