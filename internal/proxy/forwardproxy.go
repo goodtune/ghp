@@ -526,33 +526,118 @@ func (fr *ForwardProxyRouter) nonGitHubControlProxy(_ *http.Request) (*url.URL, 
 	return nil, nil
 }
 
-// NewForwardProxyTransport returns an http.Transport cloned from
-// http.DefaultTransport whose Proxy function consults the router per request.
-// All outbound GitHub transports (API proxy, github.com passthrough,
-// codeload, Copilot) share one instance so connection pools are reused per
-// selected proxy.
-func NewForwardProxyTransport(fr *ForwardProxyRouter) *http.Transport {
+// maxPooledForwardProxyTransports bounds the number of per-proxy transports
+// a routingTransport keeps alive. Normal deployments use a handful of egress
+// proxies, but clients may name their own via X-GitHub-Proxy-Forward-* when
+// forward_proxy.allow_request_header is enabled, so the cache must not grow
+// without limit. On overflow an arbitrary entry is evicted and its idle
+// connections closed; in-flight requests holding a reference are unaffected.
+const maxPooledForwardProxyTransports = 64
+
+// routingTransport is an http.RoundTripper that resolves the forward proxy
+// for every request and dispatches it to a transport dedicated to that proxy.
+//
+// It exists because http.Transport.Proxy is NOT consulted per request once a
+// destination has negotiated HTTP/2: Go hands the TLS connection to the
+// bundled HTTP/2 transport, whose connection pool is keyed by authority
+// alone. Every later request to the same host then rides the first request's
+// connection — and therefore the first request's proxy — silently ignoring
+// token rules, client-specified proxies, and ruleset reloads. Keeping one
+// http.Transport per selected proxy restores per-request routing while
+// preserving HTTP/2 and connection pooling within each egress path.
+type routingTransport struct {
+	// selector resolves the proxy for a request; a nil URL means direct
+	// (or, for the ambient-backed selectors, whatever the environment said).
+	selector func(*http.Request) (*url.URL, error)
+
+	mu         sync.Mutex
+	transports map[string]*http.Transport
+}
+
+func newRoutingTransport(selector func(*http.Request) (*url.URL, error)) *routingTransport {
+	return &routingTransport{
+		selector:   selector,
+		transports: make(map[string]*http.Transport),
+	}
+}
+
+// RoundTrip selects the egress proxy, then delegates to the transport bound
+// to it.
+func (rt *routingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	u, err := rt.selector(req)
+	if err != nil {
+		return nil, err
+	}
+	return rt.transportFor(u).RoundTrip(req)
+}
+
+// transportFor returns the transport dedicated to proxy u, creating it on
+// first use. A nil u maps to the direct transport.
+func (rt *routingTransport) transportFor(u *url.URL) *http.Transport {
+	key := ""
+	if u != nil {
+		key = u.String()
+	}
+
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	if t, ok := rt.transports[key]; ok {
+		return t
+	}
+
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.Proxy = fr.ProxyFunc()
+	if u == nil {
+		t.Proxy = nil
+	} else {
+		// Capture by value: this transport only ever dials through u, so
+		// its HTTP/2 connection pool stays bound to a single egress path.
+		fixed := *u
+		t.Proxy = func(*http.Request) (*url.URL, error) { return &fixed, nil }
+	}
+
+	if len(rt.transports) >= maxPooledForwardProxyTransports {
+		for k, evicted := range rt.transports {
+			delete(rt.transports, k)
+			evicted.CloseIdleConnections()
+			break
+		}
+	}
+	rt.transports[key] = t
 	return t
+}
+
+// CloseIdleConnections closes idle connections on every pooled transport,
+// satisfying the interface http.Client uses for the same method.
+func (rt *routingTransport) CloseIdleConnections() {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	for _, t := range rt.transports {
+		t.CloseIdleConnections()
+	}
+}
+
+// NewForwardProxyTransport returns a RoundTripper that consults the router
+// for every outbound request and dispatches through a transport dedicated to
+// the selected proxy. All outbound GitHub backends (API proxy, github.com
+// passthrough, codeload, Copilot) share one instance so connection pools are
+// reused per selected egress path.
+func NewForwardProxyTransport(fr *ForwardProxyRouter) http.RoundTripper {
+	return newRoutingTransport(fr.ProxyFunc())
 }
 
 // NewForwardProxyControlTransport returns a transport that routes every
 // request as control-plane traffic (control rule → system rule → ambient).
 // It is installed on ghp's internal clients so operators can pin the proxy's
 // own GitHub traffic to a dedicated egress path.
-func NewForwardProxyControlTransport(fr *ForwardProxyRouter) *http.Transport {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.Proxy = fr.ControlProxyFunc()
-	return t
+func NewForwardProxyControlTransport(fr *ForwardProxyRouter) http.RoundTripper {
+	return newRoutingTransport(fr.ControlProxyFunc())
 }
 
 // NewForwardProxyNonGitHubControlTransport returns a transport for ghp
 // control calls whose destination is not GitHub (release redirect HEAD
 // probes). Requests are sent direct unless a control rule sets
 // include_non_github, in which case they follow the control ruleset.
-func NewForwardProxyNonGitHubControlTransport(fr *ForwardProxyRouter) *http.Transport {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.Proxy = fr.nonGitHubControlProxy
-	return t
+func NewForwardProxyNonGitHubControlTransport(fr *ForwardProxyRouter) http.RoundTripper {
+	return newRoutingTransport(fr.nonGitHubControlProxy)
 }

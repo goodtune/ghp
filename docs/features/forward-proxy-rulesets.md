@@ -187,9 +187,18 @@ Rules of engagement:
 - **Conflicts resolve deterministically.** When two rulesets bind the same
   token, app, or the system layer, the first by name wins and a warning is
   logged.
-- **Connection pooling is preserved.** All outbound GitHub backends (API
-  proxy, github.com passthrough, codeload, Copilot) share one transport;
-  Go's HTTP transport pools connections per selected proxy.
+- **Connection pooling is preserved, per egress path.** All outbound GitHub
+  backends (API proxy, github.com passthrough, codeload, Copilot) share one
+  routing transport, which keeps a dedicated `http.Transport` — and therefore
+  a dedicated connection pool — per selected proxy. This is not just an
+  optimisation: Go's HTTP/2 client pools connections by destination host
+  alone, so a single transport would consult the routing rules only for the
+  first request to each GitHub host and silently send everything after it out
+  the same egress. Keeping pools separate is what makes per-request routing
+  hold over HTTP/2. The pool is capped at 64 proxies; past
+  that, an existing entry is evicted and its idle connections closed (in-flight
+  requests are unaffected, and the next request for an evicted proxy simply
+  rebuilds its transport).
 - **Client IP attribution** honours `server.client_ip_header`, the same
   setting used for metrics and access logs. If ghp sits behind a load
   balancer, configure it so `net` and `sticky` see real client addresses.
@@ -224,6 +233,9 @@ Rules of engagement:
   the referenced token or app leaves the rule in place, silently matching
   nothing. Prune stale rules when retiring tokens or apps.
 - On the Vault backend, ruleset name-uniqueness is enforced by an atomic
-  KV v2 compare-and-set claim on the name index (with rollback if the
-  record write fails); SQL backends enforce uniqueness with a database
-  constraint.
+  KV v2 compare-and-set claim on the name index, and ruleset updates are
+  written with a compare-and-set on the record version so concurrent renames
+  cannot both win; SQL backends enforce uniqueness with a database
+  constraint. If Vault index cleanup fails after a delete or rename, the API
+  returns an error and the stale reservation is ignored by lookups and
+  reclaimed by the next create of that name.

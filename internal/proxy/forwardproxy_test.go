@@ -2,9 +2,12 @@ package proxy
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -326,8 +329,8 @@ func TestForwardProxyRouter_ControlTransportAndContext(t *testing.T) {
 	// The dedicated control transport routes without any context marker.
 	ct := NewForwardProxyControlTransport(fr)
 	bare := httptest.NewRequest(http.MethodGet, "https://api.github.com/app/installations", nil)
-	if u, err := ct.Proxy(bare); err != nil || u == nil || u.Host != "control-proxy:3128" {
-		t.Fatalf("control transport Proxy() = (%v, %v), want control-proxy:3128", u, err)
+	if u, err := ct.(*routingTransport).selector(bare); err != nil || u == nil || u.Host != "control-proxy:3128" {
+		t.Fatalf("control transport selector = (%v, %v), want control-proxy:3128", u, err)
 	}
 
 	// WithForwardProxyControl overrides request-derived route info on the
@@ -394,8 +397,8 @@ func TestForwardProxyRouter_NonGitHubControlOptIn(t *testing.T) {
 
 	// The transport constructor wires the same behaviour.
 	nt := NewForwardProxyNonGitHubControlTransport(fr)
-	if u, err := nt.Proxy(req); err != nil || u == nil || u.Host != "control-proxy:3128" {
-		t.Fatalf("non-GitHub control transport Proxy() = (%v, %v), want control-proxy:3128", u, err)
+	if u, err := nt.(*routingTransport).selector(req); err != nil || u == nil || u.Host != "control-proxy:3128" {
+		t.Fatalf("non-GitHub control transport selector = (%v, %v), want control-proxy:3128", u, err)
 	}
 }
 
@@ -572,4 +575,81 @@ func TestForwardProxyRouter_StartRefresh(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("periodic refresh never applied the new ruleset")
+}
+
+// TestRoutingTransport_PerRequestSelectionOverHTTP2 guards the reason
+// routingTransport exists. A bare http.Transport consults Proxy only for the
+// first request to an HTTP/2 destination: the bundled h2 transport pools
+// connections by authority alone, so later requests silently inherit the
+// first request's egress. routingTransport must resolve every request.
+func TestRoutingTransport_PerRequestSelectionOverHTTP2(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, r.Proto)
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	var calls atomic.Int64
+	rt := newRoutingTransport(func(*http.Request) (*url.URL, error) {
+		calls.Add(1)
+		return nil, nil
+	})
+	// Trust the test server's certificate on every pooled transport.
+	rt.transports[""] = srv.Client().Transport.(*http.Transport).Clone()
+
+	client := &http.Client{Transport: rt}
+	const n = 4
+	for i := 0; i < n; i++ {
+		resp, err := client.Get(srv.URL)
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if got := string(body); got != "HTTP/2.0" {
+			t.Fatalf("request %d served over %s, want HTTP/2.0 (test would not exercise the bug)", i, got)
+		}
+	}
+	if got := calls.Load(); got != n {
+		t.Fatalf("proxy selector called %d times over %d HTTP/2 requests, want %d", got, n, n)
+	}
+}
+
+// TestRoutingTransport_TransportPerProxy checks that each selected proxy gets
+// its own transport (so HTTP/2 pools never straddle egress paths), that the
+// same proxy reuses one transport, and that the cache stays bounded.
+func TestRoutingTransport_TransportPerProxy(t *testing.T) {
+	rt := newRoutingTransport(func(*http.Request) (*url.URL, error) { return nil, nil })
+
+	a, _ := url.Parse("http://egress-a:3128")
+	b, _ := url.Parse("http://egress-b:3128")
+
+	ta1 := rt.transportFor(a)
+	ta2 := rt.transportFor(a)
+	tb := rt.transportFor(b)
+	direct := rt.transportFor(nil)
+
+	if ta1 != ta2 {
+		t.Error("same proxy returned different transports")
+	}
+	if ta1 == tb {
+		t.Error("different proxies shared a transport")
+	}
+	if direct == ta1 || direct.Proxy != nil {
+		t.Error("direct transport must be distinct and carry no Proxy func")
+	}
+	if u, err := ta1.Proxy(httptest.NewRequest(http.MethodGet, "https://api.github.com/", nil)); err != nil || u.String() != a.String() {
+		t.Fatalf("pooled transport Proxy = (%v, %v), want %s", u, err, a)
+	}
+
+	for i := 0; i < maxPooledForwardProxyTransports*2; i++ {
+		u, _ := url.Parse(fmt.Sprintf("http://egress-%d:3128", i))
+		rt.transportFor(u)
+	}
+	if got := len(rt.transports); got > maxPooledForwardProxyTransports {
+		t.Fatalf("transport cache grew to %d entries, want <= %d", got, maxPooledForwardProxyTransports)
+	}
+
+	rt.CloseIdleConnections()
 }

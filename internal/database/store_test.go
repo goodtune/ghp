@@ -1765,4 +1765,16 @@ func testForwardProxyRulesetCRUD(t *testing.T, store Store) {
 	if err := store.DeleteForwardProxyRuleset(ctx, newUUIDString()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("DeleteForwardProxyRuleset(missing) = %v, want ErrNotFound", err)
 	}
+
+	// Deleting releases the name reservation, so it can be claimed again.
+	if stale, err := store.GetForwardProxyRulesetByName(ctx, "ci-egress-v2"); err != nil || stale != nil {
+		t.Errorf("GetForwardProxyRulesetByName after delete = (%+v, %v), want (nil, nil)", stale, err)
+	}
+	reuse := &ForwardProxyRuleset{Name: "ci-egress-v2", Algorithm: ForwardProxyAlgoRoundRobin}
+	if err := store.CreateForwardProxyRuleset(ctx, reuse); err != nil {
+		t.Fatalf("CreateForwardProxyRuleset reusing deleted name: %v", err)
+	}
+	if err := store.DeleteForwardProxyRuleset(ctx, reuse.ID); err != nil {
+		t.Fatalf("DeleteForwardProxyRuleset (cleanup): %v", err)
+	}
 }
