@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"slices"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 )
 
@@ -21,7 +22,7 @@ type slogHandler struct {
 
 	// attrs are the pre-formatted attributes accumulated via WithAttrs, already
 	// namespaced by any active groups.
-	attrs []otellog.KeyValue
+	attrs []attribute.KeyValue
 	// groups is the stack of open group names; new attributes and record
 	// attributes are prefixed with these (dot-joined).
 	groups []string
@@ -52,7 +53,7 @@ func (h *slogHandler) Handle(ctx context.Context, r slog.Record) error {
 	if !r.Time.IsZero() {
 		rec.SetTimestamp(r.Time)
 	}
-	rec.SetBody(otellog.StringValue(r.Message))
+	rec.SetBody(attribute.StringValue(r.Message))
 	rec.SetSeverity(severity(r.Level))
 	rec.SetSeverityText(r.Level.String())
 
@@ -118,18 +119,18 @@ func severity(level slog.Level) otellog.Severity {
 }
 
 // convertAttr converts a slog.Attr (honouring the active group prefix) into an
-// OTel log.KeyValue. Empty attributes are dropped (ok=false). Group-valued
+// attribute.KeyValue. Empty attributes are dropped (ok=false). Group-valued
 // attributes are flattened into a nested map.
-func convertAttr(groups []string, a slog.Attr) (otellog.KeyValue, bool) {
+func convertAttr(groups []string, a slog.Attr) (attribute.KeyValue, bool) {
 	a.Value = a.Value.Resolve()
 	if a.Equal(slog.Attr{}) {
-		return otellog.KeyValue{}, false
+		return attribute.KeyValue{}, false
 	}
 	key := a.Key
 	if len(groups) > 0 {
 		key = joinGroups(groups, key)
 	}
-	return otellog.KeyValue{Key: key, Value: convertValue(a.Value)}, true
+	return attribute.KeyValue{Key: attribute.Key(key), Value: convertValue(a.Value)}, true
 }
 
 func joinGroups(groups []string, key string) string {
@@ -143,33 +144,33 @@ func joinGroups(groups []string, key string) string {
 	return out + key
 }
 
-// convertValue maps a slog.Value to an OTel log.Value.
-func convertValue(v slog.Value) otellog.Value {
+// convertValue maps a slog.Value to an OTel attribute.Value.
+func convertValue(v slog.Value) attribute.Value {
 	switch v.Kind() {
 	case slog.KindString:
-		return otellog.StringValue(v.String())
+		return attribute.StringValue(v.String())
 	case slog.KindInt64:
-		return otellog.Int64Value(v.Int64())
+		return attribute.Int64Value(v.Int64())
 	case slog.KindUint64:
-		return otellog.Int64Value(int64(v.Uint64()))
+		return attribute.Int64Value(int64(v.Uint64()))
 	case slog.KindFloat64:
-		return otellog.Float64Value(v.Float64())
+		return attribute.Float64Value(v.Float64())
 	case slog.KindBool:
-		return otellog.BoolValue(v.Bool())
+		return attribute.BoolValue(v.Bool())
 	case slog.KindDuration:
-		return otellog.Int64Value(v.Duration().Nanoseconds())
+		return attribute.Int64Value(v.Duration().Nanoseconds())
 	case slog.KindTime:
-		return otellog.StringValue(v.Time().Format("2006-01-02T15:04:05.000000000Z07:00"))
+		return attribute.StringValue(v.Time().Format("2006-01-02T15:04:05.000000000Z07:00"))
 	case slog.KindGroup:
 		attrs := v.Group()
-		kvs := make([]otellog.KeyValue, 0, len(attrs))
+		kvs := make([]attribute.KeyValue, 0, len(attrs))
 		for _, a := range attrs {
 			if kv, ok := convertAttr(nil, a); ok {
 				kvs = append(kvs, kv)
 			}
 		}
-		return otellog.MapValue(kvs...)
+		return attribute.MapValue(kvs...)
 	default: // slog.KindAny and anything else
-		return otellog.StringValue(v.String())
+		return attribute.StringValue(v.String())
 	}
 }
