@@ -24,6 +24,55 @@ func TestLoadAdminsFromEnv(t *testing.T) {
 	}
 }
 
+func TestLoadEnterpriseExceptionsFromYAML(t *testing.T) {
+	yaml := `
+github:
+  enterprise_slug: "12345"
+  enterprise_exceptions:
+    - match:
+        - torvalds
+        - kubernetes/website
+      teams:
+        - acme-org/oss-contributors
+      identity:
+        app_record_id: "9f3c2a1e-0000-0000-0000-000000000000"
+    - match:
+        - partner
+`
+	path := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GitHub.EnterpriseSlug != "12345" {
+		t.Errorf("EnterpriseSlug = %q, want %q", cfg.GitHub.EnterpriseSlug, "12345")
+	}
+	if len(cfg.GitHub.EnterpriseExceptions) != 2 {
+		t.Fatalf("expected 2 exceptions, got %d", len(cfg.GitHub.EnterpriseExceptions))
+	}
+	first := cfg.GitHub.EnterpriseExceptions[0]
+	if len(first.Match) != 2 || first.Match[0] != "torvalds" || first.Match[1] != "kubernetes/website" {
+		t.Errorf("unexpected match entries: %v", first.Match)
+	}
+	if len(first.Teams) != 1 || first.Teams[0] != "acme-org/oss-contributors" {
+		t.Errorf("unexpected teams entries: %v", first.Teams)
+	}
+	if first.Identity.AppRecordID != "9f3c2a1e-0000-0000-0000-000000000000" {
+		t.Errorf("unexpected app_record_id: %q", first.Identity.AppRecordID)
+	}
+	second := cfg.GitHub.EnterpriseExceptions[1]
+	if len(second.Match) != 1 || second.Match[0] != "partner" {
+		t.Errorf("unexpected match entries: %v", second.Match)
+	}
+	if second.Identity.AppRecordID != "" {
+		t.Errorf("expected empty app_record_id, got %q", second.Identity.AppRecordID)
+	}
+}
+
 func TestLoadAllowedRedirectsFromEnv(t *testing.T) {
 	t.Setenv("GHP_AUTH_ALLOWED_REDIRECTS", "https://a.example.com/cb,*.internal.example.com")
 
@@ -39,6 +88,34 @@ func TestLoadAllowedRedirectsFromEnv(t *testing.T) {
 		if cfg.Auth.AllowedRedirects[i] != w {
 			t.Errorf("AllowedRedirects[%d] = %q, want %q", i, cfg.Auth.AllowedRedirects[i], w)
 		}
+	}
+}
+
+func TestLoadBlockGithubPatFromEnv(t *testing.T) {
+	t.Setenv("GHP_BLOCK_GITHUB_PAT", "true")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Block.GithubPat {
+		t.Error("expected Block.GithubPat to be true")
+	}
+	if !cfg.IsTokenBlocked("github_pat_11ABCDEF0123456789") {
+		t.Error("expected fine-grained PAT to be blocked")
+	}
+	if cfg.IsTokenBlocked("ghp_classic123") {
+		t.Error("blocking github_pat_ must not block classic ghp_ tokens")
+	}
+}
+
+func TestIsTokenBlocked_GithubPatDisabledByDefault(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.IsTokenBlocked("github_pat_11ABCDEF0123456789") {
+		t.Error("fine-grained PATs must not be blocked by default")
 	}
 }
 
@@ -503,4 +580,69 @@ func TestRawAllowQueryToken(t *testing.T) {
 			t.Error("RawAllowQueryToken() = true, want false from GHP_RAW_ALLOW_QUERY_TOKEN")
 		}
 	})
+}
+
+func TestLoadClientIPHeaderFromEnv(t *testing.T) {
+	t.Setenv("GHP_SERVER_CLIENT_IP_HEADER", "X-Forwarded-For")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.ClientIPHeader != "x-forwarded-for" {
+		t.Errorf("ClientIPHeader = %q, want %q", cfg.Server.ClientIPHeader, "x-forwarded-for")
+	}
+}
+
+func TestLoadClientIPHeaderDefaultsEmpty(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.ClientIPHeader != "" {
+		t.Errorf("ClientIPHeader = %q, want empty", cfg.Server.ClientIPHeader)
+	}
+}
+
+func TestLoadClientIPHeaderInvalid(t *testing.T) {
+	t.Setenv("GHP_SERVER_CLIENT_IP_HEADER", "cf-connecting-ip")
+
+	if _, err := Load(""); err == nil {
+		t.Fatal("expected error for unsupported client_ip_header")
+	}
+}
+
+type warnRecorder struct {
+	messages []string
+}
+
+func (w *warnRecorder) Warn(msg string, args ...any) {
+	w.messages = append(w.messages, msg)
+}
+
+func TestWarnMissingClientIPHeader(t *testing.T) {
+	tests := []struct {
+		name              string
+		trustProxyHeaders bool
+		clientIPHeader    string
+		wantWarn          bool
+	}{
+		{name: "trust set without client ip header warns", trustProxyHeaders: true, wantWarn: true},
+		{name: "trust set with client ip header", trustProxyHeaders: true, clientIPHeader: "x-forwarded-for"},
+		{name: "trust unset without client ip header"},
+		{name: "trust unset with client ip header", clientIPHeader: "x-forwarded-for"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{Server: ServerConfig{
+				TrustProxyHeaders: tt.trustProxyHeaders,
+				ClientIPHeader:    tt.clientIPHeader,
+			}}
+			rec := &warnRecorder{}
+			cfg.WarnMissingClientIPHeader(rec)
+			if got := len(rec.messages) > 0; got != tt.wantWarn {
+				t.Errorf("warned = %v, want %v (messages: %v)", got, tt.wantWarn, rec.messages)
+			}
+		})
+	}
 }

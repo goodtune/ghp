@@ -267,6 +267,29 @@ func (r *AppRegistry) GetInstallationTokenForApp(ctx context.Context, appID stri
 	return provider.GetInstallationToken(ctx, installationID, repos, permissions)
 }
 
+// InstallationTokenForOwner mints an installation token for the given app's
+// installation on the target owner (user or organization), discovering the
+// installation ID via the app JWT. An empty appRecordID selects the default
+// app. Satisfies the proxy.ExceptionIdentitySource interface used by
+// enterprise access restriction exceptions.
+func (r *AppRegistry) InstallationTokenForOwner(ctx context.Context, appRecordID, owner string, repos []string, permissions map[string]string) (string, error) {
+	var provider *AppTokenProvider
+	var err error
+	if appRecordID != "" {
+		provider, err = r.Get(appRecordID)
+	} else {
+		provider, err = r.GetDefault()
+	}
+	if err != nil {
+		return "", err
+	}
+	installationID, err := provider.GetInstallationIDForOwner(ctx, owner)
+	if err != nil {
+		return "", err
+	}
+	return provider.GetInstallationToken(ctx, installationID, repos, permissions)
+}
+
 // NewRegistryWithState constructs an AppRegistry with pre-populated provider
 // slot IDs and an optional default ID. Provider values are nil — Get()
 // returns a clear error ("not initialized") instead of a nil pointer, so
@@ -286,4 +309,3 @@ func NewRegistryWithState(providerIDs []string, defaultID string) *AppRegistry {
 	}
 	return r
 }
-

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
@@ -45,7 +46,7 @@ type loggedRecord struct {
 	severity     otellog.Severity
 	severityText string
 	scope        string
-	attrs        map[string]otellog.Value
+	attrs        map[string]attribute.Value
 }
 
 // only returns the single captured record, failing if there is not exactly one.
@@ -71,10 +72,10 @@ func flatten(r sdklog.Record) loggedRecord {
 		severity:     r.Severity(),
 		severityText: r.SeverityText(),
 		scope:        r.InstrumentationScope().Name,
-		attrs:        map[string]otellog.Value{},
+		attrs:        map[string]attribute.Value{},
 	}
-	r.WalkAttributes(func(kv otellog.KeyValue) bool {
-		out.attrs[kv.Key] = kv.Value
+	r.WalkAttributes(func(kv attribute.KeyValue) bool {
+		out.attrs[string(kv.Key)] = kv.Value
 		return true
 	})
 	return out

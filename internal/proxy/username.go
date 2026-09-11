@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -42,12 +41,33 @@ const (
 // Results are kept in a long-lived in-memory cache keyed by a one-way SHA-256
 // hash of the token so the actual credential is never stored.
 type UsernameResolver struct {
-	store      database.Store
-	cache      *expirable.LRU[string, string]
-	logger     *slog.Logger
-	inflight   sync.Map   // tracks in-progress lookups to prevent duplicate goroutines
-	graphqlURL string     // GraphQL endpoint URL (overridable for tests)
+	store  database.Store
+	cache  *expirable.LRU[string, string]
+	logger *slog.Logger
+	// inflight maps a token hash to the *usernameFlight coordinating the
+	// lookup currently in progress for it. Async callers use it to avoid
+	// spawning duplicate goroutines; synchronous callers additionally wait
+	// on the flight so concurrent cache misses for the same token trigger
+	// exactly one GraphQL viewer request.
+	inflight   sync.Map
+	graphqlURL string       // GraphQL endpoint URL (overridable for tests)
 	httpClient *http.Client // HTTP client for GraphQL requests
+}
+
+// usernameFlight is a single in-progress username lookup that concurrent
+// callers can wait on. The leader stores the result in username before
+// closing done; waiters must only read username after done is closed.
+type usernameFlight struct {
+	done     chan struct{}
+	username string
+}
+
+// finish records the lookup result, releases any waiters, and removes the
+// flight from the inflight map.
+func (u *UsernameResolver) finish(key string, f *usernameFlight, username string) {
+	f.username = username
+	close(f.done)
+	u.inflight.Delete(key)
 }
 
 // NewUsernameResolver creates a resolver backed by store for database lookups
@@ -177,11 +197,11 @@ func (u *UsernameResolver) warmCacheSync(parentCtx context.Context, resolver Git
 			// warm-up and request-driven resolution for the same token hash
 			// deduplicate consistently and avoid redundant GraphQL calls when
 			// real traffic overlaps with the warm-up pass.
-			if _, loaded := u.inflight.LoadOrStore(key, struct{}{}); loaded {
+			f := &usernameFlight{done: make(chan struct{})}
+			if _, loaded := u.inflight.LoadOrStore(key, f); loaded {
 				return
 			}
-			defer u.inflight.Delete(key)
-			u.resolveAndCacheGitHubUsername(ctx, key, ghToken)
+			u.finish(key, f, u.resolveAndCacheGitHubUsername(ctx, key, ghToken))
 		}()
 	}
 	wg.Wait()
@@ -224,7 +244,8 @@ func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken 
 
 	// Guard against unbounded goroutine spawning: only one in-flight lookup
 	// is allowed per token hash at a time.
-	if _, loaded := u.inflight.LoadOrStore(key, struct{}{}); loaded {
+	f := &usernameFlight{done: make(chan struct{})}
+	if _, loaded := u.inflight.LoadOrStore(key, f); loaded {
 		return ""
 	}
 
@@ -233,12 +254,45 @@ func (u *UsernameResolver) ResolveFromGitHubToken(ctx context.Context, rawToken 
 	// stored in the cache for future calls. Use a fresh background context so
 	// the lookup is not cancelled when the triggering request context ends.
 	go func() {
-		defer u.inflight.Delete(key)
-		u.resolveAndCacheGitHubUsername(context.Background(), key, rawToken)
+		u.finish(key, f, u.resolveAndCacheGitHubUsername(context.Background(), key, rawToken))
 	}()
 
 	// Best-effort: if the username is not yet cached, return empty string.
 	return ""
+}
+
+// ResolveFromGitHubTokenSync is the blocking variant of ResolveFromGitHubToken:
+// on a cache miss the GraphQL viewer lookup is performed synchronously (bounded
+// by the resolver's 5s per-lookup timeout) instead of in a background goroutine.
+// It is intended for decisions that cannot proceed without an identity — e.g.
+// team-gated enterprise restriction exceptions — where returning "" on first
+// sight of a token would silently change the outcome. Returns "" on any error.
+func (u *UsernameResolver) ResolveFromGitHubTokenSync(ctx context.Context, rawToken string) string {
+	if u == nil || rawToken == "" || !isResolvableGitHubToken(rawToken) {
+		return ""
+	}
+	key := hashToken(rawToken)
+	if username, ok := u.cache.Get(key); ok {
+		return username
+	}
+
+	// Coalesce concurrent lookups for the same token: the first caller (or an
+	// already-running async lookup) is the leader; everyone else waits on its
+	// flight — bounded by their own context — instead of issuing duplicate
+	// GraphQL viewer requests.
+	f := &usernameFlight{done: make(chan struct{})}
+	if existing, loaded := u.inflight.LoadOrStore(key, f); loaded {
+		ef := existing.(*usernameFlight)
+		select {
+		case <-ef.done:
+			return ef.username
+		case <-ctx.Done():
+			return ""
+		}
+	}
+	username := u.resolveAndCacheGitHubUsername(ctx, key, rawToken)
+	u.finish(key, f, username)
+	return username
 }
 
 // CheckCache returns the cached GitHub username for the given raw token without
@@ -276,12 +330,13 @@ type graphQLResponse struct {
 
 // resolveAndCacheGitHubUsername queries the GitHub GraphQL API to resolve the
 // authenticated identity (user or bot) for the given token and stores the
-// result in the cache. It is intended to be called from a goroutine so that
-// GitHub API latency does not impact the request that triggered the lookup.
+// result in the cache, returning it ("" on any failure). Async callers (the
+// per-request goroutine, cache warming) ignore the return value; the
+// synchronous path (ResolveFromGitHubTokenSync) uses it directly.
 // parentCtx provides a deadline ceiling (e.g. the warm-cache 60s budget);
 // a 5s per-lookup timeout is derived from it so the lookup is bounded both
 // individually and within the overall warm-pass budget.
-func (u *UsernameResolver) resolveAndCacheGitHubUsername(parentCtx context.Context, key, rawToken string) {
+func (u *UsernameResolver) resolveAndCacheGitHubUsername(parentCtx context.Context, key, rawToken string) string {
 	// Derive a per-lookup timeout from the parent context. Using the parent
 	// as the base means the warm-cache 60s deadline is inherited: if the
 	// overall budget expires the child context (and in-flight HTTP request)
@@ -295,7 +350,7 @@ func (u *UsernameResolver) resolveAndCacheGitHubUsername(parentCtx context.Conte
 		if u.logger != nil {
 			u.logger.Debug("github username lookup: failed to create request", "error", err)
 		}
-		return
+		return ""
 	}
 	req.Header.Set("Authorization", "Bearer "+rawToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -306,7 +361,7 @@ func (u *UsernameResolver) resolveAndCacheGitHubUsername(parentCtx context.Conte
 		if u.logger != nil {
 			u.logger.Debug("github username lookup failed", "error", err)
 		}
-		return
+		return ""
 	}
 	defer resp.Body.Close()
 
@@ -315,14 +370,14 @@ func (u *UsernameResolver) resolveAndCacheGitHubUsername(parentCtx context.Conte
 		if u.logger != nil {
 			u.logger.Debug("github username lookup: failed to read response", "error", err)
 		}
-		return
+		return ""
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		if u.logger != nil {
 			u.logger.Debug("github username lookup: non-200 response", "status", resp.StatusCode)
 		}
-		return
+		return ""
 	}
 
 	var result graphQLResponse
@@ -330,7 +385,7 @@ func (u *UsernameResolver) resolveAndCacheGitHubUsername(parentCtx context.Conte
 		if u.logger != nil {
 			u.logger.Debug("github username lookup: failed to parse response", "error", err)
 		}
-		return
+		return ""
 	}
 
 	// GitHub GraphQL returns HTTP 200 even for auth/rate-limit/abuse failures,
@@ -340,7 +395,7 @@ func (u *UsernameResolver) resolveAndCacheGitHubUsername(parentCtx context.Conte
 		if u.logger != nil {
 			u.logger.Debug("github username lookup: graphql error", "message", result.Errors[0].Message)
 		}
-		return
+		return ""
 	}
 
 	username := result.Data.Viewer.Login
@@ -348,9 +403,10 @@ func (u *UsernameResolver) resolveAndCacheGitHubUsername(parentCtx context.Conte
 		if u.logger != nil {
 			u.logger.Debug("github username lookup: empty login in response")
 		}
-		return
+		return ""
 	}
 	u.cache.Add(key, username)
+	return username
 }
 
 // hashToken returns a hex-encoded SHA-256 digest of the token. This is used
@@ -367,40 +423,15 @@ func hashToken(token string) string {
 // resolvable GitHub prefix (gho_, ghp_, ghu_, ghs_) are returned; all other
 // values yield "".
 func extractRawGitHubToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		return ""
-	}
-	parts := strings.SplitN(auth, " ", 2)
-	if len(parts) != 2 {
-		return ""
-	}
-	scheme := strings.ToLower(parts[0])
-	credential := parts[1]
-
-	switch scheme {
-	case "bearer", "token":
-		if isResolvableGitHubToken(credential) {
-			return credential
-		}
-	case "basic":
-		decoded, err := base64.StdEncoding.DecodeString(credential)
-		if err != nil {
-			return ""
-		}
-		_, pass, ok := strings.Cut(string(decoded), ":")
-		if ok && isResolvableGitHubToken(pass) {
-			return pass
-		}
-	}
-	return ""
+	return rawTokenFromAuthValue(r.Header.Get("Authorization"))
 }
 
 // nativeGitHubTokenPrefixes lists the token prefixes for native GitHub
 // credentials whose identity can be resolved via the GitHub API. This
-// includes human user tokens (gho_, ghp_, ghu_) and GitHub App
-// installation tokens (ghs_) which identify bot accounts.
-var nativeGitHubTokenPrefixes = [...]string{"gho_", "ghp_", "ghu_", "ghs_"}
+// includes human user tokens (gho_, ghp_, ghu_, and fine-grained
+// github_pat_) and GitHub App installation tokens (ghs_) which identify
+// bot accounts.
+var nativeGitHubTokenPrefixes = [...]string{"gho_", "ghp_", "ghu_", "ghs_", "github_pat_"}
 
 // isResolvableGitHubToken returns true for tokens with prefixes whose
 // identity can be resolved via the GitHub GraphQL viewer query.

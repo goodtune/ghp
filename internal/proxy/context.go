@@ -14,6 +14,7 @@ var userIDCtxKey = &contextKey{"user-id"}
 var cacheStateCtxKey = &contextKey{"cache-state"}
 var cacheRepoCtxKey = &contextKey{"cache-repo"}
 var rawAuthCtxKey = &contextKey{"raw-auth"}
+var tokenTypeCtxKey = &contextKey{"token-type"}
 
 // AccessLogSlots holds the mutable string slots that downstream handlers
 // populate so the access-log middleware can read them after the request.
@@ -26,7 +27,8 @@ type AccessLogSlots struct {
 	// "proxy_token", "query_token", "foreign_credential", "anonymous", or one
 	// of the denial reasons "denied_method", "denied_border", "denied_policy",
 	// "denied_scope", "denied_token", "error". Empty for non-raw backends.
-	RawAuth *string
+	RawAuth   *string
+	TokenType *string // "proxy", "agent", native prefix (e.g. "gho"), or "" if unresolved
 }
 
 // PrepareAccessLogSlots returns a new request whose context carries mutable
@@ -39,17 +41,20 @@ func PrepareAccessLogSlots(r *http.Request) (*http.Request, *AccessLogSlots) {
 	cacheStateSlot := new(string)
 	cacheRepoSlot := new(string)
 	rawAuthSlot := new(string)
+	tokenTypeSlot := new(string)
 	ctx := context.WithValue(r.Context(), usernameCtxKey, usernameSlot)
 	ctx = context.WithValue(ctx, userIDCtxKey, userIDSlot)
 	ctx = context.WithValue(ctx, cacheStateCtxKey, cacheStateSlot)
 	ctx = context.WithValue(ctx, cacheRepoCtxKey, cacheRepoSlot)
 	ctx = context.WithValue(ctx, rawAuthCtxKey, rawAuthSlot)
+	ctx = context.WithValue(ctx, tokenTypeCtxKey, tokenTypeSlot)
 	return r.WithContext(ctx), &AccessLogSlots{
 		Username:   usernameSlot,
 		UserID:     userIDSlot,
 		CacheState: cacheStateSlot,
 		CacheRepo:  cacheRepoSlot,
 		RawAuth:    rawAuthSlot,
+		TokenType:  tokenTypeSlot,
 	}
 }
 
@@ -131,5 +136,11 @@ func SetCacheRepo(r *http.Request, repo string) {
 func SetRawAuth(r *http.Request, v string) {
 	if slot, ok := r.Context().Value(rawAuthCtxKey).(*string); ok && slot != nil {
 		*slot = v
+	}
+}
+
+func SetTokenType(r *http.Request, tokenType string) {
+	if slot, ok := r.Context().Value(tokenTypeCtxKey).(*string); ok {
+		*slot = tokenType
 	}
 }

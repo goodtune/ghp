@@ -37,6 +37,7 @@ GitHub uses these token prefixes:
 | `ghu_` | User-to-server tokens | `block.ghu` |
 | `ghs_` | Server-to-server tokens | `block.ghs` |
 | `ghr_` | Refresh tokens | `block.ghr` |
+| `github_pat_` | Fine-grained personal access tokens | `block.github_pat` |
 
 ## Configuration
 
@@ -51,6 +52,7 @@ Enable blocking for specific token types:
       ghu: true    # block user-to-server tokens
       ghs: false   # allow server-to-server tokens
       ghr: true    # block refresh tokens
+      github_pat: true  # block fine-grained personal access tokens
     ```
 
 === "Environment Variables"
@@ -61,6 +63,7 @@ Enable blocking for specific token types:
     GHP_BLOCK_GHU=true
     GHP_BLOCK_GHS=false
     GHP_BLOCK_GHR=true
+    GHP_BLOCK_GITHUB_PAT=true
     ```
 
 ## Typical Usage

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/noop"
 
@@ -29,8 +30,8 @@ func newAuditLogWriter(logger otellog.Logger) *auditLogWriter {
 
 // WriteAuditEntry implements proxy.AuditLogWriter.
 func (a *auditLogWriter) WriteAuditEntry(entry proxy.AuditLogEntry) {
-	attrs := []otellog.KeyValue{
-		otellog.String(attrGHPAuditAction, entry.Action),
+	attrs := []attribute.KeyValue{
+		attribute.String(attrGHPAuditAction, entry.Action),
 	}
 	attrs = appendNonEmpty(attrs, attrEndUserID, entry.UserID)
 	attrs = appendNonEmpty(attrs, attrGHPUserName, entry.Username)
@@ -41,23 +42,23 @@ func (a *auditLogWriter) WriteAuditEntry(entry proxy.AuditLogEntry) {
 	attrs = appendNonEmpty(attrs, attrURLPath, entry.Path)
 	attrs = appendNonEmpty(attrs, attrGHPRepository, entry.Repository)
 	if entry.StatusCode != 0 {
-		attrs = append(attrs, otellog.Int(attrHTTPResponseStatusCode, entry.StatusCode))
+		attrs = append(attrs, attribute.Int(attrHTTPResponseStatusCode, entry.StatusCode))
 	}
 	if entry.DurationMS != 0 {
-		attrs = append(attrs, otellog.Float64(attrHTTPServerRequestDuration, float64(entry.DurationMS)/1000))
+		attrs = append(attrs, attribute.Float64(attrHTTPServerRequestDuration, float64(entry.DurationMS)/1000))
 	}
 
 	var record otellog.Record
-	record.SetBody(otellog.StringValue("audit event"))
+	record.SetBody(attribute.StringValue("audit event"))
 	record.SetSeverity(otellog.SeverityInfo)
 	record.SetSeverityText(otellog.SeverityInfo.String())
 	record.AddAttributes(attrs...)
 	a.logger.Emit(context.Background(), record)
 }
 
-func appendNonEmpty(attrs []otellog.KeyValue, key, value string) []otellog.KeyValue {
+func appendNonEmpty(attrs []attribute.KeyValue, key, value string) []attribute.KeyValue {
 	if value == "" {
 		return attrs
 	}
-	return append(attrs, otellog.String(key, value))
+	return append(attrs, attribute.String(key, value))
 }

@@ -21,6 +21,8 @@ import (
 	"github.com/knadh/koanf/providers/env/v2"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/goodtune/ghp/internal/netutil"
 )
 
 // Config represents the complete server configuration.
@@ -85,11 +87,12 @@ type Config struct {
 // produce a warning at startup — those tokens are managed internally
 // and never reach the passthrough path.
 type BlockConfig struct {
-	GHP          bool `koanf:"ghp"`           // GitHub personal access tokens (ghp_)
+	GHP          bool `koanf:"ghp"`           // Classic personal access tokens (ghp_)
 	GHO          bool `koanf:"gho"`           // OAuth access tokens (gho_)
 	GHU          bool `koanf:"ghu"`           // GitHub user-to-server tokens (ghu_)
 	GHS          bool `koanf:"ghs"`           // GitHub server-to-server tokens (ghs_)
 	GHR          bool `koanf:"ghr"`           // Refresh tokens (ghr_)
+	GithubPat    bool `koanf:"github_pat"`    // Fine-grained personal access tokens (github_pat_)
 	AnonymousGit bool `koanf:"anonymous_git"` // Block anonymous git smart HTTP requests (identified by Git-Protocol header + no auth)
 }
 
@@ -193,6 +196,53 @@ type GitHubConfig struct {
 	PrivateKeyFile string `koanf:"private_key_file"` // Path to PEM file (GHP_GITHUB_PRIVATE_KEY_FILE)
 	BaseURL        string `koanf:"base_url"`         // GitHub API base URL for GHES (default: https://api.github.com)
 	EnterpriseSlug string `koanf:"enterprise_slug"`
+	// EnterpriseExceptions lists targets that are exempt from the enterprise
+	// access restriction header (sec-GitHub-allowed-enterprise) injected when
+	// EnterpriseSlug is set. GitHub provides no server-side exception
+	// mechanism for this feature — its documentation directs proxies to
+	// inject the header only for traffic that should be restricted — so the
+	// exemption is implemented here by omitting the header for matching
+	// requests. Only meaningful when EnterpriseSlug is non-empty. Because
+	// entries are nested structures, this field can only be configured via
+	// YAML, not environment variables.
+	EnterpriseExceptions []EnterpriseException `koanf:"enterprise_exceptions"`
+}
+
+// EnterpriseException exempts requests targeting the listed owners or
+// repositories from the enterprise access restriction header, optionally
+// gated on team membership and optionally substituting a managed identity.
+type EnterpriseException struct {
+	// Match lists the targets covered by this exception. Entries are either a
+	// bare account name ("torvalds", "kubernetes") — matching every repository
+	// owned by that user or organization — or an owner/repo pair
+	// ("kubernetes/website") matching a single repository. Matching is
+	// case-insensitive.
+	Match []string `koanf:"match"`
+	// Teams optionally restricts who may exercise this exception. Entries are
+	// "org/team-slug" pairs. When non-empty, the requesting user's GitHub
+	// username must be an active member of at least one listed team; requests
+	// from anyone else (or whose identity cannot be resolved) are treated as
+	// if the exception did not match, i.e. the restriction header stays on.
+	// Membership is checked via the GitHub API using the default GitHub App,
+	// which must be installed on the team's organization with members:read.
+	Teams []string `koanf:"teams"`
+	// Identity optionally substitutes a managed credential for the caller's
+	// own when the exception applies (e.g. so a push to an off-enterprise
+	// repository is performed by a dedicated integration identity).
+	Identity EnterpriseExceptionIdentity `koanf:"identity"`
+}
+
+// EnterpriseExceptionIdentity selects the managed credential substituted for
+// requests covered by an EnterpriseException.
+type EnterpriseExceptionIdentity struct {
+	// AppRecordID is the database record ID (UUID) of a GitHub App registered
+	// via the admin UI/API. When set, requests covered by the exception have
+	// their Authorization header replaced with an installation token minted
+	// from this app's installation on the target owner. When empty, the
+	// caller's own credential is forwarded (with the restriction header
+	// omitted). If token minting fails, the exception is treated as not
+	// matching (fail closed: the restriction header stays on).
+	AppRecordID string `koanf:"app_record_id"`
 }
 
 type DatabaseConfig struct {
@@ -238,7 +288,8 @@ type ServerConfig struct {
 	// headers and influence generated URLs (host-header injection). The
 	// preferred deployment pattern is to set base_url explicitly so the
 	// fallback path is never exercised.
-	TrustProxyHeaders bool `koanf:"trust_proxy_headers"`
+	TrustProxyHeaders bool   `koanf:"trust_proxy_headers"`
+	ClientIPHeader    string `koanf:"client_ip_header"`
 }
 
 type TokensConfig struct {
@@ -388,6 +439,12 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
 
+	clientIPHeader, err := netutil.ParseIPHeader(cfg.Server.ClientIPHeader)
+	if err != nil {
+		return nil, fmt.Errorf("server.client_ip_header: %w", err)
+	}
+	cfg.Server.ClientIPHeader = string(clientIPHeader)
+
 	// Comma-separated list env vars for slice fields. koanf unmarshals
 	// a single env var string into a one-element slice, so we split on
 	// commas to support e.g. GHP_ADMINS="alice,bob".
@@ -525,7 +582,7 @@ func (c *Config) IsAdmin(username string) bool {
 }
 
 // IsTokenBlocked returns true when the token string's type prefix is blocked by
-// the border policy. Only the five standard GitHub token prefixes are evaluated;
+// the border policy. Only the standard GitHub token prefixes are evaluated;
 // ghp's own managed token types (ghx_, gha_) are never considered here.
 //
 // Safe to call concurrently with ReloadFrom.
@@ -543,6 +600,8 @@ func (c *Config) IsTokenBlocked(token string) bool {
 		return c.Block.GHS
 	case strings.HasPrefix(token, "ghr_"):
 		return c.Block.GHR
+	case strings.HasPrefix(token, "github_pat_"):
+		return c.Block.GithubPat
 	}
 	return false
 }
@@ -613,6 +672,14 @@ func (c *Config) RawAllowQueryToken() bool {
 // and GHP_BLOCK_GHPR environment variables which a configuration mistake might
 // introduce. Note: GHP_BLOCK_GHPR targets ghp's own session token prefix (ghpr_),
 // which is distinct from GitHub's refresh token prefix (ghr_) handled by GHP_BLOCK_GHR.
+func (c *Config) WarnMissingClientIPHeader(logger interface {
+	Warn(msg string, args ...any)
+}) {
+	if c.Server.TrustProxyHeaders && c.Server.ClientIPHeader == "" {
+		logger.Warn("server.trust_proxy_headers is set but server.client_ip_header is not: client attribution and per-IP rate limits will key on the proxy address, so all clients behind the proxy share one rate-limit bucket; set server.client_ip_header to the forwarded header your proxy sets")
+	}
+}
+
 func (c *Config) WarnInvalidBlockTargets(logger interface {
 	Warn(msg string, args ...any)
 }) {

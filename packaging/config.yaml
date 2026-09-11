@@ -7,6 +7,11 @@ github:
   # client_secret: ""
   # private_key_file: /etc/ghp/github-app.pem
   # enterprise_slug: ""
+  # enterprise_exceptions:      # exempt targets from the enterprise restriction header
+  #   - match: [torvalds, kubernetes/website]
+  #     teams: [my-org/oss-team]              # optional membership gate
+  #     identity:
+  #       app_record_id: ""                   # optional managed identity (admin UI app record)
 
 database:
   driver: sqlite

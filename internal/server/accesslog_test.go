@@ -8,7 +8,12 @@ import (
 
 	otellog "go.opentelemetry.io/otel/log"
 
+	"github.com/prometheus/client_golang/prometheus"
+	io_prometheus_client "github.com/prometheus/client_model/go"
+
 	"github.com/goodtune/ghp/internal/backend"
+	"github.com/goodtune/ghp/internal/metrics"
+	"github.com/goodtune/ghp/internal/netutil"
 	"github.com/goodtune/ghp/internal/proxy"
 )
 
@@ -22,7 +27,7 @@ func TestAccessLog(t *testing.T) {
 		w.Write([]byte("hello"))
 	})
 
-	handler := accessLogHandler(backend.GitHub, inner, aw)
+	handler := accessLogHandler(backend.GitHub, inner, aw, netutil.IPHeaderNone)
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
 	req.Header.Set("User-Agent", "git/2.40")
@@ -97,7 +102,7 @@ func TestAccessLog_SensitiveHeadersRedacted(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := accessLogHandler(backend.GitHub, inner, aw)
+	handler := accessLogHandler(backend.GitHub, inner, aw, netutil.IPHeaderNone)
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
 	req.Header.Set("Authorization", "Bearer secret-token")
@@ -124,7 +129,7 @@ func TestAccessLog_ExtendedSensitiveRequestHeadersRedacted(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := accessLogHandler(backend.GitHub, inner, aw)
+	handler := accessLogHandler(backend.GitHub, inner, aw, netutil.IPHeaderNone)
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
 	req.Header.Set("X-Auth-Token", "secret-auth")
@@ -158,7 +163,7 @@ func TestAccessLog_SetCookieResponseHeaderRedacted(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := accessLogHandler(backend.GitHub, inner, aw)
+	handler := accessLogHandler(backend.GitHub, inner, aw, netutil.IPHeaderNone)
 
 	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
 	rr := httptest.NewRecorder()
@@ -186,7 +191,7 @@ func TestAccessLog_UserIDFromSlot(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := accessLogHandler(backend.Mgmt, inner, aw)
+	handler := accessLogHandler(backend.Mgmt, inner, aw, netutil.IPHeaderNone)
 
 	req := httptest.NewRequest("GET", "http://ghp.example.com/admin", nil)
 	rr := httptest.NewRecorder()
@@ -212,7 +217,7 @@ func TestAccessLog_UserIDFallsBackToUUIDWhenUsernameEmpty(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := accessLogHandler(backend.Mgmt, inner, aw)
+	handler := accessLogHandler(backend.Mgmt, inner, aw, netutil.IPHeaderNone)
 
 	req := httptest.NewRequest("GET", "http://ghp.example.com/admin", nil)
 	rr := httptest.NewRecorder()
@@ -238,7 +243,7 @@ func TestAccessLog_UserIDFallsBackToUsername(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := accessLogHandler(backend.API, inner, aw)
+	handler := accessLogHandler(backend.API, inner, aw, netutil.IPHeaderNone)
 
 	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo", nil)
 	rr := httptest.NewRecorder()
@@ -263,7 +268,7 @@ func TestAccessLog_RawAuthSlot(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		handler := accessLogHandler(backend.API, inner, aw)
+		handler := accessLogHandler(backend.API, inner, aw, netutil.IPHeaderNone)
 
 		req := httptest.NewRequest("GET", "http://ghp.example.com/o/r/main/f.txt", nil)
 		rr := httptest.NewRecorder()
@@ -285,7 +290,7 @@ func TestAccessLog_RawAuthSlot(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		handler := accessLogHandler(backend.Mgmt, inner, aw)
+		handler := accessLogHandler(backend.Mgmt, inner, aw, netutil.IPHeaderNone)
 
 		req := httptest.NewRequest("GET", "http://ghp.example.com/admin", nil)
 		rr := httptest.NewRecorder()
@@ -308,7 +313,7 @@ func TestAccessLog_ErrorLevel(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	handler := accessLogHandler(backend.GitHub, inner, aw)
+	handler := accessLogHandler(backend.GitHub, inner, aw, netutil.IPHeaderNone)
 
 	req := httptest.NewRequest("GET", "http://github.com/error", nil)
 	rr := httptest.NewRecorder()
@@ -362,7 +367,7 @@ func TestAccessLogHandler_RedactsQueryToken(t *testing.T) {
 
 	h := accessLogHandler(backend.Codeload, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}), aw)
+	}), aw, netutil.IPHeaderNone)
 
 	req := httptest.NewRequest(http.MethodGet, "/o/r/main/README.md?token=SECRETVALUE123", nil)
 	h.ServeHTTP(httptest.NewRecorder(), req)
@@ -375,5 +380,153 @@ func TestAccessLogHandler_RedactsQueryToken(t *testing.T) {
 	}
 	if got != "token=REDACTED" {
 		t.Errorf("%s = %q, want %q", attrURLQuery, got, "token=REDACTED")
+	}
+}
+
+func getClientRequestCount(t *testing.T, labels prometheus.Labels) float64 {
+	t.Helper()
+	c, err := metrics.ClientRequestTotal.GetMetricWith(labels)
+	if err != nil {
+		t.Fatalf("GetMetricWith: %v", err)
+	}
+	var m io_prometheus_client.Metric
+	if err := c.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+func TestAccessLog_ClientRequestMetric(t *testing.T) {
+	logger, _ := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxy.SetTokenType(r, "proxy")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := accessLogHandler(backend.API, inner, aw, netutil.IPHeaderNone)
+
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/org/repo", nil)
+	req.RemoteAddr = "192.168.1.50:33000"
+	rr := httptest.NewRecorder()
+
+	labels := prometheus.Labels{
+		"client":     "192.168.1.50",
+		"backend":    backend.API,
+		"token_type": "proxy",
+		"status":     "200",
+	}
+	before := getClientRequestCount(t, labels)
+	handler.ServeHTTP(rr, req)
+	after := getClientRequestCount(t, labels)
+
+	if after-before != 1 {
+		t.Errorf("expected client request counter to increment by 1, got %f", after-before)
+	}
+}
+
+func TestAccessLog_ClientRequestMetric_UnknownTokenType(t *testing.T) {
+	logger, _ := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	handler := accessLogHandler(backend.GitHub, inner, aw, netutil.IPHeaderNone)
+
+	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
+	req.RemoteAddr = "192.168.1.51:33001"
+	rr := httptest.NewRecorder()
+
+	labels := prometheus.Labels{
+		"client":     "192.168.1.51",
+		"backend":    backend.GitHub,
+		"token_type": "unknown",
+		"status":     "404",
+	}
+	before := getClientRequestCount(t, labels)
+	handler.ServeHTTP(rr, req)
+	after := getClientRequestCount(t, labels)
+
+	if after-before != 1 {
+		t.Errorf("expected client request counter to increment by 1, got %f", after-before)
+	}
+}
+
+func TestAccessLog_ForwardedHeaderIgnoredWhenNotConfigured(t *testing.T) {
+	logger, exp := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := accessLogHandler(backend.GitHub, inner, aw, netutil.IPHeaderNone)
+
+	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
+	req.RemoteAddr = "192.168.1.60:44000"
+	req.Header.Set("X-Forwarded-For", "10.9.9.9")
+	rr := httptest.NewRecorder()
+
+	labels := prometheus.Labels{
+		"client":     "192.168.1.60",
+		"backend":    backend.GitHub,
+		"token_type": "unknown",
+		"status":     "200",
+	}
+	before := getClientRequestCount(t, labels)
+	handler.ServeHTTP(rr, req)
+	after := getClientRequestCount(t, labels)
+
+	if after-before != 1 {
+		t.Errorf("expected client request counter to increment by 1, got %f", after-before)
+	}
+
+	rec := exp.only(t)
+	if got := rec.str(t, attrClientAddress); got != "192.168.1.60" {
+		t.Errorf("%s: got %q, want 192.168.1.60", attrClientAddress, got)
+	}
+	if got := rec.int(t, attrClientPort); got != 44000 {
+		t.Errorf("%s: got %d, want 44000", attrClientPort, got)
+	}
+}
+
+func TestAccessLog_ConfiguredHeaderHonoured(t *testing.T) {
+	logger, exp := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := accessLogHandler(backend.GitHub, inner, aw, netutil.IPHeaderXForwardedFor)
+
+	req := httptest.NewRequest("GET", "http://github.com/org/repo", nil)
+	req.RemoteAddr = "192.168.1.61:44001"
+	req.Header.Set("X-Forwarded-For", "6.6.6.6, 10.8.8.8")
+	rr := httptest.NewRecorder()
+
+	labels := prometheus.Labels{
+		"client":     "10.8.8.8",
+		"backend":    backend.GitHub,
+		"token_type": "unknown",
+		"status":     "200",
+	}
+	before := getClientRequestCount(t, labels)
+	handler.ServeHTTP(rr, req)
+	after := getClientRequestCount(t, labels)
+
+	if after-before != 1 {
+		t.Errorf("expected client request counter to increment by 1, got %f", after-before)
+	}
+
+	rec := exp.only(t)
+	if got := rec.str(t, attrClientAddress); got != "10.8.8.8" {
+		t.Errorf("%s: got %q, want 10.8.8.8", attrClientAddress, got)
+	}
+	if rec.has(attrClientPort) {
+		t.Errorf("%s should be omitted when client address comes from a forwarded header", attrClientPort)
 	}
 }

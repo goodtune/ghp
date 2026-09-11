@@ -20,14 +20,14 @@ func (m *mockStore) ListApps(ctx context.Context) ([]*database.App, error) {
 	return m.apps, nil
 }
 
-func (m *mockStore) CreateApp(ctx context.Context, app *database.App) error        { panic("unexpected") }
+func (m *mockStore) CreateApp(ctx context.Context, app *database.App) error { panic("unexpected") }
 func (m *mockStore) GetAppByID(ctx context.Context, id string) (*database.App, error) {
 	panic("unexpected")
 }
 func (m *mockStore) GetDefaultApp(ctx context.Context) (*database.App, error) { panic("unexpected") }
-func (m *mockStore) UpdateApp(ctx context.Context, app *database.App) error    { panic("unexpected") }
-func (m *mockStore) DeleteApp(ctx context.Context, id string) error            { panic("unexpected") }
-func (m *mockStore) SetDefaultApp(ctx context.Context, appID string) error     { panic("unexpected") }
+func (m *mockStore) UpdateApp(ctx context.Context, app *database.App) error   { panic("unexpected") }
+func (m *mockStore) DeleteApp(ctx context.Context, id string) error           { panic("unexpected") }
+func (m *mockStore) SetDefaultApp(ctx context.Context, appID string) error    { panic("unexpected") }
 
 func (m *mockStore) UpsertUser(ctx context.Context, user *database.User) error { panic("unexpected") }
 func (m *mockStore) GetUserByGitHubID(ctx context.Context, githubID int64) (*database.User, error) {
@@ -36,7 +36,7 @@ func (m *mockStore) GetUserByGitHubID(ctx context.Context, githubID int64) (*dat
 func (m *mockStore) GetUserByID(ctx context.Context, id string) (*database.User, error) {
 	panic("unexpected")
 }
-func (m *mockStore) ListUsers(ctx context.Context) ([]*database.User, error) { panic("unexpected") }
+func (m *mockStore) ListUsers(ctx context.Context) ([]*database.User, error)   { panic("unexpected") }
 func (m *mockStore) SyncAdminRoles(ctx context.Context, admins []string) error { panic("unexpected") }
 
 func (m *mockStore) UpsertGitHubToken(ctx context.Context, token *database.GitHubToken) error {
@@ -133,13 +133,13 @@ func (m *mockStore) Close() error { return nil }
 // makeApp creates a minimal App record with a valid private key for testing.
 func makeApp(id, name string, appID int64, isDefault bool) *database.App {
 	return &database.App{
-		ID:        id,
-		Name:      name,
-		AppID:     appID,
+		ID:         id,
+		Name:       name,
+		AppID:      appID,
 		PrivateKey: testRSAKey,
-		IsDefault: isDefault,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		IsDefault:  isDefault,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 }
 
@@ -219,13 +219,13 @@ func TestAppRegistry_LoadAll_NoDefault(t *testing.T) {
 
 func TestAppRegistry_LoadAll_InvalidKeySkipped(t *testing.T) {
 	bad := &database.App{
-		ID:        "bad-app",
-		Name:      "Bad App",
-		AppID:     99,
+		ID:         "bad-app",
+		Name:       "Bad App",
+		AppID:      99,
 		PrivateKey: "not-a-valid-key",
-		IsDefault: true,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		IsDefault:  true,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 	r := newTestRegistry([]*database.App{bad})
 

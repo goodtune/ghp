@@ -34,6 +34,11 @@ var (
 		Help: "Total number of HTTP requests by backend.",
 	}, []string{"backend", "method", "status"})
 
+	ClientRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_client_request_total",
+		Help: "Total number of requests by client source IP, backend, token type, and status.",
+	}, []string{"client", "backend", "token_type", "status"})
+
 	// Proxy-level metrics for ghx_/gha_ authenticated requests.
 	ProxyRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ghp_proxy_request_duration_seconds",
@@ -168,6 +173,26 @@ var (
 		Name: "ghp_block_anonymous_git_total",
 		Help: "Total number of anonymous git requests blocked by the anonymous git blocking feature.",
 	})
+
+	// EnterpriseExceptionTotal counts evaluations of enterprise access
+	// restriction exceptions that matched a request's target, labeled by
+	// outcome:
+	//   "header_omitted"       — exception applied; restriction header not injected
+	//   "identity_substituted" — exception applied and the caller's credential
+	//                            was replaced with a managed installation token
+	//   "team_denied"          — target matched but the caller is not a member
+	//                            of any required team (or could not be
+	//                            identified); restriction header kept
+	//   "unauthenticated_denied" — target matched an identity-substituting
+	//                            exception but the caller's identity could not
+	//                            be resolved (anonymous or unverifiable
+	//                            credential); restriction header kept
+	//   "identity_error"       — target matched but the managed identity could
+	//                            not be minted; restriction header kept (fail closed)
+	EnterpriseExceptionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_enterprise_exception_total",
+		Help: "Total number of enterprise access restriction exception matches, by outcome.",
+	}, []string{"outcome"})
 
 	// decisionBuckets covers internal decision-making stages (typically µs–ms)
 	// as well as the upstream_roundtrip stage, which includes the actual GitHub
@@ -341,6 +366,7 @@ const (
 	StageRedirectHeadCheck     = "redirect_head_check"
 	StageCacheLookup           = "cache_lookup"
 	StageGraphQLAnalysis       = "graphql_analysis"
+	StageEnterpriseException   = "enterprise_exception"
 )
 
 // ObserveDecision records the duration of a single stage in the proxy
@@ -390,6 +416,16 @@ func ObservePassthroughRequest(backendName, method string, status int, dur time.
 	statusStr := strconv.Itoa(status)
 	ProxyRequestDuration.WithLabelValues(backendName, method, statusStr, tokenType, apiType, username, "").Observe(dur.Seconds())
 	ProxyRequestTotal.WithLabelValues(backendName, method, statusStr, tokenType, apiType, username, "").Inc()
+}
+
+func ObserveClientRequest(client, backendName, tokenType string, status int) {
+	if client == "" {
+		client = "unknown"
+	}
+	if tokenType == "" {
+		tokenType = "unknown"
+	}
+	ClientRequestTotal.WithLabelValues(client, backendName, tokenType, strconv.Itoa(status)).Inc()
 }
 
 // SetBuildInfo records build metadata as a gauge with a constant value of 1.

@@ -39,7 +39,8 @@ values from the config file.
 | `GHP_SERVER_HTTP_LISTEN` | HTTP listen address for HTTPS redirects | |
 | `GHP_SERVER_MANAGEMENT_HOST` | Hostname for the management UI and API | |
 | `GHP_SERVER_BASE_URL` | Public base URL for OAuth callbacks and links | |
-| `GHP_SERVER_TRUST_PROXY_HEADERS` | Honour `Forwarded` / `X-Forwarded-Proto` / `X-Forwarded-Host` when `base_url` is unset (only enable behind a trusted reverse proxy) | `false` |
+| `GHP_SERVER_TRUST_PROXY_HEADERS` | Honour `Forwarded` / `X-Forwarded-Proto` / `X-Forwarded-Host` for URL construction when `base_url` is unset (only enable behind a trusted reverse proxy) | `false` |
+| `GHP_SERVER_CLIENT_IP_HEADER` | The single forwarded header trusted for client attribution in access logs, `ghp_client_request_total`, and the per-IP auth rate limiter: `forwarded`, `x-real-ip`, or `x-forwarded-for`. Set to the one header your reverse proxy sets; all others are ignored. Empty trusts no header (peer address is used) | |
 | `GHP_SERVER_SYSTEMD_SOCKET_ACTIVATION` | Accept sockets from systemd instead of binding addresses | `false` |
 
 ### GitHub
@@ -52,6 +53,7 @@ values from the config file.
 | `GHP_GITHUB_PRIVATE_KEY` | PEM-encoded GitHub App private key content | |
 | `GHP_GITHUB_PRIVATE_KEY_FILE` | Path to GitHub App private key PEM file | |
 | `GHP_GITHUB_ENTERPRISE_SLUG` | Enterprise slug for access restriction header | |
+| — | `github.enterprise_exceptions` (targets exempt from the restriction header) is YAML-only; nested lists cannot be expressed as environment variables | |
 | `GHP_GITHUB_BASE_URL` | GitHub API base URL for GHES deployments (must be HTTPS; e.g. `https://ghes.example.com/api/v3`). Omit or leave empty for github.com. Per-app overrides are set via the admin UI. | `https://api.github.com` |
 
 ### TLS
@@ -118,6 +120,7 @@ See [OAuth Broker](../features/oauth-broker.md) for integration details.
 | `GHP_BLOCK_GHU` | Block GitHub user-to-server tokens (`ghu_`) | `false` |
 | `GHP_BLOCK_GHS` | Block GitHub server-to-server tokens (`ghs_`) | `false` |
 | `GHP_BLOCK_GHR` | Block GitHub refresh tokens (`ghr_`) | `false` |
+| `GHP_BLOCK_GITHUB_PAT` | Block GitHub fine-grained personal access tokens (`github_pat_`) | `false` |
 | `GHP_BLOCK_ANONYMOUS_GIT` | Block unauthenticated git smart HTTP requests | `false` |
 
 See [Token Type Border Policy](../features/border-policy.md) for details.
@@ -180,6 +183,15 @@ github:
   # private_key: ""            # or inline PEM content (useful in containers)
   enterprise_slug: ""
   # base_url: ""               # GHES API base URL (e.g. https://ghes.example.com/api/v3); omit for github.com
+  # enterprise_exceptions:     # exempt targets from the enterprise access restriction header
+  #                            # (YAML only — nested lists cannot be set via environment variables)
+  #   - match:                 # account names ("torvalds", "kubernetes") or owner/repo pairs
+  #       - torvalds
+  #       - kubernetes/website
+  #     teams:                 # optional: restrict who may use this exception (org/team-slug);
+  #       - my-org/oss-team    #   requires the default app installed on the org with members:read
+  #     identity:              # optional: substitute a managed credential for matching requests
+  #       app_record_id: ""    #   database record ID of a GitHub App (see admin UI)
 
 database:
   driver: "sqlite"             # "sqlite", "postgres", or "vault"
@@ -201,9 +213,17 @@ server:
   management_host: ""          # hostname for management UI (e.g. ghp.example.com)
   base_url: ""                 # public base URL (e.g. https://ghp.example.com)
   # trust_proxy_headers: false # honour Forwarded / X-Forwarded-Proto / X-Forwarded-Host
-                                #   when base_url is unset. Set true only behind a trusted
-                                #   reverse proxy that strips and rewrites these headers.
-                                #   Prefer setting base_url instead.
+                                #   for URL construction when base_url is unset. Set true
+                                #   only behind a trusted reverse proxy that strips and
+                                #   rewrites these headers. Prefer setting base_url.
+  # client_ip_header: ""       # the single forwarded header trusted for client
+                                #   attribution in access logs, ghp_client_request_total,
+                                #   and the per-IP auth rate limiter: "forwarded" (RFC 7239
+                                #   for=), "x-real-ip", or "x-forwarded-for". Set to the
+                                #   one header your reverse proxy sets; all other forwarded
+                                #   headers are ignored so clients cannot spoof attribution
+                                #   via a header the proxy passes through untouched. Empty
+                                #   trusts no header: the peer address is always used.
   # systemd_socket_activation: false  # accept sockets from systemd
 
 tls:
