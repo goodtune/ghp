@@ -75,7 +75,6 @@ test.describe("Auth API", () => {
 
     const endpoints = [
       { method: "GET" as const, path: "/api/tokens" },
-      { method: "GET" as const, path: "/api/audit" },
     ];
 
     for (const ep of endpoints) {

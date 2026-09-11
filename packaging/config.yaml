@@ -7,6 +7,11 @@ github:
   # client_secret: ""
   # private_key_file: /etc/ghp/github-app.pem
   # enterprise_slug: ""
+  # enterprise_exceptions:      # exempt targets from the enterprise restriction header
+  #   - match: [torvalds, kubernetes/website]
+  #     teams: [my-org/oss-team]              # optional membership gate
+  #     identity:
+  #       app_record_id: ""                   # optional managed identity (admin UI app record)
 
 database:
   driver: sqlite
@@ -30,8 +35,22 @@ tokens:
   max_duration: 168h
 
 logging:
+  # All logs are emitted as OpenTelemetry log records (HTTP semantic
+  # conventions) to the console. "level" filters operational logs; access and
+  # audit records are always emitted.
   output: stdout
   level: info
+
+# otel:                 # Additionally export log records to an OTLP collector
+#   enabled: false      # logs are always written to the console regardless
+#   endpoint: ""        # e.g. http://localhost:4317; http:// disables TLS
+#   protocol: grpc      # "grpc" or "http"
+
+metrics:
+  # Prometheus metrics are served on a dedicated port (separate from the proxy
+  # port) so they can be network-isolated from agent traffic.
+  enabled: true    # set to false to disable
+  listen: ":9136"  # metrics server listen address
 
 # encryption_key: ""  # Or set GHP_ENCRYPTION_KEY env var
 

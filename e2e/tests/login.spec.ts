@@ -19,6 +19,18 @@ test.describe("Login page", () => {
     });
   });
 
+  test("displays the build version beneath the login form", async ({
+    page,
+  }) => {
+    await page.goto("/login");
+
+    // The version string helps managers identify which image is deployed.
+    // In dev/CI builds the version defaults to "dev".
+    const version = page.locator(".version");
+    await expect(version).toBeVisible();
+    await expect(version).toContainText("version");
+  });
+
   test("has a Sign in with GitHub button linking to OAuth", async ({
     page,
   }) => {

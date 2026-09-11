@@ -1,10 +1,10 @@
-FROM python:3.13 AS docs
+FROM python:3.14 AS docs
 WORKDIR /src
 COPY mkdocs.yml ./
 COPY docs/ docs/
-RUN pip install uv && uvx --with mkdocs-material mkdocs build --site-dir internal/docs/site
+RUN pip install uv && uvx --with mkdocs-shadcn==0.10.2 mkdocs build --site-dir internal/docs/site
 
-FROM golang:1.24 AS build
+FROM golang:1.27 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

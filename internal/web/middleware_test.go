@@ -1,9 +1,21 @@
 package web
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/goodtune/ghp/internal/auth"
+	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/crypto"
+	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/proxy"
 )
 
 // wantSecurityHeaders lists the security headers that SecurityHeadersMiddleware
@@ -62,6 +74,318 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestServerHeaderMiddleware(t *testing.T) {
+	tests := []struct {
+		name            string
+		version         string
+		wantVersion     string // expected X-GitHub-Proxy-Version value ("" means absent)
+		upstreamHeaders map[string]string // headers set by inner handler (simulates upstream response)
+	}{
+		{
+			name:        "dev version",
+			version:     "dev",
+			wantVersion: "dev",
+		},
+		{
+			name:        "release version",
+			version:     "1.2.3",
+			wantVersion: "1.2.3",
+		},
+		{
+			name:        "empty version",
+			version:     "",
+			wantVersion: "",
+		},
+		{
+			// The reverse proxy copies GitHub's "server: github.com" via
+			// Header().Add(). The middleware must win: only one Server value.
+			name:            "overwrites upstream server header",
+			version:         "1.0.0",
+			wantVersion:     "1.0.0",
+			upstreamHeaders: map[string]string{"Server": "github.com"},
+		},
+		{
+			// When version is set, any upstream X-GitHub-Proxy-Version must
+			// be overwritten with exactly one value matching version.
+			name:            "overwrites upstream version header",
+			version:         "2.0.0",
+			wantVersion:     "2.0.0",
+			upstreamHeaders: map[string]string{"X-GitHub-Proxy-Version": "upstream-leaked"},
+		},
+		{
+			// When version is empty, any upstream X-GitHub-Proxy-Version
+			// must be deleted entirely.
+			name:            "deletes upstream version header when version empty",
+			version:         "",
+			wantVersion:     "",
+			upstreamHeaders: map[string]string{"X-GitHub-Proxy-Version": "upstream-leaked"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				for k, v := range tc.upstreamHeaders {
+					// Simulate httputil.ReverseProxy which uses Add when copying
+					// upstream response headers, potentially producing duplicates.
+					w.Header().Add(k, v)
+				}
+				w.WriteHeader(http.StatusOK)
+			})
+
+			rr := httptest.NewRecorder()
+			ServerHeaderMiddleware(tc.version)(inner).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+			if got := rr.Header().Get("Server"); got != "GitHub Proxy" {
+				t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy")
+			}
+			// Ensure there is exactly one Server header value (no duplicates).
+			if vals := rr.Header().Values("Server"); len(vals) != 1 {
+				t.Errorf("Server header count: got %d values %v, want exactly 1", len(vals), vals)
+			}
+			if tc.wantVersion != "" {
+				if got := rr.Header().Get("X-GitHub-Proxy-Version"); got != tc.wantVersion {
+					t.Errorf("X-GitHub-Proxy-Version header: got %q, want %q", got, tc.wantVersion)
+				}
+				if vals := rr.Header().Values("X-GitHub-Proxy-Version"); len(vals) != 1 {
+					t.Errorf("X-GitHub-Proxy-Version header count: got %d values %v, want exactly 1", len(vals), vals)
+				}
+			} else {
+				if vals := rr.Header().Values("X-GitHub-Proxy-Version"); len(vals) != 0 {
+					t.Errorf("X-GitHub-Proxy-Version header: got %v, want header to be absent", vals)
+				}
+			}
+		})
+	}
+}
+
+func TestServerHeaderMiddlewareEmptyResponse(t *testing.T) {
+	// A handler that returns without calling Write or WriteHeader should
+	// still have the Server header set (implicit 200).
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// intentionally empty — no Write, no WriteHeader
+	})
+	rr := httptest.NewRecorder()
+	ServerHeaderMiddleware("1.0.0")(inner).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+	if got := rr.Header().Get("Server"); got != "GitHub Proxy" {
+		t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy")
+	}
+	if got := rr.Header().Get("X-GitHub-Proxy-Version"); got != "1.0.0" {
+		t.Errorf("X-GitHub-Proxy-Version header: got %q, want %q", got, "1.0.0")
+	}
+}
+
+func TestServerHeaderMiddlewareFlusher(t *testing.T) {
+	// Verify that Flush() is delegated through the wrapper and sets the header.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	})
+	rr := httptest.NewRecorder()
+	ServerHeaderMiddleware("1.0.0")(inner).ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+	if got := rr.Header().Get("Server"); got != "GitHub Proxy" {
+		t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy")
+	}
+	if got := rr.Header().Get("X-GitHub-Proxy-Version"); got != "1.0.0" {
+		t.Errorf("X-GitHub-Proxy-Version header: got %q, want %q", got, "1.0.0")
+	}
+}
+
+// noopStore implements database.Store with all methods returning zero values.
+type noopStore struct{}
+
+func (noopStore) CreateApp(_ context.Context, _ *database.App) error                            { return nil }
+func (noopStore) GetAppByID(_ context.Context, _ string) (*database.App, error)                 { return nil, nil }
+func (noopStore) GetDefaultApp(_ context.Context) (*database.App, error)                        { return nil, nil }
+func (noopStore) ListApps(_ context.Context) ([]*database.App, error)                           { return nil, nil }
+func (noopStore) UpdateApp(_ context.Context, _ *database.App) error                            { return nil }
+func (noopStore) DeleteApp(_ context.Context, _ string) error                                   { return nil }
+func (noopStore) SetDefaultApp(_ context.Context, _ string) error                               { return nil }
+func (noopStore) UpsertUser(_ context.Context, _ *database.User) error                          { return nil }
+func (noopStore) GetUserByGitHubID(_ context.Context, _ int64) (*database.User, error)         { return nil, nil }
+func (noopStore) GetUserByID(_ context.Context, _ string) (*database.User, error)               { return nil, nil }
+func (noopStore) ListUsers(_ context.Context) ([]*database.User, error)                         { return nil, nil }
+func (noopStore) SyncAdminRoles(_ context.Context, _ []string) error                            { return nil }
+func (noopStore) UpsertGitHubToken(_ context.Context, _ *database.GitHubToken) error           { return nil }
+func (noopStore) GetGitHubToken(_ context.Context, _ string) (*database.GitHubToken, error)    { return nil, nil }
+func (noopStore) GetGitHubTokenByID(_ context.Context, _ string) (*database.GitHubToken, error) { return nil, nil }
+func (noopStore) CreateProxyToken(_ context.Context, _ *database.ProxyToken) error              { return nil }
+func (noopStore) GetProxyTokenByHash(_ context.Context, _ string) (*database.ProxyToken, error) { return nil, nil }
+func (noopStore) GetProxyTokenByID(_ context.Context, _ string) (*database.ProxyToken, error)   { return nil, nil }
+func (noopStore) ListProxyTokens(_ context.Context, _ string) ([]*database.ProxyToken, error)   { return nil, nil }
+func (noopStore) ListAllProxyTokens(_ context.Context) ([]*database.ProxyToken, error)          { return nil, nil }
+func (noopStore) ListActiveProxyTokens(_ context.Context) ([]*database.ProxyToken, error)       { return nil, nil }
+func (noopStore) RevokeProxyToken(_ context.Context, _ string) error                            { return nil }
+func (noopStore) UpdateProxyTokenAppID(_ context.Context, _ string, _ string) error             { return nil }
+func (noopStore) UpdateProxyTokenScopes(_ context.Context, _ string, _ json.RawMessage, _ json.RawMessage) error { return nil }
+func (noopStore) DeleteExpiredProxyTokens(_ context.Context, _ time.Duration) (int64, error)    { return 0, nil }
+func (noopStore) CreateCachedRepository(_ context.Context, _ *database.CachedRepository) error  { return nil }
+func (noopStore) GetCachedRepositoryByID(_ context.Context, _ string) (*database.CachedRepository, error) {
+	return nil, nil
+}
+func (noopStore) GetCachedRepositoryByOwnerName(_ context.Context, _, _ string) (*database.CachedRepository, error) {
+	return nil, nil
+}
+func (noopStore) ListCachedRepositories(_ context.Context) ([]*database.CachedRepository, error) {
+	return nil, nil
+}
+func (noopStore) UpdateCachedRepository(_ context.Context, _ *database.CachedRepository) error { return nil }
+func (noopStore) DeleteCachedRepository(_ context.Context, _ string) error                     { return nil }
+func (noopStore) CreateSession(_ context.Context, _ *database.Session) error                   { return nil }
+func (noopStore) GetSessionByTokenHash(_ context.Context, _ string) (*database.Session, error) {
+	return nil, fmt.Errorf("session: %w", database.ErrNotFound)
+}
+func (noopStore) DeleteSession(_ context.Context, _ string) error                  { return nil }
+func (noopStore) DeleteExpiredSessions(_ context.Context) (int64, error)           { return 0, nil }
+func (noopStore) CreateOAuthState(_ context.Context, _ *database.OAuthState) error { return nil }
+func (noopStore) ConsumeOAuthState(_ context.Context, _, _ string) (*database.OAuthState, error) {
+	return nil, fmt.Errorf("oauth_state: %w", database.ErrNotFound)
+}
+func (noopStore) DeleteExpiredOAuthStates(_ context.Context) (int64, error)        { return 0, nil }
+func (noopStore) CreateDeviceAuth(_ context.Context, _ *database.DeviceAuth) error { return nil }
+func (noopStore) GetDeviceAuthByDeviceCode(_ context.Context, _ string) (*database.DeviceAuth, error) {
+	return nil, fmt.Errorf("device_auth: %w", database.ErrNotFound)
+}
+func (noopStore) GetDeviceAuthByUserCode(_ context.Context, _ string) (*database.DeviceAuth, error) {
+	return nil, fmt.Errorf("device_auth: %w", database.ErrNotFound)
+}
+func (noopStore) UpdateDeviceAuth(_ context.Context, _ *database.DeviceAuth) error { return nil }
+func (noopStore) DeleteDeviceAuth(_ context.Context, _ string) error               { return nil }
+func (noopStore) DeleteExpiredDeviceAuths(_ context.Context) (int64, error)        { return 0, nil }
+func (noopStore) Close() error                                                     { return nil }
+
+// newTestAuthStore returns an in-memory SQLite store with all migrations
+// applied. Used in tests that genuinely exercise auth flows (sessions,
+// oauth_states, device auth) — noopStore's not-found-everywhere semantics
+// would short-circuit those flows.
+func newTestAuthStore(t *testing.T) database.Store {
+	t.Helper()
+	store, err := database.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create test store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	migrator := database.NewMigrator(store, "sqlite")
+	if err := migrator.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return store
+}
+
+func TestSessionUsernameMiddleware_WithSession(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := crypto.NewEncryptor(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{DevMode: true}
+	ah := auth.NewHandler(cfg, newTestAuthStore(t), enc, slog.Default())
+
+	// Use test-login to create a session.
+	mux := http.NewServeMux()
+	ah.RegisterRoutes(mux)
+	loginReq := httptest.NewRequest("POST", "/auth/test-login",
+		bytes.NewReader([]byte(`{"username":"alice","role":"admin"}`)))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.RemoteAddr = "127.0.0.1:1234"
+	loginRR := httptest.NewRecorder()
+	mux.ServeHTTP(loginRR, loginReq)
+
+	if loginRR.Code != http.StatusOK {
+		t.Fatalf("test-login: got %d, want 200; body: %s", loginRR.Code, loginRR.Body.String())
+	}
+
+	// Extract session cookie.
+	cookies := loginRR.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == auth.SessionCookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("no session cookie returned by test-login")
+	}
+
+	// Verify the middleware injects both username and user ID.
+	var gotUsername, gotUserID string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUsername = proxy.GetUsername(r)
+		gotUserID = proxy.GetUserID(r)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := SessionUsernameMiddleware(ah)(inner)
+
+	req := httptest.NewRequest("GET", "/admin", nil)
+	req.AddCookie(sessionCookie)
+	// Prepare the access log slots (normally done by accessLogHandler).
+	req, slots := proxy.PrepareAccessLogSlots(req)
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if gotUsername != "alice" {
+		t.Errorf("GetUsername inside handler: got %q, want %q", gotUsername, "alice")
+	}
+	if *slots.Username != "alice" {
+		t.Errorf("username slot: got %q, want %q", *slots.Username, "alice")
+	}
+	if gotUserID == "" {
+		t.Error("GetUserID inside handler: got empty string, want non-empty user ID")
+	}
+	if *slots.UserID == "" {
+		t.Error("user ID slot: got empty string, want non-empty user ID")
+	}
+}
+
+func TestSessionUsernameMiddleware_NoSession(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := crypto.NewEncryptor(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{DevMode: true}
+	ah := auth.NewHandler(cfg, newTestAuthStore(t), enc, slog.Default())
+
+	var gotUsername, gotUserID string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUsername = proxy.GetUsername(r)
+		gotUserID = proxy.GetUserID(r)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := SessionUsernameMiddleware(ah)(inner)
+
+	req := httptest.NewRequest("GET", "/login", nil)
+	req, slots := proxy.PrepareAccessLogSlots(req)
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if gotUsername != "" {
+		t.Errorf("GetUsername: got %q, want empty string", gotUsername)
+	}
+	if *slots.Username != "" {
+		t.Errorf("username slot: got %q, want empty string", *slots.Username)
+	}
+	if gotUserID != "" {
+		t.Errorf("GetUserID: got %q, want empty string", gotUserID)
+	}
+	if *slots.UserID != "" {
+		t.Errorf("user ID slot: got %q, want empty string", *slots.UserID)
 	}
 }
 

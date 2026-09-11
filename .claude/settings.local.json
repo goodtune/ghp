@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(openssl req:*)",
+      "Bash(openssl ecparam:*)",
+      "Bash(openssl x509:*)"
+    ]
+  }
+}

@@ -1,13 +1,19 @@
-// Package web provides the embedded web UI for ghp.
+// Package web provides the management web UI and HTTP middleware for ghp.
+// It serves the dashboard (token management, admin panel, audit logs) and
+// applies cross-cutting concerns: security headers (CSP, X-Frame-Options),
+// the Server response header identifying the ghp version, and session
+// username injection for access log attribution.
 package web
 
 import (
 	"embed"
+	"encoding/json"
 	"html/template"
 	"log/slog"
 	"net/http"
 
 	"github.com/goodtune/ghp/internal/auth"
+	"github.com/goodtune/ghp/internal/database"
 )
 
 //go:embed templates/*.html
@@ -19,20 +25,51 @@ var staticFS embed.FS
 // Handler serves the web UI.
 type Handler struct {
 	auth      *auth.Handler
+	store     database.Store
 	devMode   bool
+	version   string
 	logger    *slog.Logger
 	templates *template.Template
 }
 
-// NewHandler creates a new web UI handler.
-func NewHandler(ah *auth.Handler, devMode bool, logger *slog.Logger) *Handler {
+// NewHandler creates a new web UI handler. version is the build version string
+// surfaced in the UI (e.g. beneath the login form) so operators can identify
+// which image a deployment is running.
+func NewHandler(ah *auth.Handler, store database.Store, devMode bool, version string, logger *slog.Logger) *Handler {
 	tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
 	return &Handler{
 		auth:      ah,
+		store:     store,
 		devMode:   devMode,
+		version:   version,
 		logger:    logger,
 		templates: tmpl,
 	}
+}
+
+// appSummary is a safe-for-template representation of an app (no secrets).
+type appSummary struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IsDefault bool   `json:"is_default"`
+}
+
+// getAppSummaries returns a list of app summaries for template rendering.
+func (h *Handler) getAppSummaries(r *http.Request) []appSummary {
+	apps, err := h.store.ListApps(r.Context())
+	if err != nil {
+		h.logger.Error("failed to list apps for UI", "error", err)
+		return nil
+	}
+	summaries := make([]appSummary, 0, len(apps))
+	for _, a := range apps {
+		summaries = append(summaries, appSummary{
+			ID:        a.ID,
+			Name:      a.Name,
+			IsDefault: a.IsDefault,
+		})
+	}
+	return summaries
 }
 
 // RegisterRoutes adds web UI routes to the given mux.
@@ -50,10 +87,14 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	apps := h.getAppSummaries(r)
+	appsJSON, _ := json.Marshal(apps)
 	data := map[string]interface{}{
 		"Username": session.Username,
 		"Role":     session.Role,
 		"DevMode":  h.devMode,
+		"HasApps":  len(apps) > 0,
+		"AppsJSON": template.JS(appsJSON),
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "dashboard.html", data); err != nil {
@@ -80,10 +121,12 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	apps := h.getAppSummaries(r)
 	data := map[string]interface{}{
 		"Username": session.Username,
 		"Role":     session.Role,
 		"DevMode":  h.devMode,
+		"HasApps":  len(apps) > 0,
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "admin.html", data); err != nil {
@@ -101,6 +144,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]interface{}{
 		"DevMode": h.devMode,
+		"Version": h.version,
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "login.html", data); err != nil {

@@ -13,9 +13,9 @@ jobs:
     name: Go unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -29,7 +29,7 @@ jobs:
         run: ./ghp version
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ghp-binary
           path: ghp
@@ -40,25 +40,25 @@ jobs:
     runs-on: ubuntu-latest
     needs: unit-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ghp-binary
 
       - name: Make binary executable
         run: chmod +x ./ghp
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Install Playwright dependencies
         working-directory: e2e
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps chromium firefox webkit
 
       - name: Generate encryption key
         id: enckey
@@ -86,7 +86,7 @@ jobs:
 
           # Wait for server to be ready.
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:8080/auth/status > /dev/null 2>&1; then
+            if curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/auth/status 2>/dev/null | grep -q '^[2-4]'; then
               echo "Server is ready"
               break
             fi
@@ -116,7 +116,7 @@ jobs:
       - name: Upload screenshots and report
         if: always()
         id: artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-results
           path: |
@@ -125,8 +125,13 @@ jobs:
           retention-days: 14
 
       - name: Comment on PR
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        # GITHUB_TOKEN is forced read-only for pull_request runs triggered from
+        # a fork, so issues.createComment/updateComment always 403 there. Skip
+        # the comment (test results still show in the job summary and the
+        # "Fail if tests failed" step below still gates the job) rather than
+        # letting an unrelated 403 mark the whole job as failed.
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v9
         env:
           PLAYWRIGHT_OUTCOME: ${{ steps.playwright.outcome }}
         with:
@@ -153,15 +158,16 @@ jobs:
                   const result = test.results[test.results.length - 1];
                   const status = result ? result.status : 'unknown';
                   const duration = result ? (result.duration / 1000).toFixed(1) : '?';
+                  const browser = test.projectName || '—';
                   if (status === 'passed' || status === 'expected') {
                     passed++;
-                    testRows.push(`| ${title} › ${spec.title} | ✅ Pass | ${duration}s |`);
+                    testRows.push(`| ${title} › ${spec.title} | ${browser} | ✅ Pass | ${duration}s |`);
                   } else if (status === 'failed' || status === 'timedOut' || status === 'unexpected') {
                     failed++;
-                    testRows.push(`| ${title} › ${spec.title} | ❌ Fail | ${duration}s |`);
+                    testRows.push(`| ${title} › ${spec.title} | ${browser} | ❌ Fail | ${duration}s |`);
                   } else {
                     skipped++;
-                    testRows.push(`| ${title} › ${spec.title} | ⏭️ Skip | ${duration}s |`);
+                    testRows.push(`| ${title} › ${spec.title} | ${browser} | ⏭️ Skip | ${duration}s |`);
                   }
                 }
               }
@@ -193,8 +199,8 @@ jobs:
 
               if (testRows.length > 0) {
                 body += `<details>\n<summary>Test Details</summary>\n\n`;
-                body += `| Test | Status | Duration |\n`;
-                body += `|------|--------|----------|\n`;
+                body += `| Test | Browser | Status | Duration |\n`;
+                body += `|------|---------|--------|----------|\n`;
                 body += testRows.join('\n') + '\n';
                 body += `\n</details>\n\n`;
               }

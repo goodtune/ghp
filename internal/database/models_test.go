@@ -7,8 +7,8 @@ import (
 
 func TestScopes_HasPermission(t *testing.T) {
 	scopes := Scopes{
-		"contents": "read",
-		"pulls":    "write",
+		"contents":      "read",
+		"pull_requests": "write",
 	}
 
 	tests := []struct {
@@ -18,8 +18,8 @@ func TestScopes_HasPermission(t *testing.T) {
 	}{
 		{"contents", "read", true},
 		{"contents", "write", false},
-		{"pulls", "read", true},  // write implies read
-		{"pulls", "write", true},
+		{"pull_requests", "read", true},  // write implies read
+		{"pull_requests", "write", true},
 		{"issues", "read", false},
 		{"issues", "write", false},
 	}
@@ -33,7 +33,7 @@ func TestScopes_HasPermission(t *testing.T) {
 }
 
 func TestParseScopes(t *testing.T) {
-	data := json.RawMessage(`{"contents":"read","pulls":"write"}`)
+	data := json.RawMessage(`{"contents":"read","pull_requests":"write"}`)
 	scopes, err := ParseScopes(data)
 	if err != nil {
 		t.Fatalf("ParseScopes: %v", err)
@@ -41,7 +41,7 @@ func TestParseScopes(t *testing.T) {
 	if scopes["contents"] != "read" {
 		t.Errorf("contents = %q, want read", scopes["contents"])
 	}
-	if scopes["pulls"] != "write" {
-		t.Errorf("pulls = %q, want write", scopes["pulls"])
+	if scopes["pull_requests"] != "write" {
+		t.Errorf("pull_requests = %q, want write", scopes["pull_requests"])
 	}
 }

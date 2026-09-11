@@ -1,0 +1,2 @@
+ALTER TABLE proxy_tokens ADD COLUMN last_used_at TIMESTAMPTZ;
+ALTER TABLE proxy_tokens ADD COLUMN request_count BIGINT NOT NULL DEFAULT 0;

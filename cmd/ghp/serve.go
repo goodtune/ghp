@@ -2,12 +2,11 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"io"
 	"log/slog"
 	"os"
 
 	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/observability"
 	"github.com/goodtune/ghp/internal/server"
 	"github.com/spf13/cobra"
 )
@@ -34,21 +33,24 @@ be upgraded between restarts.`,
 				return err
 			}
 
-			logger, logWriter, cleanupLogger := newLogger(cfg)
+			logging, cleanupLogger, err := observability.Setup(context.Background(), cfg, version)
+			if err != nil {
+				return err
+			}
 			defer cleanupLogger()
 
+			// Make the configured logger the global slog default so background
+			// goroutines in internal packages (e.g. token.StartCleanup,
+			// gitcache.StartCleanup) that use bare slog.Info/Error calls route
+			// through the same OTel LoggerProvider as the rest of the server.
+			logger := logging.Logger
+			slog.SetDefault(logger)
+
 			migrate, _ := cmd.Flags().GetBool("migrate")
-			if migrate {
-				logger.Info("running database migrations before startup")
-				if err := runMigrations(cfg); err != nil {
-					return fmt.Errorf("pre-startup migration: %w", err)
-				}
-				logger.Info("database migrations complete")
-			}
 
-			logger.Info("server_start", "msg", "starting ghp server")
+			logger.Info("server_start", "msg", "starting ghp server", "version", version)
 
-			srv := server.New(cfg, cfgPath, logger, logWriter)
+			srv := server.New(cfg, cfgPath, version, logger, logging.Provider, migrate)
 			forceDevMode, _ := cmd.Flags().GetBool("force-dev-mode")
 			srv.SetForceDevMode(forceDevMode)
 			return srv.Run(context.Background())
@@ -59,34 +61,4 @@ be upgraded between restarts.`,
 	cmd.Flags().Bool("force-dev-mode", false, "Allow dev mode on non-loopback addresses (unsafe; for testing only)")
 
 	return cmd
-}
-
-func newLogger(cfg *config.Config) (*slog.Logger, io.Writer, func()) {
-	var level slog.Level
-	switch cfg.Logging.Level {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-
-	opts := &slog.HandlerOptions{Level: level}
-
-	var w io.Writer = os.Stdout
-	cleanup := func() {}
-	if cfg.Logging.Output == "file" && cfg.Logging.File.Path != "" {
-		f, err := os.OpenFile(cfg.Logging.File.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err == nil {
-			w = f
-			cleanup = func() { f.Close() }
-		} else {
-			fmt.Fprintf(os.Stderr, "warning: failed to open log file %q: %v; falling back to stdout\n", cfg.Logging.File.Path, err)
-		}
-	}
-
-	return slog.New(slog.NewJSONHandler(w, opts)), w, cleanup
 }

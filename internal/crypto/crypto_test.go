@@ -45,6 +45,27 @@ func TestEncryptDecrypt(t *testing.T) {
 	}
 }
 
+func TestPassthroughEncryptor(t *testing.T) {
+	enc := NewPassthroughEncryptor()
+
+	plaintext := "gho_abc123def456"
+	encrypted, err := enc.Encrypt(plaintext)
+	if err != nil {
+		t.Fatalf("Encrypt() error: %v", err)
+	}
+	if encrypted != plaintext {
+		t.Errorf("passthrough Encrypt() = %q, want %q", encrypted, plaintext)
+	}
+
+	decrypted, err := enc.Decrypt(plaintext)
+	if err != nil {
+		t.Fatalf("Decrypt() error: %v", err)
+	}
+	if decrypted != plaintext {
+		t.Errorf("passthrough Decrypt() = %q, want %q", decrypted, plaintext)
+	}
+}
+
 func TestNewEncryptor_InvalidKey(t *testing.T) {
 	_, err := NewEncryptor("tooshort")
 	if err == nil {

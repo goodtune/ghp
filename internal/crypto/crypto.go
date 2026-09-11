@@ -1,4 +1,10 @@
-// Package crypto provides AES-256-GCM encryption for storing GitHub tokens at rest.
+// Package crypto provides AES-256-GCM encryption for storing GitHub OAuth
+// credentials at rest. Every real GitHub token (access and refresh) is encrypted
+// before being written to the database, and decrypted on-demand when the proxy
+// needs to inject credentials into an upstream request. The encryption key is
+// configured via GHP_ENCRYPTION_KEY and must be a 32-byte hex-encoded secret.
+//
+// This package also provides RSA key parsing for the OAuth broker's JWT signing.
 package crypto
 
 import (
@@ -40,7 +46,11 @@ func NewEncryptor(hexKey string) (*Encryptor, error) {
 }
 
 // Encrypt encrypts plaintext and returns a base64-encoded ciphertext (nonce prepended).
+// In passthrough mode (Vault backend), it returns the plaintext unchanged.
 func (e *Encryptor) Encrypt(plaintext string) (string, error) {
+	if e.aead == nil {
+		return plaintext, nil
+	}
 	nonce := make([]byte, e.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", fmt.Errorf("generating nonce: %w", err)
@@ -51,7 +61,11 @@ func (e *Encryptor) Encrypt(plaintext string) (string, error) {
 }
 
 // Decrypt decrypts a base64-encoded ciphertext (nonce prepended).
+// In passthrough mode (Vault backend), it returns the value unchanged.
 func (e *Encryptor) Decrypt(encoded string) (string, error) {
+	if e.aead == nil {
+		return encoded, nil
+	}
 	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return "", fmt.Errorf("decoding ciphertext: %w", err)
@@ -69,6 +83,13 @@ func (e *Encryptor) Decrypt(encoded string) (string, error) {
 	}
 
 	return string(plaintext), nil
+}
+
+// NewPassthroughEncryptor creates an Encryptor that stores values as plaintext.
+// This is used when the storage backend (e.g. Vault) already provides
+// encryption at rest, making application-level encryption redundant.
+func NewPassthroughEncryptor() *Encryptor {
+	return &Encryptor{aead: nil}
 }
 
 // GenerateKey generates a new random 32-byte key and returns it hex-encoded.

@@ -1,0 +1,967 @@
+package proxy
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/goodtune/ghp/internal/crypto"
+	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/token"
+)
+
+func TestExtractRawGitHubToken_Bearer(t *testing.T) {
+	tests := []struct {
+		name string
+		auth string
+		want string
+	}{
+		{"gho bearer", "Bearer gho_abc123", "gho_abc123"},
+		{"ghp bearer", "Bearer ghp_def456", "ghp_def456"},
+		{"ghu bearer", "Bearer ghu_xyz789", "ghu_xyz789"},
+		{"ghs bearer", "Bearer ghs_bot123", "ghs_bot123"},
+		{"gho token", "token gho_abc123", "gho_abc123"},
+		{"ghs token", "token ghs_bot123", "ghs_bot123"},
+		{"ghx not extracted", "Bearer ghx_abc123", ""},
+		{"gha not extracted", "Bearer gha_abc123", ""},
+		{"no auth", "", ""},
+		{"empty bearer", "Bearer ", ""},
+		{"random token", "Bearer sometoken", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/", nil)
+			if tt.auth != "" {
+				r.Header.Set("Authorization", tt.auth)
+			}
+			got := extractRawGitHubToken(r)
+			if got != tt.want {
+				t.Errorf("extractRawGitHubToken() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractRawGitHubToken_BasicAuth(t *testing.T) {
+	tests := []struct {
+		name string
+		user string
+		pass string
+		want string
+	}{
+		{"gho basic", "x-access-token", "gho_mytoken", "gho_mytoken"},
+		{"ghs basic", "x-access-token", "ghs_bottoken", "ghs_bottoken"},
+		{"ghp basic", "x-access-token", "ghp_pattoken", "ghp_pattoken"},
+		{"arbitrary user", "username", "gho_mytoken", "gho_mytoken"},
+		{"empty user", "", "gho_mytoken", "gho_mytoken"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/", nil)
+			encoded := base64.StdEncoding.EncodeToString([]byte(tt.user + ":" + tt.pass))
+			r.Header.Set("Authorization", "Basic "+encoded)
+			got := extractRawGitHubToken(r)
+			if got != tt.want {
+				t.Errorf("extractRawGitHubToken() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsResolvableGitHubToken(t *testing.T) {
+	tests := []struct {
+		token string
+		want  bool
+		desc  string
+	}{
+		{"gho_abc", true, "OAuth user token"},
+		{"ghp_abc", true, "personal access token"},
+		{"ghu_abc", true, "user-to-server token"},
+		{"ghs_abc", true, "GitHub App installation token (bot)"},
+		{"ghx_abc", false, "ghx_ proxy token"},
+		{"gha_abc", false, "gha_ agent token"},
+		{"randomtoken", false, "no recognized prefix"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			got := isResolvableGitHubToken(tt.token)
+			if got != tt.want {
+				t.Errorf("isResolvableGitHubToken(%q) = %v, want %v", tt.token, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHashToken(t *testing.T) {
+	h1 := hashToken("test-token")
+	h2 := hashToken("test-token")
+	if h1 != h2 {
+		t.Error("same token should produce same hash")
+	}
+	h3 := hashToken("different-token")
+	if h1 == h3 {
+		t.Error("different tokens should produce different hashes")
+	}
+	if len(h1) != 64 {
+		t.Errorf("expected SHA-256 hex hash length 64, got %d", len(h1))
+	}
+}
+
+func TestContextUsernameSlot(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+
+	// Before preparing slot, GetUsername returns "".
+	if got := GetUsername(r); got != "" {
+		t.Errorf("expected empty username before slot, got %q", got)
+	}
+
+	// SetUsername is a no-op without a slot.
+	SetUsername(r, "should-not-stick")
+	if got := GetUsername(r); got != "" {
+		t.Errorf("expected empty username without slot, got %q", got)
+	}
+
+	// Prepare slot.
+	r, slot := PrepareUsernameSlot(r)
+
+	// Set and read via context.
+	SetUsername(r, "octocat")
+	if got := GetUsername(r); got != "octocat" {
+		t.Errorf("expected 'octocat', got %q", got)
+	}
+
+	// The mutable slot should also reflect the value.
+	if *slot != "octocat" {
+		t.Errorf("expected slot to be 'octocat', got %q", *slot)
+	}
+}
+
+func TestContextAccessLogSlots(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+
+	// Before preparing slots, GetUserID returns "".
+	if got := GetUserID(r); got != "" {
+		t.Errorf("expected empty user ID before slot, got %q", got)
+	}
+
+	// SetUserID is a no-op without a slot.
+	SetUserID(r, "should-not-stick")
+	if got := GetUserID(r); got != "" {
+		t.Errorf("expected empty user ID without slot, got %q", got)
+	}
+
+	// Prepare access log slots (both username and user ID).
+	r, slots := PrepareAccessLogSlots(r)
+
+	// Set and read user ID via context.
+	SetUserID(r, "uuid-123")
+	if got := GetUserID(r); got != "uuid-123" {
+		t.Errorf("expected 'uuid-123', got %q", got)
+	}
+	if *slots.UserID != "uuid-123" {
+		t.Errorf("expected slot to be 'uuid-123', got %q", *slots.UserID)
+	}
+
+	// Username slot should also work via PrepareAccessLogSlots.
+	SetUsername(r, "octocat")
+	if got := GetUsername(r); got != "octocat" {
+		t.Errorf("expected 'octocat', got %q", got)
+	}
+	if *slots.Username != "octocat" {
+		t.Errorf("expected slot to be 'octocat', got %q", *slots.Username)
+	}
+}
+
+func TestUsernameResolver_ResolveFromUserID(t *testing.T) {
+	store := newTestStore(t)
+
+	// No user in DB.
+	resolver := NewUsernameResolver(store, nil)
+	if got := resolver.ResolveFromUserID(context.Background(), "nonexistent-id"); got != "" {
+		t.Errorf("expected empty username for nonexistent user, got %q", got)
+	}
+
+	// Empty user ID.
+	if got := resolver.ResolveFromUserID(context.Background(), ""); got != "" {
+		t.Errorf("expected empty username for empty user ID, got %q", got)
+	}
+}
+
+func TestUsernameResolver_ResolveFromGitHubToken_EmptyToken(t *testing.T) {
+	resolver := NewUsernameResolver(newTestStore(t), nil)
+	if got := resolver.ResolveFromGitHubToken(context.Background(), ""); got != "" {
+		t.Errorf("expected empty username for empty token, got %q", got)
+	}
+}
+
+func TestUsernameResolver_ResolveFromGitHubToken_NonResolvableToken(t *testing.T) {
+	// gha_ and other non-resolvable token prefixes should be rejected without
+	// any API call. The isResolvableGitHubToken guard must fire before any network I/O.
+	resolver := NewUsernameResolver(newTestStore(t), nil)
+	if got := resolver.ResolveFromGitHubToken(context.Background(), "gha_installationtoken"); got != "" {
+		t.Errorf("expected empty string for non-resolvable token, got %q", got)
+	}
+	if got := resolver.ResolveFromGitHubToken(context.Background(), "ghx_unknown"); got != "" {
+		t.Errorf("expected empty string for unknown prefix, got %q", got)
+	}
+}
+
+// newMockGraphQLServer creates a mock GitHub GraphQL server that responds to
+// the viewer query with the given login. It validates that the request uses
+// POST, sends the correct GraphQL query, and carries a Bearer token.
+func newMockGraphQLServer(t *testing.T, login string, callCount *atomic.Int32) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if callCount != nil {
+			callCount.Add(1)
+		}
+
+		// Validate the request is a proper GraphQL query.
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST request, got %s", r.Method)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			t.Errorf("expected Bearer auth header, got %q", auth)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		contentType := r.Header.Get("Content-Type")
+		if contentType != "application/json" {
+			t.Errorf("expected Content-Type application/json, got %q", contentType)
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		var reqBody map[string]string
+		if err := json.Unmarshal(body, &reqBody); err != nil {
+			t.Errorf("expected valid JSON body, got error: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		query := reqBody["query"]
+		if query != "query UserCurrent{viewer{login}}" {
+			t.Errorf("expected viewer query, got %q", query)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"viewer": map[string]interface{}{
+					"login": login,
+				},
+			},
+		})
+	}))
+}
+
+func TestUsernameResolver_GraphQL_ResolvesUserToken(t *testing.T) {
+	// A user token (gho_) should be resolved via the GraphQL viewer query.
+	var callCount atomic.Int32
+	srv := newMockGraphQLServer(t, "octocat", &callCount)
+	defer srv.Close()
+
+	resolver := NewUsernameResolver(newTestStore(t), nil, WithGraphQLURL(srv.URL))
+
+	// First call: cache miss → triggers async lookup, returns "".
+	if got := resolver.ResolveFromGitHubToken(context.Background(), "gho_testtoken"); got != "" {
+		t.Errorf("expected empty string on first cache miss, got %q", got)
+	}
+
+	// Poll until the async goroutine populates the cache (or timeout).
+	var cached string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if u := resolver.ResolveFromGitHubToken(context.Background(), "gho_testtoken"); u != "" {
+			cached = u
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if cached != "octocat" {
+		t.Errorf("expected 'octocat' from cache after async lookup, got %q", cached)
+	}
+
+	// Verify the GraphQL API was called exactly once (on the cache miss).
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected exactly 1 GraphQL API call, got %d", n)
+	}
+
+	// Another call should be a cache hit with no additional API requests.
+	if got := resolver.ResolveFromGitHubToken(context.Background(), "gho_testtoken"); got != "octocat" {
+		t.Errorf("expected 'octocat' from cache on second call, got %q", got)
+	}
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected still 1 GraphQL API call after cache hit, got %d", n)
+	}
+}
+
+func TestUsernameResolver_GraphQL_ResolvesBotToken(t *testing.T) {
+	// A GitHub App installation token (ghs_) should be resolved via the
+	// GraphQL viewer query, returning the bot account login.
+	var callCount atomic.Int32
+	srv := newMockGraphQLServer(t, "my-app[bot]", &callCount)
+	defer srv.Close()
+
+	resolver := NewUsernameResolver(newTestStore(t), nil, WithGraphQLURL(srv.URL))
+
+	// First call: cache miss → triggers async lookup.
+	if got := resolver.ResolveFromGitHubToken(context.Background(), "ghs_installtoken"); got != "" {
+		t.Errorf("expected empty string on first cache miss, got %q", got)
+	}
+
+	// Poll until the async goroutine populates the cache.
+	var cached string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if u := resolver.ResolveFromGitHubToken(context.Background(), "ghs_installtoken"); u != "" {
+			cached = u
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if cached != "my-app[bot]" {
+		t.Errorf("expected 'my-app[bot]' from cache after async lookup, got %q", cached)
+	}
+
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected exactly 1 GraphQL API call for bot token, got %d", n)
+	}
+}
+
+func TestUsernameResolver_GraphQL_CachesPerToken(t *testing.T) {
+	// Different tokens should get independent cache entries and trigger
+	// separate GraphQL lookups.
+	var callCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		auth := r.Header.Get("Authorization")
+		login := "unknown"
+		if strings.Contains(auth, "gho_user") {
+			login = "human-user"
+		} else if strings.Contains(auth, "ghs_bot") {
+			login = "bot-user[bot]"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"viewer": map[string]interface{}{
+					"login": login,
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	resolver := NewUsernameResolver(newTestStore(t), nil, WithGraphQLURL(srv.URL))
+
+	// Trigger lookups for both tokens.
+	resolver.ResolveFromGitHubToken(context.Background(), "gho_user")
+	resolver.ResolveFromGitHubToken(context.Background(), "ghs_bot")
+
+	// Poll until both are cached.
+	deadline := time.Now().Add(5 * time.Second)
+	var userCached, botCached string
+	for time.Now().Before(deadline) {
+		if userCached == "" {
+			userCached = resolver.ResolveFromGitHubToken(context.Background(), "gho_user")
+		}
+		if botCached == "" {
+			botCached = resolver.ResolveFromGitHubToken(context.Background(), "ghs_bot")
+		}
+		if userCached != "" && botCached != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if userCached != "human-user" {
+		t.Errorf("expected 'human-user' for gho_ token, got %q", userCached)
+	}
+	if botCached != "bot-user[bot]" {
+		t.Errorf("expected 'bot-user[bot]' for ghs_ token, got %q", botCached)
+	}
+
+	if n := callCount.Load(); n != 2 {
+		t.Errorf("expected 2 GraphQL API calls (one per token), got %d", n)
+	}
+}
+
+func TestUsernameResolver_GraphQL_NoDuplicateGoroutines(t *testing.T) {
+	// Verify that concurrent cache misses for the same token spawn only one
+	// goroutine (i.e. the in-flight deduplication works).
+	blocked := make(chan struct{})
+	var callCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		<-blocked // hold the response until we release it
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"viewer": map[string]interface{}{
+					"login": "octocat",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	resolver := NewUsernameResolver(newTestStore(t), nil, WithGraphQLURL(srv.URL))
+
+	// Fire several concurrent cache misses for the same token.
+	for range 5 {
+		resolver.ResolveFromGitHubToken(context.Background(), "gho_deduptoken")
+	}
+
+	// Release the blocked server handler.
+	close(blocked)
+
+	// Poll for the cache to be populated.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if resolver.ResolveFromGitHubToken(context.Background(), "gho_deduptoken") != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Only one goroutine should have reached the GraphQL API.
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected exactly 1 GraphQL API call with in-flight deduplication, got %d", n)
+	}
+}
+
+func TestUsernameResolver_GraphQL_HandlesErrorGracefully(t *testing.T) {
+	// A failing GraphQL endpoint should not cache anything, and subsequent
+	// calls should retry.
+	var callCount atomic.Int32
+	// Buffered channel signals each time a handler invocation completes.
+	done := make(chan struct{}, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"message":"Bad credentials"}`))
+		done <- struct{}{}
+	}))
+	defer srv.Close()
+
+	resolver := NewUsernameResolver(newTestStore(t), nil, WithGraphQLURL(srv.URL))
+
+	// First call: cache miss → triggers async lookup that will fail.
+	resolver.ResolveFromGitHubToken(context.Background(), "gho_badtoken")
+
+	// Wait for the async goroutine's HTTP handler to finish.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for first async lookup to complete")
+	}
+
+	// Wait until the resolver goroutine has cleared the inflight entry. Without
+	// this there is a race: the handler signals done before defer inflight.Delete
+	// runs, so the next call may hit the in-flight guard and skip the retry.
+	inflightKey := hashToken("gho_badtoken")
+	inflightDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := resolver.inflight.Load(inflightKey); !ok {
+			break
+		}
+		if time.Now().After(inflightDeadline) {
+			t.Fatal("timeout waiting for inflight entry to clear after first lookup")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Should still return empty (error response is not cached).
+	if got := resolver.ResolveFromGitHubToken(context.Background(), "gho_badtoken"); got != "" {
+		t.Errorf("expected empty string after failed lookup, got %q", got)
+	}
+
+	// Wait for the retry goroutine's HTTP handler to finish.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for retry async lookup to complete")
+	}
+
+	// Should have made at least 2 API calls (initial + retry).
+	if n := callCount.Load(); n < 2 {
+		t.Errorf("expected at least 2 GraphQL API calls after error + retry, got %d", n)
+	}
+}
+
+func TestUsernameResolver_GraphQL_HandlesGraphQLErrors(t *testing.T) {
+	// GitHub GraphQL returns HTTP 200 with a top-level "errors" array for
+	// auth/rate-limit/abuse failures. The resolver must treat this as a failed
+	// lookup and not cache the empty login.
+	var callCount atomic.Int32
+	done := make(chan struct{}, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		// HTTP 200 with a GraphQL-level error (e.g. insufficient scopes).
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"errors":[{"message":"Your token has not been granted the required scopes."}]}`))
+		done <- struct{}{}
+	}))
+	defer srv.Close()
+
+	resolver := NewUsernameResolver(newTestStore(t), nil, WithGraphQLURL(srv.URL))
+
+	// First call: cache miss → triggers async lookup that returns a GraphQL error.
+	resolver.ResolveFromGitHubToken(context.Background(), "gho_scopetoken")
+
+	// Wait for the async goroutine's HTTP handler to finish.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for first async lookup to complete")
+	}
+
+	// Wait until the resolver goroutine has cleared the inflight entry. Without
+	// this there is a race: the handler signals done before defer inflight.Delete
+	// runs, so the next call may hit the in-flight guard and skip the retry.
+	inflightKey := hashToken("gho_scopetoken")
+	inflightDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := resolver.inflight.Load(inflightKey); !ok {
+			break
+		}
+		if time.Now().After(inflightDeadline) {
+			t.Fatal("timeout waiting for inflight entry to clear after first lookup")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Nothing should be cached — the error response must not populate the cache.
+	if got := resolver.ResolveFromGitHubToken(context.Background(), "gho_scopetoken"); got != "" {
+		t.Errorf("expected empty string after GraphQL error response, got %q", got)
+	}
+
+	// Wait for the retry goroutine's HTTP handler to finish.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for retry async lookup to complete")
+	}
+
+	// The retry confirms the error was not cached and another lookup was attempted.
+	if n := callCount.Load(); n < 2 {
+		t.Errorf("expected at least 2 GraphQL API calls after error + retry, got %d", n)
+	}
+}
+
+func TestUsernameResolver_GraphQL_SendsCorrectQuery(t *testing.T) {
+	// Verify the exact GraphQL query sent matches the expected viewer query.
+	// Use a buffered channel to safely pass the query from the handler goroutine
+	// to the test goroutine without a data race.
+	queryCh := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var reqBody map[string]string
+		json.Unmarshal(body, &reqBody)
+		queryCh <- reqBody["query"]
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"viewer": map[string]interface{}{
+					"login": "testuser",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	resolver := NewUsernameResolver(newTestStore(t), nil, WithGraphQLURL(srv.URL))
+	resolver.ResolveFromGitHubToken(context.Background(), "gho_querytest")
+
+	// Wait for the async goroutine to complete.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if resolver.ResolveFromGitHubToken(context.Background(), "gho_querytest") != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var receivedQuery string
+	select {
+	case receivedQuery = <-queryCh:
+	default:
+		t.Fatal("handler goroutine did not send query to channel")
+	}
+
+	if receivedQuery != "query UserCurrent{viewer{login}}" {
+		t.Errorf("expected query 'query UserCurrent{viewer{login}}', got %q", receivedQuery)
+	}
+}
+
+func TestUsernameResolver_GraphQL_ForwardsBearerToken(t *testing.T) {
+	// Verify the resolver forwards the raw token as a Bearer credential.
+	// Use a buffered channel to safely pass the Authorization header from the
+	// handler goroutine to the test goroutine without a data race.
+	authCh := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authCh <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"viewer": map[string]interface{}{
+					"login": "testuser",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	resolver := NewUsernameResolver(newTestStore(t), nil, WithGraphQLURL(srv.URL))
+	resolver.ResolveFromGitHubToken(context.Background(), "gho_authtest123")
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if resolver.ResolveFromGitHubToken(context.Background(), "gho_authtest123") != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var receivedAuth string
+	select {
+	case receivedAuth = <-authCh:
+	default:
+		t.Fatal("handler goroutine did not send Authorization header to channel")
+	}
+
+	if receivedAuth != "Bearer gho_authtest123" {
+		t.Errorf("expected 'Bearer gho_authtest123', got %q", receivedAuth)
+	}
+}
+
+func TestUsernameResolver_GraphQL_BasicAuth_BotToken(t *testing.T) {
+	// Verify that a ghs_ token delivered via Basic auth (x-access-token:<token>)
+	// is extracted and resolved through the GraphQL viewer query.
+	srv := newMockGraphQLServer(t, "deploy-bot[bot]", nil)
+	defer srv.Close()
+
+	resolver := NewUsernameResolver(newTestStore(t), nil, WithGraphQLURL(srv.URL))
+
+	// Simulate extracting the raw token from a Basic auth header.
+	r := httptest.NewRequest("GET", "/", nil)
+	encoded := base64.StdEncoding.EncodeToString([]byte("x-access-token:ghs_bottoken"))
+	r.Header.Set("Authorization", "Basic "+encoded)
+
+	rawToken := extractRawGitHubToken(r)
+	if rawToken != "ghs_bottoken" {
+		t.Fatalf("expected ghs_bottoken from Basic auth extraction, got %q", rawToken)
+	}
+
+	// Trigger the resolver with the extracted token.
+	resolver.ResolveFromGitHubToken(context.Background(), rawToken)
+
+	// Poll until cached.
+	var cached string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if u := resolver.ResolveFromGitHubToken(context.Background(), rawToken); u != "" {
+			cached = u
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if cached != "deploy-bot[bot]" {
+		t.Errorf("expected 'deploy-bot[bot]' for ghs_ token via Basic auth, got %q", cached)
+	}
+}
+
+func TestUsernameResolver_WarmCache_ProxyTokens(t *testing.T) {
+	// WarmCache should resolve the GitHub credential for each unexpired proxy
+	// token and trigger an async GraphQL lookup to populate the cache.
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 500, GitHubUsername: "warmuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("gho_warm_test_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
+	if _, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Duration:      24 * time.Hour,
+		SessionID:     "warm-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	gqlSrv := newMockGraphQLServer(t, "warm-resolved-user", &callCount)
+	defer gqlSrv.Close()
+
+	resolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
+	ptr := NewProxyTokenResolver(tokenSvc, store, enc, nil)
+
+	// warmCacheSync blocks until all GraphQL lookups complete; read directly from cache.
+	resolver.warmCacheSync(ctx, ptr)
+
+	// warmCacheSync blocks until all workers finish so the cache is populated now.
+	cached := resolver.CheckCache("gho_warm_test_token")
+
+	if cached != "warm-resolved-user" {
+		t.Errorf("expected 'warm-resolved-user' after cache warm, got %q", cached)
+	}
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected 1 GraphQL API call from cache warm, got %d", n)
+	}
+}
+
+func TestUsernameResolver_WarmCache_SkipsExpiredAndRevoked(t *testing.T) {
+	// WarmCache must skip expired and revoked tokens.
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user := &database.User{GitHubID: 501, GitHubUsername: "skipuser", Role: "user"}
+	if err := store.UpsertUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	encAccess, err := enc.Encrypt("gho_skip_test_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                user.ID,
+		AccessToken:           encAccess,
+		RefreshToken:          "enc_refresh",
+		AccessTokenExpiresAt:  time.Now().Add(8 * time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(180 * 24 * time.Hour),
+	}
+	if err := store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
+
+	// Create a token with a very short duration so it expires immediately.
+	if _, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Duration:      1 * time.Millisecond,
+		SessionID:     "expired-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond) // ensure expiry
+
+	// Create a token and then revoke it.
+	revoked, err := tokenSvc.Create(ctx, token.CreateRequest{
+		UserID:        user.ID,
+		GitHubTokenID: gt.ID,
+		Duration:      24 * time.Hour,
+		SessionID:     "revoked-test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RevokeProxyToken(ctx, revoked.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	gqlSrv := newMockGraphQLServer(t, "should-not-resolve", &callCount)
+	defer gqlSrv.Close()
+
+	resolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
+	ptr := NewProxyTokenResolver(tokenSvc, store, enc, nil)
+	resolver.warmCacheSync(ctx, ptr)
+
+	if n := callCount.Load(); n != 0 {
+		t.Errorf("expected 0 GraphQL API calls for expired/revoked tokens, got %d", n)
+	}
+}
+
+func TestPassthroughTokenType(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+		want  string
+	}{
+		{"gho_prefix", "gho_abc123", "gho"},
+		{"ghp_prefix", "ghp_def456", "ghp"},
+		{"ghu_prefix", "ghu_xyz789", "ghu"},
+		{"ghs_prefix", "ghs_bot123", "ghs"},
+		{"ghx_unrecognized", "ghx_abc123", "unknown"},
+		{"gha_unrecognized", "gha_abc123", "unknown"},
+		{"random_token", "randomtoken", "unknown"},
+		{"empty_token", "", "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := passthroughTokenType(tt.token)
+			if got != tt.want {
+				t.Errorf("passthroughTokenType(%q) = %q, want %q", tt.token, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUsernameResolver_WarmCache_AgentTokens(t *testing.T) {
+	// WarmCache should also resolve agent tokens via the AppTokenProvider.
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSvc := token.NewService(store, 7*24*time.Hour, false)
+	var installID int64 = 55
+	if _, err := tokenSvc.Create(ctx, token.CreateRequest{
+		TokenType:      token.TokenTypeAgent,
+		InstallationID: installID,
+		Duration:       24 * time.Hour,
+		SessionID:      "agent-warm-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	gqlSrv := newMockGraphQLServer(t, "warm-bot[bot]", &callCount)
+	defer gqlSrv.Close()
+
+	resolver := NewUsernameResolver(store, nil, WithGraphQLURL(gqlSrv.URL))
+	atp := &mockAppTokenProvider{token: "ghs_warm_agent_token"}
+	ptr := NewProxyTokenResolver(tokenSvc, store, enc, atp)
+
+	// warmCacheSync blocks until all workers finish so the cache is populated now.
+	resolver.warmCacheSync(ctx, ptr)
+
+	cached := resolver.CheckCache("ghs_warm_agent_token")
+
+	if cached != "warm-bot[bot]" {
+		t.Errorf("expected 'warm-bot[bot]' after cache warm, got %q", cached)
+	}
+}
+
+func TestResolveFromGitHubTokenSync_ConcurrentCallsCoalesce(t *testing.T) {
+	// Concurrent synchronous lookups for the same token must trigger exactly
+	// one GraphQL viewer request: the first caller leads, the rest wait on
+	// the shared flight and receive the leader's result.
+	var callCount atomic.Int32
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":{"viewer":{"login":"herd-user"}}}`))
+	}))
+	defer slow.Close()
+
+	resolver := NewUsernameResolver(nil, nil, WithGraphQLURL(slow.URL))
+
+	const workers = 8
+	results := make([]string, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = resolver.ResolveFromGitHubTokenSync(context.Background(), "gho_herdtoken")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, got := range results {
+		if got != "herd-user" {
+			t.Errorf("worker %d: expected 'herd-user', got %q", i, got)
+		}
+	}
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected exactly 1 upstream lookup for concurrent callers, got %d", n)
+	}
+}
+
+func TestResolveFromGitHubTokenSync_WaiterHonoursContext(t *testing.T) {
+	// A waiter joining an in-progress flight must give up when its own
+	// context is cancelled rather than blocking until the leader finishes.
+	release := make(chan struct{})
+	var callCount atomic.Int32
+	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":{"viewer":{"login":"slow-user"}}}`))
+	}))
+	defer blocked.Close()
+	defer close(release)
+
+	resolver := NewUsernameResolver(nil, nil, WithGraphQLURL(blocked.URL))
+
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		resolver.ResolveFromGitHubTokenSync(context.Background(), "gho_slowtoken")
+	}()
+
+	// Wait for the leader's flight to be registered.
+	key := hashToken("gho_slowtoken")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := resolver.inflight.Load(key); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for leader flight to register")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if got := resolver.ResolveFromGitHubTokenSync(ctx, "gho_slowtoken"); got != "" {
+		t.Errorf("expected cancelled waiter to return empty username, got %q", got)
+	}
+
+	<-leaderDone
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected exactly 1 upstream lookup, got %d", n)
+	}
+}

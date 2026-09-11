@@ -143,7 +143,7 @@ func TestProxyTokenCRUD(t *testing.T) {
 	}
 
 	// Test proxy token (ghx_ type).
-	scopes := json.RawMessage(`{"contents":"read","pulls":"write"}`)
+	scopes := json.RawMessage(`{"contents":"read","pull_requests":"write"}`)
 	repos := json.RawMessage(`["org/repo"]`)
 	pt := &ProxyToken{
 		TokenHash:     "sha256hash123",
@@ -154,7 +154,7 @@ func TestProxyTokenCRUD(t *testing.T) {
 		Repositories:  repos,
 		Scopes:        scopes,
 		SessionID:     "test-session",
-		ExpiresAt:     time.Now().Add(24 * time.Hour),
+		ExpiresAt:     timePtr(time.Now().Add(24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, pt); err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestProxyTokenCRUD(t *testing.T) {
 		Repositories:   agentRepos,
 		Scopes:         json.RawMessage(`{"contents":"read"}`),
 		SessionID:      "admin-session",
-		ExpiresAt:      time.Now().Add(365 * 24 * time.Hour),
+		ExpiresAt:      timePtr(time.Now().Add(365 * 24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, at); err != nil {
 		t.Fatal(err)
@@ -211,17 +211,6 @@ func TestProxyTokenCRUD(t *testing.T) {
 		t.Errorf("installation_id = %v, want 12345", gotAgent.InstallationID)
 	}
 
-	// Update usage.
-	if err := store.UpdateProxyTokenUsage(ctx, pt.ID); err != nil {
-		t.Fatal(err)
-	}
-	got2, _ := store.GetProxyTokenByID(ctx, pt.ID)
-	if got2.RequestCount != 1 {
-		t.Errorf("request_count = %d, want 1", got2.RequestCount)
-	}
-	if got2.LastUsedAt == nil {
-		t.Error("last_used_at should be set")
-	}
 
 	// List.
 	tokens, err := store.ListProxyTokens(ctx, user.ID)
@@ -298,39 +287,17 @@ func TestMigrations(t *testing.T) {
 	}
 }
 
-func TestAuditLog(t *testing.T) {
+// TestSQLiteStoreContract runs the shared store contract tests against SQLite.
+func TestSQLiteStoreContract(t *testing.T) {
 	store := newTestStore(t)
-	ctx := context.Background()
+	testStoreContract(t, store)
 
-	user := &User{GitHubID: 1, GitHubUsername: "charlie", Role: "user"}
-	if err := store.UpsertUser(ctx, user); err != nil {
-		t.Fatal(err)
-	}
-
-	entry := &AuditEntry{
-		UserID:     user.ID,
-		Action:     "proxy_request",
-		Method:     "GET",
-		Path:       "/repos/org/repo/pulls",
-		Repository: "org/repo",
-		StatusCode: 200,
-		DurationMS: 42,
-		SessionID:  "test",
-	}
-	if err := store.CreateAuditEntry(ctx, entry); err != nil {
-		t.Fatal(err)
-	}
-
-	entries, err := store.ListAuditEntries(ctx, AuditFilter{UserID: user.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("ListAuditEntries = %d, want 1", len(entries))
-	}
-	if entries[0].Action != "proxy_request" {
-		t.Errorf("action = %q, want proxy_request", entries[0].Action)
-	}
+	// SQLite uses DELETE ... RETURNING for ConsumeOAuthState, so the
+	// stronger atomicity invariant holds. The Vault backend cannot offer
+	// it (read-then-delete) and is therefore not invoked here.
+	t.Run("OAuthStateConsumeAtomic", func(t *testing.T) {
+		testOAuthStateConsumeAtomic(t, store)
+	})
 }
 
 // Ensure temporary files are cleaned up.

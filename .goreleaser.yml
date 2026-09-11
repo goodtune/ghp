@@ -2,7 +2,7 @@ version: 2
 
 before:
   hooks:
-    - uvx --with mkdocs-shadcn mkdocs build --site-dir internal/docs/site
+    - uvx --with mkdocs-shadcn==0.10.2 mkdocs build --site-dir internal/docs/site
 
 builds:
   - main: ./cmd/ghp

@@ -3,18 +3,37 @@ package database
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
+
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-// newTestPostgresStore creates a PostgresStore connected to a test database.
-// Tests are skipped when GHP_TEST_POSTGRES_DSN is not set.
+// newTestPostgresStore spins up a PostgreSQL container via testcontainers and
+// returns a PostgresStore connected to it. The container is terminated on
+// test cleanup.
 func newTestPostgresStore(t *testing.T) *PostgresStore {
 	t.Helper()
-	dsn := os.Getenv("GHP_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("GHP_TEST_POSTGRES_DSN not set; skipping PostgreSQL tests")
+	ctx := context.Background()
+
+	pgContainer, err := tcpostgres.Run(ctx, "postgres:17-alpine",
+		tcpostgres.WithDatabase("ghp_test"),
+		tcpostgres.WithUsername("test"),
+		tcpostgres.WithPassword("test"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		t.Fatalf("start postgres container: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := pgContainer.Terminate(ctx); err != nil {
+			t.Logf("terminate postgres container: %v", err)
+		}
+	})
+
+	dsn, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("postgres connection string: %v", err)
 	}
 
 	store, err := NewPostgresStore(dsn)
@@ -24,12 +43,11 @@ func newTestPostgresStore(t *testing.T) *PostgresStore {
 	t.Cleanup(func() { store.Close() })
 
 	// Drop and recreate tables for a clean slate.
-	ctx := context.Background()
 	for _, stmt := range []string{
-		"DROP TABLE IF EXISTS audit_log",
 		"DROP TABLE IF EXISTS proxy_tokens",
 		"DROP TYPE IF EXISTS token_type",
 		"DROP TABLE IF EXISTS github_tokens",
+		"DROP TABLE IF EXISTS apps",
 		"DROP TABLE IF EXISTS users",
 		"DROP TABLE IF EXISTS schema_migrations",
 	} {
@@ -47,6 +65,19 @@ func newTestPostgresStore(t *testing.T) *PostgresStore {
 		t.Fatalf("Migrate: %v", err)
 	}
 	return store
+}
+
+// TestPostgresStoreContract runs the shared store contract tests against PostgreSQL.
+func TestPostgresStoreContract(t *testing.T) {
+	store := newTestPostgresStore(t)
+	testStoreContract(t, store)
+
+	// Postgres uses DELETE ... RETURNING for ConsumeOAuthState, so the
+	// stronger atomicity invariant holds. See store_test.go for why this
+	// isn't part of the shared contract suite.
+	t.Run("OAuthStateConsumeAtomic", func(t *testing.T) {
+		testOAuthStateConsumeAtomic(t, store)
+	})
 }
 
 func TestPostgresUserCRUD(t *testing.T) {
@@ -135,7 +166,7 @@ func TestPostgresProxyTokenCRUD(t *testing.T) {
 	}
 
 	// Test proxy token (ghx_ type).
-	scopes := json.RawMessage(`{"contents":"read","pulls":"write"}`)
+	scopes := json.RawMessage(`{"contents":"read","pull_requests":"write"}`)
 	repos := json.RawMessage(`["org/repo"]`)
 	pt := &ProxyToken{
 		TokenHash:     "sha256hash123",
@@ -146,7 +177,7 @@ func TestPostgresProxyTokenCRUD(t *testing.T) {
 		Repositories:  repos,
 		Scopes:        scopes,
 		SessionID:     "test-session",
-		ExpiresAt:     time.Now().Add(24 * time.Hour),
+		ExpiresAt:     timePtr(time.Now().Add(24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, pt); err != nil {
 		t.Fatal(err)
@@ -186,7 +217,7 @@ func TestPostgresProxyTokenCRUD(t *testing.T) {
 		Repositories:   agentRepos,
 		Scopes:         json.RawMessage(`{"contents":"read"}`),
 		SessionID:      "admin-session",
-		ExpiresAt:      time.Now().Add(365 * 24 * time.Hour),
+		ExpiresAt:      timePtr(time.Now().Add(365 * 24 * time.Hour)),
 	}
 	if err := store.CreateProxyToken(ctx, at); err != nil {
 		t.Fatal(err)
@@ -201,18 +232,6 @@ func TestPostgresProxyTokenCRUD(t *testing.T) {
 	}
 	if gotAgent.InstallationID == nil || *gotAgent.InstallationID != 12345 {
 		t.Errorf("installation_id = %v, want 12345", gotAgent.InstallationID)
-	}
-
-	// Update usage.
-	if err := store.UpdateProxyTokenUsage(ctx, pt.ID); err != nil {
-		t.Fatal(err)
-	}
-	got2, _ := store.GetProxyTokenByID(ctx, pt.ID)
-	if got2.RequestCount != 1 {
-		t.Errorf("request_count = %d, want 1", got2.RequestCount)
-	}
-	if got2.LastUsedAt == nil {
-		t.Error("last_used_at should be set")
 	}
 
 	// List.
@@ -266,37 +285,3 @@ func TestPostgresMigrations(t *testing.T) {
 	}
 }
 
-func TestPostgresAuditLog(t *testing.T) {
-	store := newTestPostgresStore(t)
-	ctx := context.Background()
-
-	user := &User{GitHubID: 1, GitHubUsername: "charlie", Role: "user"}
-	if err := store.UpsertUser(ctx, user); err != nil {
-		t.Fatal(err)
-	}
-
-	entry := &AuditEntry{
-		UserID:     user.ID,
-		Action:     "proxy_request",
-		Method:     "GET",
-		Path:       "/repos/org/repo/pulls",
-		Repository: "org/repo",
-		StatusCode: 200,
-		DurationMS: 42,
-		SessionID:  "test",
-	}
-	if err := store.CreateAuditEntry(ctx, entry); err != nil {
-		t.Fatal(err)
-	}
-
-	entries, err := store.ListAuditEntries(ctx, AuditFilter{UserID: user.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("ListAuditEntries = %d, want 1", len(entries))
-	}
-	if entries[0].Action != "proxy_request" {
-		t.Errorf("action = %q, want proxy_request", entries[0].Action)
-	}
-}

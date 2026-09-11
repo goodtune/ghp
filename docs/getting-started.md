@@ -1,8 +1,8 @@
 # Getting Started
 
-This guide assumes your administrator has already deployed ghp and configured
-DNS so that `api.github.com` and `github.com` resolve to the proxy on your
-network. You just need a token.
+This guide is for users who need to create tokens and configure agents. It
+assumes your administrator has already deployed ghp and configured DNS so that
+`api.github.com` and `github.com` resolve to the proxy on your network.
 
 ## Create a Token
 
@@ -11,9 +11,9 @@ network. You just need a token.
 1. Open your team's ghp dashboard (e.g. `https://ghp.example.com`)
 2. Sign in with GitHub
 3. Click **Create Token**
-4. Select the target repository
-5. Choose permission scopes (e.g. `contents:read`, `pulls:write`)
-6. Set a duration (default: 24 hours)
+4. Select the target repository (or leave blank for an open-scoped token)
+5. Choose permission scopes (e.g. `contents:read`, `pull_requests:write`)
+6. Set a duration (default: 24 hours; if the server has `tokens.allow_no_expiry` enabled, a "No expiry" option is also available)
 7. Click **Create** and copy the `ghx_`-prefixed token
 
 ### CLI
@@ -22,23 +22,65 @@ First, authenticate with the ghp server:
 
     ghp auth login
 
+This opens a verification URL on your **ghp server** (not github.com) showing
+a short user code. Confirm the code matches what the CLI printed and click
+**Authorize**. The CLI then saves the issued session token to
+`~/.config/ghp/config.yaml`. See [`ghp auth login`](cli/auth.md#ghp-auth-login)
+for details, including how to use the flow over SSH or in a headless
+environment.
+
 Then create a scoped proxy token:
 
     ghp token create \
       --repo owner/repo \
-      --scope contents:read,pulls:write \
+      --scope contents:read,pull_requests:write \
       --duration 48h \
       --session "my-coding-session"
 
-Admins can also create agent tokens backed by a GitHub App installation
+If the server has `tokens.allow_no_expiry` enabled, you can create a token
+that never expires by passing `--duration never`.
+
+Administrators can also create agent tokens backed by a GitHub App installation
 (see [GitHub App Setup](admin/github-app.md) for server configuration):
 
     ghp token create \
-      --type agent \
-      --installation-id 12345678 \
+      --app mybot \
+      --installation myorg \
       --repos owner/repo1,owner/repo2 \
-      --scope contents:read,pulls:write
+      --scope contents:read,pull_requests:write
 
+The `--app` flag accepts the app name (as shown in the admin Apps table) and
+`--installation` accepts the GitHub account login (org or user name) where the
+app is installed. Both flags resolve to the underlying IDs automatically. When
+`--app` or `--installation` is used, `--type agent` is inferred.
+
+If only one app is configured (or one is marked as default), `--app` can be
+omitted — the installation is resolved against the default app:
+
+    ghp token create \
+      --installation myorg \
+      --duration never
+
+The numeric `--app-id` (database UUID) and `--installation-id` (GitHub numeric
+ID) flags remain available for advanced or scripted use.
+
+See [Token Scoping](features/token-scoping.md) for a full explanation of
+repository restrictions, permission scopes, and open-scoped tokens.
+
+## Administrator: Register a GitHub App
+
+Before agent tokens (`gha_`) can be created, at least one GitHub App must be
+registered with ghp.
+
+If the server config includes `github.app_id` and `github.private_key` (or
+`github.private_key_file`), a default App record is created automatically on
+first startup. No further action is needed.
+
+Otherwise, an admin should log in to the admin panel at `/admin` and use
+**Apps → Add App** to register a GitHub App with its credentials (App ID,
+client ID, client secret, and private key PEM). See
+[GitHub App Setup](admin/github-app.md) for details on creating a GitHub App
+and obtaining these values.
 
 ## Configure Your Agent
 
@@ -55,22 +97,26 @@ List your active tokens:
 
     ghp token list
 
-Revoke a token:
+Revoke a token immediately:
 
     ghp token revoke <token-id>
 
-Or use the web dashboard to view and revoke tokens.
+Or use the [web dashboard](web-ui.md) to view and revoke tokens.
 
-## Scopes
+## Scopes Reference
 
-Scopes follow the GitHub API permission model. Common scopes:
+Scopes follow the GitHub API permission model:
 
 | Scope | Description |
 |-------|-------------|
 | `contents:read` | Read repository contents (files, commits) |
 | `contents:write` | Push commits, create/update files |
-| `pulls:read` | Read pull requests |
-| `pulls:write` | Create and update pull requests |
+| `pull_requests:read` | Read pull requests |
+| `pull_requests:write` | Create and update pull requests |
 | `issues:read` | Read issues |
 | `issues:write` | Create and update issues |
-| `metadata:read` | Read repository metadata (always included) |
+| `metadata:read` | Read repository metadata (always permitted) |
+
+When no scopes are specified, the token inherits the full permissions of the
+underlying credential. See [Token Scoping](features/token-scoping.md) for
+details on how scoping works.

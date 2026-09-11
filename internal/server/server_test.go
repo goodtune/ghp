@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/goodtune/ghp/internal/web"
 )
 
 func TestHostDispatch(t *testing.T) {
@@ -13,6 +15,9 @@ func TestHostDispatch(t *testing.T) {
 	githubHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("github"))
 	})
+	codeloadHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("codeload"))
+	})
 	copilotHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("copilot"))
 	})
@@ -21,11 +26,12 @@ func TestHostDispatch(t *testing.T) {
 	})
 
 	dispatch := newHostDispatch(hostDispatchConfig{
-		apiHandler:     apiHandler,
-		githubHandler:  githubHandler,
-		copilotHandler: copilotHandler,
-		mgmtHandler:    mgmtHandler,
-		managementHost: "ghp.example.com",
+		apiHandler:      apiHandler,
+		githubHandler:   githubHandler,
+		codeloadHandler: codeloadHandler,
+		copilotHandler:  copilotHandler,
+		mgmtHandler:     mgmtHandler,
+		managementHost:  "ghp.example.com",
 	})
 
 	tests := []struct {
@@ -34,13 +40,20 @@ func TestHostDispatch(t *testing.T) {
 	}{
 		{"api.github.com", "api"},
 		{"api.github.com:443", "api"},
+		{"API.GitHub.COM", "api"}, // hostnames are case-insensitive (RFC 1035 §2.3.3)
 		{"github.com", "github"},
 		{"github.com:443", "github"},
+		{"GitHub.com:443", "github"},
+		{"codeload.github.com", "codeload"},
+		{"codeload.github.com:443", "codeload"},
+		{"CodeLoad.GitHub.com", "codeload"},
 		{"api.githubcopilot.com", "copilot"},
 		{"copilot.githubcopilot.com", "copilot"},
 		{"githubcopilot.com", "copilot"},
+		{"API.GitHubCopilot.com", "copilot"},
 		{"ghp.example.com", "mgmt"},
 		{"ghp.example.com:443", "mgmt"},
+		{"GHP.Example.COM", "mgmt"},
 		{"unknown.example.com", ""}, // 404 when managementHost is set
 	}
 
@@ -64,17 +77,82 @@ func TestHostDispatch(t *testing.T) {
 
 }
 
+// TestServerHeaderAllBackends verifies that the Server and X-GitHub-Proxy-Version
+// response headers are set on all backends (api, github, codeload, copilot, mgmt)
+// when ServerHeaderMiddleware wraps the host dispatch handler.
+func TestServerHeaderAllBackends(t *testing.T) {
+	const version = "1.2.3"
+
+	apiHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("api"))
+	})
+	githubHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("github"))
+	})
+	codeloadHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("codeload"))
+	})
+	copilotHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("copilot"))
+	})
+	mgmtHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("mgmt"))
+	})
+
+	dispatch := newHostDispatch(hostDispatchConfig{
+		apiHandler:      apiHandler,
+		githubHandler:   githubHandler,
+		codeloadHandler: codeloadHandler,
+		copilotHandler:  copilotHandler,
+		mgmtHandler:     mgmtHandler,
+		managementHost:  "ghp.example.com",
+	})
+	handler := web.ServerHeaderMiddleware(version)(dispatch)
+
+	tests := []struct {
+		name string
+		host string
+		body string
+	}{
+		{"api backend", "api.github.com", "api"},
+		{"github backend", "github.com", "github"},
+		{"codeload backend", "codeload.github.com", "codeload"},
+		{"copilot backend", "api.githubcopilot.com", "copilot"},
+		{"mgmt backend", "ghp.example.com", "mgmt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			req.Host = tt.host
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if got := rr.Body.String(); got != tt.body {
+				t.Errorf("body: got %q, want %q", got, tt.body)
+			}
+			if got := rr.Header().Get("Server"); got != "GitHub Proxy" {
+				t.Errorf("Server header: got %q, want %q", got, "GitHub Proxy")
+			}
+			if got := rr.Header().Get("X-GitHub-Proxy-Version"); got != version {
+				t.Errorf("X-GitHub-Proxy-Version header: got %q, want %q", got, version)
+			}
+		})
+	}
+}
+
 func TestHostDispatch_EmptyManagementHost(t *testing.T) {
 	mgmtHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("mgmt"))
 	})
 
 	dispatch := newHostDispatch(hostDispatchConfig{
-		apiHandler:     http.NotFoundHandler(),
-		githubHandler:  http.NotFoundHandler(),
-		copilotHandler: http.NotFoundHandler(),
-		mgmtHandler:    mgmtHandler,
-		managementHost: "", // empty = catch-all fallback
+		apiHandler:      http.NotFoundHandler(),
+		githubHandler:   http.NotFoundHandler(),
+		codeloadHandler: http.NotFoundHandler(),
+		copilotHandler:  http.NotFoundHandler(),
+		mgmtHandler:     mgmtHandler,
+		managementHost:  "", // empty = catch-all fallback
 	})
 
 	tests := []struct {

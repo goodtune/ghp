@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,13 +13,9 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-)
 
-// brokerState holds the pending state for an in-progress OAuth broker flow.
-type brokerState struct {
-	RedirectURI     string
-	DownstreamState string
-}
+	"github.com/goodtune/ghp/internal/database"
+)
 
 // BrokerClaims are the JWT claims minted by the OAuth broker.
 type BrokerClaims struct {
@@ -44,10 +41,17 @@ func (h *Handler) handleBrokerAuthorize(w http.ResponseWriter, r *http.Request) 
 	downstreamState := r.URL.Query().Get("state")
 
 	state := generateState()
-	h.brokerStates.Add(state, &brokerState{
-		RedirectURI:     redirectURI,
-		DownstreamState: downstreamState,
-	})
+	if err := h.store.CreateOAuthState(r.Context(), &database.OAuthState{
+		State:                 state,
+		Kind:                  database.OAuthStateKindBroker,
+		BrokerRedirectURI:     redirectURI,
+		BrokerDownstreamState: downstreamState,
+		ExpiresAt:             time.Now().Add(brokerStateTTL).UTC(),
+	}); err != nil {
+		h.logger.Error("failed to persist broker oauth state", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
 
 	callbackURL := h.brokerCallbackURL(r)
 	params := url.Values{}
@@ -75,11 +79,11 @@ func (h *Handler) handleBrokerCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bs, ok := h.brokerStates.Get(state)
-	if ok {
-		h.brokerStates.Remove(state)
-	}
-	if !ok {
+	bs, err := h.store.ConsumeOAuthState(r.Context(), state, database.OAuthStateKindBroker)
+	if err != nil {
+		if !errors.Is(err, database.ErrNotFound) {
+			h.logger.Error("broker oauth state consume failed", "error", err)
+		}
 		http.Error(w, "Invalid or expired state", http.StatusBadRequest)
 		return
 	}
@@ -87,9 +91,9 @@ func (h *Handler) handleBrokerCallback(w http.ResponseWriter, r *http.Request) {
 	// Exchange code for access token, including the redirect_uri that was
 	// sent in the authorize request (GitHub requires it to match).
 	callbackURL := h.brokerCallbackURL(r)
-	accessToken, _, _, err := h.exchangeCode(code, callbackURL)
-	if err != nil {
-		h.logger.Error("broker: OAuth code exchange failed", "error", err)
+	accessToken, _, _, exErr := h.exchangeCode(code, callbackURL)
+	if exErr != nil {
+		h.logger.Error("broker: OAuth code exchange failed", "error", exErr)
 		http.Error(w, "Authentication failed", http.StatusInternalServerError)
 		return
 	}
@@ -110,7 +114,7 @@ func (h *Handler) handleBrokerCallback(w http.ResponseWriter, r *http.Request) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    h.brokerIssuer(),
 			Subject:   user.Login,
-			Audience:  jwt.ClaimStrings{bs.RedirectURI},
+			Audience:  jwt.ClaimStrings{bs.BrokerRedirectURI},
 			ExpiresAt: jwt.NewNumericDate(now.Add(60 * time.Second)),
 			IssuedAt:  jwt.NewNumericDate(now),
 		},
@@ -125,19 +129,19 @@ func (h *Handler) handleBrokerCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Redirect to the downstream service with the signed token.
-	redirectURL, err := url.Parse(bs.RedirectURI)
+	redirectURL, err := url.Parse(bs.BrokerRedirectURI)
 	if err != nil {
 		http.Error(w, "Invalid redirect_uri", http.StatusInternalServerError)
 		return
 	}
 	q := redirectURL.Query()
 	q.Set("token", signed)
-	if bs.DownstreamState != "" {
-		q.Set("state", bs.DownstreamState)
+	if bs.BrokerDownstreamState != "" {
+		q.Set("state", bs.BrokerDownstreamState)
 	}
 	redirectURL.RawQuery = q.Encode()
 
-	h.logger.Info("broker_auth_complete", "user", user.Login, "redirect_uri", bs.RedirectURI)
+	h.logger.Info("broker_auth_complete", "user", user.Login, "redirect_uri", bs.BrokerRedirectURI)
 	http.Redirect(w, r, redirectURL.String(), http.StatusTemporaryRedirect)
 }
 
