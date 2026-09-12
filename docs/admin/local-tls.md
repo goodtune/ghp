@@ -13,6 +13,7 @@ The certificate covers:
 | `localhost` | Direct access to the local proxy |
 | `api.github.com` | Proxied GitHub API traffic |
 | `github.com` | Proxied GitHub web traffic |
+| `raw.githubusercontent.com` | Proxied raw file content |
 
 ## Generate the certificate
 
@@ -29,7 +30,7 @@ openssl ecparam -genkey -name prime256v1 -out local.key
 # 3. Create a CSR with the required SANs
 openssl req -new -key local.key -out local.csr \
   -subj "/CN=localhost" \
-  -addext "subjectAltName=DNS:localhost,DNS:api.github.com,DNS:github.com"
+  -addext "subjectAltName=DNS:localhost,DNS:api.github.com,DNS:github.com,DNS:raw.githubusercontent.com"
 
 # 4. Sign the CSR with the CA (valid 1 year)
 openssl x509 -req -in local.csr \

@@ -24,6 +24,16 @@ const (
 	// configured caching mirror when codeload.redirect_to is set.
 	Codeload = "codeload.github.com"
 
+	// Raw handles requests to raw.githubusercontent.com — direct file content
+	// downloads at /{owner}/{repo}/{ref}/{path}. Requests bearing a GHP-issued
+	// token are scope-enforced and forwarded with the resolved credential.
+	// Requests bearing a GitHub-issued ?token= query parameter, and anonymous
+	// requests, are forwarded unmodified — GHP observes and logs them but
+	// cannot attribute or enforce them. This host is exempt from the
+	// sec-GitHub-allowed-enterprise corporate proxy restriction, which is why
+	// proxying it is worthwhile in the first place.
+	Raw = "raw.githubusercontent.com"
+
 	// Copilot handles requests to *.githubcopilot.com. Traffic is forwarded
 	// transparently without token interception or scope enforcement; only access
 	// logging and metrics are applied.
