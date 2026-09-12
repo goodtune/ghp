@@ -67,11 +67,26 @@ type Config struct {
 
 	Cache CacheConfig `koanf:"cache"`
 
+	ForwardProxy ForwardProxyConfig `koanf:"forward_proxy"`
+
 	EncryptionKey string `koanf:"encryption_key"`
 
 	// DevMode enables test-only endpoints (e.g. /auth/test-login).
 	// Must never be enabled in production.
 	DevMode bool `koanf:"dev_mode"`
+}
+
+// ForwardProxyConfig gates forward proxy behaviours that are configured
+// statically rather than through the runtime ruleset API.
+type ForwardProxyConfig struct {
+	// AllowRequestHeader enables per-request client selection of the
+	// upstream forward proxy via the X-GitHub-Proxy-Forward-HTTP,
+	// X-GitHub-Proxy-Forward-HTTPS, and X-GitHub-Proxy-Forward-SOCKS
+	// request headers. Off by default: honouring the headers lets any
+	// client direct ghp to open connections to an arbitrary proxy
+	// endpoint, so operators must opt in deliberately. When disabled the
+	// headers are stripped and ignored.
+	AllowRequestHeader bool `koanf:"allow_request_header"`
 }
 
 // BlockConfig defines which GitHub token prefixes are blocked from
@@ -403,6 +418,15 @@ func Load(path string) (*Config, error) {
 						return "logging.file." + field[len("file_"):], v
 					}
 					return section + "." + field, v
+				case "forward":
+					// The forward_proxy section contains an underscore, so the
+					// first-underscore split yields section "forward" with the
+					// real field after the "proxy_" prefix
+					// (GHP_FORWARD_PROXY_ALLOW_REQUEST_HEADER ->
+					// forward_proxy.allow_request_header).
+					if strings.HasPrefix(field, "proxy_") {
+						return "forward_proxy." + field[len("proxy_"):], v
+					}
 				}
 			}
 			return s, v

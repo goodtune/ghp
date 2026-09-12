@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	vault "github.com/hashicorp/vault/api"
@@ -106,4 +107,33 @@ func newTestVaultStore(t *testing.T) *VaultStore {
 func TestVaultStoreContract(t *testing.T) {
 	store := newTestVaultStore(t)
 	testStoreContract(t, store)
+}
+
+// TestKVVersionOf covers the shapes Vault's client can hand back for the KV
+// v2 version field. Getting this wrong would silently turn every
+// compare-and-set write into `cas: 0` (create-only), breaking the
+// read-modify-write paths that depend on it.
+func TestKVVersionOf(t *testing.T) {
+	tests := []struct {
+		name string
+		meta map[string]interface{}
+		want int64
+	}{
+		{"nil metadata", nil, 0},
+		{"missing version", map[string]interface{}{"created_time": "now"}, 0},
+		{"json.Number", map[string]interface{}{"version": json.Number("7")}, 7},
+		{"float64", map[string]interface{}{"version": float64(7)}, 7},
+		{"int64", map[string]interface{}{"version": int64(7)}, 7},
+		{"int", map[string]interface{}{"version": 7}, 7},
+		{"string", map[string]interface{}{"version": "7"}, 7},
+		{"unparseable string", map[string]interface{}{"version": "seven"}, 0},
+		{"unexpected type", map[string]interface{}{"version": []int{7}}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := kvVersionOf(tt.meta); got != tt.want {
+				t.Errorf("kvVersionOf(%v) = %d, want %d", tt.meta, got, tt.want)
+			}
+		})
+	}
 }

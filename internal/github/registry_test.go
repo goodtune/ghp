@@ -128,6 +128,24 @@ func (m *mockStore) DeleteDeviceAuth(_ context.Context, _ string) error { panic(
 func (m *mockStore) DeleteExpiredDeviceAuths(_ context.Context) (int64, error) {
 	panic("unexpected")
 }
+func (m *mockStore) CreateForwardProxyRuleset(_ context.Context, _ *database.ForwardProxyRuleset) error {
+	panic("unexpected")
+}
+func (m *mockStore) GetForwardProxyRulesetByID(_ context.Context, _ string) (*database.ForwardProxyRuleset, error) {
+	panic("unexpected")
+}
+func (m *mockStore) GetForwardProxyRulesetByName(_ context.Context, _ string) (*database.ForwardProxyRuleset, error) {
+	panic("unexpected")
+}
+func (m *mockStore) ListForwardProxyRulesets(_ context.Context) ([]*database.ForwardProxyRuleset, error) {
+	panic("unexpected")
+}
+func (m *mockStore) UpdateForwardProxyRuleset(_ context.Context, _ *database.ForwardProxyRuleset) error {
+	panic("unexpected")
+}
+func (m *mockStore) DeleteForwardProxyRuleset(_ context.Context, _ string) error {
+	panic("unexpected")
+}
 func (m *mockStore) Close() error { return nil }
 
 // makeApp creates a minimal App record with a valid private key for testing.

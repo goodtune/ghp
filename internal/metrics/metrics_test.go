@@ -162,6 +162,7 @@ func TestObserveDecision_AllStages(t *testing.T) {
 		StageRedirectHeadCheck,
 		StageCacheLookup,
 		StageGraphQLAnalysis,
+		StageForwardProxySelection,
 	}
 
 	for _, stage := range stages {
@@ -601,5 +602,59 @@ func TestTokenCleanupDeletedTotal(t *testing.T) {
 	after := getCounterValueSimple(t, TokenCleanupDeletedTotal)
 	if after-before != 5 {
 		t.Errorf("expected counter to increment by 5, got %f", after-before)
+	}
+}
+
+func TestForwardProxySelectTotal(t *testing.T) {
+	cases := []struct{ ruleset, layer string }{
+		{"ci-egress", "token"},
+		{"ci-egress", "app"},
+		{"ci-egress", "net"},
+		{"default", "system"},
+		{"control-plane", "control"},
+		{"", "ambient"},
+		{"", "direct"},
+		{"", "header"},
+	}
+	for _, c := range cases {
+		t.Run(c.layer, func(t *testing.T) {
+			labels := prometheus.Labels{"ruleset": c.ruleset, "layer": c.layer}
+			before := getCounterValue(t, ForwardProxySelectTotal, labels)
+			ForwardProxySelectTotal.WithLabelValues(c.ruleset, c.layer).Inc()
+			after := getCounterValue(t, ForwardProxySelectTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
+	}
+}
+
+func TestForwardProxyRulesetsActive_Gauge(t *testing.T) {
+	ForwardProxyRulesetsActive.Set(3)
+	if got := getGaugeValue(t, ForwardProxyRulesetsActive); got != 3 {
+		t.Errorf("expected gauge value 3, got %f", got)
+	}
+	ForwardProxyRulesetsActive.Set(0)
+	if got := getGaugeValue(t, ForwardProxyRulesetsActive); got != 0 {
+		t.Errorf("expected gauge value 0, got %f", got)
+	}
+}
+
+func TestForwardProxyClientSpecifiedTotal(t *testing.T) {
+	cases := []struct{ scheme, tokenType string }{
+		{"http", "proxy"},
+		{"socks5", "agent"},
+		{"https", "unknown"},
+	}
+	for _, c := range cases {
+		t.Run(c.scheme+"_"+c.tokenType, func(t *testing.T) {
+			labels := prometheus.Labels{"scheme": c.scheme, "token_type": c.tokenType}
+			before := getCounterValue(t, ForwardProxyClientSpecifiedTotal, labels)
+			ForwardProxyClientSpecifiedTotal.WithLabelValues(c.scheme, c.tokenType).Inc()
+			after := getCounterValue(t, ForwardProxyClientSpecifiedTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
 	}
 }

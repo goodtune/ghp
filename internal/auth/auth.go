@@ -150,6 +150,14 @@ func NewHandler(cfg *config.Config, store database.Store, enc *crypto.Encryptor,
 	return h
 }
 
+// SetTransport sets the transport used for outbound OAuth and GitHub API
+// requests (code exchange, user lookups). The server installs the forward
+// proxy control transport here so auth traffic — ghp control traffic —
+// follows the control-layer egress routing.
+func (h *Handler) SetTransport(rt http.RoundTripper) {
+	h.httpClient.Transport = rt
+}
+
 // secureCookies returns true when cookies should be sent with the Secure flag.
 // This is the case when TLS certificates are configured or when the BaseURL
 // uses an https:// scheme.

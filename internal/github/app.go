@@ -140,6 +140,14 @@ func NewAppTokenProvider(cfg AppConfig) (*AppTokenProvider, error) {
 	}, nil
 }
 
+// SetTransport sets the transport used for GitHub App API calls (JWT-signed
+// installation listing and installation token minting). The server installs
+// the forward proxy control transport here so App credential traffic — ghp
+// control traffic — follows the control-layer egress routing.
+func (p *AppTokenProvider) SetTransport(rt http.RoundTripper) {
+	p.client.Transport = rt
+}
+
 // installationCacheKey returns a stable cache key that uniquely identifies a
 // (installationID, repos, permissions) tuple. The repos and permissions are
 // sorted before hashing so that call-site ordering does not affect the key.
