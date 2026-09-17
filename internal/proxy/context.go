@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"net/http"
+	"net/url"
 )
 
 // contextKey is an unexported type used for context keys in this package
@@ -125,4 +126,66 @@ func SetTokenType(r *http.Request, tokenType string) {
 	if slot, ok := r.Context().Value(tokenTypeCtxKey).(*string); ok {
 		*slot = tokenType
 	}
+}
+
+var forwardProxyCtxKey = &contextKey{"forward-proxy-route"}
+
+// ForwardProxyRouteInfo carries the request identity the forward proxy
+// router selects on. The struct is mutable: the server middleware seeds the
+// client IP before dispatch, and the token-resolving handlers fill in the
+// token/app identity once known. Outbound requests built from the inbound
+// request context inherit the same pointer, so http.Transport.Proxy sees the
+// final values at roundtrip time.
+type ForwardProxyRouteInfo struct {
+	ClientIP  string
+	TokenID   string // proxy token record UUID, "" when no ghx_/gha_ token resolved
+	AppID     string // GitHub App record UUID (agent tokens only), "" otherwise
+	TokenType string // "proxy", "agent", or "" — used for metrics labeling only
+	Control   bool   // ghp-originated control traffic: route via the control layer only
+	// ClientProxy is a per-request forward proxy the client selected via
+	// the X-GitHub-Proxy-Forward-* headers (validated and feature-gated at
+	// the edge). Non-nil beats every ruleset layer.
+	ClientProxy *url.URL
+}
+
+// PrepareForwardProxyInfo returns a request whose context carries a mutable
+// forward proxy route-info slot seeded with the client IP.
+func PrepareForwardProxyInfo(r *http.Request, clientIP string) *http.Request {
+	info := &ForwardProxyRouteInfo{ClientIP: clientIP}
+	return r.WithContext(context.WithValue(r.Context(), forwardProxyCtxKey, info))
+}
+
+// SetForwardProxyIdentity records the resolved token/app identity in the
+// request's route-info slot. It is a no-op if no slot was prepared.
+func SetForwardProxyIdentity(r *http.Request, tokenID, appID, tokenType string) {
+	if info, ok := r.Context().Value(forwardProxyCtxKey).(*ForwardProxyRouteInfo); ok {
+		info.TokenID = tokenID
+		info.AppID = appID
+		info.TokenType = tokenType
+	}
+}
+
+// SetForwardProxyClientChoice records a client-selected forward proxy in the
+// request's route-info slot. It is a no-op if no slot was prepared.
+func SetForwardProxyClientChoice(r *http.Request, u *url.URL) {
+	if info, ok := r.Context().Value(forwardProxyCtxKey).(*ForwardProxyRouteInfo); ok {
+		info.ClientProxy = u
+	}
+}
+
+// WithForwardProxyControl returns a context whose route-info slot marks the
+// traffic as ghp-originated control traffic (control rule → system rule →
+// ambient). It shadows any request-derived route info already on the context,
+// so internal calls made with a proxied request's context (e.g. OAuth token
+// refresh) are classified as control rather than inheriting the client's
+// token/app/net routing.
+func WithForwardProxyControl(ctx context.Context) context.Context {
+	return context.WithValue(ctx, forwardProxyCtxKey, &ForwardProxyRouteInfo{Control: true})
+}
+
+// ForwardProxyInfoFromContext returns the route-info slot from ctx, or nil
+// when none was prepared.
+func ForwardProxyInfoFromContext(ctx context.Context) *ForwardProxyRouteInfo {
+	info, _ := ctx.Value(forwardProxyCtxKey).(*ForwardProxyRouteInfo)
+	return info
 }

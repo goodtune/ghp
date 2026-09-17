@@ -129,6 +129,27 @@ verifies GitHub access before serving cached data.
 
 See [Git Cache](features/git-cache.md) for configuration and details.
 
+### Forward Proxy Rulesets
+
+Outbound GitHub traffic honours the process environment (`HTTPS_PROXY` et al.)
+by default. Forward proxy rulesets let operators steer traffic out through
+specific egress proxies at runtime — for example splitting heavy CI traffic
+80/20 across two egress IPs, or pinning CI runner subnets to a dedicated path
+so an IP ban never takes down interactive users.
+
+Rulesets bind proxy targets and a routing algorithm (round robin, weighted,
+sticky-by-source-IP) to traffic selected by token, app, source network (CIDR),
+system-wide, or control rules; more specific layers win. Control rules cover
+ghp's own GitHub-destined calls (OAuth flows and token refresh, installation
+token minting, username resolution) so the proxy's control-plane traffic can
+be pinned to a dedicated egress path; release HEAD probes target the
+operator's mirror and go direct unless the control rule opts them in via
+`include_non_github`. They are managed via the admin
+API (`/api/forward-proxy-rulesets`) and take effect without a restart.
+Anything not matched by a ruleset continues to use the ambient environment.
+
+See [Forward Proxy Rulesets](features/forward-proxy-rulesets.md) for details.
+
 ### Multi-App Support
 
 ghp supports multiple GitHub Apps simultaneously. Each app can have its own
