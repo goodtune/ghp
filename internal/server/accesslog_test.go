@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	otellog "go.opentelemetry.io/otel/log"
@@ -257,6 +258,53 @@ func TestAccessLog_UserIDFallsBackToUsername(t *testing.T) {
 	}
 }
 
+func TestAccessLog_RawAuthSlot(t *testing.T) {
+	t.Run("emits ghp.raw.auth when the slot is set", func(t *testing.T) {
+		logger, exp := newCaptureLogger(t)
+		aw := newAccessLogWriter(logger)
+
+		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			proxy.SetRawAuth(r, "query_token")
+			w.WriteHeader(http.StatusOK)
+		})
+
+		handler := accessLogHandler(backend.API, inner, aw, netutil.IPHeaderNone)
+
+		req := httptest.NewRequest("GET", "http://ghp.example.com/o/r/main/f.txt", nil)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		rec := exp.only(t)
+
+		if got := rec.str(t, attrGHPRawAuth); got != "query_token" {
+			t.Errorf("%s: got %q, want query_token", attrGHPRawAuth, got)
+		}
+	})
+
+	t.Run("omits ghp.raw.auth when the slot is untouched", func(t *testing.T) {
+		logger, exp := newCaptureLogger(t)
+		aw := newAccessLogWriter(logger)
+
+		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+
+		handler := accessLogHandler(backend.Mgmt, inner, aw, netutil.IPHeaderNone)
+
+		req := httptest.NewRequest("GET", "http://ghp.example.com/admin", nil)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		rec := exp.only(t)
+
+		if rec.has(attrGHPRawAuth) {
+			t.Errorf("%s: present, want absent for non-raw backend", attrGHPRawAuth)
+		}
+	})
+}
+
 func TestAccessLog_ErrorLevel(t *testing.T) {
 	logger, exp := newCaptureLogger(t)
 	aw := newAccessLogWriter(logger)
@@ -279,6 +327,59 @@ func TestAccessLog_ErrorLevel(t *testing.T) {
 	}
 	if got := rec.int(t, attrHTTPResponseStatusCode); got != 500 {
 		t.Errorf("%s: got %d, want 500", attrHTTPResponseStatusCode, got)
+	}
+}
+
+func TestRedactedQuery(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"no sensitive params", "ref=main&path=README.md", "ref=main&path=README.md"},
+		{"github blob token", "token=AACGATXPAI3FK7WLHZDREQLKMR6GLAA", "token=REDACTED"},
+		{"access_token", "access_token=abc123", "access_token=REDACTED"},
+		{"client_secret", "client_secret=shhh", "client_secret=REDACTED"},
+		{"mixed", "ref=main&token=abc&page=2", "ref=main&token=REDACTED&page=2"},
+		{"case insensitive name", "TOKEN=abc", "TOKEN=REDACTED"},
+		{"repeated param", "token=a&token=b", "token=REDACTED&token=REDACTED"},
+		{"valueless param", "token", "token=REDACTED"},
+		{"unparseable is redacted wholesale", "%zz&token=abc", "REDACTED"},
+		// Go's url.ParseQuery has rejected ";" as a separator since Go 1.17
+		// (https://go.dev/issue/25192), so a semicolon-separated query never
+		// reaches the "&"-based split below — it fails ParseQuery and is
+		// redacted wholesale by the branch above.
+		{"semicolon separator is redacted wholesale", "x=1;token=SECRET", "REDACTED"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactedQuery(tt.in); got != tt.want {
+				t.Errorf("redactedQuery(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAccessLogHandler_RedactsQueryToken(t *testing.T) {
+	logger, exp := newCaptureLogger(t)
+	aw := newAccessLogWriter(logger)
+
+	h := accessLogHandler(backend.Codeload, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), aw, netutil.IPHeaderNone)
+
+	req := httptest.NewRequest(http.MethodGet, "/o/r/main/README.md?token=SECRETVALUE123", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	rec := exp.only(t)
+
+	got := rec.str(t, attrURLQuery)
+	if strings.Contains(got, "SECRETVALUE123") {
+		t.Errorf("%s = %q, must not contain the token value", attrURLQuery, got)
+	}
+	if got != "token=REDACTED" {
+		t.Errorf("%s = %q, want %q", attrURLQuery, got, "token=REDACTED")
 	}
 }
 
