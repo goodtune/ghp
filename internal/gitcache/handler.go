@@ -82,7 +82,6 @@ type ServiceTokenFunc func(ctx context.Context) (string, error)
 // (enforced by the lsRefsSucceeded gate in ServeUploadPack). For standalone
 // fetch requests, the ScopedPassthroughHandler has already validated the
 // token and enforced scope before the request reaches this handler.
-//
 type Handler struct {
 	registry         *Registry
 	serviceTokenFn   ServiceTokenFunc
@@ -110,6 +109,15 @@ func NewHandler(registry *Registry, serviceTokenFn ServiceTokenFunc, upstreamBas
 		httpClient:       &http.Client{}, // no client-level timeout; per-request context controls it
 		responseCacheDir: responseCacheDir,
 	}
+}
+
+// SetTransport sets the transport used for upstream ls-refs/fetch requests.
+// The server installs the forward proxy ruleset transport here so cached-repo
+// git traffic follows the same egress selection as the raw passthrough
+// (upstream requests are built with the inbound request context, so route
+// info seeded by the server middleware flows through).
+func (h *Handler) SetTransport(rt http.RoundTripper) {
+	h.httpClient.Transport = rt
 }
 
 // ServeInfoRefs handles GET /owner/repo.git/info/refs?service=git-upload-pack

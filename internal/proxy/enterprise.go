@@ -319,6 +319,19 @@ type membershipFlight struct {
 	member bool
 }
 
+// SetTransport sets the transport used for team membership lookups. The
+// server installs the forward proxy control transport here so membership
+// checks — ghp control traffic — follow the control-layer egress routing
+// instead of dialing GitHub directly. Safe on a nil policy
+// (NewEnterprisePolicy returns nil when the feature is disabled) and a
+// no-op when team checking is disabled (no identity source).
+func (p *EnterprisePolicy) SetTransport(rt http.RoundTripper) {
+	if p == nil || p.teams == nil {
+		return
+	}
+	p.teams.client.Transport = rt
+}
+
 func newTeamChecker(identity ExceptionIdentitySource, logger *slog.Logger) *teamChecker {
 	return &teamChecker{
 		identity: identity,

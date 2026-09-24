@@ -241,6 +241,16 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 
 		tokenType := pt.TokenType
 
+		// Record the resolved token identity for forward proxy routing: the
+		// reverse proxy clones this request (context included), so the
+		// transport's per-request proxy selection can match token- and
+		// app-bound rulesets.
+		ptAppID := ""
+		if pt.AppID != nil {
+			ptAppID = *pt.AppID
+		}
+		SetForwardProxyIdentity(r, pt.ID, ptAppID, tokenType)
+
 		// Inject the token creator's user ID for auditing. The actual GitHub
 		// username is resolved later via the GraphQL viewer endpoint, after the
 		// real GitHub token is obtained — giving the authenticated identity

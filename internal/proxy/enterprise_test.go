@@ -848,3 +848,23 @@ func newScopedPassthroughWithPolicy(t *testing.T, inner http.Handler, policy *En
 	handler := NewScopedPassthroughHandler(inner, tokenSvc, resolver, nil, policy, slog.Default())
 	return handler, result.Token
 }
+
+func TestEnterprisePolicy_SetTransportNilSafe(t *testing.T) {
+	// NewEnterprisePolicy returns nil when the feature is disabled; the
+	// server calls SetTransport unconditionally, so it must be nil-safe.
+	var p *EnterprisePolicy
+	p.SetTransport(http.DefaultTransport)
+
+	disabled := NewEnterprisePolicy(config.GitHubConfig{}, nil, nil)
+	if disabled != nil {
+		t.Fatalf("expected nil policy when enterprise_slug is empty, got %+v", disabled)
+	}
+	disabled.SetTransport(http.DefaultTransport)
+
+	// Enabled policy without identity source: teams is nil, still a no-op.
+	enabled := NewEnterprisePolicy(config.GitHubConfig{EnterpriseSlug: "corp"}, nil, nil)
+	if enabled == nil {
+		t.Fatal("expected non-nil policy when enterprise_slug is set")
+	}
+	enabled.SetTransport(http.DefaultTransport)
+}

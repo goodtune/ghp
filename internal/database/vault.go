@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -295,6 +297,90 @@ func (s *VaultStore) kvCreate(ctx context.Context, key string, data map[string]i
 		})
 		if err != nil && isKVCASMismatch(err) {
 			return errKVAlreadyExists
+		}
+		return err
+	})
+}
+
+// errKVCASConflict is returned by kvWriteCAS when the stored version no
+// longer matches the version the caller read, meaning another writer
+// modified the secret in between.
+var errKVCASConflict = errors.New("kv: version conflict")
+
+// kvReadVersioned reads data from a KV v2 path together with the version
+// number of the value it returned, for use with kvWriteCAS. Returns
+// (nil, 0, nil) when the path holds no value.
+//
+// Re-authenticates once on 403 errors, like the other KV helpers.
+func (s *VaultStore) kvReadVersioned(ctx context.Context, key string) (map[string]interface{}, int64, error) {
+	var secret *vault.Secret
+	err := s.withRelogin(ctx, func() error {
+		var readErr error
+		secret, readErr = s.client.Logical().ReadWithContext(ctx, s.dataPath(key))
+		return readErr
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	if secret == nil {
+		return nil, 0, nil
+	}
+	data, ok := secret.Data["data"].(map[string]interface{})
+	if !ok {
+		return nil, 0, nil
+	}
+	meta, _ := secret.Data["metadata"].(map[string]interface{})
+	return data, kvVersionOf(meta), nil
+}
+
+// kvVersionOf extracts the KV v2 version from a secret's metadata map.
+// Vault's JSON decoder hands numbers back as json.Number by default but may
+// yield float64 depending on client configuration, so both are handled
+// rather than assuming one shape.
+func kvVersionOf(meta map[string]interface{}) int64 {
+	if meta == nil {
+		return 0
+	}
+	switch v := meta["version"].(type) {
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0
+		}
+		return n
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case string:
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	return 0
+}
+
+// kvWriteCAS writes data to a KV v2 path only if the stored value is still
+// at the given version, using KV v2's check-and-set option. It is the
+// read-modify-write counterpart to kvCreate: callers read with
+// kvReadVersioned, mutate, then write with the version they saw. Returns
+// errKVCASConflict when another writer got there first.
+//
+// Re-authenticates once on 403 errors via withRelogin, like the other KV
+// helpers; CAS conflicts are returned as errKVCASConflict so they can be
+// distinguished from authentication failures.
+func (s *VaultStore) kvWriteCAS(ctx context.Context, key string, data map[string]interface{}, version int64) error {
+	return s.withRelogin(ctx, func() error {
+		_, err := s.client.Logical().WriteWithContext(ctx, s.dataPath(key), map[string]interface{}{
+			"data":    data,
+			"options": map[string]interface{}{"cas": version},
+		})
+		if err != nil && isKVCASMismatch(err) {
+			return errKVCASConflict
 		}
 		return err
 	})
@@ -1105,6 +1191,256 @@ func (s *VaultStore) DeleteCachedRepository(ctx context.Context, id string) erro
 	// Delete the owner/name index entry.
 	_ = s.kvDelete(ctx, fmt.Sprintf("cached-repos/by-owner-name/%s/%s", existing.Owner, existing.Name))
 	return s.kvDelete(ctx, "cached-repos/"+id)
+}
+
+// --- Forward proxy rulesets ---
+
+func (s *VaultStore) CreateForwardProxyRuleset(ctx context.Context, rs *ForwardProxyRuleset) error {
+	if rs.ID == "" {
+		rs.ID = uuid.New().String()
+	}
+	now := time.Now().UTC()
+	rs.CreatedAt = now
+	rs.UpdatedAt = now
+	if rs.Proxies == nil {
+		rs.Proxies = []ForwardProxyEntry{}
+	}
+	if rs.Rules == nil {
+		rs.Rules = []ForwardProxyRule{}
+	}
+
+	// Claim the name first with an atomic KV v2 CAS create, then write the
+	// record. Claiming first means a concurrent create of the same name
+	// loses the CAS race cleanly, and a failed record write can roll the
+	// claim back — no sequence leaves a listed record without an index.
+	indexPath := "forward-proxy-rulesets/by-name/" + rs.Name
+	claim := map[string]interface{}{"id": rs.ID}
+	if err := s.kvCreate(ctx, indexPath, claim); err != nil {
+		if !errors.Is(err, errKVAlreadyExists) {
+			return err
+		}
+		// The name is claimed. That is usually a genuine duplicate, but it
+		// can also be a reservation stranded by a delete or rename whose
+		// index cleanup failed. Take such a claim over — but only via a
+		// compare-and-set on the version we inspected, so a concurrent
+		// create cannot slip in behind the staleness check.
+		stale, version, sErr := s.forwardProxyNameClaimIsStale(ctx, rs.Name)
+		if sErr != nil {
+			return sErr
+		}
+		if !stale {
+			return fmt.Errorf("forward proxy ruleset %q already exists", rs.Name)
+		}
+		if err := s.kvWriteCAS(ctx, indexPath, claim, version); err != nil {
+			return fmt.Errorf("forward proxy ruleset %q already exists", rs.Name)
+		}
+	}
+
+	data, err := marshalToMap(rs)
+	if err != nil {
+		_ = s.kvDelete(ctx, indexPath)
+		return fmt.Errorf("marshaling forward proxy ruleset: %w", err)
+	}
+	if err := s.kvWrite(ctx, "forward-proxy-rulesets/"+rs.ID, data); err != nil {
+		// Roll back the name claim so a retry does not hit a phantom
+		// duplicate.
+		_ = s.kvDelete(ctx, indexPath)
+		return err
+	}
+	return nil
+}
+
+func (s *VaultStore) GetForwardProxyRulesetByID(ctx context.Context, id string) (*ForwardProxyRuleset, error) {
+	data, err := s.kvRead(ctx, "forward-proxy-rulesets/"+id)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, fmt.Errorf("forward proxy ruleset %s: %w", id, ErrNotFound)
+	}
+	var rs ForwardProxyRuleset
+	if err := unmarshalFromMap(data, &rs); err != nil {
+		return nil, err
+	}
+	if rs.Proxies == nil {
+		rs.Proxies = []ForwardProxyEntry{}
+	}
+	if rs.Rules == nil {
+		rs.Rules = []ForwardProxyRule{}
+	}
+	return &rs, nil
+}
+
+func (s *VaultStore) GetForwardProxyRulesetByName(ctx context.Context, name string) (*ForwardProxyRuleset, error) {
+	indexData, err := s.kvRead(ctx, "forward-proxy-rulesets/by-name/"+name)
+	if err != nil {
+		return nil, err
+	}
+	if indexData == nil {
+		return nil, nil
+	}
+	id, ok := indexData["id"].(string)
+	if !ok {
+		return nil, nil
+	}
+	rs, err := s.GetForwardProxyRulesetByID(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		// Stale index entry: treat as missing for this read-style lookup.
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if rs.Name != name {
+		// The index entry outlived the name it reserved (a rename whose
+		// old-index cleanup failed). Do not report the record under a name
+		// it no longer bears.
+		return nil, nil
+	}
+	return rs, nil
+}
+
+// forwardProxyNameClaimIsStale reports whether the by-name index entry for
+// name exists but no longer resolves to a ruleset actually bearing that
+// name — the residue of a delete or rename whose index cleanup failed. It
+// also returns the index entry's current KV version so the caller can take
+// the claim over with a compare-and-set write.
+func (s *VaultStore) forwardProxyNameClaimIsStale(ctx context.Context, name string) (bool, int64, error) {
+	idx, version, err := s.kvReadVersioned(ctx, "forward-proxy-rulesets/by-name/"+name)
+	if err != nil {
+		return false, 0, err
+	}
+	if idx == nil {
+		return false, 0, nil
+	}
+	id, ok := idx["id"].(string)
+	if !ok || id == "" {
+		return true, version, nil
+	}
+	rs, err := s.GetForwardProxyRulesetByID(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		return true, version, nil
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	return rs.Name != name, version, nil
+}
+
+func (s *VaultStore) ListForwardProxyRulesets(ctx context.Context) ([]*ForwardProxyRuleset, error) {
+	keys, err := s.kvList(ctx, "forward-proxy-rulesets")
+	if err != nil {
+		return nil, err
+	}
+	var rulesets []*ForwardProxyRuleset
+	for _, key := range keys {
+		// Skip index paths.
+		if key == "by-name" {
+			continue
+		}
+		rs, err := s.GetForwardProxyRulesetByID(ctx, key)
+		if errors.Is(err, ErrNotFound) {
+			continue // deleted concurrently with the list
+		}
+		if err != nil {
+			return nil, err
+		}
+		if rs != nil {
+			rulesets = append(rulesets, rs)
+		}
+	}
+	sort.Slice(rulesets, func(i, j int) bool { return rulesets[i].Name < rulesets[j].Name })
+	return rulesets, nil
+}
+
+func (s *VaultStore) UpdateForwardProxyRuleset(ctx context.Context, rs *ForwardProxyRuleset) error {
+	// Read the record together with its KV version so the write below can be
+	// conditioned on nothing having changed in between. Without that,
+	// concurrent renames of the same ruleset (A→B and A→C) each claim their
+	// own destination index and then both overwrite the record: whichever
+	// loses leaves its destination name reserved forever, pointing at a
+	// ruleset that no longer bears it.
+	data, version, err := s.kvReadVersioned(ctx, "forward-proxy-rulesets/"+rs.ID)
+	if err != nil {
+		return err
+	}
+	if data == nil {
+		return fmt.Errorf("forward proxy ruleset %s: %w", rs.ID, ErrNotFound)
+	}
+	var existing ForwardProxyRuleset
+	if err := unmarshalFromMap(data, &existing); err != nil {
+		return err
+	}
+
+	// On rename, claim the new name atomically (KV v2 CAS create) before
+	// touching the record, and roll the claim back if the record write
+	// fails; the old index is removed only after the record is persisted.
+	nameChanged := existing.Name != rs.Name
+	newIndexPath := "forward-proxy-rulesets/by-name/" + rs.Name
+	if nameChanged {
+		if err := s.kvCreate(ctx, newIndexPath, map[string]interface{}{"id": rs.ID}); err != nil {
+			if errors.Is(err, errKVAlreadyExists) {
+				return fmt.Errorf("forward proxy ruleset %q already exists", rs.Name)
+			}
+			return err
+		}
+	}
+
+	rs.CreatedAt = existing.CreatedAt // preserve immutable field
+	rs.UpdatedAt = time.Now().UTC()
+	if rs.Proxies == nil {
+		rs.Proxies = []ForwardProxyEntry{}
+	}
+	if rs.Rules == nil {
+		rs.Rules = []ForwardProxyRule{}
+	}
+	out, err := marshalToMap(rs)
+	if err == nil {
+		err = s.kvWriteCAS(ctx, "forward-proxy-rulesets/"+rs.ID, out, version)
+	}
+	if err != nil {
+		if nameChanged {
+			// Release the claim we just took so the losing rename does not
+			// strand its destination name.
+			_ = s.kvDelete(ctx, newIndexPath)
+		}
+		if errors.Is(err, errKVCASConflict) {
+			return fmt.Errorf("forward proxy ruleset %s was modified concurrently, retry the update: %w", rs.ID, err)
+		}
+		return fmt.Errorf("persisting forward proxy ruleset: %w", err)
+	}
+	if nameChanged {
+		// The record now carries the new name, so the old reservation is
+		// dead weight. Failing to release it does not corrupt anything —
+		// lookups reject index entries whose record no longer matches, and
+		// a later create reclaims the name — but the operator should know
+		// the cleanup did not complete.
+		if err := s.kvDelete(ctx, "forward-proxy-rulesets/by-name/"+existing.Name); err != nil {
+			return fmt.Errorf("releasing previous forward proxy ruleset name %q: %w", existing.Name, err)
+		}
+	}
+	return nil
+}
+
+func (s *VaultStore) DeleteForwardProxyRuleset(ctx context.Context, id string) error {
+	existing, err := s.GetForwardProxyRulesetByID(ctx, id)
+	if err != nil {
+		return err // wraps ErrNotFound when the ruleset does not exist
+	}
+	// Delete the record first. Releasing the name reservation ahead of it
+	// would, on a failed record delete, leave a live ruleset whose name is
+	// no longer reserved — a subsequent create of that name would then
+	// succeed and the supposedly unique name would cover two rulesets.
+	if err := s.kvDelete(ctx, "forward-proxy-rulesets/"+id); err != nil {
+		return err
+	}
+	// The record is gone; release the name. A failure here leaves a stale
+	// reservation, which lookups already ignore and a later create reclaims,
+	// but it is reported rather than swallowed.
+	if err := s.kvDelete(ctx, "forward-proxy-rulesets/by-name/"+existing.Name); err != nil {
+		return fmt.Errorf("releasing forward proxy ruleset name %q: %w", existing.Name, err)
+	}
+	return nil
 }
 
 // --- Sessions ---
