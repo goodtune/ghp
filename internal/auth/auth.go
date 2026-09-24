@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -87,9 +88,9 @@ type Handler struct {
 	rsaPrivKey *rsa.PrivateKey
 
 	// Rate limiters for sensitive endpoints (keyed by IP address).
-	loginLimiter      *IPRateLimiter // POST /auth/test-login
-	githubLimiter     *IPRateLimiter // GET  /auth/github
-	authorizeLimiter  *IPRateLimiter // GET  /auth/authorize
+	loginLimiter       *IPRateLimiter // POST /auth/test-login
+	githubLimiter      *IPRateLimiter // GET  /auth/github
+	authorizeLimiter   *IPRateLimiter // GET  /auth/authorize
 	deviceStartLimiter *IPRateLimiter // POST /cli/auth/device
 	devicePollLimiter  *IPRateLimiter // POST /cli/auth/device/token
 
@@ -554,10 +555,10 @@ func (h *Handler) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Upsert user.
 	user := &database.User{
-		GitHubID:      ghUser.ID,
+		GitHubID:       ghUser.ID,
 		GitHubUsername: ghUser.Login,
-		GitHubEmail:   ghUser.Email,
-		Role:          role,
+		GitHubEmail:    ghUser.Email,
+		Role:           role,
 	}
 	if err := h.store.UpsertUser(r.Context(), user); err != nil {
 		h.logger.Error("Failed to upsert user", "error", err)
@@ -686,6 +687,13 @@ func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 // handleTestLogin creates a test user and session without GitHub OAuth.
 // Only available when DevMode is enabled. This must never be used in production.
 func (h *Handler) handleTestLogin(w http.ResponseWriter, r *http.Request) {
+	// Reject requests that do not originate from a loopback address even when
+	// dev mode is enabled, providing defense-in-depth against accidental exposure.
+	if !isLoopbackRemoteAddr(r.RemoteAddr) {
+		http.Error(w, "test login is only available from loopback addresses", http.StatusForbidden)
+		return
+	}
+
 	var req struct {
 		Username string `json:"username"`
 		Role     string `json:"role"`
@@ -720,7 +728,7 @@ func (h *Handler) handleTestLogin(w http.ResponseWriter, r *http.Request) {
 
 	user := &database.User{
 		GitHubID:       ghID,
-		GitHubUsername:  req.Username,
+		GitHubUsername: req.Username,
 		GitHubEmail:    req.Username + "@test.local",
 		Role:           req.Role,
 	}
@@ -887,6 +895,17 @@ func (h *Handler) getGitHubAPIBaseURL() string {
 		return h.githubAPIBaseURL
 	}
 	return "https://api.github.com"
+}
+
+// isLoopbackRemoteAddr returns true when remoteAddr (in "host:port" or "host"
+// form) is a loopback address (127.0.0.0/8 or ::1).
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // mainCallbackURL returns the absolute URL of the GitHub OAuth callback
