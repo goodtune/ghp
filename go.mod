@@ -3,7 +3,7 @@ module github.com/goodtune/ghp
 go 1.26.0
 
 require (
-	github.com/go-git/go-billy/v5 v5.9.1
+	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/goodtune/dotvault v0.35.0
