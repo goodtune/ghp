@@ -8,7 +8,6 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/goodtune/dotvault v0.37.0
 	github.com/google/gitprotocolio v0.0.0-20210704173409-b5a56823ae52
-	github.com/google/go-github/v91 v91.0.0
 	github.com/google/go-github/v93 v93.0.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -99,7 +98,6 @@ require (
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
 	github.com/klauspost/compress v1.20.1 // indirect
-	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/knadh/koanf/maps v0.1.2 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260330125221-c963978e514e // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
