@@ -296,6 +296,7 @@ func TestSessionUsernameMiddleware_WithSession(t *testing.T) {
 	loginReq := httptest.NewRequest("POST", "/auth/test-login",
 		bytes.NewReader([]byte(`{"username":"alice","role":"admin"}`)))
 	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.RemoteAddr = "127.0.0.1:1234"
 	loginRR := httptest.NewRecorder()
 	mux.ServeHTTP(loginRR, loginReq)
 

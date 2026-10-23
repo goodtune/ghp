@@ -8,6 +8,7 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; }
         .container { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+        .dev-banner { background: #da3633; color: #fff; text-align: center; padding: 0.5rem 1rem; font-weight: 600; font-size: 0.875rem; letter-spacing: 0.02em; }
         header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 0; border-bottom: 1px solid #30363d; margin-bottom: 2rem; }
         header h1 { font-size: 1.25rem; color: #f0f6fc; }
         .user-info { display: flex; align-items: center; gap: 1rem; }
@@ -43,6 +44,7 @@
     <script src="/static/ghp-permission-select.js"></script>
 </head>
 <body>
+    {{ if .DevMode }}<div class="dev-banner">⚠ DEV MODE ACTIVE — test-login endpoint is enabled; do not use in production</div>{{ end }}
     <div class="container">
         <header>
             <h1>ghp <span style="color:#8b949e;font-weight:400">/ admin</span></h1>
