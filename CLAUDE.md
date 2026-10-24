@@ -60,7 +60,7 @@ PLAYWRIGHT_BROWSER=chromium npx playwright test
 ## Project Structure
 
 ```
-cmd/ghp/          CLI entrypoint (cobra commands: serve, migrate, auth, token)
+cmd/ghp/          CLI entrypoint (cobra commands: serve, migrate, auth, token, apptoken, webhooks)
 internal/
   auth/           GitHub OAuth + session management + rate limiting
   proxy/          Core proxy logic, scope enforcement, token resolution
@@ -70,6 +70,7 @@ internal/
   crypto/         AES-256-GCM encryption, RSA key operations
   config/         Configuration loading via koanf
   web/            Web UI handlers, templates, static assets, middleware
+  webhook/        GitHub webhook ingress: signature verification, embedded NATS JetStream bus, ngrok tunnel
   metrics/        Prometheus metric registration
   github/         GitHub App JWT/installation handling
   backend/        Database abstraction interface
@@ -131,6 +132,11 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_cache_request_total` — per-repository git requests with cache outcome (`owner`, `repo`, `result` labels)
 - `ghp_cache_eviction_total` — protocol response files evicted by size-limit cleanup (`owner`, `repo` labels)
 - `ghp_cache_response_size_bytes` — current total cached protocol response file size per repo (`owner`, `repo` labels)
+- `ghp_webhook_received_total` — GitHub webhook deliveries by `event` and `result` (`published`, `duplicate`, `invalid_signature`, `unknown_app`, `bad_request`, `publish_error`, `internal_error`)
+- `ghp_webhook_publish_duration_seconds` — JetStream publish + ack latency for webhook deliveries
+- `ghp_webhook_ngrok_tunnel_up` — 1 while the embedded ngrok tunnel session is connected
+- `ghp_webhook_stream_messages` / `ghp_webhook_stream_bytes` — current webhook stream size (refreshed every 30s)
+- `ghp_webhook_subscribers_active` — open webhook subscribers by `kind` (`sse`, `nats`)
 
 ## Coding Conventions
 

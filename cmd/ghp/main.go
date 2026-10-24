@@ -26,6 +26,7 @@ func newRootCmd() *cobra.Command {
 		newAuthCmd(),
 		newTokenCmd(),
 		newAppTokenCmd(),
+		newWebhooksCmd(),
 		newVersionCmd(),
 		newDocCmd(rootCmd),
 	)

@@ -49,8 +49,9 @@ func testAppCRUD(t *testing.T, store Store) {
 		ClientID:     "Iv1.abc123",
 		ClientSecret: "encrypted_secret",
 		PrivateKey:   "encrypted_key",
-		BaseURL:      "https://api.github.com",
-		IsDefault:    true,
+		BaseURL:       "https://api.github.com",
+		IsDefault:     true,
+		WebhookSecret: "encrypted_webhook_secret",
 	}
 	if err := store.CreateApp(ctx, app); err != nil {
 		t.Fatalf("CreateApp: %v", err)
@@ -91,6 +92,9 @@ func testAppCRUD(t *testing.T, store Store) {
 	if !got.IsDefault {
 		t.Error("expected is_default = true")
 	}
+	if got.WebhookSecret != "encrypted_webhook_secret" {
+		t.Errorf("webhook_secret = %q, want encrypted_webhook_secret", got.WebhookSecret)
+	}
 	if got.CreatedAt.IsZero() {
 		t.Error("expected CreatedAt to be set on retrieved app")
 	}
@@ -122,6 +126,7 @@ func testAppCRUD(t *testing.T, store Store) {
 	// Update.
 	app.Name = "Updated App"
 	app.IsDefault = false
+	app.WebhookSecret = "rotated_webhook_secret"
 	if err := store.UpdateApp(ctx, app); err != nil {
 		t.Fatalf("UpdateApp: %v", err)
 	}
@@ -131,6 +136,22 @@ func testAppCRUD(t *testing.T, store Store) {
 	}
 	if got2.Name != "Updated App" {
 		t.Errorf("name after update = %q, want Updated App", got2.Name)
+	}
+	if got2.WebhookSecret != "rotated_webhook_secret" {
+		t.Errorf("webhook_secret after update = %q, want rotated_webhook_secret", got2.WebhookSecret)
+	}
+
+	// Clearing the secret must persist as empty, not be ignored.
+	app.WebhookSecret = ""
+	if err := store.UpdateApp(ctx, app); err != nil {
+		t.Fatalf("UpdateApp (clear secret): %v", err)
+	}
+	gotCleared, err := store.GetAppByID(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("GetAppByID after clearing secret: %v", err)
+	}
+	if gotCleared.WebhookSecret != "" {
+		t.Errorf("webhook_secret after clear = %q, want empty", gotCleared.WebhookSecret)
 	}
 	if got2.CreatedAt.IsZero() {
 		t.Error("expected CreatedAt preserved after update")

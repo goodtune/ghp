@@ -449,10 +449,10 @@ func (s *PostgresStore) CreateApp(ctx context.Context, app *App) error {
 	}
 	now := time.Now().UTC()
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO apps (id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO apps (id, name, app_id, client_id, client_secret, private_key, base_url, is_default, webhook_secret, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING created_at, updated_at
-	`, app.ID, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, now, now,
+	`, app.ID, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, app.WebhookSecret, now, now,
 	).Scan(&app.CreatedAt, &app.UpdatedAt)
 	return err
 }
@@ -460,8 +460,8 @@ func (s *PostgresStore) CreateApp(ctx context.Context, app *App) error {
 func (s *PostgresStore) GetAppByID(ctx context.Context, id string) (*App, error) {
 	a := &App{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps WHERE id = $1`, id,
-	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.CreatedAt, &a.UpdatedAt)
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, webhook_secret, created_at, updated_at FROM apps WHERE id = $1`, id,
+	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.WebhookSecret, &a.CreatedAt, &a.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -474,8 +474,8 @@ func (s *PostgresStore) GetAppByID(ctx context.Context, id string) (*App, error)
 func (s *PostgresStore) GetDefaultApp(ctx context.Context) (*App, error) {
 	a := &App{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps WHERE is_default = TRUE LIMIT 1`,
-	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.CreatedAt, &a.UpdatedAt)
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, webhook_secret, created_at, updated_at FROM apps WHERE is_default = TRUE LIMIT 1`,
+	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.WebhookSecret, &a.CreatedAt, &a.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -487,7 +487,7 @@ func (s *PostgresStore) GetDefaultApp(ctx context.Context) (*App, error) {
 
 func (s *PostgresStore) ListApps(ctx context.Context) ([]*App, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps ORDER BY created_at`)
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, webhook_secret, created_at, updated_at FROM apps ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -496,7 +496,7 @@ func (s *PostgresStore) ListApps(ctx context.Context) ([]*App, error) {
 	var apps []*App
 	for rows.Next() {
 		a := &App{}
-		if err := rows.Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.WebhookSecret, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
 		apps = append(apps, a)
@@ -507,9 +507,9 @@ func (s *PostgresStore) ListApps(ctx context.Context) ([]*App, error) {
 func (s *PostgresStore) UpdateApp(ctx context.Context, app *App) error {
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE apps SET name = $1, app_id = $2, client_id = $3, client_secret = $4, private_key = $5, base_url = $6, is_default = $7, updated_at = $8
-		WHERE id = $9
-	`, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, now, app.ID)
+		UPDATE apps SET name = $1, app_id = $2, client_id = $3, client_secret = $4, private_key = $5, base_url = $6, is_default = $7, webhook_secret = $8, updated_at = $9
+		WHERE id = $10
+	`, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, app.WebhookSecret, now, app.ID)
 	if err != nil {
 		return err
 	}

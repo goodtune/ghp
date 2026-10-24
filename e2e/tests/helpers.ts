@@ -122,8 +122,9 @@ export async function createAppViaAPI(
     app_id: number;
     private_key?: string;
     is_default?: boolean;
+    webhook_secret?: string;
   }
-): Promise<{ id: string; name: string; app_id: number; is_default: boolean }> {
+): Promise<{ id: string; name: string; app_id: number; is_default: boolean; has_webhook_secret?: boolean }> {
   const ctx = await request.newContext({
     baseURL: BASE_URL,
     extraHTTPHeaders: { Authorization: `Bearer ${sessionToken}` },
@@ -132,6 +133,7 @@ export async function createAppViaAPI(
     data: {
       name: app.name,
       app_id: app.app_id,
+      webhook_secret: app.webhook_secret,
       private_key:
         app.private_key ||
         "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",

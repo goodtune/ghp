@@ -12,6 +12,10 @@ DynamicUser=yes
 StateDirectory=ghp
 ConfigurationDirectory=ghp
 LogsDirectory=ghp
+# Relative on-disk defaults (cache.storage_path "cache", webhooks.nats.store_dir
+# "nats") resolve under the writable state directory rather than "/", which
+# ProtectSystem=strict makes read-only.
+WorkingDirectory=%S/ghp
 
 Restart=on-failure
 RestartSec=5s
