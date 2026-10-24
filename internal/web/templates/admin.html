@@ -76,6 +76,10 @@
                         <input type="password" id="app-client-secret" placeholder="secret">
                     </div>
                     <div class="form-group">
+                        <label for="app-webhook-secret">Webhook Secret (optional)</label>
+                        <input type="password" id="app-webhook-secret" placeholder="verifies X-Hub-Signature-256 on deliveries">
+                    </div>
+                    <div class="form-group">
                         <label for="app-private-key">Private Key (PEM)</label>
                         <textarea id="app-private-key" rows="6" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.75rem;font-family:monospace;" placeholder="-----BEGIN RSA PRIVATE KEY-----"></textarea>
                     </div>
@@ -89,6 +93,16 @@
                     <button class="btn" id="create-app-btn">Create App</button>
                 </div>
             </details>
+        </div>
+
+        <div class="section" id="webhooks-section" hidden>
+            <h2>Webhooks</h2>
+            <div id="webhooks-status"></div>
+            <div style="display:flex;align-items:center;gap:0.75rem;margin:1rem 0 0.5rem">
+                <h3 style="font-size:0.95rem;color:#f0f6fc;font-weight:600">Recent deliveries</h3>
+                <button class="btn btn-secondary" id="webhooks-refresh-btn" style="margin-left:auto">Refresh</button>
+            </div>
+            <div id="webhooks-deliveries"></div>
         </div>
 
         <div class="section">
@@ -223,10 +237,13 @@
                 container.innerHTML = '<div class="empty">No apps configured</div>';
                 return;
             }
-            let html = '<table><tr><th>Record ID</th><th>Name</th><th>GitHub App ID</th><th>Client ID</th><th>Base URL</th><th>Default</th><th>Created</th><th></th></tr>';
+            let html = '<table><tr><th>Record ID</th><th>Name</th><th>GitHub App ID</th><th>Client ID</th><th>Base URL</th><th>Default</th><th>Webhook</th><th>Created</th><th></th></tr>';
             for (const app of apps) {
                 const created = new Date(app.created_at).toLocaleString();
                 const isDefault = app.is_default ? '<span class="badge badge-active">Default</span>' : '';
+                const webhook = app.has_webhook_secret
+                    ? '<span class="badge badge-active" title="Webhook secret configured">Secret set</span>'
+                    : '<span class="badge badge-revoked" title="No webhook secret; deliveries for this app can only verify against the server-wide secret">No secret</span>';
                 html += '<tr>';
                 html += '<td><code data-copy-id="' + esc(app.id) + '" title="' + esc(app.id) + '" style="cursor:pointer;user-select:all">' + esc(app.id.substring(0, 8)) + '&hellip;</code></td>';
                 html += '<td>' + esc(app.name) + '</td>';
@@ -234,6 +251,7 @@
                 html += '<td>' + esc(app.client_id || '-') + '</td>';
                 html += '<td>' + esc(app.base_url || 'https://api.github.com') + '</td>';
                 html += '<td>' + isDefault + '</td>';
+                html += '<td>' + webhook + '</td>';
                 html += '<td>' + created + '</td>';
                 html += '<td><button class="btn btn-secondary" data-edit-app="' + esc(app.id) + '">Edit</button> <button class="btn btn-danger" data-delete-app="' + esc(app.id) + '">Delete</button></td>';
                 html += '</tr>';
@@ -271,7 +289,7 @@
             const editRow = document.createElement('tr');
             editRow.id = 'edit-app-row';
             const editCell = document.createElement('td');
-            editCell.colSpan = 8;
+            editCell.colSpan = 9;
             editCell.style.background = '#161b22';
             editCell.style.padding = '1rem';
 
@@ -315,6 +333,21 @@
             const clientSecretField = makeField('Client Secret', 'password', '', 'Leave empty to keep unchanged');
             const privateKeyField = makeField('Private Key (PEM)', 'textarea', '', 'Leave empty to keep unchanged');
             const baseUrlField = makeField('Base URL', 'text', app.base_url || '', 'https://api.github.com');
+            const webhookSecretField = makeField('Webhook Secret', 'password', '',
+                app.has_webhook_secret ? 'Leave empty to keep unchanged' : 'Not set');
+
+            // Checkbox to clear an existing webhook secret (PUT with "").
+            const clearWebhookGroup = document.createElement('div');
+            clearWebhookGroup.className = 'form-group';
+            clearWebhookGroup.style.cssText = 'margin-bottom:0;display:flex;align-items:center;gap:0.5rem;';
+            const clearWebhookCheckbox = document.createElement('input');
+            clearWebhookCheckbox.type = 'checkbox';
+            clearWebhookCheckbox.disabled = !app.has_webhook_secret;
+            const clearWebhookLabel = document.createElement('label');
+            clearWebhookLabel.textContent = 'Remove webhook secret';
+            clearWebhookLabel.style.cssText = 'font-size:0.875rem;color:#8b949e;margin-bottom:0;';
+            clearWebhookGroup.appendChild(clearWebhookCheckbox);
+            clearWebhookGroup.appendChild(clearWebhookLabel);
 
             // Checkbox for is_default.
             const defaultGroup = document.createElement('div');
@@ -340,6 +373,8 @@
             form.appendChild(clientSecretField);
             form.appendChild(privateKeyField);
             form.appendChild(baseUrlField);
+            form.appendChild(webhookSecretField);
+            form.appendChild(clearWebhookGroup);
 
             editCell.appendChild(form);
 
@@ -390,6 +425,13 @@
 
                 const newIsDefault = defaultCheckbox.checked;
                 if (newIsDefault !== !!app.is_default) body.is_default = newIsDefault;
+
+                if (clearWebhookCheckbox.checked) {
+                    body.webhook_secret = '';
+                } else {
+                    const newWebhookSecret = webhookSecretField.querySelector('input').value;
+                    if (newWebhookSecret) body.webhook_secret = newWebhookSecret;
+                }
 
                 if (Object.keys(body).length === 0) {
                     editRow.remove();
@@ -465,6 +507,7 @@
                 private_key: document.getElementById('app-private-key').value,
                 base_url: document.getElementById('app-base-url').value,
                 is_default: document.getElementById('app-is-default').checked,
+                webhook_secret: document.getElementById('app-webhook-secret').value,
             };
             if (!body.name || !body.app_id || !body.private_key) {
                 alert('Name, GitHub App ID, and Private Key are required.');
@@ -477,6 +520,7 @@
                 document.getElementById('app-github-id').value = '';
                 document.getElementById('app-client-id').value = '';
                 document.getElementById('app-client-secret').value = '';
+                document.getElementById('app-webhook-secret').value = '';
                 document.getElementById('app-private-key').value = '';
                 document.getElementById('app-base-url').value = '';
                 document.getElementById('app-is-default').checked = false;
@@ -495,6 +539,154 @@
                 alert(err.message || 'Failed to delete app');
             }
             loadApps();
+        }
+
+        // ── Webhooks ──────────────────────────────────────────────
+        // The panel is hidden unless the server reports the ingress as
+        // enabled. Status and deliveries come from the admin API; the
+        // ingress URL is what operators paste into the GitHub App settings.
+        async function loadWebhooks() {
+            const section = document.getElementById('webhooks-section');
+            const statusEl = document.getElementById('webhooks-status');
+            let status;
+            try {
+                status = await api('GET', '/api/webhooks/status');
+            } catch (err) {
+                console.error('Failed to load webhook status:', err);
+                section.hidden = false;
+                statusEl.innerHTML = '<div class="empty">Failed to load webhook status: ' + esc(err.message || 'error') + '</div>';
+                document.getElementById('webhooks-deliveries').innerHTML = '';
+                return;
+            }
+            if (!status || !status.enabled) {
+                section.hidden = true;
+                return;
+            }
+            section.hidden = false;
+            renderWebhookStatus(status);
+            loadWebhookDeliveries();
+        }
+
+        function renderWebhookStatus(status) {
+            const statusEl = document.getElementById('webhooks-status');
+            const stream = status.stream || {};
+            const nats = status.nats || {};
+            const ngrok = status.ngrok || {};
+            const appsWithSecret = (status.apps || []).filter(a => a.has_webhook_secret).length;
+            const appsTotal = (status.apps || []).length;
+
+            let html = '<table>';
+            html += '<tr><th style="width:220px">Ingress URL</th><td>';
+            if (status.ingress_url) {
+                html += '<code id="webhooks-ingress-url" style="user-select:all">' + esc(status.ingress_url) + '</code> ';
+                html += '<button class="btn btn-secondary" id="webhooks-copy-url" style="padding:0.2rem 0.6rem;font-size:0.75rem">Copy</button>';
+            } else {
+                html += '<span style="color:#8b949e">Path <code>' + esc(status.ingress_path) + '</code> &mdash; set <code>server.base_url</code> or enable ngrok to compute the public URL</span>';
+            }
+            html += '</td></tr>';
+            html += '<tr><th>ngrok tunnel</th><td>';
+            if (!ngrok.enabled) {
+                html += '<span class="badge badge-revoked">Disabled</span>';
+            } else if (ngrok.connected) {
+                html += '<span class="badge badge-active">Connected</span> <code>' + esc(ngrok.url || '') + '</code>';
+            } else {
+                html += '<span class="badge badge-expired">Connecting&hellip;</span>' + (ngrok.domain ? ' <code>' + esc(ngrok.domain) + '</code>' : '');
+            }
+            html += '</td></tr>';
+            html += '<tr><th>NATS clients</th><td>';
+            if (nats.listen) {
+                html += '<code>' + esc(nats.client_url || nats.listen) + '</code>' + (nats.auth_required ? ' (token required)' : ' <span style="color:#f85149">(no auth token!)</span>') + ' &mdash; ' + esc(String(nats.clients || 0)) + ' connected';
+            } else {
+                html += '<span style="color:#8b949e">in-process only (use the SSE stream or <code>ghp webhooks tail</code>)</span>';
+            }
+            html += '</td></tr>';
+            html += '<tr><th>Stream</th><td><code>' + esc(nats.stream || '') + '</code> on <code>' + esc(nats.subject_prefix || '') + '.&gt;</code> &mdash; ' +
+                esc(String(stream.messages || 0)) + ' deliveries, ' + formatBytes(stream.bytes || 0) +
+                (stream.last_time ? ', last at ' + new Date(stream.last_time).toLocaleString() : '') +
+                ' (retention ' + esc(stream.max_age || '') + ' / ' + formatBytes(stream.max_bytes || 0) + ')</td></tr>';
+            html += '<tr><th>Secrets</th><td>' + esc(String(appsWithSecret)) + ' of ' + esc(String(appsTotal)) + ' apps have a webhook secret' +
+                (status.global_secret_configured ? '; server-wide fallback secret configured' : '') + '</td></tr>';
+            html += '</table>';
+            statusEl.innerHTML = html;
+
+            const copyBtn = document.getElementById('webhooks-copy-url');
+            if (copyBtn) {
+                copyBtn.addEventListener('click', () => {
+                    navigator.clipboard?.writeText(status.ingress_url).then(() => {
+                        copyBtn.textContent = 'Copied';
+                        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+                    }).catch(() => {});
+                });
+            }
+        }
+
+        function formatBytes(n) {
+            if (n < 1024) return n + ' B';
+            const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+            let i = -1;
+            do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
+            return n.toFixed(1) + ' ' + units[i];
+        }
+
+        async function loadWebhookDeliveries() {
+            const container = document.getElementById('webhooks-deliveries');
+            let list;
+            try {
+                list = await api('GET', '/api/webhooks/deliveries?limit=25');
+            } catch (err) {
+                console.error('Failed to load deliveries:', err);
+                container.innerHTML = '<div class="empty">Failed to load deliveries: ' + esc(err.message || 'error') + '</div>';
+                return;
+            }
+            if (!Array.isArray(list) || list.length === 0) {
+                container.innerHTML = '<div class="empty">No deliveries received yet</div>';
+                return;
+            }
+            let html = '<table><tr><th>Seq</th><th>Received</th><th>Event</th><th>Action</th><th>Repository</th><th>App</th><th>Delivery</th><th></th></tr>';
+            for (const d of list) {
+                html += '<tr data-seq-row="' + esc(String(d.sequence)) + '">';
+                html += '<td>' + esc(String(d.sequence)) + '</td>';
+                html += '<td>' + (d.received_at ? new Date(d.received_at).toLocaleString() : '-') + '</td>';
+                html += '<td><code>' + esc(d.event || '') + '</code></td>';
+                html += '<td>' + esc(d.action || '-') + '</td>';
+                html += '<td>' + esc(d.repository || '-') + '</td>';
+                html += '<td>' + esc(d.app_name || (d.app_record_id ? d.app_record_id.substring(0, 8) + '…' : '-')) + '</td>';
+                html += '<td><code title="' + esc(d.delivery || '') + '">' + esc((d.delivery || '').substring(0, 8)) + '&hellip;</code></td>';
+                html += '<td><button class="btn btn-secondary" data-view-delivery="' + esc(String(d.sequence)) + '" style="padding:0.2rem 0.6rem;font-size:0.75rem">Payload</button></td>';
+                html += '</tr>';
+            }
+            html += '</table>';
+            container.innerHTML = html;
+            container.querySelectorAll('[data-view-delivery]').forEach(el => {
+                el.addEventListener('click', () => toggleDeliveryPayload(el.dataset.viewDelivery));
+            });
+        }
+
+        async function toggleDeliveryPayload(seq) {
+            const existing = document.getElementById('delivery-payload-row');
+            const wasOpen = existing && existing.dataset.seq === seq;
+            if (existing) existing.remove();
+            if (wasOpen) return;
+            const row = document.querySelector('[data-seq-row="' + CSS.escape(seq) + '"]');
+            if (!row) return;
+            const payloadRow = document.createElement('tr');
+            payloadRow.id = 'delivery-payload-row';
+            payloadRow.dataset.seq = seq;
+            const cell = document.createElement('td');
+            cell.colSpan = 8;
+            cell.style.cssText = 'background:#161b22;padding:1rem;';
+            const pre = document.createElement('pre');
+            pre.style.cssText = 'max-height:400px;overflow:auto;font-size:0.75rem;white-space:pre-wrap;word-break:break-all;';
+            pre.textContent = 'Loading…';
+            cell.appendChild(pre);
+            payloadRow.appendChild(cell);
+            row.after(payloadRow);
+            try {
+                const env = await api('GET', '/api/webhooks/deliveries/' + encodeURIComponent(seq));
+                pre.textContent = JSON.stringify(env, null, 2);
+            } catch (err) {
+                pre.textContent = 'Failed to load delivery: ' + (err.message || 'error');
+            }
         }
 
         async function onAppChange() {
@@ -1079,10 +1271,12 @@
         document.getElementById('create-btn').addEventListener('click', createAgentToken);
 
         document.getElementById('create-cached-repo-btn').addEventListener('click', createCachedRepo);
+        document.getElementById('webhooks-refresh-btn').addEventListener('click', loadWebhooks);
 
         // loadInstallations() is called from populateAppSelect() once an app
         // is selected (or auto-selected), so it is not called unconditionally here.
         loadApps();
+        loadWebhooks();
         loadUsers();
         loadCachedRepos();
         loadAllTokens();

@@ -47,6 +47,7 @@ import (
 	"github.com/goodtune/ghp/internal/proxy"
 	"github.com/goodtune/ghp/internal/token"
 	"github.com/goodtune/ghp/internal/web"
+	"github.com/goodtune/ghp/internal/webhook"
 )
 
 // Server is the main ghp server.
@@ -511,9 +512,53 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Build access log writer for OpenTelemetry access log records.
 	aw := newAccessLogWriter(s.logProvider.Logger(accessLogScope))
+	clientIPHeader := netutil.IPHeader(s.cfg.Server.ClientIPHeader)
+
+	// GitHub webhook ingress: embedded NATS JetStream bus, signature-verifying
+	// HTTP handler on the management host, optional ngrok tunnel serving only
+	// that path, and the admin API/UI surfaces. Infrastructure settings, so
+	// bound here at startup rather than hot-reloaded.
+	if s.cfg.Webhooks.Enabled {
+		if err := s.cfg.Webhooks.Validate(); err != nil {
+			return err
+		}
+		var natsTLS *tls.Config
+		if s.cfg.Webhooks.NATS.TLS {
+			natsTLS, err = loadTLSConfig(&s.cfg.TLS)
+			if err != nil {
+				return fmt.Errorf("loading TLS config for NATS listener: %w", err)
+			}
+		}
+		bus, err := webhook.NewBus(lifecycleCtx, s.cfg.Webhooks.NATS, webhook.BusOptions{
+			MaxPayloadBytes: s.cfg.Webhooks.MaxPayloadBytes,
+			TLS:             natsTLS,
+		}, s.logger)
+		if err != nil {
+			return fmt.Errorf("starting webhook event bus: %w", err)
+		}
+		defer bus.Close()
+		bus.StartMetricsRefresh(lifecycleCtx, 30*time.Second)
+
+		secrets := webhook.NewStoreSecretSource(store, enc, s.cfg.Webhooks.Secret, s.logger)
+		ingress := webhook.NewHandler(bus, secrets, s.cfg.Webhooks.MaxPayloadBytes, s.logger)
+		mux.Handle("POST "+s.cfg.Webhooks.Path, ingress)
+
+		webhookSvc := newWebhookService(s.cfg.Webhooks, bus, secrets, s.cfg.Server.BaseURL)
+		api.SetWebhooks(webhookSvc)
+
+		if s.cfg.Webhooks.Ngrok.Enabled {
+			tunnelHandler := accessLogHandler(backend.Webhook, webhook.IngressMux(s.cfg.Webhooks.Path, ingress), aw, clientIPHeader)
+			go s.runNgrokTunnel(lifecycleCtx, tunnelHandler, webhookSvc)
+		}
+		s.logger.Info("webhook_ingress_ready",
+			"path", s.cfg.Webhooks.Path,
+			"url", webhookSvc.IngressURL(),
+			"ngrok", s.cfg.Webhooks.Ngrok.Enabled,
+			"nats_listen", bus.ListenAddr(),
+		)
+	}
 
 	// Build host dispatch with access logging on all handlers.
-	clientIPHeader := netutil.IPHeader(s.cfg.Server.ClientIPHeader)
 	withRouteInfo := func(next http.Handler) http.Handler {
 		return forwardProxyRouteInfoMiddleware(next, s.cfg, clientIPHeader)
 	}
@@ -564,6 +609,50 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Plain HTTP mode (single port, no TLS).
 	return s.servePlain(lifecycleCtx, handler)
+}
+
+// runNgrokTunnel connects the embedded ngrok tunnel, retrying with backoff
+// until it succeeds or ctx is cancelled. A failure to reach ngrok must not
+// take the proxy down: the ingress stays reachable on the management host
+// and the tunnel comes up when connectivity returns. Once connected the
+// tunnel is registered with the webhook service so the admin API reports
+// the public URL; if the endpoint later closes, the loop reconnects.
+func (s *Server) runNgrokTunnel(ctx context.Context, handler http.Handler, svc *webhookService) {
+	backoff := 5 * time.Second
+	for ctx.Err() == nil {
+		tunnel, err := webhook.StartTunnel(ctx, s.cfg.Webhooks.Ngrok, webhook.TunnelOptions{
+			Authtoken: s.cfg.Webhooks.NgrokAuthtoken(),
+			Handler:   handler,
+			Version:   s.version,
+		}, s.logger)
+		if err != nil {
+			s.logger.Error("ngrok_tunnel_start_failed", "error", err, "retry_in", backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < time.Minute {
+				backoff *= 2
+			}
+			continue
+		}
+		backoff = 5 * time.Second
+		svc.setTunnel(tunnel)
+		s.logger.Info("webhook_public_url", "url", svc.IngressURL())
+		tunnel.Wait(ctx)
+		svc.setTunnel(nil)
+		tunnel.Close()
+		if ctx.Err() != nil {
+			return
+		}
+		s.logger.Warn("ngrok_tunnel_closed; reconnecting", "retry_in", backoff)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+	}
 }
 
 // serveTLS starts an HTTPS server with TLS termination and an optional

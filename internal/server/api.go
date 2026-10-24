@@ -98,6 +98,7 @@ type API struct {
 	httpClient         *http.Client // used for outbound GitHub API calls
 	auditLog           *auditLogWriter
 	forwardProxyRouter *proxy.ForwardProxyRouter // nil when ruleset routing is not wired (tests)
+	webhooks           *webhookService           // nil when the webhook ingress is disabled
 
 	tokenCreateLimiter *auth.IPRateLimiter // POST /api/tokens
 }
@@ -164,6 +165,14 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/forward-proxy-rulesets/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleGetForwardProxyRuleset)))
 	mux.Handle("PATCH /api/forward-proxy-rulesets/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleUpdateForwardProxyRuleset)))
 	mux.Handle("DELETE /api/forward-proxy-rulesets/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleDeleteForwardProxyRuleset)))
+
+	// Webhook ingress (admin): status, recent deliveries, and the SSE
+	// subscriber stream. The ingress POST path itself is registered by the
+	// server, not here, because it must be reachable without a session.
+	mux.Handle("GET /api/webhooks/status", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleWebhookStatus)))
+	mux.Handle("GET /api/webhooks/deliveries", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleWebhookDeliveries)))
+	mux.Handle("GET /api/webhooks/deliveries/{seq}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleWebhookDelivery)))
+	mux.Handle("GET /api/webhooks/stream", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleWebhookStream)))
 
 	mux.Handle("GET /api/cached-repos", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListCachedRepos)))
 	mux.Handle("POST /api/cached-repos", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleCreateCachedRepo)))
@@ -919,20 +928,24 @@ type appResponse struct {
 	ClientID  string `json:"client_id"`
 	BaseURL   string `json:"base_url"`
 	IsDefault bool   `json:"is_default"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	// HasWebhookSecret reports whether a webhook secret is stored for the
+	// app. The secret itself is never returned.
+	HasWebhookSecret bool   `json:"has_webhook_secret"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
 }
 
 func appToResponse(app *database.App) appResponse {
 	return appResponse{
-		ID:        app.ID,
-		Name:      app.Name,
-		AppID:     app.AppID,
-		ClientID:  app.ClientID,
-		BaseURL:   app.BaseURL,
-		IsDefault: app.IsDefault,
-		CreatedAt: app.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: app.UpdatedAt.Format(time.RFC3339),
+		ID:               app.ID,
+		Name:             app.Name,
+		AppID:            app.AppID,
+		ClientID:         app.ClientID,
+		BaseURL:          app.BaseURL,
+		IsDefault:        app.IsDefault,
+		HasWebhookSecret: appHasWebhookSecret(app),
+		CreatedAt:        app.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:        app.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -961,6 +974,10 @@ type createAppRequest struct {
 	PrivateKey   string `json:"private_key"`
 	BaseURL      string `json:"base_url"`
 	IsDefault    bool   `json:"is_default"`
+	// WebhookSecret is the GitHub webhook secret for the app. Optional;
+	// deliveries targeting an app without one can only verify against the
+	// server-wide webhooks.secret.
+	WebhookSecret string `json:"webhook_secret"`
 }
 
 func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
@@ -1008,18 +1025,25 @@ func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
 		return
 	}
+	encWebhookSecret, err := encryptIfPresent(a.encryptor, req.WebhookSecret)
+	if err != nil {
+		a.logger.Error("failed to encrypt webhook secret", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
+		return
+	}
 
 	// Create the app with IsDefault=false first. If the caller requested it to
 	// be the default, we promote it after a successful insert so that a failed
 	// CreateApp cannot leave the system with no default app.
 	app := &database.App{
-		Name:         req.Name,
-		AppID:        req.AppID,
-		ClientID:     req.ClientID,
-		ClientSecret: encClientSecret,
-		PrivateKey:   encPrivateKey,
-		BaseURL:      req.BaseURL,
-		IsDefault:    false,
+		Name:          req.Name,
+		AppID:         req.AppID,
+		ClientID:      req.ClientID,
+		ClientSecret:  encClientSecret,
+		PrivateKey:    encPrivateKey,
+		BaseURL:       req.BaseURL,
+		IsDefault:     false,
+		WebhookSecret: encWebhookSecret,
 	}
 
 	if err := a.store.CreateApp(r.Context(), app); err != nil {
@@ -1045,16 +1069,18 @@ func (a *API) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 			a.logger.Warn("failed to reload app registry", "error", err)
 		}
 	}
+	a.invalidateWebhookSecrets()
 
 	session := auth.SessionFromContext(r.Context())
 	a.logger.Info("app_created", "user", session.Username, "app_id", app.ID, "name", app.Name)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"id":         app.ID,
-		"name":       app.Name,
-		"app_id":     app.AppID,
-		"is_default": app.IsDefault,
-		"created_at": app.CreatedAt.Format(time.RFC3339),
+		"id":                 app.ID,
+		"name":               app.Name,
+		"app_id":             app.AppID,
+		"is_default":         app.IsDefault,
+		"has_webhook_secret": appHasWebhookSecret(app),
+		"created_at":         app.CreatedAt.Format(time.RFC3339),
 	})
 }
 
@@ -1080,16 +1106,18 @@ func (a *API) handleGetApp(w http.ResponseWriter, r *http.Request) {
 
 // updateAppRequest is used for PUT /api/apps/{id}. String fields use
 // zero-value semantics: an empty string means "don't change". Pointer fields
-// (AppID, BaseURL, IsDefault) distinguish "omitted" from "set to zero/empty"
-// so callers can explicitly clear BaseURL or toggle IsDefault.
+// (AppID, BaseURL, IsDefault, WebhookSecret) distinguish "omitted" from "set
+// to zero/empty" so callers can explicitly clear BaseURL or the webhook
+// secret, or toggle IsDefault.
 type updateAppRequest struct {
-	Name         string  `json:"name"`
-	AppID        *int64  `json:"app_id"`
-	ClientID     string  `json:"client_id"`
-	ClientSecret string  `json:"client_secret"`
-	PrivateKey   string  `json:"private_key"`
-	BaseURL      *string `json:"base_url"`
-	IsDefault    *bool   `json:"is_default"`
+	Name          string  `json:"name"`
+	AppID         *int64  `json:"app_id"`
+	ClientID      string  `json:"client_id"`
+	ClientSecret  string  `json:"client_secret"`
+	PrivateKey    string  `json:"private_key"`
+	BaseURL       *string `json:"base_url"`
+	IsDefault     *bool   `json:"is_default"`
+	WebhookSecret *string `json:"webhook_secret"`
 }
 
 func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
@@ -1164,6 +1192,14 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	if req.IsDefault != nil {
 		existing.IsDefault = *req.IsDefault
 	}
+	if req.WebhookSecret != nil {
+		enc, err := encryptIfPresent(a.encryptor, *req.WebhookSecret)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to encrypt credentials"})
+			return
+		}
+		existing.WebhookSecret = enc
+	}
 
 	if err := a.store.UpdateApp(r.Context(), existing); err != nil {
 		a.logger.Error("failed to update app", "error", err)
@@ -1188,6 +1224,7 @@ func (a *API) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 			a.logger.Warn("failed to reload app registry", "error", err)
 		}
 	}
+	a.invalidateWebhookSecrets()
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "App updated"})
 }
@@ -1214,6 +1251,7 @@ func (a *API) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 			a.logger.Warn("failed to reload app registry", "error", err)
 		}
 	}
+	a.invalidateWebhookSecrets()
 
 	session := auth.SessionFromContext(r.Context())
 	a.logger.Info("app_deleted", "user", session.Username, "app_id", id)

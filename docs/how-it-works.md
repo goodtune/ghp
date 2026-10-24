@@ -150,6 +150,27 @@ Anything not matched by a ruleset continues to use the ambient environment.
 
 See [Forward Proxy Rulesets](features/forward-proxy-rulesets.md) for details.
 
+### Webhook Ingress
+
+ghp can be the single receiving point for GitHub webhooks across every
+registered app. Deliveries arrive at one ingress path (on the management host
+and, optionally, on a public URL served by an embedded ngrok tunnel), are
+verified against the targeted app's webhook secret using `X-Hub-Signature-256`,
+and are stored in an embedded NATS JetStream stream. Nothing unsigned or
+unverifiable is ever stored.
+
+Each delivery is published under
+`github.webhooks.{app}.{event}.{action}.{owner}.{repo}` with GitHub's headers
+preserved as message headers, so subscribers filter by app, event type, action
+or repository with ordinary NATS wildcards. GitHub redeliveries are
+deduplicated by delivery GUID. Subscribers consume through native NATS clients
+(when a listener is configured), the authenticated server-sent-events stream
+on the admin API, or `ghp webhooks tail`; durable consumers resume where they
+left off. Both embedded services are optional and off by default, and ghp
+remains a single static binary.
+
+See [Webhooks](features/webhooks.md) for details.
+
 ### Multi-App Support
 
 ghp supports multiple GitHub Apps simultaneously. Each app can have its own

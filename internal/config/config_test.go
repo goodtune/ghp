@@ -742,7 +742,9 @@ webhooks:
 	if _, err := f.WriteString(yaml); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, err := Load(f.Name())
 	if err != nil {

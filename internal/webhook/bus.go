@@ -350,6 +350,16 @@ func (s *Subscription) Ack(m jetstream.Msg) error {
 	return m.Ack()
 }
 
+// Nak returns a durable delivery to the stream for immediate redelivery.
+// Call it when the message could not be handed to the subscriber (e.g. the
+// client disconnected mid-write) so it does not sit pending for AckWait.
+func (s *Subscription) Nak(m jetstream.Msg) error {
+	if !s.durable || m == nil {
+		return nil
+	}
+	return m.Nak()
+}
+
 // Close stops the iterator.
 func (s *Subscription) Close() {
 	if s.msgs != nil {
@@ -389,8 +399,11 @@ func (b *Bus) Subscribe(ctx context.Context, opts SubscribeOptions) (*Subscripti
 			DeliverPolicy:  policy,
 			OptStartSeq:    startSeq,
 			AckPolicy:      jetstream.AckExplicitPolicy,
-			AckWait:        30 * time.Second,
-			MaxAckPending:  256,
+			// Subscribers ack as soon as the event is flushed to the client,
+			// so a short AckWait keeps redelivery prompt when a client
+			// disconnects mid-fetch without over-delivering to healthy ones.
+			AckWait:       10 * time.Second,
+			MaxAckPending: 256,
 			// Durable position survives reconnects but is garbage-collected
 			// after a long absence so abandoned CLIs don't pin storage.
 			InactiveThreshold: 7 * 24 * time.Hour,

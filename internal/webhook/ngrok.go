@@ -126,6 +126,17 @@ func StartTunnel(ctx context.Context, cfg config.WebhooksNgrokConfig, opts Tunne
 	return t, nil
 }
 
+// Wait blocks until the endpoint stops or ctx is cancelled.
+func (t *Tunnel) Wait(ctx context.Context) {
+	if t == nil || t.ln == nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+	case <-t.ln.Done():
+	}
+}
+
 // URL returns the public endpoint URL.
 func (t *Tunnel) URL() string {
 	if t == nil || t.ln == nil || t.ln.URL() == nil {

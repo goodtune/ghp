@@ -37,6 +37,7 @@ nav:
     - Codeload Redirect: features/codeload.md
     - Forward Proxy Rulesets: features/forward-proxy-rulesets.md
     - OAuth Broker: features/oauth-broker.md
+    - Webhooks: features/webhooks.md
   - Administration:
     - Installation: admin/installation.md
     - Configuration: admin/configuration.md
@@ -52,5 +53,6 @@ nav:
     - ghp auth: cli/auth.md
     - ghp token: cli/token.md
     - ghp apptoken: cli/apptoken.md
+    - ghp webhooks: cli/webhooks.md
   - Web UI: web-ui.md
   - Development: development.md
