@@ -119,11 +119,7 @@ func newWebhooksStatusCmd() *cobra.Command {
 				fmt.Fprintln(out, "ngrok:         connecting")
 			}
 			if st.NATS.Listen != "" {
-				auth := "no auth token"
-				if st.NATS.AuthRequired {
-					auth = "token required"
-				}
-				fmt.Fprintf(out, "NATS:          %s (%s, %d clients)\n", st.NATS.ClientURL, auth, st.NATS.Clients)
+				fmt.Fprintf(out, "NATS:          %s (user %q + auth token, %d clients)\n", st.NATS.ClientURL, "subscriber", st.NATS.Clients)
 			} else {
 				fmt.Fprintln(out, "NATS:          in-process only")
 			}

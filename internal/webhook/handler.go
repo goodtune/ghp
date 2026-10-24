@@ -126,7 +126,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(candidates) == 0 {
 		h.logger.Warn("webhook_unknown_target", "delivery", delivery, "event", event, "target_type", targetType, "target_id", targetID)
-		h.reject(w, http.StatusUnauthorized, eventLabel, "unknown_app", "no webhook secret is configured for this delivery's target", delivery)
+		// Same wording as the signature failure below so an anonymous
+		// sender cannot learn which GitHub App IDs have secrets configured;
+		// the metric result and the server log keep the distinction.
+		h.reject(w, http.StatusUnauthorized, eventLabel, "unknown_app", "signature verification failed", delivery)
 		return
 	}
 
@@ -142,7 +145,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if matched == nil {
 		h.logger.Warn("webhook_signature_invalid", "delivery", delivery, "event", event, "target_type", targetType, "target_id", targetID, "has_signature", sig != "")
-		h.reject(w, http.StatusUnauthorized, eventLabel, "invalid_signature", "X-Hub-Signature-256 did not verify", delivery)
+		h.reject(w, http.StatusUnauthorized, eventLabel, "invalid_signature", "signature verification failed", delivery)
 		return
 	}
 

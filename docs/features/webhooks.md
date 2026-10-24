@@ -172,16 +172,25 @@ data: {"subject":"github.webhooks.3f1c….pull_request.opened.goodtune.ghp","seq
 
 | Query parameter | Meaning |
 |---|---|
-| `filter` | subject filter under the prefix (default: everything) |
+| `filter` | subject filter under the prefix, e.g. `github.webhooks.*.push.>` (default: everything) |
 | `from` | `new` (default), `all`, or a stream sequence number |
 | `durable` | name of a server-side consumer that remembers its position; events are acknowledged only after they are flushed to the client |
 
 Reconnecting with the standard `Last-Event-ID` header resumes after that
 sequence. A `: ping` comment is sent every 15 seconds while idle.
 
+Durable names are sanitised to `[A-Za-z0-9_-]` (so `review agent` and
+`review_agent` are the same consumer) and `from`/`Last-Event-ID` only apply
+when the consumer is first created: afterwards the consumer's own
+acknowledged position is authoritative, which is what makes a restarted
+subscriber resume correctly.
+
 `GET /api/webhooks/deliveries?limit=N` lists the most recent deliveries
-(newest first, without payloads) and `GET /api/webhooks/deliveries/{seq}`
-returns one delivery with its payload.
+(newest first, without payloads; default 50, maximum 200) and
+`GET /api/webhooks/deliveries/{seq}` returns one delivery with its payload.
+The `apps` list in `GET /api/webhooks/status` names the GitHub App ID
+`github_app_id`; the older `/api/apps` responses call the same number
+`app_id`.
 
 ### CLI
 
@@ -194,12 +203,13 @@ See [ghp webhooks](../cli/webhooks.md).
 
 ### Native NATS clients
 
-Set `webhooks.nats.listen` (and `auth_token`) to let NATS clients connect
-directly and use the full JetStream feature set (durable pull consumers,
-batching, work queues shared by several workers):
+Set `webhooks.nats.listen` and `webhooks.nats.auth_token` to let NATS clients
+connect directly and use the full JetStream feature set (durable pull
+consumers, batching, work queues shared by several workers). Clients
+authenticate as user `subscriber` with the token as password:
 
 ```go
-nc, _ := nats.Connect("nats://ghp.internal:4222", nats.Token(os.Getenv("GHP_NATS_TOKEN")))
+nc, _ := nats.Connect("nats://ghp.internal:4222", nats.UserInfo("subscriber", os.Getenv("GHP_NATS_TOKEN")))
 js, _ := jetstream.New(nc)
 cons, _ := js.CreateOrUpdateConsumer(ctx, "GITHUB_WEBHOOKS", jetstream.ConsumerConfig{
     Durable:        "review-agent",
@@ -213,8 +223,12 @@ cons.Consume(func(m jetstream.Msg) {
 ```
 
 The listener uses the `tls.certificates` when `webhooks.nats.tls` is true.
-There is no per-subject authorisation: anyone holding the token can read the
-whole stream, so bind the listener to a private interface.
+The `subscriber` user can read the whole stream and create, update or delete
+consumers, but cannot publish into the webhook subject space or create,
+alter, purge or delete the stream: a leaked token cannot forge deliveries or
+destroy the log. ghp's own in-process connection uses a separate random
+per-process credential. There is no per-subject read authorisation, so bind
+the listener to a private interface.
 
 ## Admin UI
 
@@ -246,6 +260,10 @@ are reported as `unknown` (the real name is still stored on the message).
   In HA deployments point GitHub (or ngrok) at one instance; the admin API
   on other instances reports the feature as enabled but reads their own
   (empty) streams.
+- **No rate limiting on the ingress.** The ingress is unauthenticated by
+  nature (GitHub signs rather than logs in); each request costs at most one
+  body read (capped by `max_payload_bytes`) and one HMAC per candidate
+  secret. Put it behind your usual edge protection if that matters.
 - **Subscribing is an admin capability.** Scoping webhook visibility to the
   repositories of a `ghx_`/`gha_` token is future work; today the SSE stream
   and CLI require an admin session.

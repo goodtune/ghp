@@ -1,9 +1,9 @@
 // Package webhook implements the GitHub webhook ingress: an HTTP handler that
 // verifies X-Hub-Signature-256 against per-app secrets, an embedded NATS
 // JetStream server that durably stores every verified delivery, an optional
-// embedded ngrok tunnel that exposes the ingress publicly, and the subscriber
-// surfaces (JetStream iteration helpers used by the admin SSE stream and the
-// CLI).
+// embedded ngrok tunnel that exposes the ingress publicly, and the JetStream
+// iteration helpers behind the admin SSE stream (which the ghp webhooks CLI
+// consumes).
 package webhook
 
 import (
@@ -66,14 +66,15 @@ func SanitizeToken(s string) string {
 }
 
 // ValidFilter reports whether filter is a syntactically valid NATS subject
-// filter rooted under prefix: it must equal prefix or begin with prefix+".",
+// filter rooted under prefix: it must begin with prefix+"." (the stream only
+// holds subjects below the prefix, so the bare prefix matches nothing),
 // contain no whitespace or empty tokens, and use '>' only as the final
 // token. Subscribers cannot escape the webhook subject space.
 func ValidFilter(prefix, filter string) bool {
 	if filter == "" {
 		return false
 	}
-	if filter != prefix && !strings.HasPrefix(filter, prefix+".") {
+	if !strings.HasPrefix(filter, prefix+".") {
 		return false
 	}
 	if strings.ContainsAny(filter, " \t\r\n") {

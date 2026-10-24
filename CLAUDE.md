@@ -60,7 +60,7 @@ PLAYWRIGHT_BROWSER=chromium npx playwright test
 ## Project Structure
 
 ```
-cmd/ghp/          CLI entrypoint (cobra commands: serve, migrate, auth, token)
+cmd/ghp/          CLI entrypoint (cobra commands: serve, migrate, auth, token, apptoken, webhooks)
 internal/
   auth/           GitHub OAuth + session management + rate limiting
   proxy/          Core proxy logic, scope enforcement, token resolution

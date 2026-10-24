@@ -49,7 +49,7 @@ func TestValidFilter(t *testing.T) {
 		filter string
 		want   bool
 	}{
-		{"github.webhooks", true},
+		{"github.webhooks", false}, // stream holds prefix.> only; bare prefix matches nothing
 		{"github.webhooks.>", true},
 		{"github.webhooks.*.pull_request.>", true},
 		{"github.webhooks._.ping._._._", true},

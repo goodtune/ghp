@@ -351,6 +351,7 @@ var (
 	//                         form encoding, oversized body)
 	//   "publish_error"     — JetStream publish failed; 503 returned so the
 	//                         operator can redeliver from GitHub
+	//   "internal_error"    — the secret lookup itself failed (store error)
 	// The event label is bounded by GitHub's event catalogue; unknown or
 	// empty event names are normalised to "unknown".
 	WebhookReceivedTotal = promauto.NewCounterVec(prometheus.CounterOpts{

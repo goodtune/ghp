@@ -85,9 +85,12 @@ func (s *StoreSecretSource) Invalidate() {
 //     hooks that an operator may have configured with an app's secret),
 //     every other app that has a secret.
 //
-// An integration delivery that names an app without a secret, or an unknown
-// app, falls through to the global secret only: we never let a delivery
-// addressed to app A verify under app B's secret.
+// An integration delivery is never tried against other apps' secrets: a
+// delivery addressed to app A must not verify under app B's secret. The
+// global secret is always a candidate (after the matched app) so operators
+// who share one secret across apps and repository hooks can keep doing so; a
+// delivery that verifies only under the global secret is stored without an
+// app attribution.
 func (s *StoreSecretSource) Candidates(ctx context.Context, targetType, targetID string) ([]Candidate, error) {
 	apps, err := s.apps(ctx)
 	if err != nil {
@@ -156,8 +159,8 @@ func (s *StoreSecretSource) apps(ctx context.Context) ([]appSecret, error) {
 	return out, nil
 }
 
-// StaticSecretSource is a SecretSource backed by a fixed candidate list.
-// Useful in tests and for the CLI's local verification helpers.
+// StaticSecretSource is a SecretSource backed by a fixed candidate list,
+// used by tests.
 type StaticSecretSource []Candidate
 
 // Candidates returns the static list regardless of target.

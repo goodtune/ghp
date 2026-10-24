@@ -315,6 +315,9 @@ func TestWebhookStream_SSE(t *testing.T) {
 	})
 
 	t.Run("Last-Event-ID resumes", func(t *testing.T) {
+		// Independent of earlier subtests: publish our own marker and
+		// expect replay to start right after sequence 1 and reach it.
+		postDelivery(t, h, secret, "issues", "d-lei", `{"action":"labeled"}`)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL, nil)
@@ -324,9 +327,29 @@ func TestWebhookStream_SSE(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer resp.Body.Close()
-		events := readSSE(t, resp.Body, 2)
-		if len(events) != 2 || events[0]["sequence"].(float64) != 2 || events[1]["sequence"].(float64) != 3 {
-			t.Errorf("unexpected events: %+v", events)
+		sc := bufio.NewScanner(resp.Body)
+		sc.Buffer(make([]byte, 1<<20), 1<<20)
+		var first float64 = -1
+		found := false
+		for sc.Scan() {
+			line := sc.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &m); err != nil {
+				t.Fatal(err)
+			}
+			if first < 0 {
+				first = m["sequence"].(float64)
+			}
+			if m["delivery"] == "d-lei" {
+				found = true
+				break
+			}
+		}
+		if first != 2 || !found {
+			t.Errorf("expected replay from sequence 2 through d-lei; first=%v found=%v", first, found)
 		}
 	})
 
@@ -346,14 +369,36 @@ func TestWebhookStream_SSE(t *testing.T) {
 		if len(first) != 1 || first[0]["sequence"].(float64) != 1 {
 			t.Fatalf("first: %+v", first)
 		}
-		// Give the server a moment to ack and tear down. The first handler
-		// may have pulled (and possibly delivered) sequence 2 before the
-		// client went away; either way the durable consumer must continue
-		// past sequence 1 rather than replaying from the start.
+		// The first handler may have streamed (and acked) everything
+		// retained before the client closed, so publish a fresh delivery
+		// the resumed durable must receive; and it must never replay
+		// sequence 1.
 		time.Sleep(200 * time.Millisecond)
+		postDelivery(t, h, secret, "star", "d-durable", `{"action":"created"}`)
 		second := get(1)
 		if len(second) != 1 || second[0]["sequence"].(float64) <= 1 {
 			t.Errorf("durable did not resume: %+v", second)
+		}
+
+		// A reconnecting client sends Last-Event-ID; for a durable that
+		// must not be an error (JetStream forbids changing the start
+		// position) and must continue from the consumer's own position.
+		postDelivery(t, h, secret, "star", "d-durable-2", `{"action":"deleted"}`)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"?durable=test-cli&from=new", nil)
+		req.Header.Set("Last-Event-ID", "1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("durable reconnect with Last-Event-ID: status %d", resp.StatusCode)
+		}
+		events := readSSE(t, resp.Body, 1)
+		if len(events) != 1 || events[0]["sequence"].(float64) <= 1 {
+			t.Errorf("durable reconnect: %+v", events)
 		}
 	})
 

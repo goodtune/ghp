@@ -392,9 +392,11 @@ type WebhooksNATSConfig struct {
 	// or the CLI. Set e.g. "127.0.0.1:4222" to let NATS clients subscribe
 	// directly with durable consumers.
 	Listen string `koanf:"listen"`
-	// AuthToken, when set, is required from every native NATS client. It
-	// has no effect on the in-process connection. Strongly recommended
-	// whenever Listen is non-empty.
+	// AuthToken is the password native NATS clients present as user
+	// "subscriber". Required whenever Listen is non-empty. Subscribers may
+	// read the stream and manage consumers but cannot publish into the
+	// webhook subject space or alter the stream; ghp's own in-process
+	// connection uses a separate random per-process credential.
 	AuthToken string `koanf:"auth_token"`
 	// TLS, when true, serves the NATS listener using the certificates in the
 	// top-level tls section.
@@ -435,6 +437,11 @@ type WebhooksNgrokConfig struct {
 	Domain string `koanf:"domain"`
 }
 
+// MaxWebhookPayloadBytes is the upper bound for webhooks.max_payload_bytes.
+// GitHub caps deliveries at 25 MiB; the bound leaves room above that while
+// keeping the NATS max_payload (an int32) well within range.
+const MaxWebhookPayloadBytes = 1 << 30
+
 // NgrokAuthtoken returns the configured ngrok authtoken, falling back to the
 // NGROK_AUTHTOKEN environment variable.
 func (w *WebhooksConfig) NgrokAuthtoken() string {
@@ -453,8 +460,11 @@ func (w *WebhooksConfig) Validate() error {
 	if !strings.HasPrefix(w.Path, "/") || w.Path == "/" {
 		return fmt.Errorf("webhooks.path must be an absolute path other than \"/\" (got %q)", w.Path)
 	}
-	if w.MaxPayloadBytes <= 0 {
-		return fmt.Errorf("webhooks.max_payload_bytes must be positive (got %d)", w.MaxPayloadBytes)
+	if w.MaxPayloadBytes <= 0 || w.MaxPayloadBytes > MaxWebhookPayloadBytes {
+		return fmt.Errorf("webhooks.max_payload_bytes must be between 1 and %d (got %d)", MaxWebhookPayloadBytes, w.MaxPayloadBytes)
+	}
+	if w.NATS.Listen != "" && w.NATS.AuthToken == "" {
+		return fmt.Errorf("webhooks.nats.auth_token is required when webhooks.nats.listen is set")
 	}
 	if w.NATS.Stream == "" || strings.ContainsAny(w.NATS.Stream, ". *>/\\\t\n") {
 		return fmt.Errorf("webhooks.nats.stream must be a non-empty name without whitespace, '.', '*', '>' or path separators (got %q)", w.NATS.Stream)

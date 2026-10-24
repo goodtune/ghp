@@ -11,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
@@ -237,7 +235,7 @@ func (a *API) handleWebhookDelivery(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	env, err := a.webhooks.bus.Get(ctx, seq)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrMsgNotFound) {
+		if errors.Is(err, webhook.ErrDeliveryNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"message": "Delivery not found"})
 			return
 		}
@@ -307,7 +305,21 @@ func (a *API) handleWebhookStream(w http.ResponseWriter, r *http.Request) {
 	}
 	rc := http.NewResponseController(w)
 
-	ctx := r.Context()
+	// The stream must end when the client goes away or when the server is
+	// shutting down: http.Server.Shutdown waits for in-flight handlers, and
+	// the request context alone would keep an idle SSE loop alive for the
+	// whole shutdown timeout.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	if a.ctx != nil {
+		go func() {
+			select {
+			case <-a.ctx.Done():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
 	sub, err := a.webhooks.bus.Subscribe(ctx, opts)
 	if err != nil {
 		a.logger.Error("webhook_subscribe_failed", "error", err, "filter", opts.Filter, "durable", opts.Durable)

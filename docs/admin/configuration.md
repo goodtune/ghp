@@ -179,7 +179,7 @@ See [Git Cache](../features/git-cache.md) for details.
 | `GHP_WEBHOOKS_SECRET` | Server-wide fallback webhook secret, tried when a delivery does not target an app with its own secret | |
 | `GHP_WEBHOOKS_MAX_PAYLOAD_BYTES` | Maximum accepted request body (GitHub sends at most 25 MiB) | `26214400` |
 | `GHP_WEBHOOKS_NATS_LISTEN` | `host:port` for native NATS clients; empty keeps the server in-process only | |
-| `GHP_WEBHOOKS_NATS_AUTH_TOKEN` | Token native NATS clients must present (strongly recommended when `listen` is set) | |
+| `GHP_WEBHOOKS_NATS_AUTH_TOKEN` | Password native NATS clients present as user `subscriber` (read-only on the stream); required when `listen` is set | |
 | `GHP_WEBHOOKS_NATS_TLS` | Serve the NATS listener with the certificates from the `tls` section | `false` |
 | `GHP_WEBHOOKS_NATS_STORE_DIR` | JetStream file store directory | `nats` |
 | `GHP_WEBHOOKS_NATS_STREAM` | JetStream stream name | `GITHUB_WEBHOOKS` |
@@ -326,7 +326,7 @@ webhooks:
   max_payload_bytes: 26214400  # 25 MiB, GitHub's maximum
   nats:
     listen: ""                 # e.g. "127.0.0.1:4222" to admit native NATS subscribers; empty = in-process only
-    # auth_token: ""           # required from native clients when set (recommended with listen)
+    # auth_token: ""           # password for the read-only "subscriber" user; required when listen is set
     tls: false                 # serve the NATS listener with the tls.certificates above
     store_dir: nats            # JetStream file store
     stream: GITHUB_WEBHOOKS

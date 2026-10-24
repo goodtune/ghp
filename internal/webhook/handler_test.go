@@ -341,3 +341,37 @@ type errSecretSource struct{}
 func (errSecretSource) Candidates(context.Context, string, string) ([]Candidate, error) {
 	return nil, context.Canceled
 }
+
+func TestHandler_EdgeCasePayloads(t *testing.T) {
+	secret := []byte("s")
+	tests := []struct {
+		name        string
+		body        string
+		contentType string
+		wantSubject string
+	}{
+		{"form content type with charset", url.Values{"payload": {prPayload}}.Encode(), "application/x-www-form-urlencoded; charset=utf-8", "github.webhooks._.pull_request.opened.goodtune.ghp"},
+		{"non-object JSON payload", `[1,2,3]`, "application/json", "github.webhooks._.ping._._._"},
+		{"empty body", ``, "application/json", "github.webhooks._.ping._._._"},
+		{"payload with nested dots and spaces in names", `{"action":"re opened","repository":{"name":"a.b","owner":{"login":"o"}}}`, "application/json", "github.webhooks._.ping.re_opened.o.a_b"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fp := &fakePublisher{}
+			h := NewHandler(fp, StaticSecretSource{{Secret: secret}}, 0, nil)
+			event := "ping"
+			if strings.Contains(tt.wantSubject, "pull_request") {
+				event = "pull_request"
+			}
+			req := deliveryRequest(t, tt.body, event, "d", tt.contentType, secret, nil)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+			}
+			if fp.lastSubject != tt.wantSubject {
+				t.Errorf("subject = %q, want %q", fp.lastSubject, tt.wantSubject)
+			}
+		})
+	}
+}

@@ -595,7 +595,7 @@
             html += '</td></tr>';
             html += '<tr><th>NATS clients</th><td>';
             if (nats.listen) {
-                html += '<code>' + esc(nats.client_url || nats.listen) + '</code>' + (nats.auth_required ? ' (token required)' : ' <span style="color:#f85149">(no auth token!)</span>') + ' &mdash; ' + esc(String(nats.clients || 0)) + ' connected';
+                html += '<code>' + esc(nats.client_url || nats.listen) + '</code> (user <code>subscriber</code> + auth token) &mdash; ' + esc(String(nats.clients || 0)) + ' connected';
             } else {
                 html += '<span style="color:#8b949e">in-process only (use the SSE stream or <code>ghp webhooks tail</code>)</span>';
             }

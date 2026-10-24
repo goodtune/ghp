@@ -154,7 +154,7 @@ exposed via the status API.
 
 | Metric | Labels | Meaning |
 |---|---|---|
-| `ghp_webhook_received_total` | `event`, `result` | `published`, `duplicate`, `invalid_signature`, `unknown_app`, `bad_request`, `publish_error` |
+| `ghp_webhook_received_total` | `event`, `result` | `published`, `duplicate`, `invalid_signature`, `unknown_app`, `bad_request`, `publish_error`, `internal_error` |
 | `ghp_webhook_publish_duration_seconds` | — | JetStream publish + ack latency |
 | `ghp_webhook_ngrok_tunnel_up` | — | 1 while the ngrok agent session is connected |
 | `ghp_webhook_stream_messages` / `ghp_webhook_stream_bytes` | — | Current stream size, refreshed every 30 s |
@@ -171,6 +171,8 @@ exposed via the status API.
 
 - Signature verification requires SHA-256; GitHub's legacy `X-Hub-Signature`
   (SHA-1) alone is rejected.
-- The NATS listener has no per-subject authorisation: anyone holding the
+- The NATS listener authenticates external clients as a read-only
+  `subscriber` user (no publishing into the webhook subjects, no stream
+  mutation) but has no per-subject read authorisation: anyone holding the
   auth token can read the whole stream. Bind it to a private interface.
 - Stream state is local to one instance.

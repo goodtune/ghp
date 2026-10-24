@@ -2,7 +2,9 @@ package webhook
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +21,21 @@ import (
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/metrics"
 )
+
+// ErrDeliveryNotFound is returned by Bus.Get when no delivery has the given
+// sequence (it never existed or retention discarded it).
+var ErrDeliveryNotFound = errors.New("webhook delivery not found")
+
+// SubscriberUser is the NATS username native clients authenticate as, with
+// the configured auth token as the password. The subscriber user may create
+// and manage consumers and read the stream, but may not publish into the
+// webhook subject space or alter the stream: a token holder must not be
+// able to forge "verified" deliveries or destroy the log.
+const SubscriberUser = "subscriber"
+
+// internalUser is the in-process identity ghp itself publishes with. Its
+// password is random per process and never leaves memory.
+const internalUser = "ghp"
 
 // Bus is the embedded NATS JetStream server plus the in-process client ghp
 // uses to publish verified deliveries and to serve subscribers.
@@ -80,8 +97,25 @@ func NewBus(ctx context.Context, cfg config.WebhooksNATSConfig, opts BusOptions,
 			so.Host = "0.0.0.0"
 		}
 	}
-	if cfg.AuthToken != "" {
-		so.Authorization = cfg.AuthToken
+	// Authentication: two users rather than a single global token so that
+	// external subscribers cannot publish or administer the stream. The
+	// in-process connection authenticates as internalUser with a random
+	// per-process password. When no listener is configured only the
+	// internal user exists.
+	internalPass, err := randomPassword()
+	if err != nil {
+		return nil, fmt.Errorf("generating internal NATS credential: %w", err)
+	}
+	so.Users = []*natsserver.User{{Username: internalUser, Password: internalPass}}
+	if cfg.Listen != "" {
+		if cfg.AuthToken == "" {
+			return nil, errors.New("webhooks.nats.auth_token is required when webhooks.nats.listen is set")
+		}
+		so.Users = append(so.Users, &natsserver.User{
+			Username:    SubscriberUser,
+			Password:    cfg.AuthToken,
+			Permissions: subscriberPermissions(cfg.SubjectPrefix),
+		})
 	}
 	if cfg.TLS {
 		if opts.TLS == nil {
@@ -105,13 +139,12 @@ func NewBus(ctx context.Context, cfg config.WebhooksNATSConfig, opts BusOptions,
 		return nil, errors.New("embedded NATS server did not become ready within 10s")
 	}
 
-	connOpts := []nats.Option{nats.InProcessServer(srv), nats.Name("ghp"), nats.MaxReconnects(-1)}
-	if cfg.AuthToken != "" {
-		// Token auth applies to every client connection, including the
-		// in-process one.
-		connOpts = append(connOpts, nats.Token(cfg.AuthToken))
-	}
-	nc, err := nats.Connect("", connOpts...)
+	nc, err := nats.Connect("",
+		nats.InProcessServer(srv),
+		nats.Name("ghp"),
+		nats.MaxReconnects(-1),
+		nats.UserInfo(internalUser, internalPass),
+	)
 	if err != nil {
 		srv.Shutdown()
 		return nil, fmt.Errorf("connecting to embedded NATS server: %w", err)
@@ -209,12 +242,15 @@ func (b *Bus) Info(ctx context.Context) (*jetstream.StreamInfo, error) {
 	return b.stream.Info(ctx)
 }
 
-// Get fetches a single stored delivery by stream sequence. Returns
-// jetstream.ErrMsgNotFound when the sequence does not exist (or was
+// Get fetches a single stored delivery by stream sequence. Returns a
+// wrapped ErrDeliveryNotFound when the sequence does not exist (or was
 // discarded by retention).
 func (b *Bus) Get(ctx context.Context, seq uint64) (*Envelope, error) {
 	raw, err := b.stream.GetMsg(ctx, seq)
 	if err != nil {
+		if errors.Is(err, jetstream.ErrMsgNotFound) {
+			return nil, fmt.Errorf("sequence %d: %w", seq, ErrDeliveryNotFound)
+		}
 		return nil, err
 	}
 	return EnvelopeFromRaw(raw), nil
@@ -288,17 +324,25 @@ type SubscribeOptions struct {
 	// via Subscription.Ack. Durable names are sanitised to a single NATS
 	// token. When empty an ephemeral ordered consumer is used and Ack is a
 	// no-op.
+	//
+	// StartSeq and FromStart only apply when the durable consumer is first
+	// created: JetStream does not allow a consumer's start position to be
+	// changed afterwards, and a durable's whole point is to resume from its
+	// own acknowledged position regardless of what the reconnecting client
+	// asks for.
 	Durable string
 }
 
 // Subscription iterates stored deliveries for one subscriber.
 //
 // Ephemeral (ordered) subscriptions prefetch through a MessagesContext.
-// Durable subscriptions deliberately fetch one message at a time: a
-// prefetched-but-unacknowledged message would otherwise sit pending for the
-// full AckWait after a subscriber disconnects, delaying its redelivery to
-// the reconnecting subscriber by up to 30 s. Webhook volumes are low enough
-// that the extra round trip per message is irrelevant.
+// Durable subscriptions deliberately fetch one message at a time so that at
+// most one unacknowledged message is ever outstanding per subscriber: a
+// batch of prefetched-but-unacknowledged messages would otherwise sit
+// pending for the full AckWait after a subscriber disconnects. A message
+// that lands in the single in-flight pull exactly as the client goes away
+// still waits AckWait (10 s) before redelivery; webhook volumes are low
+// enough that the extra round trip per message is irrelevant.
 type Subscription struct {
 	msgs    jetstream.MessagesContext // ephemeral
 	cons    jetstream.Consumer        // durable
@@ -393,21 +437,31 @@ func (b *Bus) Subscribe(ctx context.Context, opts SubscribeOptions) (*Subscripti
 	)
 	if opts.Durable != "" {
 		name := SanitizeToken(opts.Durable)
-		cons, err = b.stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
-			Durable:        name,
-			FilterSubjects: []string{filter},
-			DeliverPolicy:  policy,
-			OptStartSeq:    startSeq,
-			AckPolicy:      jetstream.AckExplicitPolicy,
-			// Subscribers ack as soon as the event is flushed to the client,
-			// so a short AckWait keeps redelivery prompt when a client
-			// disconnects mid-fetch without over-delivering to healthy ones.
-			AckWait:       10 * time.Second,
-			MaxAckPending: 256,
-			// Durable position survives reconnects but is garbage-collected
-			// after a long absence so abandoned CLIs don't pin storage.
-			InactiveThreshold: 7 * 24 * time.Hour,
-		})
+		cons, err = b.stream.Consumer(ctx, name)
+		if errors.Is(err, jetstream.ErrConsumerNotFound) {
+			cons, err = b.stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
+				Durable:        name,
+				FilterSubjects: []string{filter},
+				DeliverPolicy:  policy,
+				OptStartSeq:    startSeq,
+				AckPolicy:      jetstream.AckExplicitPolicy,
+				// Subscribers ack as soon as the event is flushed to the
+				// client, so a short AckWait keeps redelivery prompt when a
+				// client disconnects mid-fetch without over-delivering to
+				// healthy ones.
+				AckWait:       10 * time.Second,
+				MaxAckPending: 256,
+				// Durable position survives reconnects but is
+				// garbage-collected after a long absence so abandoned CLIs
+				// don't pin storage.
+				InactiveThreshold: 7 * 24 * time.Hour,
+			})
+			// Two subscribers racing to create the same durable: one wins,
+			// the other attaches to it.
+			if errors.Is(err, jetstream.ErrConsumerExists) || errors.Is(err, jetstream.ErrConsumerNameAlreadyInUse) {
+				cons, err = b.stream.Consumer(ctx, name)
+			}
+		}
 	} else {
 		cons, err = b.stream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
 			FilterSubjects: []string{filter},
@@ -470,6 +524,39 @@ func (b *Bus) Close() {
 			b.srv.WaitForShutdown()
 		}
 	})
+}
+
+// subscriberPermissions builds the permission set for native subscribers:
+// everything is allowed except publishing into the delivery subject space
+// (forging deliveries) and the JetStream API calls that create, alter or
+// destroy streams and their messages. Consumer management, acks, inboxes
+// and stream reads remain available.
+func subscriberPermissions(prefix string) *natsserver.Permissions {
+	return &natsserver.Permissions{
+		Publish: &natsserver.SubjectPermission{
+			Deny: []string{
+				prefix + ".>",
+				prefix,
+				"$JS.API.STREAM.CREATE.>",
+				"$JS.API.STREAM.UPDATE.>",
+				"$JS.API.STREAM.DELETE.>",
+				"$JS.API.STREAM.PURGE.>",
+				"$JS.API.STREAM.RESTORE.>",
+				"$JS.API.STREAM.SNAPSHOT.>",
+				"$JS.API.STREAM.MSG.DELETE.>",
+				"$JS.API.STREAM.PEER.REMOVE.>",
+				"$JS.API.STREAM.LEADER.STEPDOWN.>",
+			},
+		},
+	}
+}
+
+func randomPassword() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // slogNATSLogger adapts nats-server's logger interface to slog.

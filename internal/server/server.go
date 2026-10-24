@@ -548,7 +548,20 @@ func (s *Server) Run(ctx context.Context) error {
 
 		if s.cfg.Webhooks.Ngrok.Enabled {
 			tunnelHandler := accessLogHandler(backend.Webhook, webhook.IngressMux(s.cfg.Webhooks.Path, ingress), aw, clientIPHeader)
-			go s.runNgrokTunnel(lifecycleCtx, tunnelHandler, webhookSvc)
+			tunnelDone := make(chan struct{})
+			go func() {
+				defer close(tunnelDone)
+				s.runNgrokTunnel(lifecycleCtx, tunnelHandler, webhookSvc)
+			}()
+			// Give the tunnel a bounded chance to close cleanly (so ngrok
+			// releases the endpoint promptly) before the bus shuts down.
+			defer func() {
+				select {
+				case <-tunnelDone:
+				case <-time.After(15 * time.Second):
+					s.logger.Warn("ngrok_tunnel_shutdown_timeout")
+				}
+			}()
 		}
 		s.logger.Info("webhook_ingress_ready",
 			"path", s.cfg.Webhooks.Path,

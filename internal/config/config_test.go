@@ -779,6 +779,9 @@ func TestWebhooksValidate(t *testing.T) {
 		{"prefix cannot contain wildcards", func(w *WebhooksConfig) { w.Enabled = true; w.NATS.SubjectPrefix = "gh.*" }, true},
 		{"prefix cannot be empty", func(w *WebhooksConfig) { w.Enabled = true; w.NATS.SubjectPrefix = "" }, true},
 		{"max payload must be positive", func(w *WebhooksConfig) { w.Enabled = true; w.MaxPayloadBytes = 0 }, true},
+		{"max payload capped", func(w *WebhooksConfig) { w.Enabled = true; w.MaxPayloadBytes = MaxWebhookPayloadBytes + 1 }, true},
+		{"listen requires auth token", func(w *WebhooksConfig) { w.Enabled = true; w.NATS.Listen = "127.0.0.1:4222" }, true},
+		{"listen with auth token valid", func(w *WebhooksConfig) { w.Enabled = true; w.NATS.Listen = "127.0.0.1:4222"; w.NATS.AuthToken = "t" }, false},
 		{"ngrok requires an authtoken", func(w *WebhooksConfig) { w.Enabled = true; w.Ngrok.Enabled = true }, true},
 		{"ngrok with authtoken valid", func(w *WebhooksConfig) { w.Enabled = true; w.Ngrok.Enabled = true; w.Ngrok.Authtoken = "x" }, false},
 	}

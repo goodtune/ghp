@@ -2,12 +2,14 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/goodtune/ghp/internal/config"
 )
@@ -257,11 +259,14 @@ func TestBus_ListenAddrAndClients(t *testing.T) {
 	}
 
 	if _, err := nats.Connect(b.ClientURL()); err == nil {
-		t.Error("expected connection without token to fail")
+		t.Error("expected connection without credentials to fail")
 	}
-	nc, err := nats.Connect(b.ClientURL(), nats.Token("s3cret"))
+	if _, err := nats.Connect(b.ClientURL(), nats.Token("s3cret")); err == nil {
+		t.Error("expected bare token auth to fail; clients must use the subscriber user")
+	}
+	nc, err := nats.Connect(b.ClientURL(), nats.UserInfo(SubscriberUser, "s3cret"))
 	if err != nil {
-		t.Fatalf("connect with token: %v", err)
+		t.Fatalf("connect as subscriber: %v", err)
 	}
 	defer nc.Close()
 	deadline := time.Now().Add(2 * time.Second)
@@ -278,4 +283,144 @@ func TestBus_InProcessOnlyHasNoListener(t *testing.T) {
 	if b.ListenAddr() != "" || b.ClientURL() != "" {
 		t.Errorf("expected no listener, got %q %q", b.ListenAddr(), b.ClientURL())
 	}
+}
+
+func TestBus_ListenRequiresAuthToken(t *testing.T) {
+	cfg := testNATSConfig(t)
+	cfg.Listen = "127.0.0.1:0"
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := NewBus(ctx, cfg, BusOptions{}, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+		t.Fatal("expected NewBus to refuse a listener without an auth token")
+	}
+}
+
+func TestBus_SubscriberCannotPublishOrAlterStream(t *testing.T) {
+	cfg := testNATSConfig(t)
+	cfg.Listen = "127.0.0.1:0"
+	cfg.AuthToken = "s3cret"
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	b, err := NewBus(ctx, cfg, BusOptions{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer b.Close()
+	subj := Subject(b.SubjectPrefix(), SubjectParts{Event: "push"})
+	publishTest(t, b, subj, "real-1", "push")
+
+	nc, err := nats.Connect(b.ClientURL(), nats.UserInfo(SubscriberUser, "s3cret"))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer nc.Close()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Forging a delivery must be denied: no ack ever arrives.
+	pctx, pcancel := context.WithTimeout(ctx, 2*time.Second)
+	defer pcancel()
+	if _, err := js.Publish(pctx, subj, []byte(`{"forged":true}`)); err == nil {
+		t.Error("subscriber was able to publish into the webhook subject space")
+	}
+	// Destroying the stream must be denied.
+	dctx, dcancel := context.WithTimeout(ctx, 2*time.Second)
+	defer dcancel()
+	if err := js.DeleteStream(dctx, b.StreamName()); err == nil {
+		t.Error("subscriber was able to delete the stream")
+	}
+	// Reading must still work.
+	cons, err := js.OrderedConsumer(ctx, b.StreamName(), jetstream.OrderedConsumerConfig{DeliverPolicy: jetstream.DeliverAllPolicy})
+	if err != nil {
+		t.Fatalf("subscriber could not create a consumer: %v", err)
+	}
+	m, err := cons.Next(jetstream.FetchMaxWait(5 * time.Second))
+	if err != nil {
+		t.Fatalf("subscriber could not read: %v", err)
+	}
+	if m.Headers().Get(HdrDelivery) != "real-1" {
+		t.Errorf("unexpected message: %+v", m.Headers())
+	}
+	info, err := b.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.State.Msgs != 1 {
+		t.Errorf("stream should still hold exactly the real delivery, got %d msgs", info.State.Msgs)
+	}
+}
+
+func TestBus_DurableIgnoresStartOnReconnect(t *testing.T) {
+	b := newTestBus(t)
+	ctx := context.Background()
+	subj := Subject(b.SubjectPrefix(), SubjectParts{Event: "push"})
+	for i := 1; i <= 3; i++ {
+		publishTest(t, b, subj, "d-"+string(rune('0'+i)), "push")
+	}
+	sub, err := b.Subscribe(ctx, SubscribeOptions{Durable: "resume", FromStart: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	e, m, err := sub.Next(nctx)
+	if err != nil || e.Sequence != 1 {
+		t.Fatalf("first: seq=%v err=%v", e, err)
+	}
+	if err := sub.Ack(m); err != nil {
+		t.Fatal(err)
+	}
+	sub.Close()
+
+	// A reconnecting client (EventSource / CLI) sends Last-Event-ID, which
+	// becomes StartSeq. JetStream forbids changing a durable's start policy;
+	// the existing consumer must simply be reused.
+	sub2, err := b.Subscribe(ctx, SubscribeOptions{Durable: "resume", StartSeq: 2})
+	if err != nil {
+		t.Fatalf("resubscribe with StartSeq: %v", err)
+	}
+	defer sub2.Close()
+	e2, _, err := sub2.Next(nctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e2.Sequence != 2 {
+		t.Errorf("resumed seq = %d, want 2", e2.Sequence)
+	}
+
+	if _, err := b.Get(ctx, 999); !errors.Is(err, ErrDeliveryNotFound) {
+		t.Errorf("Get missing: err = %v, want ErrDeliveryNotFound", err)
+	}
+}
+
+func TestBus_RecentAfterRetentionPurge(t *testing.T) {
+	b := newTestBus(t)
+	ctx := context.Background()
+	subj := Subject(b.SubjectPrefix(), SubjectParts{Event: "push"})
+	for i := 1; i <= 6; i++ {
+		publishTest(t, b, subj, "d-"+string(rune('0'+i)), "push")
+	}
+	// Simulate retention discarding the oldest deliveries: FirstSeq becomes
+	// 5, so a limit larger than what remains must clamp to FirstSeq rather
+	// than request sequences that no longer exist.
+	if err := b.stream.Purge(ctx, jetstream.WithPurgeSequence(5)); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	got, err := b.Recent(ctx, 4)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if len(got) != 2 || got[0].Sequence != 6 || got[1].Sequence != 5 {
+		t.Errorf("expected [6 5], got %+v", seqs(got))
+	}
+}
+
+func seqs(envs []*Envelope) []uint64 {
+	out := make([]uint64, 0, len(envs))
+	for _, e := range envs {
+		out = append(out, e.Sequence)
+	}
+	return out
 }
