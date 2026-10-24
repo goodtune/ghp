@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLoadAdminsFromEnv(t *testing.T) {
@@ -605,5 +606,202 @@ func TestForwardProxyAllowRequestHeaderDefaultsFalse(t *testing.T) {
 	}
 	if cfg.ForwardProxy.AllowRequestHeader {
 		t.Error("expected ForwardProxy.AllowRequestHeader to default to false")
+	}
+}
+
+func TestWebhooksDefaults(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := cfg.Webhooks
+	if w.Enabled {
+		t.Error("Webhooks.Enabled should default to false")
+	}
+	if w.Path != "/webhooks/github" {
+		t.Errorf("Path = %q, want /webhooks/github", w.Path)
+	}
+	if w.MaxPayloadBytes != 25*1024*1024 {
+		t.Errorf("MaxPayloadBytes = %d, want %d", w.MaxPayloadBytes, 25*1024*1024)
+	}
+	if w.NATS.StoreDir != "nats" {
+		t.Errorf("NATS.StoreDir = %q, want nats", w.NATS.StoreDir)
+	}
+	if w.NATS.Stream != "GITHUB_WEBHOOKS" {
+		t.Errorf("NATS.Stream = %q, want GITHUB_WEBHOOKS", w.NATS.Stream)
+	}
+	if w.NATS.SubjectPrefix != "github.webhooks" {
+		t.Errorf("NATS.SubjectPrefix = %q, want github.webhooks", w.NATS.SubjectPrefix)
+	}
+	if w.NATS.MaxAge != 7*24*time.Hour {
+		t.Errorf("NATS.MaxAge = %v, want 168h", w.NATS.MaxAge)
+	}
+	if w.NATS.MaxBytes != 1<<30 {
+		t.Errorf("NATS.MaxBytes = %d, want %d", w.NATS.MaxBytes, 1<<30)
+	}
+	if w.NATS.DedupeWindow != 10*time.Minute {
+		t.Errorf("NATS.DedupeWindow = %v, want 10m", w.NATS.DedupeWindow)
+	}
+	if w.NATS.Listen != "" {
+		t.Errorf("NATS.Listen = %q, want empty", w.NATS.Listen)
+	}
+	if w.Ngrok.Enabled {
+		t.Error("Ngrok.Enabled should default to false")
+	}
+}
+
+func TestLoadWebhooksFromEnv(t *testing.T) {
+	t.Setenv("GHP_WEBHOOKS_ENABLED", "true")
+	t.Setenv("GHP_WEBHOOKS_PATH", "/hooks/gh")
+	t.Setenv("GHP_WEBHOOKS_SECRET", "global-secret")
+	t.Setenv("GHP_WEBHOOKS_MAX_PAYLOAD_BYTES", "1024")
+	t.Setenv("GHP_WEBHOOKS_NATS_LISTEN", "127.0.0.1:4222")
+	t.Setenv("GHP_WEBHOOKS_NATS_AUTH_TOKEN", "tok")
+	t.Setenv("GHP_WEBHOOKS_NATS_TLS", "true")
+	t.Setenv("GHP_WEBHOOKS_NATS_STORE_DIR", "/var/lib/ghp/nats")
+	t.Setenv("GHP_WEBHOOKS_NATS_STREAM", "HOOKS")
+	t.Setenv("GHP_WEBHOOKS_NATS_SUBJECT_PREFIX", "gh.hooks")
+	t.Setenv("GHP_WEBHOOKS_NATS_MAX_AGE", "48h")
+	t.Setenv("GHP_WEBHOOKS_NATS_MAX_BYTES", "2048")
+	t.Setenv("GHP_WEBHOOKS_NATS_DEDUPE_WINDOW", "5m")
+	t.Setenv("GHP_WEBHOOKS_NGROK_ENABLED", "true")
+	t.Setenv("GHP_WEBHOOKS_NGROK_AUTHTOKEN", "ngrok-token")
+	t.Setenv("GHP_WEBHOOKS_NGROK_DOMAIN", "hooks.example.ngrok.app")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := cfg.Webhooks
+	if !w.Enabled {
+		t.Error("Enabled = false, want true")
+	}
+	if w.Path != "/hooks/gh" {
+		t.Errorf("Path = %q", w.Path)
+	}
+	if w.Secret != "global-secret" {
+		t.Errorf("Secret = %q", w.Secret)
+	}
+	if w.MaxPayloadBytes != 1024 {
+		t.Errorf("MaxPayloadBytes = %d", w.MaxPayloadBytes)
+	}
+	if w.NATS.Listen != "127.0.0.1:4222" {
+		t.Errorf("NATS.Listen = %q", w.NATS.Listen)
+	}
+	if w.NATS.AuthToken != "tok" {
+		t.Errorf("NATS.AuthToken = %q", w.NATS.AuthToken)
+	}
+	if !w.NATS.TLS {
+		t.Error("NATS.TLS = false, want true")
+	}
+	if w.NATS.StoreDir != "/var/lib/ghp/nats" {
+		t.Errorf("NATS.StoreDir = %q", w.NATS.StoreDir)
+	}
+	if w.NATS.Stream != "HOOKS" {
+		t.Errorf("NATS.Stream = %q", w.NATS.Stream)
+	}
+	if w.NATS.SubjectPrefix != "gh.hooks" {
+		t.Errorf("NATS.SubjectPrefix = %q", w.NATS.SubjectPrefix)
+	}
+	if w.NATS.MaxAge != 48*time.Hour {
+		t.Errorf("NATS.MaxAge = %v", w.NATS.MaxAge)
+	}
+	if w.NATS.MaxBytes != 2048 {
+		t.Errorf("NATS.MaxBytes = %d", w.NATS.MaxBytes)
+	}
+	if w.NATS.DedupeWindow != 5*time.Minute {
+		t.Errorf("NATS.DedupeWindow = %v", w.NATS.DedupeWindow)
+	}
+	if !w.Ngrok.Enabled {
+		t.Error("Ngrok.Enabled = false, want true")
+	}
+	if w.Ngrok.Authtoken != "ngrok-token" {
+		t.Errorf("Ngrok.Authtoken = %q", w.Ngrok.Authtoken)
+	}
+	if w.Ngrok.Domain != "hooks.example.ngrok.app" {
+		t.Errorf("Ngrok.Domain = %q", w.Ngrok.Domain)
+	}
+}
+
+func TestLoadWebhooksFromYAML(t *testing.T) {
+	yaml := `
+webhooks:
+  enabled: true
+  path: /gh
+  nats:
+    listen: ":4222"
+    subject_prefix: "gh"
+  ngrok:
+    enabled: true
+    domain: "example.ngrok.app"
+`
+	f, err := os.CreateTemp(t.TempDir(), "config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(yaml); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Webhooks.Enabled || cfg.Webhooks.Path != "/gh" {
+		t.Errorf("unexpected webhooks config: %+v", cfg.Webhooks)
+	}
+	if cfg.Webhooks.NATS.Listen != ":4222" || cfg.Webhooks.NATS.SubjectPrefix != "gh" {
+		t.Errorf("unexpected nats config: %+v", cfg.Webhooks.NATS)
+	}
+	// Unset YAML keys keep their defaults.
+	if cfg.Webhooks.NATS.Stream != "GITHUB_WEBHOOKS" {
+		t.Errorf("Stream = %q, want default", cfg.Webhooks.NATS.Stream)
+	}
+	if !cfg.Webhooks.Ngrok.Enabled || cfg.Webhooks.Ngrok.Domain != "example.ngrok.app" {
+		t.Errorf("unexpected ngrok config: %+v", cfg.Webhooks.Ngrok)
+	}
+}
+
+func TestWebhooksValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*WebhooksConfig)
+		wantErr bool
+	}{
+		{"disabled is always valid", func(w *WebhooksConfig) { w.Enabled = false; w.Path = "" }, false},
+		{"defaults valid", func(w *WebhooksConfig) { w.Enabled = true }, false},
+		{"path must start with slash", func(w *WebhooksConfig) { w.Enabled = true; w.Path = "hooks" }, true},
+		{"path cannot be root", func(w *WebhooksConfig) { w.Enabled = true; w.Path = "/" }, true},
+		{"stream name cannot contain dots", func(w *WebhooksConfig) { w.Enabled = true; w.NATS.Stream = "a.b" }, true},
+		{"prefix cannot contain wildcards", func(w *WebhooksConfig) { w.Enabled = true; w.NATS.SubjectPrefix = "gh.*" }, true},
+		{"prefix cannot be empty", func(w *WebhooksConfig) { w.Enabled = true; w.NATS.SubjectPrefix = "" }, true},
+		{"max payload must be positive", func(w *WebhooksConfig) { w.Enabled = true; w.MaxPayloadBytes = 0 }, true},
+		{"ngrok requires an authtoken", func(w *WebhooksConfig) { w.Enabled = true; w.Ngrok.Enabled = true }, true},
+		{"ngrok with authtoken valid", func(w *WebhooksConfig) { w.Enabled = true; w.Ngrok.Enabled = true; w.Ngrok.Authtoken = "x" }, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("NGROK_AUTHTOKEN", "")
+			w := Defaults().Webhooks
+			tt.mutate(&w)
+			err := w.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestWebhooksValidate_NgrokEnvToken(t *testing.T) {
+	t.Setenv("NGROK_AUTHTOKEN", "from-env")
+	w := Defaults().Webhooks
+	w.Enabled = true
+	w.Ngrok.Enabled = true
+	if err := w.Validate(); err != nil {
+		t.Errorf("expected NGROK_AUTHTOKEN to satisfy validation, got %v", err)
+	}
+	if w.NgrokAuthtoken() != "from-env" {
+		t.Errorf("NgrokAuthtoken() = %q, want from-env", w.NgrokAuthtoken())
 	}
 }
