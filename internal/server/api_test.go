@@ -16,6 +16,7 @@ import (
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/config"
+	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	ghpgithub "github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/token"
@@ -727,5 +728,92 @@ func TestHandleUpdateTokenScopes_HappyPath(t *testing.T) {
 	scopes, _ := resp["scopes"].(map[string]interface{})
 	if scopes["contents"] != "write" {
 		t.Errorf("scopes[contents] = %v, want write", scopes["contents"])
+	}
+}
+
+func TestAppWebhookSecret_CreateUpdateClear(t *testing.T) {
+	a := newTestAPIWithStore(t)
+	a.encryptor = crypto.NewPassthroughEncryptor()
+	ctx := auth.NewContextWithSession(context.Background(), adminSession())
+
+	// Create with a webhook secret.
+	body := `{"name":"Hooked","app_id":4242,"private_key":"-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----","webhook_secret":"shh"}`
+	req := httptest.NewRequest("POST", "/api/apps", strings.NewReader(body)).WithContext(ctx)
+	w := httptest.NewRecorder()
+	a.handleCreateApp(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created["has_webhook_secret"] != true {
+		t.Errorf("create response has_webhook_secret = %v", created["has_webhook_secret"])
+	}
+	if _, leaked := created["webhook_secret"]; leaked {
+		t.Error("webhook_secret must never be returned")
+	}
+	id := created["id"].(string)
+
+	stored, err := a.store.GetAppByID(ctx, id)
+	if err != nil || stored == nil {
+		t.Fatalf("GetAppByID: %v", err)
+	}
+	if stored.WebhookSecret != "shh" {
+		t.Errorf("stored webhook secret = %q", stored.WebhookSecret)
+	}
+
+	// GET and list expose only the boolean.
+	getReq := httptest.NewRequest("GET", "/api/apps/"+id, nil).WithContext(ctx)
+	getReq.SetPathValue("id", id)
+	w = httptest.NewRecorder()
+	a.handleGetApp(w, getReq)
+	if !strings.Contains(w.Body.String(), `"has_webhook_secret":true`) || strings.Contains(w.Body.String(), "shh") {
+		t.Errorf("get response: %s", w.Body.String())
+	}
+
+	// Omitting webhook_secret on update leaves it alone.
+	upd := httptest.NewRequest("PUT", "/api/apps/"+id, strings.NewReader(`{"name":"Renamed"}`)).WithContext(ctx)
+	upd.SetPathValue("id", id)
+	w = httptest.NewRecorder()
+	a.handleUpdateApp(w, upd)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", w.Code, w.Body.String())
+	}
+	stored, _ = a.store.GetAppByID(ctx, id)
+	if stored.WebhookSecret != "shh" || stored.Name != "Renamed" {
+		t.Errorf("after rename: secret=%q name=%q", stored.WebhookSecret, stored.Name)
+	}
+
+	// Rotating.
+	upd = httptest.NewRequest("PUT", "/api/apps/"+id, strings.NewReader(`{"webhook_secret":"new"}`)).WithContext(ctx)
+	upd.SetPathValue("id", id)
+	w = httptest.NewRecorder()
+	a.handleUpdateApp(w, upd)
+	if w.Code != http.StatusOK {
+		t.Fatalf("rotate: %d %s", w.Code, w.Body.String())
+	}
+	stored, _ = a.store.GetAppByID(ctx, id)
+	if stored.WebhookSecret != "new" {
+		t.Errorf("after rotate: %q", stored.WebhookSecret)
+	}
+
+	// Explicit empty string clears it.
+	upd = httptest.NewRequest("PUT", "/api/apps/"+id, strings.NewReader(`{"webhook_secret":""}`)).WithContext(ctx)
+	upd.SetPathValue("id", id)
+	w = httptest.NewRecorder()
+	a.handleUpdateApp(w, upd)
+	if w.Code != http.StatusOK {
+		t.Fatalf("clear: %d %s", w.Code, w.Body.String())
+	}
+	stored, _ = a.store.GetAppByID(ctx, id)
+	if stored.WebhookSecret != "" {
+		t.Errorf("after clear: %q", stored.WebhookSecret)
+	}
+	w = httptest.NewRecorder()
+	a.handleGetApp(w, getReq)
+	if !strings.Contains(w.Body.String(), `"has_webhook_secret":false`) {
+		t.Errorf("get after clear: %s", w.Body.String())
 	}
 }

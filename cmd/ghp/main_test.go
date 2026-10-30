@@ -46,6 +46,7 @@ func TestHelpOutput_Root(t *testing.T) {
 		"auth",
 		"token",
 		"apptoken",
+		"webhooks",
 		"version",
 		"--config",
 	} {

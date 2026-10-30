@@ -69,6 +69,11 @@ type Config struct {
 
 	ForwardProxy ForwardProxyConfig `koanf:"forward_proxy"`
 
+	// Webhooks configures the GitHub webhook ingress, the embedded NATS
+	// JetStream event bus, and the optional embedded ngrok tunnel. Bound at
+	// startup; not hot-reloadable.
+	Webhooks WebhooksConfig `koanf:"webhooks"`
+
 	EncryptionKey string `koanf:"encryption_key"`
 
 	// DevMode enables test-only endpoints (e.g. /auth/test-login).
@@ -287,9 +292,9 @@ type ServerConfig struct {
 }
 
 type TokensConfig struct {
-	DefaultDuration              time.Duration `koanf:"default_duration"`
-	MaxDuration                  time.Duration `koanf:"max_duration"`
-	AllowNoExpiry                bool          `koanf:"allow_no_expiry"`
+	DefaultDuration time.Duration `koanf:"default_duration"`
+	MaxDuration     time.Duration `koanf:"max_duration"`
+	AllowNoExpiry   bool          `koanf:"allow_no_expiry"`
 	// ExpiredTokenRetentionPeriod is how long after a token expires or is
 	// revoked before it is hard-deleted from the database.  Defaults to
 	// 30 days.  Set to 0 to disable automatic cleanup.
@@ -353,6 +358,127 @@ type AuthConfig struct {
 	AllowedRedirects []string `koanf:"allowed_redirects"`
 }
 
+// WebhooksConfig holds settings for the GitHub webhook ingress feature. When
+// Enabled, ghp accepts webhook deliveries at Path on the management host,
+// verifies each delivery's X-Hub-Signature-256 against the secret of the app
+// it targets, and publishes the payload to an embedded NATS JetStream stream
+// from which subscribers consume (native NATS clients, the admin SSE stream,
+// or the ghp webhooks CLI).
+type WebhooksConfig struct {
+	// Enabled activates the webhook ingress and the embedded NATS server.
+	Enabled bool `koanf:"enabled"`
+	// Path is the ingress path (on the management host and, when ngrok is
+	// enabled, on the public tunnel) that GitHub posts deliveries to. Must
+	// begin with "/". Defaults to "/webhooks/github".
+	Path string `koanf:"path"`
+	// Secret is an optional global webhook secret tried when a delivery does
+	// not target a registered app (e.g. repository or organisation hooks) or
+	// when the targeted app has no secret of its own. Per-app secrets are
+	// configured on the app record via the admin UI/API.
+	Secret string `koanf:"secret"`
+	// MaxPayloadBytes caps the accepted request body. GitHub never sends
+	// more than 25 MiB. Defaults to 25 MiB.
+	MaxPayloadBytes int64 `koanf:"max_payload_bytes"`
+
+	NATS  WebhooksNATSConfig  `koanf:"nats"`
+	Ngrok WebhooksNgrokConfig `koanf:"ngrok"`
+}
+
+// WebhooksNATSConfig configures the embedded NATS JetStream server.
+type WebhooksNATSConfig struct {
+	// Listen is the host:port the embedded server accepts native NATS
+	// client connections on. Empty (the default) means the server is
+	// reachable in-process only; subscribers then use the admin SSE stream
+	// or the CLI. Set e.g. "127.0.0.1:4222" to let NATS clients subscribe
+	// directly with durable consumers.
+	Listen string `koanf:"listen"`
+	// AuthToken is the password native NATS clients present as user
+	// "subscriber". Required whenever Listen is non-empty. Subscribers may
+	// read the stream and manage consumers but cannot publish into the
+	// webhook subject space or alter the stream; ghp's own in-process
+	// connection uses a separate random per-process credential.
+	AuthToken string `koanf:"auth_token"`
+	// TLS, when true, serves the NATS listener using the certificates in the
+	// top-level tls section.
+	TLS bool `koanf:"tls"`
+	// StoreDir is the JetStream file store directory. Defaults to "nats" in
+	// the working directory.
+	StoreDir string `koanf:"store_dir"`
+	// Stream is the JetStream stream name. Defaults to "GITHUB_WEBHOOKS".
+	Stream string `koanf:"stream"`
+	// SubjectPrefix is the root of the subject hierarchy deliveries are
+	// published under: {prefix}.{app}.{event}.{action}.{owner}.{repo}.
+	// Defaults to "github.webhooks".
+	SubjectPrefix string `koanf:"subject_prefix"`
+	// MaxAge is how long deliveries are retained. Defaults to 7 days.
+	MaxAge time.Duration `koanf:"max_age"`
+	// MaxBytes caps the stream's total size; oldest deliveries are discarded
+	// first. Defaults to 1 GiB.
+	MaxBytes int64 `koanf:"max_bytes"`
+	// DedupeWindow is how long JetStream remembers delivery GUIDs so that a
+	// GitHub redelivery within the window is reported as a duplicate rather
+	// than stored twice. Defaults to 10 minutes.
+	DedupeWindow time.Duration `koanf:"dedupe_window"`
+}
+
+// WebhooksNgrokConfig configures the embedded ngrok tunnel that exposes the
+// webhook ingress path publicly.
+type WebhooksNgrokConfig struct {
+	// Enabled starts an ngrok agent session in-process and serves the
+	// webhook path on the resulting public endpoint. Nothing else served by
+	// ghp is reachable through the tunnel.
+	Enabled bool `koanf:"enabled"`
+	// Authtoken is the ngrok authtoken. Falls back to the NGROK_AUTHTOKEN
+	// environment variable when empty.
+	Authtoken string `koanf:"authtoken"`
+	// Domain is an optional reserved ngrok domain (e.g. "hooks.example.ngrok.app").
+	// When empty ngrok assigns a random URL on each start, which operators
+	// must copy into the GitHub App settings after every restart.
+	Domain string `koanf:"domain"`
+}
+
+// MaxWebhookPayloadBytes is the upper bound for webhooks.max_payload_bytes.
+// GitHub caps deliveries at 25 MiB; the bound leaves room above that while
+// keeping the NATS max_payload (an int32) well within range.
+const MaxWebhookPayloadBytes = 1 << 30
+
+// NgrokAuthtoken returns the configured ngrok authtoken, falling back to the
+// NGROK_AUTHTOKEN environment variable.
+func (w *WebhooksConfig) NgrokAuthtoken() string {
+	if w.Ngrok.Authtoken != "" {
+		return w.Ngrok.Authtoken
+	}
+	return os.Getenv("NGROK_AUTHTOKEN")
+}
+
+// Validate checks the webhook configuration for internal consistency. It is
+// a no-op when the feature is disabled.
+func (w *WebhooksConfig) Validate() error {
+	if !w.Enabled {
+		return nil
+	}
+	if !strings.HasPrefix(w.Path, "/") || w.Path == "/" {
+		return fmt.Errorf("webhooks.path must be an absolute path other than \"/\" (got %q)", w.Path)
+	}
+	if w.MaxPayloadBytes <= 0 || w.MaxPayloadBytes > MaxWebhookPayloadBytes {
+		return fmt.Errorf("webhooks.max_payload_bytes must be between 1 and %d (got %d)", MaxWebhookPayloadBytes, w.MaxPayloadBytes)
+	}
+	if w.NATS.Listen != "" && w.NATS.AuthToken == "" {
+		return fmt.Errorf("webhooks.nats.auth_token is required when webhooks.nats.listen is set")
+	}
+	if w.NATS.Stream == "" || strings.ContainsAny(w.NATS.Stream, ". *>/\\\t\n") {
+		return fmt.Errorf("webhooks.nats.stream must be a non-empty name without whitespace, '.', '*', '>' or path separators (got %q)", w.NATS.Stream)
+	}
+	if w.NATS.SubjectPrefix == "" || strings.ContainsAny(w.NATS.SubjectPrefix, " *>\t\n") ||
+		strings.HasPrefix(w.NATS.SubjectPrefix, ".") || strings.HasSuffix(w.NATS.SubjectPrefix, ".") || strings.Contains(w.NATS.SubjectPrefix, "..") {
+		return fmt.Errorf("webhooks.nats.subject_prefix must be a non-empty subject without wildcards or empty tokens (got %q)", w.NATS.SubjectPrefix)
+	}
+	if w.Ngrok.Enabled && w.NgrokAuthtoken() == "" {
+		return fmt.Errorf("webhooks.ngrok.enabled requires webhooks.ngrok.authtoken or NGROK_AUTHTOKEN")
+	}
+	return nil
+}
+
 // Defaults returns a Config with sensible defaults.
 func Defaults() *Config {
 	return &Config{
@@ -385,6 +511,18 @@ func Defaults() *Config {
 		Cache: CacheConfig{
 			StoragePath: "cache",
 		},
+		Webhooks: WebhooksConfig{
+			Path:            "/webhooks/github",
+			MaxPayloadBytes: 25 * 1024 * 1024,
+			NATS: WebhooksNATSConfig{
+				StoreDir:      "nats",
+				Stream:        "GITHUB_WEBHOOKS",
+				SubjectPrefix: "github.webhooks",
+				MaxAge:        7 * 24 * time.Hour,
+				MaxBytes:      1 << 30,
+				DedupeWindow:  10 * time.Minute,
+			},
+		},
 	}
 }
 
@@ -412,10 +550,20 @@ func Load(path string) (*Config, error) {
 			if i := strings.Index(s, "_"); i > 0 {
 				section, field := s[:i], s[i+1:]
 				switch section {
-				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases", "codeload", "cache":
+				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases", "codeload", "cache", "webhooks":
 					// Handle 3-level nesting for logging.file.*
 					if section == "logging" && strings.HasPrefix(field, "file_") {
 						return "logging.file." + field[len("file_"):], v
+					}
+					// Handle 3-level nesting for webhooks.nats.* and
+					// webhooks.ngrok.* (GHP_WEBHOOKS_NATS_LISTEN ->
+					// webhooks.nats.listen).
+					if section == "webhooks" {
+						for _, sub := range []string{"nats_", "ngrok_"} {
+							if strings.HasPrefix(field, sub) {
+								return "webhooks." + strings.TrimSuffix(sub, "_") + "." + field[len(sub):], v
+							}
+						}
 					}
 					return section + "." + field, v
 				case "forward":

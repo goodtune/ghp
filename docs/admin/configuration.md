@@ -170,6 +170,31 @@ not this file. See [Forward Proxy Rulesets](../features/forward-proxy-rulesets.m
 
 See [Git Cache](../features/git-cache.md) for details.
 
+### Webhooks
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GHP_WEBHOOKS_ENABLED` | Enable the GitHub webhook ingress and the embedded NATS JetStream server | `false` |
+| `GHP_WEBHOOKS_PATH` | Ingress path GitHub posts deliveries to (on the management host and the ngrok tunnel) | `/webhooks/github` |
+| `GHP_WEBHOOKS_SECRET` | Server-wide fallback webhook secret, tried when a delivery does not target an app with its own secret | |
+| `GHP_WEBHOOKS_MAX_PAYLOAD_BYTES` | Maximum accepted request body (GitHub sends at most 25 MiB) | `26214400` |
+| `GHP_WEBHOOKS_NATS_LISTEN` | `host:port` for native NATS clients; empty keeps the server in-process only | |
+| `GHP_WEBHOOKS_NATS_AUTH_TOKEN` | Password native NATS clients present as user `subscriber` (read-only on the stream); required when `listen` is set | |
+| `GHP_WEBHOOKS_NATS_TLS` | Serve the NATS listener with the certificates from the `tls` section | `false` |
+| `GHP_WEBHOOKS_NATS_STORE_DIR` | JetStream file store directory | `nats` |
+| `GHP_WEBHOOKS_NATS_STREAM` | JetStream stream name | `GITHUB_WEBHOOKS` |
+| `GHP_WEBHOOKS_NATS_SUBJECT_PREFIX` | Root of the delivery subject hierarchy | `github.webhooks` |
+| `GHP_WEBHOOKS_NATS_MAX_AGE` | Delivery retention period | `168h` |
+| `GHP_WEBHOOKS_NATS_MAX_BYTES` | Stream size cap; oldest deliveries are discarded first | `1073741824` |
+| `GHP_WEBHOOKS_NATS_DEDUPE_WINDOW` | How long delivery GUIDs are remembered for redelivery deduplication | `10m` |
+| `GHP_WEBHOOKS_NGROK_ENABLED` | Start an embedded ngrok tunnel serving only the ingress path | `false` |
+| `GHP_WEBHOOKS_NGROK_AUTHTOKEN` | ngrok authtoken (falls back to `NGROK_AUTHTOKEN`) | |
+| `GHP_WEBHOOKS_NGROK_DOMAIN` | Reserved ngrok domain; empty assigns a random URL on each start | |
+
+Per-app webhook secrets are stored on the app record (admin UI or
+`POST`/`PUT /api/apps`), not in this file. See
+[Webhooks](../features/webhooks.md) for details.
+
 ## Full YAML Reference
 
 ```yaml
@@ -293,6 +318,26 @@ cache:
   # s3_bucket: ""              # S3 bucket for shared cache storage (optional)
   # s3_region: ""              # AWS region
   # s3_endpoint: ""            # custom S3-compatible endpoint (MinIO, etc)
+
+webhooks:
+  enabled: false               # receive GitHub webhooks and fan them out via embedded NATS JetStream
+  path: /webhooks/github       # ingress path on the management host (and the ngrok tunnel)
+  # secret: ""                 # server-wide fallback secret; per-app secrets live on the app record
+  max_payload_bytes: 26214400  # 25 MiB, GitHub's maximum
+  nats:
+    listen: ""                 # e.g. "127.0.0.1:4222" to admit native NATS subscribers; empty = in-process only
+    # auth_token: ""           # password for the read-only "subscriber" user; required when listen is set
+    tls: false                 # serve the NATS listener with the tls.certificates above
+    store_dir: nats            # JetStream file store
+    stream: GITHUB_WEBHOOKS
+    subject_prefix: github.webhooks
+    max_age: 168h              # retention
+    max_bytes: 1073741824      # 1 GiB cap, oldest discarded first
+    dedupe_window: 10m         # redelivery deduplication window (by X-GitHub-Delivery)
+  ngrok:
+    enabled: false             # expose the ingress path via an embedded ngrok tunnel
+    # authtoken: ""            # or NGROK_AUTHTOKEN
+    # domain: ""               # reserved ngrok domain; empty = random URL per start
 
 admins:
   - "alice"

@@ -70,6 +70,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/var/lib/ghp /var/log/ghp
+WorkingDirectory=/var/lib/ghp
 PrivateTmp=yes
 
 [Install]

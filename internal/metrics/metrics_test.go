@@ -658,3 +658,58 @@ func TestForwardProxyClientSpecifiedTotal(t *testing.T) {
 		})
 	}
 }
+
+func TestWebhookReceivedTotal(t *testing.T) {
+	labels := prometheus.Labels{"event": "pull_request", "result": "published"}
+	before := getCounterValue(t, WebhookReceivedTotal, labels)
+	WebhookReceivedTotal.WithLabelValues("pull_request", "published").Inc()
+	after := getCounterValue(t, WebhookReceivedTotal, labels)
+	if after-before != 1 {
+		t.Errorf("expected counter to increment by 1, got %f", after-before)
+	}
+}
+
+func TestWebhookPublishDuration(t *testing.T) {
+	var m io_prometheus_client.Metric
+	if err := WebhookPublishDuration.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	before := m.GetHistogram().GetSampleCount()
+	WebhookPublishDuration.Observe(0.002)
+	m.Reset()
+	if err := WebhookPublishDuration.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got := m.GetHistogram().GetSampleCount() - before; got != 1 {
+		t.Errorf("expected sample count to increase by 1, got %d", got)
+	}
+}
+
+func TestWebhookGauges(t *testing.T) {
+	WebhookNgrokTunnelUp.Set(1)
+	if v := getGaugeValue(t, WebhookNgrokTunnelUp); v != 1 {
+		t.Errorf("WebhookNgrokTunnelUp = %f, want 1", v)
+	}
+	WebhookNgrokTunnelUp.Set(0)
+	if v := getGaugeValue(t, WebhookNgrokTunnelUp); v != 0 {
+		t.Errorf("WebhookNgrokTunnelUp = %f, want 0", v)
+	}
+
+	WebhookStreamMessages.Set(42)
+	if v := getGaugeValue(t, WebhookStreamMessages); v != 42 {
+		t.Errorf("WebhookStreamMessages = %f, want 42", v)
+	}
+	WebhookStreamBytes.Set(4096)
+	if v := getGaugeValue(t, WebhookStreamBytes); v != 4096 {
+		t.Errorf("WebhookStreamBytes = %f, want 4096", v)
+	}
+
+	g := WebhookSubscribersActive.WithLabelValues("sse")
+	g.Set(0)
+	g.Inc()
+	g.Inc()
+	g.Dec()
+	if v := getGaugeValue(t, g); v != 1 {
+		t.Errorf("WebhookSubscribersActive{sse} = %f, want 1", v)
+	}
+}

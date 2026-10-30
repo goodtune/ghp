@@ -79,6 +79,9 @@ jobs:
           GHP_DEV_MODE: "true"
           GHP_GITHUB_CLIENT_ID: "test-client-id"
           GHP_GITHUB_CLIENT_SECRET: "test-client-secret"
+          GHP_WEBHOOKS_ENABLED: "true"
+          GHP_WEBHOOKS_NATS_STORE_DIR: /tmp/ghp-test-nats
+          GHP_SERVER_BASE_URL: http://localhost:8080
         run: |
           ./ghp serve &
           SERVER_PID=$!

@@ -361,3 +361,55 @@ func TestSyncAdminRoles(t *testing.T) {
 		t.Errorf("bob role = %q, want admin", gotBob2.Role)
 	}
 }
+
+// TestSQLiteDownMigration012PreservesAppReferences guards the webhook_secret
+// down migration: it must drop the column in place. A table rebuild (DROP
+// TABLE apps) would fire ON DELETE SET NULL on proxy_tokens.app_id and
+// github_tokens.app_id because foreign keys are enabled on every connection.
+func TestSQLiteDownMigration012PreservesAppReferences(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "down.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := NewMigrator(store, "sqlite").Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{Name: "A", AppID: 1, WebhookSecret: "s"}
+	if err := store.CreateApp(ctx, app); err != nil {
+		t.Fatal(err)
+	}
+	inst := int64(99)
+	tok := &ProxyToken{
+		TokenHash: "hash-down-012", TokenPrefix: "gha_x", TokenType: "agent",
+		AppID: &app.ID, InstallationID: &inst, Repositories: []byte(`[]`), Scopes: []byte(`{}`),
+	}
+	if err := store.CreateProxyToken(ctx, tok); err != nil {
+		t.Fatal(err)
+	}
+
+	down, err := sqliteMigrations.ReadFile("migrations/sqlite/012_add_app_webhook_secret.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, string(down)); err != nil {
+		t.Fatalf("down migration: %v", err)
+	}
+
+	var appID *string
+	if err := store.db.QueryRowContext(ctx, `SELECT app_id FROM proxy_tokens WHERE id = ?`, tok.ID).Scan(&appID); err != nil {
+		t.Fatal(err)
+	}
+	if appID == nil || *appID != app.ID {
+		t.Fatalf("proxy_tokens.app_id after down migration = %v, want %q", appID, app.ID)
+	}
+	var n int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('apps') WHERE name = 'webhook_secret'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Error("webhook_secret column still present after down migration")
+	}
+}

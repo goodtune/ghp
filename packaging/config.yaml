@@ -56,3 +56,16 @@ metrics:
 
 # admins:
 #   - github-username
+
+# webhooks:
+#   enabled: false                      # receive GitHub webhooks and fan them out via embedded NATS JetStream
+#   path: /webhooks/github
+#   # secret: ""                        # server-wide fallback; per-app secrets are set on the app record
+#   nats:
+#     store_dir: /var/lib/ghp/nats      # JetStream file store (StateDirectory of the systemd unit)
+#     # listen: "127.0.0.1:4222"        # admit native NATS subscribers (requires auth_token)
+#     # auth_token: ""
+#   ngrok:
+#     enabled: false
+#     # authtoken: ""                   # or NGROK_AUTHTOKEN in the unit's Environment
+#     # domain: ""                      # reserved ngrok domain

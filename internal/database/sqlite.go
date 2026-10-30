@@ -568,9 +568,9 @@ func (s *SQLiteStore) CreateApp(ctx context.Context, app *App) error {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO apps (id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, app.ID, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, now, now)
+		INSERT INTO apps (id, name, app_id, client_id, client_secret, private_key, base_url, is_default, webhook_secret, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, app.ID, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, app.WebhookSecret, now, now)
 	if err != nil {
 		return err
 	}
@@ -583,8 +583,8 @@ func (s *SQLiteStore) GetAppByID(ctx context.Context, id string) (*App, error) {
 	a := &App{}
 	var createdStr, updatedStr string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps WHERE id = ?`, id,
-	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &createdStr, &updatedStr)
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, webhook_secret, created_at, updated_at FROM apps WHERE id = ?`, id,
+	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.WebhookSecret, &createdStr, &updatedStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -600,8 +600,8 @@ func (s *SQLiteStore) GetDefaultApp(ctx context.Context) (*App, error) {
 	a := &App{}
 	var createdStr, updatedStr string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps WHERE is_default = 1 LIMIT 1`,
-	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &createdStr, &updatedStr)
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, webhook_secret, created_at, updated_at FROM apps WHERE is_default = 1 LIMIT 1`,
+	).Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.WebhookSecret, &createdStr, &updatedStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -615,7 +615,7 @@ func (s *SQLiteStore) GetDefaultApp(ctx context.Context) (*App, error) {
 
 func (s *SQLiteStore) ListApps(ctx context.Context) ([]*App, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, created_at, updated_at FROM apps ORDER BY created_at`)
+		`SELECT id, name, app_id, client_id, client_secret, private_key, base_url, is_default, webhook_secret, created_at, updated_at FROM apps ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -625,7 +625,7 @@ func (s *SQLiteStore) ListApps(ctx context.Context) ([]*App, error) {
 	for rows.Next() {
 		a := &App{}
 		var createdStr, updatedStr string
-		if err := rows.Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &createdStr, &updatedStr); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.AppID, &a.ClientID, &a.ClientSecret, &a.PrivateKey, &a.BaseURL, &a.IsDefault, &a.WebhookSecret, &createdStr, &updatedStr); err != nil {
 			return nil, err
 		}
 		a.CreatedAt = parseTime(createdStr)
@@ -638,9 +638,9 @@ func (s *SQLiteStore) ListApps(ctx context.Context) ([]*App, error) {
 func (s *SQLiteStore) UpdateApp(ctx context.Context, app *App) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE apps SET name = ?, app_id = ?, client_id = ?, client_secret = ?, private_key = ?, base_url = ?, is_default = ?, updated_at = ?
+		UPDATE apps SET name = ?, app_id = ?, client_id = ?, client_secret = ?, private_key = ?, base_url = ?, is_default = ?, webhook_secret = ?, updated_at = ?
 		WHERE id = ?
-	`, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, now, app.ID)
+	`, app.Name, app.AppID, app.ClientID, app.ClientSecret, app.PrivateKey, app.BaseURL, app.IsDefault, app.WebhookSecret, now, app.ID)
 	if err != nil {
 		return err
 	}

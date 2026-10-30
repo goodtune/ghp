@@ -35,8 +35,12 @@ type App struct {
 	PrivateKey   string    `json:"private_key"`
 	BaseURL      string    `json:"base_url"`
 	IsDefault    bool      `json:"is_default"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	// WebhookSecret is the encrypted GitHub webhook secret used to verify
+	// X-Hub-Signature-256 on deliveries targeting this app. Empty when the
+	// app has no webhook secret configured.
+	WebhookSecret string    `json:"webhook_secret"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // User represents a ghp user authenticated via GitHub OAuth.

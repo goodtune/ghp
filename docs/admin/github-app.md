@@ -26,6 +26,15 @@ Or via environment variables:
     export GHP_GITHUB_CLIENT_ID=Iv1.abc123
     export GHP_GITHUB_CLIENT_SECRET=your-client-secret
 
+## Webhooks
+
+To have ghp receive the app's webhooks, enable `webhooks.enabled` on the
+server, give the app record a **Webhook Secret** (admin UI or
+`PUT /api/apps/{id}`), and set the app's **Webhook URL** on GitHub to the
+ingress URL shown on the admin page or by `ghp webhooks status`. The same
+secret goes into the GitHub **Webhook secret** field. See
+[Webhooks](../features/webhooks.md).
+
 ## Agent Tokens (gha_)
 
 To enable agent tokens (`gha_` prefix), ghp needs the App ID and private key

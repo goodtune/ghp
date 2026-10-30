@@ -338,6 +338,64 @@ var (
 		Help: "Number of enabled forward proxy rulesets currently active in the route table.",
 	})
 
+	// WebhookReceivedTotal counts GitHub webhook deliveries presented to the
+	// ingress handler, labeled by the X-GitHub-Event name and the outcome:
+	//   "published"         — verified and stored in the JetStream stream
+	//   "duplicate"         — verified, but the delivery GUID was already
+	//                         stored within the dedupe window
+	//   "invalid_signature" — no candidate secret produced a matching
+	//                         X-Hub-Signature-256 (or the header was absent)
+	//   "unknown_app"       — no secret could be resolved for the delivery
+	//                         target at all
+	//   "bad_request"       — malformed delivery (missing headers, bad
+	//                         form encoding, oversized body)
+	//   "publish_error"     — JetStream publish failed; 503 returned so the
+	//                         operator can redeliver from GitHub
+	//   "internal_error"    — the secret lookup itself failed (store error)
+	// The event label is bounded by GitHub's event catalogue; unknown or
+	// empty event names are normalised to "unknown".
+	WebhookReceivedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_webhook_received_total",
+		Help: "Total GitHub webhook deliveries received by the ingress handler, by event and outcome.",
+	}, []string{"event", "result"})
+
+	// WebhookPublishDuration measures the time from handing a verified
+	// delivery to JetStream until the publish acknowledgement returns.
+	WebhookPublishDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ghp_webhook_publish_duration_seconds",
+		Help:    "Duration of JetStream publish + acknowledgement for webhook deliveries.",
+		Buckets: []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5},
+	})
+
+	// WebhookNgrokTunnelUp is 1 while the embedded ngrok agent session is
+	// connected to the ngrok service and 0 otherwise (disabled, connecting,
+	// or disconnected).
+	WebhookNgrokTunnelUp = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ghp_webhook_ngrok_tunnel_up",
+		Help: "1 when the embedded ngrok tunnel session is connected, 0 otherwise.",
+	})
+
+	// WebhookStreamMessages and WebhookStreamBytes reflect the current size
+	// of the webhook JetStream stream. They are refreshed periodically from
+	// stream info rather than incremented per publish, so they also account
+	// for retention-driven discards.
+	WebhookStreamMessages = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ghp_webhook_stream_messages",
+		Help: "Number of webhook deliveries currently retained in the JetStream stream.",
+	})
+	WebhookStreamBytes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "ghp_webhook_stream_bytes",
+		Help: "Total bytes currently retained in the webhook JetStream stream.",
+	})
+
+	// WebhookSubscribersActive counts open subscriber connections by kind:
+	// "sse" for admin API server-sent-events streams and "nats" for native
+	// NATS clients connected to the embedded server's listener.
+	WebhookSubscribersActive = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ghp_webhook_subscribers_active",
+		Help: "Number of active webhook subscribers by kind (sse, nats).",
+	}, []string{"kind"})
+
 	// BuildInfo is a gauge with a constant value of 1 labeled by build
 	// metadata. It follows the node_exporter_build_info convention.
 	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{

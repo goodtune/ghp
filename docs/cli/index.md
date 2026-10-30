@@ -14,6 +14,7 @@ operations. Use `--help` on any command for full details.
 | [`ghp auth`](auth.md) | Authenticate with the ghp server |
 | [`ghp token`](token.md) | Create, list, and revoke proxy tokens |
 | [`ghp apptoken`](apptoken.md) | Generate a GitHub App installation access token |
+| [`ghp webhooks`](webhooks.md) | Show webhook ingress status and stream deliveries |
 | `ghp version` | Print version information |
 
 ## Global Flags

@@ -82,6 +82,10 @@ client ID, client secret, and private key PEM). See
 [GitHub App Setup](admin/github-app.md) for details on creating a GitHub App
 and obtaining these values.
 
+To also receive the app's webhooks through ghp, enable `webhooks.enabled`, set a
+**Webhook Secret** on the app record, and point GitHub at the ingress URL shown
+on the admin page. See [Webhooks](features/webhooks.md).
+
 ## Configure Your Agent
 
 Set the token as `GH_TOKEN` in the agent's environment:

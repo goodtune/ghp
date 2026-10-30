@@ -32,4 +32,10 @@ const (
 	// Mgmt handles requests to the configured management host. This serves the
 	// web dashboard, OAuth login flow, token management API, and embedded docs.
 	Mgmt = "management"
+
+	// Webhook attributes GitHub webhook deliveries that arrive through the
+	// embedded ngrok tunnel. Deliveries posted directly to the management
+	// host's ingress path are attributed to Mgmt like any other request on
+	// that host.
+	Webhook = "webhook"
 )

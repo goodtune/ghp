@@ -204,6 +204,31 @@ cardinality bounded; query the access log for per-ref breakdowns.
 
 See [Codeload Redirect](../features/codeload.md) for configuration details.
 
+### Webhook Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `ghp_webhook_received_total` | Counter | `event`, `result` | Webhook deliveries presented to the ingress, by GitHub event and outcome |
+| `ghp_webhook_publish_duration_seconds` | Histogram | — | JetStream publish + acknowledgement latency per delivery |
+| `ghp_webhook_ngrok_tunnel_up` | Gauge | — | 1 while the embedded ngrok session is connected |
+| `ghp_webhook_stream_messages` | Gauge | — | Deliveries currently retained in the JetStream stream (refreshed every 30 s) |
+| `ghp_webhook_stream_bytes` | Gauge | — | Bytes currently retained in the stream |
+| `ghp_webhook_subscribers_active` | Gauge | `kind` | Open subscribers: `sse` (admin stream / CLI) and `nats` (native clients) |
+
+**`ghp_webhook_received_total` result values:**
+
+- `published` — verified and stored
+- `duplicate` — verified, but the delivery GUID was already stored within the dedupe window
+- `invalid_signature` — no candidate secret verified `X-Hub-Signature-256` (or the header was missing)
+- `unknown_app` — no secret could be resolved for the delivery's target
+- `bad_request` — missing headers, malformed form body, or oversized payload
+- `publish_error` — JetStream publish failed (`503` returned so the delivery can be resent)
+- `internal_error` — secret lookup failed
+
+The `event` label is bounded by GitHub's event catalogue; unknown names are
+reported as `unknown`. The `backend` label on the HTTP metrics is `webhook`
+for deliveries that arrived through the ngrok tunnel.
+
 ## Logging
 
 ghp treats **OpenTelemetry log records** as its first-class logging primitive.
