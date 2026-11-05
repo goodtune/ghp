@@ -108,6 +108,12 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	vv := *base
 	v := &vv
 	v.Step = map[string]map[string]string{}
+	// Profile IDs are placeholders for every known profile; an unknown
+	// name expands to "" (text/template's index ignores missingkey).
+	v.ProfileIDs = make(map[string]string, len(t.Profiles))
+	for n := range t.Profiles {
+		v.ProfileIDs[n] = "00000000-0000-4000-8000-000000000000"
+	}
 	for _, r := range append(append([]Request{}, s.Steps...), s.Cleanup...) {
 		if len(r.Capture) == 0 {
 			continue
@@ -201,10 +207,18 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			return
 		}
 		if s.Kind == "token_api" {
-			// token_api scenarios (steps, request and cleanup alike) only
-			// talk to the management API; they must never reach /repos/.
+			// token_api scenarios (steps, request and cleanup alike) talk
+			// to the management API, plus read-only GETs to the proxy host
+			// under /api/v3/ (sent with the scenario's profile token).
+			if (method == "GET" || method == "HEAD") && strings.HasPrefix(clean, "/api/v3/") {
+				return
+			}
 			if clean != "/api/tokens" && !strings.HasPrefix(clean, "/api/tokens/") {
-				add("%s: token_api path %q must be /api/tokens or start with /api/tokens/ or /api/tokens?", where, path)
+				add("%s: token_api path %q must be /api/tokens or start with /api/tokens/ or /api/tokens? (or be a GET under /api/v3/)", where, path)
+				return
+			}
+			if method == "DELETE" && (clean == "/api/tokens" || strings.TrimPrefix(clean, "/api/tokens/") == "") {
+				add("%s: DELETE %q has an empty token id (unknown profile in ProfileIDs?)", where, path)
 			}
 			return
 		}
@@ -247,8 +261,8 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	}
 	if s.Request != nil {
 		checkReq("request", -1, s.Request)
-	} else if s.Kind == "token_api" {
-		add("token_api scenario needs a request")
+	} else if s.Kind == "token_api" && len(s.Steps) == 0 {
+		add("token_api scenario needs a request or steps")
 	}
 	// Normalise copies the rest shorthand Expect into Steps[0]; Steps are
 	// the source of truth, so do not report the same problem twice.

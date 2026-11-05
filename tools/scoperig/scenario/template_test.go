@@ -83,3 +83,15 @@ func TestExpandAny(t *testing.T) {
 		t.Errorf("want error naming Bad, got %v", err)
 	}
 }
+
+func TestExpand_ProfileIDs(t *testing.T) {
+	v := testVars()
+	v.ProfileIDs = map[string]string{"lifecycle-revoke": "11111111-2222-3333-4444-555555555555"}
+	got, err := Expand(`/api/tokens/{{index .ProfileIDs "lifecycle-revoke"}}`, v)
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if want := "/api/tokens/11111111-2222-3333-4444-555555555555"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

@@ -1,0 +1,147 @@
+# Permission restriction scenarios (spec section 7: PERM-C11 to C16).
+# Write scenarios target W only, use run-unique names and clean up with
+# the open token.
+- id: PERM-C11.contents-read-blocks-put
+  claim: PERM-C11
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: contents:read blocks creating a file on W; GHP denies before GitHub.
+  profile: perm-ro
+  kind: rest
+  requires: [repo_w_push]
+  method: PUT
+  path: /repos/{{.RepoW}}/contents/scoperig-{{.RunID}}-c11.txt
+  body: {message: "scoperig {{.RunID}} C11", content: "c2NvcGVyaWcK"}
+  expect: {status: 403, body_contains: ["Token does not have permission", "contents:write"], ghp_denial: true}
+
+- id: PERM-C12.contents-write-allows-put
+  claim: PERM-C12
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: contents:write allows creating a file on W.
+  profile: perm-rw
+  kind: rest
+  requires: [repo_w_push]
+  steps:
+    - name: put
+      method: PUT
+      path: /repos/{{.RepoW}}/contents/scoperig-{{.RunID}}-c12.txt
+      body: {message: "scoperig {{.RunID}} C12", content: "c2NvcGVyaWcK"}
+      expect: {status: 201}
+      capture: {sha: "$.content.sha"}
+  cleanup:
+    - method: DELETE
+      path: /repos/{{.RepoW}}/contents/scoperig-{{.RunID}}-c12.txt
+      body: {message: "scoperig cleanup", sha: "{{.Step.put.sha}}"}
+
+- id: PERM-C13.pulls-read-blocks-create
+  claim: PERM-C13
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: pull_requests:read blocks creating a pull request on W; GHP denies before GitHub.
+  profile: perm-ro
+  kind: rest
+  requires: [repo_w_push]
+  method: POST
+  path: /repos/{{.RepoW}}/pulls
+  body: {title: "scoperig {{.RunID}} C13 ro", head: "{{.Fixture.W.Branch}}", base: "scoperig-absent-{{.RunID}}"}
+  expect: {status: 403, body_contains: ["Token does not have permission", "pull_requests:write"], ghp_denial: true}
+
+- id: PERM-C13.pulls-write-allows-create
+  claim: PERM-C13
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: pull_requests:write allows creating a pull request on W from a run branch.
+  profile: perm-rw
+  kind: rest
+  requires: [repo_w_push]
+  steps:
+    - name: repo
+      method: GET
+      path: /repos/{{.RepoW}}
+      expect: {status: 200}
+      capture: {default_branch: "$.default_branch"}
+    - name: base
+      method: GET
+      path: /repos/{{.RepoW}}/git/ref/heads/{{.Step.repo.default_branch}}
+      expect: {status: 200}
+      capture: {sha: "$.object.sha"}
+    - name: ref
+      method: POST
+      path: /repos/{{.RepoW}}/git/refs
+      body: {ref: "refs/heads/scoperig-{{.RunID}}-c13", sha: "{{.Step.base.sha}}"}
+      expect: {status: 201}
+    - name: commit
+      method: PUT
+      path: /repos/{{.RepoW}}/contents/scoperig-{{.RunID}}-c13.txt
+      body: {message: "scoperig {{.RunID}} C13", content: "c2NvcGVyaWcK", branch: "scoperig-{{.RunID}}-c13"}
+      expect: {status: 201}
+    - name: create
+      method: POST
+      path: /repos/{{.RepoW}}/pulls
+      body: {title: "scoperig {{.RunID}} C13", head: "scoperig-{{.RunID}}-c13", base: "{{.Step.repo.default_branch}}", body: "automated; closed immediately"}
+      expect: {status: 201}
+      capture: {number: "$.number"}
+  cleanup:
+    - method: PATCH
+      path: /repos/{{.RepoW}}/pulls/{{.Step.create.number}}
+      body: {state: closed}
+    - method: DELETE
+      path: /repos/{{.RepoW}}/git/refs/heads/scoperig-{{.RunID}}-c13
+
+- id: PERM-C14.issues-read-blocks-create
+  claim: PERM-C14
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: issues:read blocks creating an issue on W; GHP denies before GitHub.
+  profile: perm-ro
+  kind: rest
+  requires: [repo_w_push]
+  method: POST
+  path: /repos/{{.RepoW}}/issues
+  body: {title: "scoperig {{.RunID}} C14 ro", body: "automated; must be denied"}
+  expect: {status: 403, body_contains: ["Token does not have permission", "issues:write"], ghp_denial: true}
+
+- id: PERM-C14.issues-write-allows-create
+  claim: PERM-C14
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: issues:write allows creating an issue on W.
+  profile: perm-rw
+  kind: rest
+  requires: [repo_w_push]
+  steps:
+    - name: create
+      method: POST
+      path: /repos/{{.RepoW}}/issues
+      body: {title: "scoperig {{.RunID}} C14", body: "automated; closed immediately"}
+      expect: {status: 201}
+      capture: {number: "$.number"}
+  cleanup:
+    - method: PATCH
+      path: /repos/{{.RepoW}}/issues/{{.Step.create.number}}
+      body: {state: closed}
+
+- id: PERM-C15.metadata-repo
+  claim: PERM-C15
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: Repository metadata is readable with only issues:read.
+  profile: perm-issues-ro
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}
+  expect: {status: 200}
+
+- id: PERM-C15.metadata-user
+  claim: PERM-C15
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: GET /user is readable with only issues:read.
+  profile: perm-issues-ro
+  kind: rest
+  method: GET
+  path: /user
+  expect: {status: 200, json: {"$.login": "{{.Login}}"}}
+
+- id: PERM-C16.write-implies-read
+  claim: PERM-C16
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: contents:write also allows reading contents.
+  profile: perm-rw
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoW}}/contents/README.md
+  expect: {status: 200}

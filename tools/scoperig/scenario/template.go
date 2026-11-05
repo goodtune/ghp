@@ -37,6 +37,7 @@ type Vars struct {
 	Fixture             map[string]FixtureVals // keys "A", "B", "W"
 	Instance            InstanceVals
 	Step                map[string]map[string]string // step name -> capture name -> value
+	ProfileIDs          map[string]string            // profile name -> minted token id (not the token value)
 }
 
 var funcs = template.FuncMap{

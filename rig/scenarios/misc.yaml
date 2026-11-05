@@ -1,0 +1,27 @@
+# Miscellaneous scenarios (spec section 7: MISC-C52).
+# GHP synthesises X-OAuth-Scopes on GET / only for tokens with permission
+# scopes (internal/proxy/proxy.go), so these use permission-scoped profiles
+# and match the exact synthetic value.
+- id: MISC-C52.synthetic-oauth-scopes
+  claim: MISC-C52
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: GET / with a permission-scoped token returns a synthetic X-OAuth-Scopes header.
+  profile: perm-ro
+  kind: rest
+  method: GET
+  path: /
+  expect:
+    status: 200
+    header: {X-OAuth-Scopes: "actions:read, contents:read, issues:read, metadata:read, pull_requests:read"}
+
+- id: MISC-C52.synthetic-oauth-scopes-repo-restricted
+  claim: MISC-C52
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: GET / with a repository- and permission-scoped token returns a synthetic X-OAuth-Scopes header.
+  profile: repo-A-perm-ro
+  kind: rest
+  method: GET
+  path: /
+  expect:
+    status: 200
+    header: {X-OAuth-Scopes: "contents:read, metadata:read"}

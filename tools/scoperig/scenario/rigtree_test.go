@@ -70,6 +70,8 @@ func TestRigTree(t *testing.T) {
 			t.Errorf("%s: doc and claim are required", id)
 		}
 	}
+	checkScenarioCoverage(t, tree)
+
 	for _, suffix := range []string{"-C42", "-C53"} {
 		if id := findSuffix(tree, suffix); id == "" || tree.Claims[id].Testable != "never" {
 			t.Errorf("claim *%s must exist with testable never", suffix)
@@ -102,4 +104,74 @@ func findSuffix(tree *Tree, suffix string) string {
 		}
 	}
 	return ""
+}
+
+// task18Claims are the iteration-1 REST, lifecycle, border and misc claims
+// (spec section 7) with the minimum scenario count each must have.
+var task18Claims = map[string]int{
+	"REPO-C05": 1, "REPO-C06": 3, "REPO-C07": 2, "REPO-C10": 1,
+	"PERM-C11": 1, "PERM-C12": 1, "PERM-C13": 2, "PERM-C14": 2, "PERM-C15": 2, "PERM-C16": 1,
+	"OPEN-C20": 3, "OPEN-C21": 1,
+	"LIFE-C37": 1, "LIFE-C38": 1, "LIFE-C40": 1,
+	"BORDER-C43": 3, "BORDER-C44": 1, "MISC-C52": 1,
+}
+
+// checkScenarioCoverage asserts that every iteration-1 claim that is not a
+// GAP, GQL or GH claim has scenarios, and that every scenario with a
+// non-GET step either declares requires: [repo_w_push] or is token_api.
+func checkScenarioCoverage(t *testing.T, tree *Tree) {
+	t.Helper()
+	count := make(map[string]int)
+	for _, s := range tree.Scenarios {
+		count[s.Claim]++
+		if !strings.HasPrefix(s.ID, s.Claim+".") || len(s.ID) == len(s.Claim)+1 {
+			t.Errorf("scenario %q: id must be <claim>.<slug> for claim %q", s.ID, s.Claim)
+		}
+		if s.Kind == "token_api" {
+			continue
+		}
+		write, succeeds := false, false
+		for _, r := range append(append([]Request{}, s.Steps...), s.Cleanup...) {
+			if m := strings.ToUpper(strings.TrimSpace(r.Method)); m != "" && m != "GET" && m != "HEAD" {
+				write = true
+				if r.Expect != nil && r.Expect.Status >= 200 && r.Expect.Status < 300 {
+					succeeds = true
+				}
+			}
+		}
+		if s.Kind == "graphql" {
+			continue // graphql uses POST for reads; the mutation rule covers writes
+		}
+		if write && !contains(s.Requires, "repo_w_push") {
+			t.Errorf("scenario %q has a non-GET step but does not require repo_w_push", s.ID)
+		}
+		if succeeds && len(s.Cleanup) == 0 {
+			t.Errorf("scenario %q expects a successful write but has no cleanup", s.ID)
+		}
+	}
+	for id, c := range tree.Claims {
+		if c.Iteration != 1 || c.Testable != "periodic" {
+			continue
+		}
+		if strings.HasPrefix(id, "GAP-") || strings.HasPrefix(id, "GQL-") || strings.HasPrefix(id, "GH-") {
+			continue
+		}
+		if count[id] == 0 {
+			t.Errorf("iteration-1 claim %s has no scenario", id)
+		}
+	}
+	for id, n := range task18Claims {
+		if count[id] < n {
+			t.Errorf("claim %s: got %d scenarios, want >= %d", id, count[id], n)
+		}
+	}
+}
+
+func contains(xs []string, x string) bool {
+	for _, e := range xs {
+		if e == x {
+			return true
+		}
+	}
+	return false
 }

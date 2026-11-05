@@ -1,0 +1,45 @@
+# Border policy scenarios (spec section 7: BORDER-C43, C44).
+# The C43 tokens are fake: a native prefix plus 36 characters built from the
+# run ID and fixed padding. They are never real credentials.
+- id: BORDER-C43.ghp-blocked
+  claim: BORDER-C43
+  doc: docs/features/border-policy.md#how-it-works
+  description: A classic PAT prefix (ghp_) is blocked with 403 before reaching GitHub.
+  profile: open
+  kind: rest
+  method: GET
+  path: /user
+  headers: {Authorization: "token ghp_{{printf \"%.36s\" (print .RunID \"scoperigfakescoperigfakescoperigfake\")}}"}
+  expect: {status: 403, body_contains: ["Token type is not permitted by the border policy"], ghp_denial: true}
+
+- id: BORDER-C43.gho-blocked
+  claim: BORDER-C43
+  doc: docs/features/border-policy.md#how-it-works
+  description: An OAuth token prefix (gho_) is blocked with 403 before reaching GitHub.
+  profile: open
+  kind: rest
+  method: GET
+  path: /user
+  headers: {Authorization: "token gho_{{printf \"%.36s\" (print .RunID \"scoperigfakescoperigfakescoperigfake\")}}"}
+  expect: {status: 403, body_contains: ["Token type is not permitted by the border policy"], ghp_denial: true}
+
+- id: BORDER-C43.github-pat-blocked
+  claim: BORDER-C43
+  doc: docs/features/border-policy.md#how-it-works
+  description: A fine-grained PAT prefix (github_pat_) is blocked with 403 before reaching GitHub.
+  profile: open
+  kind: rest
+  method: GET
+  path: /user
+  headers: {Authorization: "token github_pat_{{printf \"%.36s\" (print .RunID \"scoperigfakescoperigfakescoperigfake\")}}"}
+  expect: {status: 403, body_contains: ["Token type is not permitted by the border policy"], ghp_denial: true}
+
+- id: BORDER-C44.ghx-accepted
+  claim: BORDER-C44
+  doc: docs/features/border-policy.md#how-it-works
+  description: A ghx_ token is always accepted by the border policy.
+  profile: open
+  kind: rest
+  method: GET
+  path: /user
+  expect: {status: 200, ghp_denial: false}

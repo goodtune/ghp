@@ -419,3 +419,22 @@ func TestValidate_Round4Hardening(t *testing.T) {
 	}
 	requireNoErr(t, Validate(withScenarios(ghScenario("OK", "", "auth", "status")), nil))
 }
+
+func TestValidate_TokenAPIProxyGET(t *testing.T) {
+	tree := withScenarios(&Scenario{ID: "T1", Claim: "C1", Kind: "token_api", Profile: "p",
+		Steps: []Request{
+			{Name: "before", Method: "GET", Path: "/api/v3/user"},
+			{Name: "revoke", Method: "DELETE", Path: `/api/tokens/{{index .ProfileIDs "p"}}`},
+			{Name: "probe", Path: "/api/v3/user"},
+		}})
+	requireNoErr(t, Validate(tree, nil))
+
+	// Non-GET to the proxy host is rejected.
+	requireErr(t, Validate(withScenarios(&Scenario{ID: "T2", Claim: "C1", Kind: "token_api",
+		Steps: []Request{{Method: "POST", Path: "/api/v3/repos/{{.RepoW}}/issues"}}}), nil), "T2", "/api/tokens")
+	// An unknown profile name in ProfileIDs expands to an empty id: rejected.
+	requireErr(t, Validate(withScenarios(&Scenario{ID: "T3", Claim: "C1", Kind: "token_api",
+		Steps: []Request{{Method: "DELETE", Path: `/api/tokens/{{index .ProfileIDs "nope"}}`}}}), nil), "T3", "token id")
+	// Neither steps nor request.
+	requireErr(t, Validate(withScenarios(&Scenario{ID: "T4", Claim: "C1", Kind: "token_api"}), nil), "T4", "needs")
+}
