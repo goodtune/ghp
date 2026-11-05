@@ -17,7 +17,7 @@
           "verdict": "allow"
         },
         "repo": {
-          "verdict": "allow"
+          "verdict": "deny:no_repo_ref"
         }
       }
     }

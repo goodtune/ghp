@@ -23,7 +23,9 @@
           "verdict": "allow"
         },
         "repo": {
-          "verdict": "allow"
+          "verdict": "allow",
+          "known_issue": "https://github.com/goodtune/ghp/issues/297",
+          "current": "deny:unpinned"
         }
       }
     }
