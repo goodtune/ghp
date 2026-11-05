@@ -9,9 +9,8 @@ instance:
   # the rig does not probe it. Each listed prefix sets capability
   # border_block_<prefix> (ghp, gho, github_pat); BORDER-C43 scenarios for an
   # unlisted prefix report GAP. Edit this if the instance's policy differs.
-  # The live instance does not set block.* (first live run 20261105T0530Z:
-  # fake ghp_/gho_/github_pat_ tokens reached GitHub and got 401), so none
-  # are declared and BORDER-C43 reports GAP.
+  # Leave it empty unless the instance sets block.*; BORDER-C43 then
+  # reports GAP.
   border_block: []
 fixtures:
   repo_a: OWNER/ghp-scoperig-a

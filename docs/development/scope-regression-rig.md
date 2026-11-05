@@ -215,6 +215,8 @@ Safety and limits:
 
 - `pr_create_dryrun` is the only "create" command in the oracle matrix. It is safe: `--dry-run` stops before any change, an explicit `--head` skips the push and fork logic, and `gh` runs in a temporary directory that is not a git checkout, behind a git ceiling.
 - The `gh` credential must be in `hosts.yml` or the macOS keychain. The oracle does not pass through the Linux Secret Service (DBUS), so on such hosts `gh` fails closed.
+- Choose an oracle repository whose owner and name are not `gh` subcommand words or GraphQL keywords or field names (for example `list`, `view`, `on`, `node`). The identity scrub refuses such a repository and fails closed: nothing is written.
+- If a command captures no request (for example, `gh` fails) and a corpus entry for that command exists (this version or the previous one), the oracle stops with an error and writes nothing. If no entry exists, it skips that command and reports it in the diff.
 - Before you commit a refreshed corpus, review every `+ operation` and `+ field` line in the oracle diff. A new operation gets `verdict: allow` by default.
 
 As a fallback, capture with `GH_DEBUG=api` by hand and convert the captures with:
