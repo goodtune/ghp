@@ -37,7 +37,8 @@ var ghCommonFlags = []ghFlag{{"-R", "--repo", true}}
 var ghFlagTable = map[string][]ghFlag{
 	"api": {
 		{"", "--allow-escape-sequences", false}, {"", "--cache", true},
-		{"-F", "--field", true}, {"-H", "--header", true}, {"", "--hostname", true},
+		{"-F", "--field", true}, {"-H", "--header", true},
+		// --hostname is deliberately absent: the rig must only reach the proxy.
 		{"-i", "--include", false}, {"", "--input", true}, {"-q", "--jq", true},
 		{"-X", "--method", true}, {"", "--paginate", false}, {"-p", "--preview", true},
 		{"-f", "--raw-field", true}, {"", "--silent", false}, {"", "--slurp", false},
@@ -239,6 +240,17 @@ func checkGH(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, add f
 		add("gh: repo %q must be A, B or W", sc.Repo)
 	}
 
+	// Never print the credential into rig output.
+	for _, a := range args {
+		if a == "--show-token" || strings.HasPrefix(a, "--show-token=") {
+			add("gh: --show-token is not allowed (it prints the credential)")
+			return
+		}
+	}
+	if len(args) > 1 && args[0] == "auth" && args[1] == "token" {
+		add("gh: auth token is not allowed (it prints the credential)")
+		return
+	}
 	if args[0] == "api" {
 		checkGHAPI(args[1:], rawArgs[1:], sc, prof, v, add)
 		return
@@ -318,7 +330,11 @@ func checkGHAPI(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, ad
 		return
 	}
 	for _, fv := range g.all("--raw-field", "--field") {
-		k, _, _ := strings.Cut(fv, "=")
+		k, val, _ := strings.Cut(fv, "=")
+		if strings.HasPrefix(val, "@") {
+			add("gh: api field %q: @file values (local file upload) are not allowed", k)
+			return
+		}
 		if strings.Contains(k, "[") {
 			add("gh: api field %q: nested field syntax not supported in scenarios", k)
 			return
