@@ -12,7 +12,9 @@ import (
 
 // Pattern matches any GitHub or GHP token-shaped string. Submatch 1 is the
 // prefix, which is kept so redacted output still shows the token type.
-var Pattern = regexp.MustCompile(`(?i)(gh[oupsrx]_|gha_|ghpr_|github_pat_)[A-Za-z0-9_]{8,}`)
+// It is case-sensitive: real prefixes are lower case, and a case-insensitive
+// match would mangle names such as GHP_SERVER_URL.
+var Pattern = regexp.MustCompile(`(gh[oupsrx]_|gha_|ghpr_|github_pat_)[A-Za-z0-9_]{8,}`)
 
 const (
 	replacement = "${1}[REDACTED]"

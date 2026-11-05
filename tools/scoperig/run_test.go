@@ -38,6 +38,7 @@ type fakeGHP struct {
 	creates    int
 	failRevoke bool
 	pushW      bool
+	deletes    []string          // ids passed to DELETE /api/tokens/{id}, in order
 	onScenario func(path string) // called for scenario (non-fixture) GETs
 }
 
@@ -143,6 +144,12 @@ func (f *fakeGHP) serveTokens(w http.ResponseWriter, r *http.Request) {
 			writeJSONResp(w, 500, map[string]string{"message": "boom"})
 			return
 		}
+		if t.Revoked {
+			f.deletes = append(f.deletes, id)
+			writeJSONResp(w, 400, map[string]string{"message": "token already revoked"})
+			return
+		}
+		f.deletes = append(f.deletes, id)
 		t.Revoked = true
 		writeJSONResp(w, 200, map[string]string{"status": "revoked"})
 	case r.Method == http.MethodGet:
@@ -523,6 +530,51 @@ func TestRun_RevokeFailureExits2(t *testing.T) {
 	}
 	if strings.Contains(all, fakeTokPfx) {
 		t.Errorf("token value printed:\n%s", all)
+	}
+}
+
+func TestRun_ProfileIDsReachTokenAPIDelete(t *testing.T) {
+	f := newFakeGHP(t)
+	root, cfg := writeTree(t, f.host(), `
+- id: REPO-C06.revoke-profile
+  claim: REPO-C06
+  profile: x
+  kind: token_api
+  steps:
+    - {name: revoke, method: DELETE, path: "/api/tokens/{{index .ProfileIDs \"x\"}}", expect: {status: 200}}
+  expect: {status: 200}
+`)
+	if err := os.WriteFile(filepath.Join(root, "profiles.yaml"), []byte(testProfiles+"- {name: x, type: proxy, duration: 2h}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "r.json")
+	res := runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--out", out)
+	if res.code != 0 {
+		t.Fatalf("exit = %d, want 0\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+	}
+	raw, _ := os.ReadFile(out)
+	if st := statusesByID(t, raw)["REPO-C06.revoke-profile"]["status"]; st != "PASS" {
+		t.Errorf("status = %v, want PASS", st)
+	}
+	// open is tok-1, x is tok-2. The scenario's DELETE must target tok-2,
+	// and RevokeAll must not error on (or re-send) the already revoked token.
+	f.mu.Lock()
+	deletes := append([]string(nil), f.deletes...)
+	f.mu.Unlock()
+	var xDeletes int
+	for _, id := range deletes {
+		if id == "tok-2" {
+			xDeletes++
+		}
+	}
+	if xDeletes != 1 {
+		t.Errorf("DELETE /api/tokens/tok-2 sent %d times (deletes %v), want 1", xDeletes, deletes)
+	}
+	if strings.Contains(res.stdout+res.stderr, "revoke:") {
+		t.Errorf("RevokeAll reported an error:\n%s%s", res.stdout, res.stderr)
+	}
+	if left := f.liveRunTokens(); len(left) != 0 {
+		t.Errorf("tokens left live: %v", left)
 	}
 }
 

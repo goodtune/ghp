@@ -57,11 +57,7 @@ func exitCode(err error, stderr io.Writer) int {
 	var ee *exitError
 	if errors.As(err, &ee) {
 		if ee.err != nil && ee.code != 0 {
-			msg := ee.err.Error()
-			if !ee.plain {
-				msg = redact.String(msg)
-			}
-			fmt.Fprintln(stderr, "scoperig:", msg)
+			fmt.Fprintln(stderr, "scoperig:", redact.String(ee.err.Error()))
 		}
 		return ee.code
 	}
@@ -215,7 +211,7 @@ func writeJSON(name string, rep *report.Report) error {
 func connect(ctx context.Context, c *Config, deps runDeps) (*http.Client, *tokens.Manager, error) {
 	deps.defaults()
 	if err := c.RequireServer(); err != nil {
-		return nil, nil, &exitError{code: 3, err: fmt.Errorf("%w: %v", ErrPreflight, err), plain: true}
+		return nil, nil, &exitError{code: 3, err: fmt.Errorf("%w: %v", ErrPreflight, err)}
 	}
 	hc := deps.HTTP
 	if hc == nil {
@@ -252,7 +248,7 @@ func ensureFixtures(ctx context.Context, c *Config, deps runDeps, stdout io.Writ
 			}
 		}
 	}()
-	vars := &scenario.Vars{RunID: mgr.SessionID(), Host: c.Instance.Host,
+	vars := &scenario.Vars{RunID: strings.TrimPrefix(mgr.SessionID(), tokens.SessionPrefix), Host: c.Instance.Host,
 		RepoA: repoRef(c.RepoA), RepoB: repoRef(c.RepoB), RepoW: repoRef(c.RepoW)}
 	open, err := mgr.Create(ctx, tree.Profiles["open"], vars)
 	if err != nil {

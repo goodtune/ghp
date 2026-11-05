@@ -29,10 +29,6 @@ import (
 type exitError struct {
 	code int
 	err  error
-	// plain marks a message known to hold no secret. redact.Pattern also
-	// matches variable names such as GHP_SERVER_URL, so such messages are
-	// printed unredacted to stay readable.
-	plain bool
 }
 
 func (e *exitError) Error() string {
@@ -142,7 +138,7 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 
 	// 2. Preflight (first network use).
 	if err := c.RequireServer(); err != nil {
-		return nil, &exitError{code: 3, err: fmt.Errorf("%w: %v", ErrPreflight, err), plain: true}
+		return nil, &exitError{code: 3, err: fmt.Errorf("%w: %v", ErrPreflight, err)}
 	}
 	hc := deps.HTTP
 	if hc == nil {
@@ -157,10 +153,7 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 
 	runID := deps.RunID()
 	started := deps.Now().UTC()
-	pace := time.Duration(0)
-	if c.TokenCreateRate > 0 {
-		pace = deps.Pace(c.TokenCreateRate)
-	}
+	pace := deps.Pace(max(c.TokenCreateRate, 1))
 	mgr := tokens.NewManager(c.ServerURL, c.UserToken, runID, hc, pace)
 	if deps.OnManager != nil {
 		deps.OnManager(mgr)
@@ -191,6 +184,11 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 		}
 		if len(leftover) > 0 {
 			fmt.Fprintf(out, "leftover token ids (revoke them or let the next sweep): %s\n", strings.Join(leftover, " "))
+			// A live token outranks a could-not-start error.
+			var ee *exitError
+			if errors.As(err, &ee) && ee.code == 3 {
+				err = &exitError{code: 2, err: fmt.Errorf("%w; token revocation failed", ee.err)}
+			}
 		}
 		if rep != nil {
 			rep.Tokens.Created = mgr.Created()
@@ -236,6 +234,7 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 		failAll(redact.String("create open token: " + err.Error()))
 		return rep, nil
 	}
+	vars.ProfileIDs = map[string]string{"open": open.ID()}
 	handles := map[string]tokens.Handle{"open": open}
 	profErr := map[string]string{}
 	for _, name := range profilesUsed(selected) {
@@ -248,6 +247,7 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 			continue
 		}
 		handles[name] = h
+		vars.ProfileIDs[name] = h.ID()
 	}
 
 	// 5. Capability probe.
@@ -366,6 +366,10 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 }
 
 // fixtureKeys guesses which fixture repos s depends on from its templates.
+// It is a substring heuristic over the marshalled scenario: a reference to
+// .Fixture.X or .RepoX (or repo: X) means fixture X. A false positive only
+// turns a runnable scenario into ERROR when that fixture failed discovery;
+// a false negative lets the scenario run and fail on its own request.
 func fixtureKeys(s *scenario.Scenario) []string {
 	raw, err := yaml.Marshal(s)
 	if err != nil {
