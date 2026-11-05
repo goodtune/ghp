@@ -1,14 +1,15 @@
 # GAP probes (spec section 7; consensus section A). Expectations are the
 # DESIRED behaviour. known_issue and observed record today's behaviour from
-# the first live run (20261105T0534Z). GAP-A7 passed (GHP denies the
-# dot-segment path for B), so it carries no known_issue; GAP-A6 needs the
+# the first live run (20261105T0534Z). GAP-A1 and GAP-A2 are fixed (#290,
+# #291). GAP-A7 passed (GHP denies the dot-segment path for B), so it
+# carries no known_issue; GAP-A6 needs the
 # agent_installation capability and has not run yet.
 #
 # Consensus issue links, for triage: A1 goodtune/ghp#290, A2 #291,
 # A3 #292, A6 #294, A7 #295.
 
-# GAP-A1: DELETE git/refs is not in the REST permission table, so today it is
-# forwarded unchecked (GitHub answers 422 for the absent ref). The ref never
+# GAP-A1: DELETE git/refs needs contents:write (#290). Before the fix it was
+# forwarded unchecked (GitHub answered 422 for the absent ref). The ref never
 # exists, so a forwarded request is harmless. The path targets W only.
 - id: GAP-A1.delete-ref-contents-ro
   claim: GAP-A1
@@ -20,9 +21,6 @@
   method: DELETE
   path: /repos/{{.RepoW}}/git/refs/heads/scoperig-absent-{{.RunID}}
   expect: {status: 403, ghp_denial: true}
-  known_issue: https://github.com/goodtune/ghp/issues/290
-  # Run 20261105T0534Z: forwarded unchecked, GitHub answered 422.
-  observed: {status: 422, ghp_denial: false, body_contains: ["Reference does not exist"]}
 
 - id: GAP-A2.repositories-by-id
   claim: GAP-A2
@@ -33,9 +31,6 @@
   method: GET
   path: /repositories/{{.RepoB.ID}}
   expect: {status: 403, ghp_denial: true}
-  known_issue: https://github.com/goodtune/ghp/issues/291
-  # Run 20261105T0534Z: B's repository object returned to the repo-A token.
-  observed: {status: 200, ghp_denial: false, json: {"$.full_name": "{{.RepoB}}"}}
 
 # GAP-A3: sent to the instance with TLS SNI and Host github.com (the
 # github.com virtual host), path without /api/v3.
@@ -94,6 +89,8 @@
   kind: rest
   method: GET
   path: /repos/{{.RepoA}}/../../{{.RepoB}}/contents/README.md
+  # GHP rejects dot segments before any lookup (#295).
   expect:
-    status_in: [403, 404]
+    status: 403
+    ghp_denial: true
     body_not_contains: ['"path": "README.md"', '"path":"README.md"']
