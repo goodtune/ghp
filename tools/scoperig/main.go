@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -227,6 +228,9 @@ func requireOwners(c *Config) error {
 }
 
 func writeJSON(name string, rep *report.Report) error {
+	if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
+		return err
+	}
 	fh, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err

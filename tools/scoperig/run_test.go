@@ -800,3 +800,13 @@ func TestRun_KnownIssueStepFailureIsKnownChanged(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteJSON_CreatesParentDirs(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "a", "b", "run.json")
+	if err := writeJSON(name, &report.Report{RunID: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(name); err != nil {
+		t.Fatal(err)
+	}
+}
