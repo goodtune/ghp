@@ -1,0 +1,85 @@
+package scenario
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func testVars() *Vars {
+	return &Vars{
+		RunID: "run1",
+		RepoA: RepoRef{Owner: "o", Name: "a", ID: 1},
+		RepoB: RepoRef{Owner: "o", Name: "b", ID: 2},
+		RepoW: RepoRef{Owner: "o", Name: "w", ID: 3},
+		Fixture: map[string]FixtureVals{
+			"A": {PRNumber: 7, IssueNumber: 3},
+		},
+		Instance: InstanceVals{MaxDuration: 168 * time.Hour},
+		Step:     map[string]map[string]string{"create": {"number": "42"}},
+	}
+}
+
+func TestExpand(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+		wantErr        bool
+	}{
+		{"repo", "{{.RepoA}}", "o/a", false},
+		{"owner", "{{.RepoA.Owner}}", "o", false},
+		{"fixture", "{{.Fixture.A.PRNumber}}", "7", false},
+		{"add", `{{add .Instance.MaxDuration "1h"}}`, "169h0m0s", false},
+		{"upper", `{{upper .RepoA.Name}}`, "A", false},
+		{"step", "{{.Step.create.number}}", "42", false},
+		{"plain", "/user", "/user", false},
+		{"unknown field", "{{.Nope}}", "", true},
+		{"unknown map key", "{{.Fixture.Z.PRNumber}}", "", true},
+		{"unknown step", "{{.Step.missing.x}}", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Expand(tt.in, testVars())
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Expand(%q) = %q, want error", tt.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Expand(%q): %v", tt.in, err)
+			}
+			if got != tt.want {
+				t.Errorf("Expand(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExpandAny(t *testing.T) {
+	in := map[string]any{
+		"title": "scoperig {{.RunID}}",
+		"list":  []any{"{{.RepoB}}", 5, true},
+		"n":     map[string]any{"x": "{{.RepoW.Name}}"},
+	}
+	out, err := ExpandAny(in, testVars())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.(map[string]any)
+	if m["title"] != "scoperig run1" {
+		t.Errorf("title = %v", m["title"])
+	}
+	l := m["list"].([]any)
+	if l[0] != "o/b" || l[1] != 5 || l[2] != true {
+		t.Errorf("list = %v", l)
+	}
+	if m["n"].(map[string]any)["x"] != "w" {
+		t.Errorf("nested = %v", m["n"])
+	}
+	if in["title"] != "scoperig {{.RunID}}" {
+		t.Error("input was mutated")
+	}
+	if _, err := ExpandAny([]any{"{{.Bad}}"}, testVars()); err == nil || !strings.Contains(err.Error(), "Bad") {
+		t.Errorf("want error naming Bad, got %v", err)
+	}
+}

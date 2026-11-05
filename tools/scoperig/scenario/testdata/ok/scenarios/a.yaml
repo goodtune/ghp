@@ -5,7 +5,6 @@
   profile: repo-A
   kind: rest
   known_issue: ""
-  observed: {}
   requires: []
   cleanup: []
   method: GET
