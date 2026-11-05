@@ -1,12 +1,13 @@
 package scenario
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
 
-// ghReadOnly lists gh subcommands (group + action) that never write.
-// "search *" and "api" are handled separately.
+// ghReadOnly lists gh subcommands (group + action) that never write. They
+// keep a permissive argument parser; "search *" is also read-only.
 var ghReadOnly = map[string]bool{
 	"repo view": true, "repo list": true,
 	"pr list": true, "pr view": true, "pr status": true, "pr checks": true, "pr diff": true,
@@ -18,16 +19,78 @@ var ghReadOnly = map[string]bool{
 	"auth status": true,
 }
 
-// ghFlagsWithValue are flags whose next argument is a value, not a
-// positional. Unknown flags are assumed to take no value; that only makes
-// repo extraction stricter (more positionals are inspected).
-var ghFlagsWithValue = map[string]bool{
-	"-R": true, "--repo": true, "-X": true, "--method": true, "-f": true, "-F": true,
-	"--field": true, "--raw-field": true, "--input": true, "-H": true, "--header": true,
-	"-q": true, "--jq": true, "-t": true, "--template": true, "--json": true, "-L": true,
-	"--limit": true, "-s": true, "--state": true, "-l": true, "--label": true,
-	"-a": true, "--assignee": true, "-A": true, "--author": true, "-B": true, "--base": true,
-	"--hostname": true, "-b": true, "--body": true, "--title": true,
+// ghFlag describes one known flag: its short and long names and whether it
+// takes a value.
+type ghFlag struct {
+	short, long string
+	value       bool
+}
+
+// ghCommonFlags apply to every repo-scoped subcommand.
+var ghCommonFlags = []ghFlag{{"-R", "--repo", true}}
+
+// ghFlagTable lists, for every subcommand that may be used in a write
+// scenario (and for api), every flag gh accepts and its arity, taken from
+// `gh <cmd> --help`. The parser fails closed: a write or api invocation
+// with a flag not listed here is rejected, because guessing arity wrongly
+// lets a flag swallow the real endpoint or --repo value.
+var ghFlagTable = map[string][]ghFlag{
+	"api": {
+		{"", "--allow-escape-sequences", false}, {"", "--cache", true},
+		{"-F", "--field", true}, {"-H", "--header", true}, {"", "--hostname", true},
+		{"-i", "--include", false}, {"", "--input", true}, {"-q", "--jq", true},
+		{"-X", "--method", true}, {"", "--paginate", false}, {"-p", "--preview", true},
+		{"-f", "--raw-field", true}, {"", "--silent", false}, {"", "--slurp", false},
+		{"-t", "--template", true}, {"", "--verbose", false},
+	},
+	"pr merge": {
+		{"", "--admin", false}, {"-A", "--author-email", true}, {"", "--auto", false},
+		{"-b", "--body", true}, {"-F", "--body-file", true}, {"-d", "--delete-branch", false},
+		{"", "--disable-auto", false}, {"", "--match-head-commit", true}, {"-m", "--merge", false},
+		{"-r", "--rebase", false}, {"-s", "--squash", false}, {"-t", "--subject", true},
+	},
+	"issue create": {
+		{"-a", "--assignee", true}, {"", "--attach", true}, {"", "--blocked-by", true},
+		{"", "--blocking", true}, {"-b", "--body", true}, {"-F", "--body-file", true},
+		{"-e", "--editor", false}, {"-l", "--label", true}, {"-m", "--milestone", true},
+		{"", "--parent", true}, {"-p", "--project", true}, {"", "--recover", true},
+		{"-T", "--template", true}, {"-t", "--title", true}, {"", "--type", true},
+		{"-w", "--web", false},
+	},
+	"pr create": {
+		{"-a", "--assignee", true}, {"", "--attach", true}, {"-B", "--base", true},
+		{"-b", "--body", true}, {"-F", "--body-file", true}, {"-d", "--draft", false},
+		{"", "--dry-run", false}, {"-e", "--editor", false}, {"-f", "--fill", false},
+		{"", "--fill-first", false}, {"", "--fill-verbose", false}, {"-H", "--head", true},
+		{"-l", "--label", true}, {"-m", "--milestone", true}, {"", "--no-maintainer-edit", false},
+		{"-p", "--project", true}, {"", "--recover", true}, {"-r", "--reviewer", true},
+		{"-T", "--template", true}, {"-t", "--title", true}, {"-w", "--web", false},
+	},
+	"label create": {
+		{"-c", "--color", true}, {"-d", "--description", true}, {"-f", "--force", false},
+	},
+	"release create": {
+		{"", "--discussion-category", true}, {"-d", "--draft", false},
+		{"", "--fail-on-no-commits", false}, {"", "--generate-notes", false},
+		{"", "--latest", false}, {"-n", "--notes", true}, {"-F", "--notes-file", true},
+		{"", "--notes-from-tag", false}, {"", "--notes-start-tag", true},
+		{"-p", "--prerelease", false}, {"", "--target", true}, {"-t", "--title", true},
+		{"", "--verify-tag", false},
+	},
+	"issue close": {
+		{"-c", "--comment", true}, {"", "--duplicate-of", true}, {"-r", "--reason", true},
+	},
+	"pr close": {
+		{"-c", "--comment", true}, {"-d", "--delete-branch", false},
+	},
+	"issue comment": ghCommentFlags,
+	"pr comment":    ghCommentFlags,
+}
+
+var ghCommentFlags = []ghFlag{
+	{"", "--attach", true}, {"-b", "--body", true}, {"-F", "--body-file", true},
+	{"", "--create-if-none", false}, {"", "--delete-last", false}, {"", "--edit-last", false},
+	{"-e", "--editor", false}, {"-w", "--web", false}, {"", "--yes", false},
 }
 
 var (
@@ -37,42 +100,7 @@ var (
 
 type ghArgs struct {
 	positionals []string
-	flags       map[string][]string
-}
-
-func parseGHArgs(args []string) ghArgs {
-	g := ghArgs{flags: map[string][]string{}}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "--" {
-			g.positionals = append(g.positionals, args[i+1:]...)
-			break
-		}
-		if strings.HasPrefix(a, "--") && strings.Contains(a, "=") {
-			k, val, _ := strings.Cut(a, "=")
-			g.flags[k] = append(g.flags[k], val)
-			continue
-		}
-		if strings.HasPrefix(a, "-") && len(a) > 2 && !strings.HasPrefix(a, "--") {
-			// short flag with attached value, e.g. -XPOST, -Rowner/name
-			k := a[:2]
-			if ghFlagsWithValue[k] {
-				g.flags[k] = append(g.flags[k], strings.TrimPrefix(a[2:], "="))
-				continue
-			}
-		}
-		if strings.HasPrefix(a, "-") && a != "-" {
-			if ghFlagsWithValue[a] && i+1 < len(args) {
-				g.flags[a] = append(g.flags[a], args[i+1])
-				i++
-			} else {
-				g.flags[a] = append(g.flags[a], "")
-			}
-			continue
-		}
-		g.positionals = append(g.positionals, a)
-	}
-	return g
+	flags       map[string][]string // keyed by long name in strict mode
 }
 
 func (g ghArgs) all(names ...string) []string {
@@ -83,35 +111,123 @@ func (g ghArgs) all(names ...string) []string {
 	return out
 }
 
-func repoFromSpec(spec string) string {
-	if m := ghURLRE.FindStringSubmatch(spec); m != nil {
-		return m[1] + "/" + strings.TrimSuffix(m[2], ".git")
+// ghLooseValueFlags is only used by the permissive parser for read-only
+// subcommands, where a mis-parse cannot cause a write.
+var ghLooseValueFlags = map[string]bool{
+	"-R": true, "--repo": true, "-q": true, "--jq": true, "-t": true, "--template": true,
+	"--json": true, "-L": true, "--limit": true, "-s": true, "--state": true, "-l": true,
+	"--label": true, "-a": true, "--assignee": true, "-A": true, "--author": true,
+	"-B": true, "--base": true, "--hostname": true, "-S": true, "--search": true,
+}
+
+func parseGHLoose(args []string) ghArgs {
+	g := ghArgs{flags: map[string][]string{}}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			g.positionals = append(g.positionals, args[i+1:]...)
+			return g
+		case strings.HasPrefix(a, "--") && strings.Contains(a, "="):
+			k, val, _ := strings.Cut(a, "=")
+			g.flags[k] = append(g.flags[k], val)
+		case strings.HasPrefix(a, "-") && a != "-":
+			if ghLooseValueFlags[a] && i+1 < len(args) {
+				g.flags[a] = append(g.flags[a], args[i+1])
+				i++
+			} else if len(a) > 2 && !strings.HasPrefix(a, "--") && ghLooseValueFlags[a[:2]] {
+				g.flags[a[:2]] = append(g.flags[a[:2]], strings.TrimPrefix(a[2:], "="))
+			} else {
+				g.flags[a] = append(g.flags[a], "")
+			}
+		default:
+			g.positionals = append(g.positionals, a)
+		}
 	}
-	parts := strings.Split(strings.Trim(spec, "/"), "/")
+	return g
+}
+
+// parseGHStrict parses args against table and returns an error for any
+// unknown flag, bundled short flags, or a value flag with no value.
+// Flag values are stored under the long name.
+func parseGHStrict(args []string, cmd string, table []ghFlag) (ghArgs, error) {
+	byName := map[string]ghFlag{}
+	for _, f := range append(append([]ghFlag{}, ghCommonFlags...), table...) {
+		if f.short != "" {
+			byName[f.short] = f
+		}
+		byName[f.long] = f
+	}
+	g := ghArgs{flags: map[string][]string{}}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			g.positionals = append(g.positionals, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			g.positionals = append(g.positionals, a)
+			continue
+		}
+		name, val, hasVal := a, "", false
+		if strings.HasPrefix(a, "--") {
+			name, val, hasVal = strings.Cut(a, "=")
+		} else if len(a) > 2 {
+			name, val, hasVal = a[:2], strings.TrimPrefix(a[2:], "="), true
+		}
+		f, ok := byName[name]
+		if !ok {
+			return g, fmt.Errorf("unknown flag %q for gh %s; add it to ghFlagTable", name, cmd)
+		}
+		if !f.value {
+			if hasVal {
+				return g, fmt.Errorf("flag %q for gh %s takes no value (bundled short flags are not supported)", a, cmd)
+			}
+			g.flags[f.long] = append(g.flags[f.long], "")
+			continue
+		}
+		if !hasVal {
+			if i+1 >= len(args) {
+				return g, fmt.Errorf("flag %q for gh %s needs a value", name, cmd)
+			}
+			i++
+			val = args[i]
+		}
+		g.flags[f.long] = append(g.flags[f.long], val)
+	}
+	return g, nil
+}
+
+// repoFromSpec resolves OWNER/REPO, HOST/OWNER/REPO or a GitHub URL to
+// "owner/name". ok is false when spec does not resolve.
+func repoFromSpec(spec string) (string, bool) {
+	if m := ghURLRE.FindStringSubmatch(spec); m != nil {
+		return m[1] + "/" + strings.TrimSuffix(m[2], ".git"), true
+	}
+	parts := strings.Split(spec, "/")
 	if len(parts) == 3 { // host/owner/name
 		parts = parts[1:]
 	}
-	if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-		return parts[0] + "/" + parts[1]
+	if len(parts) == 2 && ghRepoRE.MatchString(parts[0]+"/"+parts[1]) {
+		return parts[0] + "/" + parts[1], true
 	}
-	return spec
+	return "", false
 }
 
-// checkGH applies the write target rule to a gh invocation. repoKey is the
-// scenario's repo: field (A, B or W), which the runner exports as the
-// default repository.
+// checkGH applies the write target rule to a gh invocation. The scenario's
+// repo: field (A, B or W) is exported by the runner as the default repo.
 func checkGH(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, add func(string, ...any)) {
-	repoKey := sc.Repo
 	if len(args) > 0 && args[0] == "gh" {
-		args = args[1:]
-		rawArgs = rawArgs[1:]
+		args, rawArgs = args[1:], rawArgs[1:]
 	}
-	g := parseGHArgs(args)
-	rg := parseGHArgs(rawArgs)
-	pos := g.positionals
+	joined := strings.Join(args, " ")
+	if len(args) == 0 {
+		add("gh: no arguments")
+		return
+	}
 
 	var refs []string
-	switch repoKey {
+	switch sc.Repo {
 	case "":
 	case "A":
 		refs = append(refs, v.RepoA.String())
@@ -120,96 +236,125 @@ func checkGH(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, add f
 	case "W":
 		refs = append(refs, v.RepoW.String())
 	default:
-		add("gh: repo %q must be A, B or W", repoKey)
-	}
-	for _, r := range g.all("-R", "--repo") {
-		refs = append(refs, repoFromSpec(r))
+		add("gh: repo %q must be A, B or W", sc.Repo)
 	}
 
-	group, action := "", ""
-	if len(pos) > 0 {
-		group = pos[0]
-	}
-	if len(pos) > 1 {
-		action = pos[1]
-	}
-
-	read := false
-	switch {
-	case group == "search":
-		read = true
-		for _, p := range pos[1:] {
-			if ghRepoRE.MatchString(p) || ghURLRE.MatchString(p) {
-				refs = append(refs, repoFromSpec(p))
-			}
-		}
-	case group == "api":
-		endpoint := strings.TrimPrefix(action, "/")
-		if endpoint == "graphql" {
-			checkGHGraphQL(g, rg, sc, prof, v, add)
-			return
-		}
-		read = true
-		for _, m := range g.all("-X", "--method") {
-			if !strings.EqualFold(m, "GET") {
-				read = false
-			}
-		}
-		if len(g.all("-f", "-F", "--field", "--raw-field", "--input")) > 0 {
-			read = false
-		}
-		ep := strings.SplitN(endpoint, "?", 2)[0]
-		clean, err := normalisePath("/" + ep)
-		if err != nil {
-			add("gh: api endpoint: %v", err)
-			return
-		}
-		if !read {
-			// Non-GET api calls must target W's REST namespace; no other
-			// endpoint (user/starred, repositories/<id>, orgs, ...) is allowed.
-			if !strings.HasPrefix(clean, "/repos/"+v.RepoW.String()+"/") {
-				add("gh: write api endpoint %q must start with repos/{{.RepoW}}/", endpoint)
-			}
-			return
-		}
-		for _, p := range pos[2:] {
-			if ghRepoRE.MatchString(p) || ghURLRE.MatchString(p) {
-				refs = append(refs, repoFromSpec(p))
-			}
-		}
-	default:
-		read = ghReadOnly[group+" "+action]
-		for _, p := range pos[min(2, len(pos)):] {
-			if ghRepoRE.MatchString(p) || ghURLRE.MatchString(p) {
-				refs = append(refs, repoFromSpec(p))
-			}
-		}
-	}
-	if read {
+	if args[0] == "api" {
+		checkGHAPI(args[1:], rawArgs[1:], sc, prof, v, add)
 		return
 	}
+	if args[0] == "search" || (len(args) > 1 && ghReadOnly[args[0]+" "+args[1]]) {
+		return // read-only: permissive parsing cannot cause a write
+	}
+
+	// Everything else is a write and is parsed strictly.
+	if len(args) < 2 || strings.HasPrefix(args[0], "-") || strings.HasPrefix(args[1], "-") {
+		add("gh: write command %q must start with <group> <action>", joined)
+		return
+	}
+	cmd := args[0] + " " + args[1]
+	table, ok := ghFlagTable[cmd]
+	if !ok {
+		add("gh: subcommand %q has no entry in ghFlagTable; it cannot be used in a write scenario", cmd)
+		return
+	}
+	g, err := parseGHStrict(args[2:], cmd, table)
+	if err != nil {
+		add("gh: %v", err)
+		return
+	}
+	for _, r := range g.flags["--repo"] {
+		if strings.HasPrefix(r, "-") {
+			add("gh: --repo value %q looks like a flag", r)
+			return
+		}
+		rr, ok := repoFromSpec(r)
+		if !ok {
+			add("gh: --repo value %q is not OWNER/REPO, HOST/OWNER/REPO or a URL", r)
+			return
+		}
+		refs = append(refs, rr)
+	}
+	for _, p := range g.positionals {
+		if !strings.Contains(p, "/") {
+			continue
+		}
+		rr, ok := repoFromSpec(p)
+		if !ok {
+			add("gh: positional %q looks like a repository reference but does not resolve", p)
+			continue
+		}
+		refs = append(refs, rr)
+	}
+	requireW(joined, refs, v, add)
+}
+
+func requireW(joined string, refs []string, v *Vars, add func(string, ...any)) {
 	if len(refs) == 0 {
-		add("gh: write command %q names no repository; writes must target {{.RepoW}}", strings.Join(args, " "))
+		add("gh: write command %q names no repository; writes must target {{.RepoW}}", joined)
 		return
 	}
-	w := v.RepoW.String()
 	for _, r := range refs {
-		if r != w {
-			add("gh: write command %q references %s; writes must target {{.RepoW}}", strings.Join(args, " "), r)
+		if r != v.RepoW.String() {
+			add("gh: write command %q references %s; writes must target {{.RepoW}}", joined, r)
 		}
 	}
 }
 
-// checkGHGraphQL treats `gh api graphql` like a graphql scenario: the query
-// must parse (fail closed), and mutations go through checkGraphQL with the
-// -f/-F key=value fields as variables.
+// checkGHAPI handles `gh api`. It is always parsed strictly.
+func checkGHAPI(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, add func(string, ...any)) {
+	g, err := parseGHStrict(args, "api", ghFlagTable["api"])
+	if err != nil {
+		add("gh: %v", err)
+		return
+	}
+	rg, _ := parseGHStrict(rawArgs, "api", ghFlagTable["api"])
+	if len(g.positionals) != 1 {
+		add("gh: api needs exactly one endpoint, got %q", g.positionals)
+		return
+	}
+	if len(g.flags["--repo"]) > 0 {
+		add("gh: api does not take --repo")
+		return
+	}
+	for _, fv := range g.all("--raw-field", "--field") {
+		k, _, _ := strings.Cut(fv, "=")
+		if strings.Contains(k, "[") {
+			add("gh: api field %q: nested field syntax not supported in scenarios", k)
+			return
+		}
+	}
+	endpoint := strings.TrimPrefix(g.positionals[0], "/")
+	if endpoint == "graphql" {
+		checkGHGraphQL(g, rg, sc, prof, v, add)
+		return
+	}
+	write := len(g.all("--raw-field", "--field", "--input")) > 0
+	for _, m := range g.all("--method") {
+		if !strings.EqualFold(m, "GET") {
+			write = true
+		}
+	}
+	ep := strings.SplitN(endpoint, "?", 2)[0]
+	clean, err := normalisePath("/" + ep)
+	if err != nil {
+		add("gh: api endpoint: %v", err)
+		return
+	}
+	if write && !strings.HasPrefix(clean, "/repos/"+v.RepoW.String()+"/") {
+		// Non-GET api calls must target W's REST namespace; no other
+		// endpoint (user/starred, repositories/<id>, orgs, ...) is allowed.
+		add("gh: write api endpoint %q must start with repos/{{.RepoW}}/", endpoint)
+	}
+}
+
 func checkGHGraphQL(g, rg ghArgs, sc *Scenario, prof *Profile, v *Vars, add func(string, ...any)) {
 	if len(g.all("--input")) > 0 {
 		add("gh: api graphql --input is not allowed; pass the query with -f query=")
 		return
 	}
-	fields := g.all("-f", "-F", "--field", "--raw-field")
-	rawFields := rg.all("-f", "-F", "--field", "--raw-field")
+	fields := g.all("--raw-field", "--field")
+	rawFields := rg.all("--raw-field", "--field")
 	vars, rawVars := map[string]any{}, map[string]any{}
 	query, queries := "", 0
 	for i, fv := range fields {

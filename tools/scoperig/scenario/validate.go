@@ -208,7 +208,15 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			}
 			return
 		}
-		if s.Kind == "graphql" && clean == "/graphql" {
+		if s.Kind == "graphql" && (clean == "/graphql" || strings.Contains(path, "query=")) {
+			if method != "POST" {
+				add("%s: graphql steps must use POST, not %s", where, method)
+				return
+			}
+			if strings.Contains(path, "?") {
+				add("%s: graphql step path must not carry a query string", where)
+				return
+			}
 			// GraphQL steps are checked by the mutation rule, not the REST
 			// write rule.
 			if m, ok := body.(map[string]any); ok {

@@ -33,6 +33,7 @@ type gqlFacts struct {
 	pairs    [][2]string // owner/name pairs from any argument list or object
 	strings  []string    // every string, int and enum literal
 	repoIDs  []*ast.Value
+	varRefs  []string // names of variables referenced in arguments
 }
 
 func parseGraphQL(q string) (*gqlFacts, error) {
@@ -50,6 +51,8 @@ func parseGraphQL(q string) (*gqlFacts, error) {
 			f.repoIDs = append(f.repoIDs, v)
 		}
 		switch v.Kind {
+		case ast.Variable:
+			f.varRefs = append(f.varRefs, v.Raw)
 		case ast.StringValue, ast.BlockValue, ast.IntValue, ast.EnumValue:
 			f.strings = append(f.strings, v.Raw)
 		case ast.ObjectValue:
@@ -162,6 +165,19 @@ func checkGraphQL(where string, sc *Scenario, before int, q string, vars, rawVar
 		return
 	}
 	w := v.RepoW.String()
+
+	// A mutation may only use variables that have a value here; otherwise
+	// the runner (or gh nested -f syntax) could supply an unchecked value.
+	seenVar := map[string]bool{}
+	for _, name := range f.varRefs {
+		if seenVar[name] {
+			continue
+		}
+		seenVar[name] = true
+		if val, ok := vars[name]; !ok || val == nil {
+			add("%s: graphql mutation references variable $%s with no value", where, name)
+		}
+	}
 
 	// (a)/(b) profile restriction.
 	if prof != nil {

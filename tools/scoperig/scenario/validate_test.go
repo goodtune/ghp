@@ -360,3 +360,44 @@ func TestValidate_Round2Bypasses(t *testing.T) {
 	requireNoErr(t, Validate(withScenarios(&Scenario{ID: "OK", Claim: "C1", Profile: "w", Kind: "graphql",
 		Steps: []Request{stepQ("{{.RepoW.Owner}}", "{{.RepoW.Name}}"), mutStep("{{ .Step.q.rid }}")}}), nil))
 }
+
+func TestValidate_Round3Bypasses(t *testing.T) {
+	bad := []*Scenario{
+		ghScenario("R1", "", "api", "-p", "repos/{{.RepoW}}/issues", "-X", "POST", "repos/{{.RepoA}}/issues"),
+		ghScenario("R1b", "", "api", "--unknown", "repos/{{.RepoW}}/issues", "-X", "POST", "repos/{{.RepoA}}/issues"),
+		ghScenario("R2", "W", "pr", "merge", "1", "-s", "-R", "github.com/{{.RepoA}}"),
+		ghScenario("R2b", "W", "pr", "merge", "1", "-R", "-s"),
+		ghScenario("R2c", "W", "pr", "merge", "1", "--bogus", "-R", "{{.RepoA}}"),
+		ghScenario("R2d", "W", "issue", "create", "--title", "x", "github.com/{{.RepoA}}/extra/bits"),
+		ghScenario("R2e", "W", "pr", "lock", "1"),
+		ghScenario("R2f", "W", "pr", "merge", "-sd", "1"),
+		ghScenario("R3", "", "api", "graphql", "-f", `query=mutation($input: CreateIssueInput!) { createIssue(input:$input) { clientMutationId } }`, "-f", "input[repositoryId]=R_other"),
+		ghScenario("R3b", "", "api", "-X", "POST", "repos/{{.RepoW}}/issues", "-f", "labels[]=x"),
+		{ID: "R3c", Claim: "C1", Profile: "w", Kind: "graphql",
+			Query: `mutation($input: CreateIssueInput!) { createIssue(input:$input) { clientMutationId } }`},
+		{ID: "R4", Claim: "C1", Profile: "w", Kind: "graphql",
+			Steps: []Request{{Method: "GET", Path: "/graphql"}}},
+		{ID: "R4b", Claim: "C1", Profile: "w", Kind: "graphql",
+			Steps: []Request{{Method: "GET", Path: "/graphql?query=mutation%7Bx%7D"}}},
+	}
+	for _, s := range bad {
+		t.Run(s.ID, func(t *testing.T) {
+			if errs := Validate(withScenarios(s), nil); len(errs) == 0 {
+				t.Fatalf("bypass accepted")
+			}
+		})
+	}
+	good := []*Scenario{
+		ghScenario("G1", "W", "pr", "merge", "1", "-s", "-d"),
+		ghScenario("G2", "", "pr", "merge", "1", "--squash", "-R", "github.com/{{.RepoW}}"),
+		ghScenario("G3", "", "api", "-X", "POST", "-H", "Accept: x", "repos/{{.RepoW}}/issues", "-f", "title=x", "--jq", ".number"),
+		ghScenario("G4", "W", "issue", "close", "1", "--reason", "completed", "-c", "done"),
+		ghScenario("G5", "", "label", "create", "x", "--repo={{.RepoW}}", "--color", "ff0000"),
+		ghScenario("G6", "", "issue", "comment", "https://github.com/{{.RepoW}}/issues/1", "-b", "hi"),
+	}
+	for _, s := range good {
+		t.Run(s.ID, func(t *testing.T) {
+			requireNoErr(t, Validate(withScenarios(s), nil))
+		})
+	}
+}
