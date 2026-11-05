@@ -202,6 +202,12 @@ scoperig oracle --gh-version auto
 | `--issue` | `1` | Issue number in `--oracle-repo` for `issue view`. |
 | `--gh` | `$GHP_RIG_GH`, then `gh` on `PATH` | The `gh` binary. |
 
+Safety and limits:
+
+- `pr_create_dryrun` is the only "create" command in the oracle matrix. It is safe: `--dry-run` stops before any change, an explicit `--head` skips the push and fork logic, and `gh` runs in a temporary directory that is not a git checkout, behind a git ceiling.
+- The `gh` credential must be in `hosts.yml` or the macOS keychain. The oracle does not pass through the Linux Secret Service (DBUS), so on such hosts `gh` fails closed.
+- Before you commit a refreshed corpus, review every `+ operation` and `+ field` line in the oracle diff. A new operation gets `verdict: allow` by default.
+
 As a fallback, capture with `GH_DEBUG=api` by hand and convert the captures with:
 
 ```bash
