@@ -2,8 +2,9 @@
 # perm-ro and repo-A, all against repository A. Expectations come from the
 # gh 2.102.0 query corpus (rig/corpus/gh/2.102.0, `current` verdicts) and
 # consensus A9. Commands that fail today carry known_issue + observed:
-#   #297 variable-driven repository(owner, name) lookups (repo-scoped tokens)
 #   #298 object fields gh sends that are in no analyzer table
+# gh passes owner/name as String variables; since #297 these pin the
+# repository for repo-scoped tokens.
 # The fixture PR has no checks, so `gh pr checks` exits 1 with
 # "no checks reported" when it works; exit_code_in: [0, 1] covers both.
 # No gh writes in this file.
@@ -31,14 +32,12 @@
 - id: GH-C51.repo-view.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh repo view with the repo-A token. Note: gh passes owner/name as variables, so the lookup is unpinned."
+  description: "gh repo view with the repo-A token. Note: gh passes owner/name as String variables, which pin the repository (#297)."
   profile: repo-A
   kind: gh
   repo: A
   args: ["repo", "view", "{{.Host}}/{{.RepoA}}"]
   expect: {exit_code: 0, stdout_contains: ["{{.RepoA.Name}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/297
-  observed: {exit_code: 1, stderr_contains: ["must use literal string arguments"]}
 
 - id: GH-C51.pr-list.open
   claim: GH-C51
@@ -169,14 +168,14 @@
 - id: GH-C51.pr-checks.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr checks with the repo-A token. Note: the status-check query uses root node(id:), which is cross-repository, so the desired outcome is a denial; today the first (variable-driven) query is rejected as unpinned."
+  description: "gh pr checks with the repo-A token. Note: the status-check query uses root node(id:), which is cross-repository, so the desired outcome is a denial; today the status-check query is rejected first for unmapped fields."
   profile: repo-A
   kind: gh
   repo: A
   args: ["pr", "checks", "{{.Fixture.A.PRNumber}}"]
   expect: {exit_code: 1, stderr_contains: ["uses cross-repository fields"]}
-  known_issue: https://github.com/goodtune/ghp/issues/297
-  observed: {exit_code: 1, stderr_contains: ["must use literal string arguments"]}
+  known_issue: https://github.com/goodtune/ghp/issues/298
+  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.issue-list.open
   claim: GH-C51
