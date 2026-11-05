@@ -697,3 +697,11 @@ func TestValidate_CleanupRejectsGraphQLMutation(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_ObservedNeedsAssertion(t *testing.T) {
+	s := &Scenario{ID: "P4", Claim: "C", Kind: "rest", Profile: "a", Method: "GET", Path: "/user", Expect: &Expect{Status: 200},
+		KnownIssue: "https://github.com/goodtune/ghp/issues/1", Observed: &Expect{}}
+	if errs := Validate(r4Tree(s), nil); !errsContain(errs, "observed must have at least one assertion") {
+		t.Fatalf("want observed error, got %v", errs)
+	}
+}

@@ -346,6 +346,11 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		checkExpect("expect", s.Expect, v, add)
 	}
 	checkExpect("observed", s.Observed, v, add)
+	// An empty observed matches every response, so a known issue would
+	// stay KNOWN forever and never report KNOWN-CHANGED.
+	if s.Observed != nil && !hasAssertion(s.Observed) {
+		add("observed must have at least one assertion")
+	}
 
 	args := make([]string, 0, len(s.Args))
 	argsOK := true
