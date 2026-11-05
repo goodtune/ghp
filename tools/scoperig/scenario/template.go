@@ -117,3 +117,52 @@ func ExpandAny(x any, v *Vars) (any, error) {
 		return x, nil
 	}
 }
+
+// ExpandExpect returns a copy of e with every string matcher (json values,
+// header values, body/stdout/stderr substrings) expanded. nil stays nil.
+func ExpandExpect(e *Expect, v *Vars) (*Expect, error) {
+	if e == nil {
+		return nil, nil
+	}
+	out := *e
+	strs := func(in []string) ([]string, error) {
+		if in == nil {
+			return nil, nil
+		}
+		r, err := ExpandAny(in, v)
+		if err != nil {
+			return nil, err
+		}
+		return r.([]string), nil
+	}
+	m := func(in map[string]string) (map[string]string, error) {
+		if in == nil {
+			return nil, nil
+		}
+		r, err := ExpandAny(in, v)
+		if err != nil {
+			return nil, err
+		}
+		return r.(map[string]string), nil
+	}
+	var err error
+	if out.JSON, err = m(e.JSON); err != nil {
+		return nil, err
+	}
+	if out.Header, err = m(e.Header); err != nil {
+		return nil, err
+	}
+	if out.BodyContains, err = strs(e.BodyContains); err != nil {
+		return nil, err
+	}
+	if out.BodyNotContains, err = strs(e.BodyNotContains); err != nil {
+		return nil, err
+	}
+	if out.StdoutContains, err = strs(e.StdoutContains); err != nil {
+		return nil, err
+	}
+	if out.StderrContains, err = strs(e.StderrContains); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

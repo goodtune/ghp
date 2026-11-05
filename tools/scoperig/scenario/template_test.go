@@ -95,3 +95,32 @@ func TestExpand_ProfileIDs(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+func TestExpandExpect(t *testing.T) {
+	v := &Vars{Login: "octo", RepoA: RepoRef{Owner: "o", Name: "a"}}
+	if got, err := ExpandExpect(nil, v); err != nil || got != nil {
+		t.Fatalf("nil: %v %v", got, err)
+	}
+	in := &Expect{
+		Status:         200,
+		JSON:           map[string]string{"$.login": "{{.Login}}", "$.full_name": "{{.RepoA}}"},
+		BodyContains:   []string{"{{.RepoA.Name}}"},
+		Header:         map[string]string{"X": "{{.Login}}"},
+		StdoutContains: []string{"{{.RepoA}}"},
+		StderrContains: []string{"plain"},
+	}
+	got, err := ExpandExpect(in, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.JSON["$.login"] != "octo" || got.JSON["$.full_name"] != "o/a" || got.BodyContains[0] != "a" ||
+		got.Header["X"] != "octo" || got.StdoutContains[0] != "o/a" || got.StderrContains[0] != "plain" || got.Status != 200 {
+		t.Errorf("got %+v", got)
+	}
+	if in.JSON["$.login"] != "{{.Login}}" {
+		t.Errorf("input mutated")
+	}
+	if _, err := ExpandExpect(&Expect{JSON: map[string]string{"$.x": "{{.Nope}}"}}, v); err == nil {
+		t.Errorf("missing key: want error")
+	}
+}

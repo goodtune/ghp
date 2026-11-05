@@ -349,6 +349,18 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 	env.Vars.Step = map[string]map[string]string{}
 	obs, rerr := ex.Run(ctx, s, tok, env)
 
+	// Expand templated matchers (e.g. json: {"$.login": "{{.Login}}"}) after
+	// the run, so step captures are available, and classify against a copy.
+	sc := *s
+	var xerr error
+	if sc.Expect, xerr = scenario.ExpandExpect(s.Expect, env.Vars); xerr == nil {
+		sc.Observed, xerr = scenario.ExpandExpect(s.Observed, env.Vars)
+	}
+	if xerr != nil {
+		return errResult(s, "expand expectations: "+xerr.Error())
+	}
+	s = &sc
+
 	var r report.ScenarioResult
 	var sf exec.StepFailure
 	switch {
