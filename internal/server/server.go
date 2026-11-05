@@ -899,12 +899,6 @@ func systemdListeners() ([]net.Listener, error) {
 	return listeners, nil
 }
 
-// forwardProxyRouteInfoMiddleware seeds the forward proxy route-info slot
-// (client IP; token identity is filled in later by the token-resolving
-// handlers) on every proxied backend so the shared transport can select an
-// egress proxy per request. Client-selected proxy headers are validated and
-// stripped here — they must never reach the upstream — and only honoured
-// when forward_proxy.allow_request_header is enabled.
 // managementProxyHandler wraps the API proxy handler for the management
 // host's GHES-style routes (/api/v3/ and /api/graphql). RequireGHPToken
 // rejects anonymous requests and native GitHub tokens (#296): without it the
@@ -914,6 +908,12 @@ func managementProxyHandler(proxyHandler http.Handler, cfg *config.Config) http.
 	return forwardProxyRouteInfoMiddleware(proxy.RequireGHPToken(proxyHandler, cfg), cfg, netutil.IPHeader(cfg.Server.ClientIPHeader))
 }
 
+// forwardProxyRouteInfoMiddleware seeds the forward proxy route-info slot
+// (client IP; token identity is filled in later by the token-resolving
+// handlers) on every proxied backend so the shared transport can select an
+// egress proxy per request. Client-selected proxy headers are validated and
+// stripped here — they must never reach the upstream — and only honoured
+// when forward_proxy.allow_request_header is enabled.
 func forwardProxyRouteInfoMiddleware(next http.Handler, cfg *config.Config, clientIPHeader netutil.IPHeader) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clientProxy, err := proxy.ExtractClientForwardProxy(r, cfg.ForwardProxy.AllowRequestHeader)
