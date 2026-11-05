@@ -158,6 +158,14 @@ var (
 		Help: "Total number of enterprise access restriction exception matches, by outcome.",
 	}, []string{"outcome"})
 
+	// ScopeUnmappedDeniedTotal counts REST requests from scoped tokens that
+	// were denied because no scope rule matched the method and path
+	// (deny-by-default). The method label is normalised by NormalizeMethod.
+	ScopeUnmappedDeniedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_scope_unmapped_denied_total",
+		Help: "Total number of scoped-token REST requests denied because no scope rule matched.",
+	}, []string{"token_type", "method"})
+
 	// decisionBuckets covers internal decision-making stages (typically µs–ms)
 	// as well as the upstream_roundtrip stage, which includes the actual GitHub
 	// API call and can easily exceed 1s under load or on slow networks.
@@ -503,4 +511,14 @@ var runtimeDebugReadBuildInfo = defaultReadBuildInfo
 
 func defaultReadBuildInfo() (*debug.BuildInfo, bool) {
 	return debug.ReadBuildInfo()
+}
+
+// NormalizeMethod maps an HTTP method to a bounded label value. Standard
+// methods are returned unchanged; anything else becomes "OTHER".
+func NormalizeMethod(method string) string {
+	switch method {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS":
+		return method
+	}
+	return "OTHER"
 }

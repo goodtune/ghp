@@ -225,6 +225,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resolveTokenType = string(tt)
 	}
 
+	// Reject dot segments and empty segments before any lookup. Such a path
+	// could resolve to a different resource upstream than the one the scope
+	// checks see (for example /repos/A/x/../../B/y/contents).
+	if hasUnsafePathSegment(apiPath) {
+		metrics.ObserveDecision(metrics.StageScopeEnforcement, resolveTokenType, 0)
+		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
+		writeError(w, http.StatusForbidden, "Request path contains dot or empty segments")
+		return
+	}
+
 	// Resolve the client token.
 	resolveStart := time.Now()
 	pt, err := h.tokenService.Resolve(r.Context(), clientToken)
@@ -305,34 +315,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract repository from path (if this is a /repos/ path).
-	repo := ExtractRepoFromPath(apiPath)
-
-	// Enforce repository scope only when the token has repo restrictions.
-	// A token with repos=null carries no repo restriction (applies to any repo).
+	// Scoped tokens are deny-by-default on the API host: the request must
+	// be on the non-repository allowlist, or target an allowed repository
+	// and match a scope rule whose permission the token holds.
 	scopeEnforceStart := time.Now()
-	if repo != "" && len(si.Repos) > 0 && !si.repoAllowed(repo) {
+	decision := decideREST(si, r.Method, apiPath)
+	repo := decision.repo
+	if !decision.allowed {
+		if decision.unmapped {
+			metrics.ScopeUnmappedDeniedTotal.WithLabelValues(tokenType, metrics.NormalizeMethod(r.Method)).Inc()
+		}
 		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-		writeError(w, http.StatusForbidden,
-			fmt.Sprintf("Token is not scoped to %s", repo))
+		writeError(w, http.StatusForbidden, decision.message)
 		h.logRequest(pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
-	}
-
-	// Enforce permission scope only when the token has scope restrictions.
-	// Unrecognized endpoints are forwarded — GitHub's token handles access.
-	// A token with scopes=null carries no permission restriction (any endpoint allowed).
-	permission, level := EndpointScope(r.Method, apiPath)
-	if permission != "" && permission != "metadata" && len(si.Scopes) > 0 {
-		if !si.Scopes.HasPermission(permission, level) {
-			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-			writeError(w, http.StatusForbidden,
-				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
-			h.logRequest(pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
-			return
-		}
 	}
 	metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 

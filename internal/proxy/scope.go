@@ -2,6 +2,8 @@
 package proxy
 
 import (
+	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 )
@@ -34,6 +36,14 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/git/(refs|trees|blobs|commits|tags)(/.*)?$`, "GET", "contents", "read"},
 		{`^/repos/[^/]+/[^/]+/git/(refs|trees|blobs|commits|tags)(/.*)?$`, "POST", "contents", "write"},
 		{`^/repos/[^/]+/[^/]+/git/(refs|trees|blobs|commits|tags)(/.*)?$`, "PATCH", "contents", "write"},
+		{`^/repos/[^/]+/[^/]+/git/refs/.+$`, "DELETE", "contents", "write"},
+		{`^/repos/[^/]+/[^/]+/git/(ref|matching-refs)/.+$`, "GET", "contents", "read"},
+
+		// README, tags, merges and repository dispatch (contents).
+		{`^/repos/[^/]+/[^/]+/readme(/.*)?$`, "GET", "contents", "read"},
+		{`^/repos/[^/]+/[^/]+/tags$`, "GET", "contents", "read"},
+		{`^/repos/[^/]+/[^/]+/merges$`, "POST", "contents", "write"},
+		{`^/repos/[^/]+/[^/]+/dispatches$`, "POST", "contents", "write"},
 
 		// Branch protection — must be matched before the branches catch-all.
 		{`^/repos/[^/]+/[^/]+/branches/[^/]+/protection(/.*)?$`, "GET", "administration", "read"},
@@ -56,6 +66,12 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/pulls$`, "POST", "pull_requests", "write"},
 		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+$`, "PATCH", "pull_requests", "write"},
 		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/merge$`, "PUT", "pull_requests", "write"},
+		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/merge$`, "GET", "pull_requests", "read"},
+		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/update-branch$`, "PUT", "pull_requests", "write"},
+		{`^/repos/[^/]+/[^/]+/pulls/comments(/.*)?$`, "GET", "pull_requests", "read"},
+		{`^/repos/[^/]+/[^/]+/pulls/comments/[0-9]+(/.*)?$`, "POST", "pull_requests", "write"},
+		{`^/repos/[^/]+/[^/]+/pulls/comments/[0-9]+(/.*)?$`, "PATCH", "pull_requests", "write"},
+		{`^/repos/[^/]+/[^/]+/pulls/comments/[0-9]+(/.*)?$`, "DELETE", "pull_requests", "write"},
 		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/(files|commits|reviews|comments|requested_reviewers)(/.*)?$`, "GET", "pull_requests", "read"},
 		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/(reviews|comments|requested_reviewers)(/.*)?$`, "POST", "pull_requests", "write"},
 		{`^/repos/[^/]+/[^/]+/pulls/[0-9]+/(reviews|comments|requested_reviewers)(/.*)?$`, "PUT", "pull_requests", "write"},
@@ -74,13 +90,27 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/issues/[0-9]+/assignees(/.*)?$`, "GET", "issues", "read"},
 		{`^/repos/[^/]+/[^/]+/issues/[0-9]+/assignees(/.*)?$`, "POST", "issues", "write"},
 		{`^/repos/[^/]+/[^/]+/issues/[0-9]+/assignees(/.*)?$`, "DELETE", "issues", "write"},
+		{`^/repos/[^/]+/[^/]+/issues/[0-9]+/(events|timeline|reactions)$`, "GET", "issues", "read"},
+		{`^/repos/[^/]+/[^/]+/issues/comments(/.*)?$`, "GET", "issues", "read"},
+		{`^/repos/[^/]+/[^/]+/issues/comments/[0-9]+(/.*)?$`, "POST", "issues", "write"},
+		{`^/repos/[^/]+/[^/]+/issues/comments/[0-9]+(/.*)?$`, "PATCH", "issues", "write"},
+		{`^/repos/[^/]+/[^/]+/issues/comments/[0-9]+(/.*)?$`, "DELETE", "issues", "write"},
+
+		// Repository labels and milestones (issues permission).
+		{`^/repos/[^/]+/[^/]+/(labels|milestones)(/.*)?$`, "GET", "issues", "read"},
+		{`^/repos/[^/]+/[^/]+/(labels|milestones)$`, "POST", "issues", "write"},
+		{`^/repos/[^/]+/[^/]+/(labels|milestones)/[^/]+$`, "PATCH", "issues", "write"},
+		{`^/repos/[^/]+/[^/]+/(labels|milestones)/[^/]+$`, "DELETE", "issues", "write"},
 
 		// Statuses and checks
 		{`^/repos/[^/]+/[^/]+/statuses/.*$`, "GET", "statuses", "read"},
 		{`^/repos/[^/]+/[^/]+/statuses/.*$`, "POST", "statuses", "write"},
 		{`^/repos/[^/]+/[^/]+/check-runs(/.*)?$`, "GET", "checks", "read"},
 		{`^/repos/[^/]+/[^/]+/check-runs(/.*)?$`, "POST", "checks", "write"},
+		{`^/repos/[^/]+/[^/]+/check-runs/[0-9]+$`, "PATCH", "checks", "write"},
 		{`^/repos/[^/]+/[^/]+/check-suites(/.*)?$`, "GET", "checks", "read"},
+		{`^/repos/[^/]+/[^/]+/check-suites(/.*)?$`, "POST", "checks", "write"},
+		{`^/repos/[^/]+/[^/]+/check-suites(/.*)?$`, "PATCH", "checks", "write"},
 
 		// Secrets — must be matched before the actions catch-all.
 		{`^/repos/[^/]+/[^/]+/actions/secrets(/.*)?$`, "GET", "secrets", "read"},
@@ -179,6 +209,8 @@ func init() {
 		// Releases
 		{`^/repos/[^/]+/[^/]+/releases(/.*)?$`, "GET", "contents", "read"},
 		{`^/repos/[^/]+/[^/]+/releases(/.*)?$`, "POST", "contents", "write"},
+		{`^/repos/[^/]+/[^/]+/releases/.+$`, "PATCH", "contents", "write"},
+		{`^/repos/[^/]+/[^/]+/releases/.+$`, "DELETE", "contents", "write"},
 
 		// Repository administration: settings changes, collaborators, branch
 		// protection, invitations, transfers, topics. GET on /repos/{owner}/{repo}
@@ -193,6 +225,14 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/invitations/[0-9]+$`, "PATCH", "administration", "write"},
 		{`^/repos/[^/]+/[^/]+/invitations/[0-9]+$`, "DELETE", "administration", "write"},
 		{`^/repos/[^/]+/[^/]+/topics$`, "PUT", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/keys(/.*)?$`, "GET", "administration", "read"},
+		{`^/repos/[^/]+/[^/]+/keys$`, "POST", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/keys/[0-9]+$`, "DELETE", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/rulesets(/.*)?$`, "GET", "administration", "read"},
+		{`^/repos/[^/]+/[^/]+/rulesets$`, "POST", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/rulesets/[0-9]+$`, "PUT", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/rulesets/[0-9]+$`, "DELETE", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/forks$`, "POST", "administration", "write"},
 
 		// Organisation membership: members list, memberships, invitations,
 		// public members.
@@ -210,9 +250,10 @@ func init() {
 
 		// Repository metadata (always allowed with any scope)
 		{`^/repos/[^/]+/[^/]+$`, "GET", "metadata", "read"},
+		{`^/repos/[^/]+/[^/]+/(forks|languages|contributors)$`, "GET", "metadata", "read"},
 
-		// User endpoint (always allowed)
-		{`^/user$`, "", "metadata", "read"},
+		// Non-repository metadata endpoints (see nonRepoAllowlist).
+		{`^/(user|rate_limit|meta|octocat|zen)?$`, "GET", "metadata", "read"},
 	}
 
 	for _, d := range defs {
@@ -274,7 +315,12 @@ func parseServiceParam(query string) string {
 
 // EndpointScope returns the permission and level required for a given method and path.
 // Returns empty strings if the endpoint is not recognized.
+//
+// HEAD is matched as GET: it is the read-only form of the same resource.
 func EndpointScope(method, path string) (permission, level string) {
+	if method == http.MethodHead {
+		method = http.MethodGet
+	}
 	for _, r := range rules {
 		if r.method != "" && r.method != method {
 			continue
@@ -294,4 +340,86 @@ func ExtractRepoFromPath(path string) string {
 		return ""
 	}
 	return parts[1] + "/" + parts[2]
+}
+
+// nonRepoAllowlist is the set of paths outside /repos/{owner}/{repo} that a
+// scoped token may read (GET or HEAD). They expose only the caller's identity
+// and service metadata, which tools such as "gh auth status" need. Every
+// other non-repository path is denied for repo-restricted tokens.
+var nonRepoAllowlist = map[string]bool{
+	"/":           true,
+	"/user":       true,
+	"/rate_limit": true,
+	"/meta":       true,
+	"/octocat":    true,
+	"/zen":        true,
+}
+
+// restDecision is the result of evaluating a REST request for a scoped token.
+type restDecision struct {
+	allowed bool
+	// unmapped is true when the request was denied because no scope rule
+	// matched it (deny-by-default).
+	unmapped bool
+	// repo is the owner/repo extracted from the path, if any.
+	repo    string
+	message string
+}
+
+// decideREST evaluates a REST request on the API host for a scoped token
+// (any repo restriction or permission restriction). It is deny-by-default:
+//
+//  1. GET/HEAD on a nonRepoAllowlist path is allowed.
+//  2. A repo-restricted token may only reach /repos/{owner}/{repo} paths for
+//     an allowed repository.
+//  3. The method and path must match a scope rule; no match is denied.
+//  4. A permission-restricted token must hold the rule's permission level
+//     (metadata rules need no permission).
+//
+// Callers must reject unsafe paths (hasUnsafePathSegment) first.
+func decideREST(si tokenScopeInfo, method, path string) restDecision {
+	if (method == http.MethodGet || method == http.MethodHead) && nonRepoAllowlist[path] {
+		return restDecision{allowed: true}
+	}
+
+	repo := ExtractRepoFromPath(path)
+	if len(si.Repos) > 0 {
+		if repo == "" {
+			return restDecision{message: fmt.Sprintf(
+				"Token is restricted to specific repositories; %s %s does not target a repository", method, path)}
+		}
+		if !si.repoAllowed(repo) {
+			return restDecision{repo: repo, message: fmt.Sprintf("Token is not scoped to %s", repo)}
+		}
+	}
+
+	permission, level := EndpointScope(method, path)
+	if permission == "" {
+		return restDecision{repo: repo, unmapped: true, message: fmt.Sprintf(
+			"Endpoint %s %s is not permitted for scoped tokens (no scope rule matches)", method, path)}
+	}
+	if permission != "metadata" && len(si.Scopes) > 0 && !si.Scopes.HasPermission(permission, level) {
+		return restDecision{repo: repo, message: fmt.Sprintf(
+			"Token does not have permission for %s:%s on %s", permission, level, repo)}
+	}
+	return restDecision{allowed: true, repo: repo}
+}
+
+// hasUnsafePathSegment reports whether path contains a "." or ".." segment
+// or an empty segment ("//"). Such paths could address a different resource
+// after normalisation than the one the scope checks saw, so they are
+// rejected before any scope evaluation. A single trailing slash is allowed.
+func hasUnsafePathSegment(path string) bool {
+	segs := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	for i, seg := range segs {
+		switch seg {
+		case ".", "..":
+			return true
+		case "":
+			if i != len(segs)-1 {
+				return true
+			}
+		}
+	}
+	return false
 }
