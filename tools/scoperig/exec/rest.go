@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -53,7 +54,50 @@ func restRequest(ctx context.Context, r *scenario.Request, tok tokens.Handle, en
 	if err != nil {
 		return nil, err
 	}
+	if r.Vhost != "" {
+		return vhostRequest(ctx, path, r, tok, env)
+	}
 	return verbatimRequest(ctx, env.APIBase, path, r, tok.Authorize, env)
+}
+
+// vhostRequest sends r to the instance host (APIBase without its path) with
+// TLS SNI and the Host header set to r.Vhost, as a client of that virtual
+// host would. The path is sent verbatim with no /api/v3 prefix.
+func vhostRequest(ctx context.Context, path string, r *scenario.Request, tok tokens.Handle, env *RunEnv) (*expect.Observation, error) {
+	bu, err := url.Parse(env.APIBase)
+	if err != nil {
+		return nil, fmt.Errorf("base url: %w", err)
+	}
+	if bu.Scheme != "https" {
+		return nil, fmt.Errorf("vhost %s needs an https instance URL", r.Vhost)
+	}
+	base := env.HTTP
+	if base == nil {
+		base = &http.Client{Timeout: RequestTimeout}
+	}
+	var tr *http.Transport
+	if t, ok := base.Transport.(*http.Transport); ok {
+		tr = t.Clone()
+	} else if base.Transport == nil {
+		tr = http.DefaultTransport.(*http.Transport).Clone()
+	} else {
+		return nil, fmt.Errorf("vhost %s: unsupported transport %T", r.Vhost, base.Transport)
+	}
+	if tr.TLSClientConfig == nil {
+		tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	tr.TLSClientConfig.ServerName = r.Vhost
+	defer tr.CloseIdleConnections()
+	client := *base
+	client.Transport = tr
+	venv := *env
+	venv.HTTP = &client
+	host := r.Vhost
+	auth := func(req *http.Request) {
+		tok.Authorize(req)
+		req.Host = host
+	}
+	return verbatimRequest(ctx, bu.Scheme+"://"+bu.Host, path, r, auth, &venv)
 }
 
 // verbatimRequest sends r to base+path, setting URL.Opaque so that "..",

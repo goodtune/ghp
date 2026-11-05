@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -162,5 +163,36 @@ func TestREST_WriteNotRetriedAfterAmbiguousError(t *testing.T) {
 func TestFor_GH(t *testing.T) {
 	if e, err := For("gh"); err != nil || e.Kind() != "gh" {
 		t.Fatalf("For(gh) = %v, %v", e, err)
+	}
+}
+
+func TestREST_Vhost(t *testing.T) {
+	var gotHost, gotSNI, gotURI string
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost, gotURI = r.Host, r.RequestURI
+		if r.TLS != nil {
+			gotSNI = r.TLS.ServerName
+		}
+		w.WriteHeader(403)
+	}))
+	defer ts.Close()
+	env, _, tok := newEnv(t, nil)
+	env.HTTP = ts.Client()
+	env.APIBase = ts.URL + "/api/v3"
+	// httptest's certificate is valid for example.com, so it stands in for
+	// github.com here.
+	s := &scenario.Scenario{ID: "x", Kind: "rest", Vhost: "example.com", Path: "/{{.RepoB}}/archive/HEAD.tar.gz"}
+	obs, err := (restExecutor{}).Run(context.Background(), s, tok, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.Status != 403 {
+		t.Errorf("status = %d", obs.Status)
+	}
+	if gotHost != "example.com" || gotSNI != "example.com" {
+		t.Errorf("Host = %q, SNI = %q, want example.com for both", gotHost, gotSNI)
+	}
+	if want := "/b-owner/b-repo/archive/HEAD.tar.gz"; gotURI != want {
+		t.Errorf("RequestURI = %q, want %q (no /api/v3 prefix)", gotURI, want)
 	}
 }

@@ -29,6 +29,9 @@ type Request struct {
 	Body    any               `yaml:"body"`
 	Expect  *Expect           `yaml:"expect"`
 	Capture map[string]string `yaml:"capture"` // name -> "$.json.path"
+	// Vhost, if set, sends a rest request to the instance with this TLS
+	// SNI and Host header and no /api/v3 prefix (only "github.com").
+	Vhost string `yaml:"vhost"`
 }
 
 // Expect is the matcher syntax shared by expect: and observed: blocks.
@@ -62,6 +65,7 @@ type Scenario struct {
 	Steps     []Request         `yaml:"steps"`  // rest (single request = one step)
 	Method    string            `yaml:"method"` // rest shorthand
 	Path      string            `yaml:"path"`
+	Vhost     string            `yaml:"vhost"` // rest shorthand; see Request.Vhost
 	Headers   map[string]string `yaml:"headers"`
 	Body      any               `yaml:"body"`
 	Query     string            `yaml:"query"` // graphql

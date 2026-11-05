@@ -1,0 +1,239 @@
+# GraphQL scope enforcement scenarios (spec section 7: GQL-C24 to C33,
+# iteration-1 subset). Every 403 asserts ghp_denial so a GitHub-side error
+# cannot pass for a GHP denial. Messages are from
+# internal/proxy/graphql_verdict.go.
+- id: GQL-C24.viewer-no-repo-ref
+  claim: GQL-C24
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A repository-restricted token cannot send a query with no repository(owner, name).
+  profile: repo-A
+  kind: graphql
+  query: "{ viewer { login } }"
+  expect: {status: 403, body_contains: ["must reference repository(owner, name)"], ghp_denial: true}
+
+- id: GQL-C25.repo-a-literal-b
+  claim: GQL-C25
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A token scoped to A cannot look up B by literal arguments.
+  profile: repo-A
+  kind: graphql
+  query: |
+    { repository(owner: "{{.RepoB.Owner}}", name: "{{.RepoB.Name}}") { name } }
+  expect: {status: 403, body_contains: ["Token is not scoped to"], ghp_denial: true}
+
+- id: GQL-C25.repo-ab-literal-a-and-b
+  claim: GQL-C25
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: Control - a token scoped to A and B can look up both by literal arguments.
+  profile: repo-AB
+  kind: graphql
+  query: |
+    {
+      a: repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { name }
+      b: repository(owner: "{{.RepoB.Owner}}", name: "{{.RepoB.Name}}") { name }
+    }
+  expect:
+    status: 200
+    body_not_contains: ['"errors"']
+    json: {"$.data.a.name": "{{.RepoA.Name}}", "$.data.b.name": "{{.RepoB.Name}}"}
+
+# GQL-C26: the cross-repository fields below are also absent from the
+# analyzer's allow and scope tables, and the unmapped-field check runs before
+# the cross-repository check, so today's verdict is deny:unmapped (ruling from
+# the Task 1 review). The claim (rejected for repository-scoped tokens) holds
+# either way; the expectations pin today's message.
+- id: GQL-C26.search-root
+  claim: GQL-C26
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: Root search is rejected for a repository-scoped token.
+  profile: repo-A
+  kind: graphql
+  query: |
+    {
+      repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { name }
+      search(query: "scoperig", type: REPOSITORY, first: 1) { repositoryCount }
+    }
+  expect: {status: 403, body_contains: ["GraphQL request references unmapped fields", "search"], ghp_denial: true}
+
+- id: GQL-C26.node-root
+  claim: GQL-C26
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: Root node(id:) is rejected for a repository-scoped token.
+  profile: repo-A
+  kind: graphql
+  query: |
+    {
+      repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { name }
+      node(id: "{{.RepoB.NodeID}}") { id }
+    }
+  expect: {status: 403, body_contains: ["GraphQL request references unmapped fields", "node"], ghp_denial: true}
+
+- id: GQL-C26.viewer-repositories
+  claim: GQL-C26
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: viewer.repositories is rejected for a repository-scoped token.
+  profile: repo-A
+  kind: graphql
+  query: |
+    {
+      repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { name }
+      viewer { repositories(first: 1) { totalCount } }
+    }
+  expect: {status: 403, body_contains: ["GraphQL request references unmapped fields", "repositories"], ghp_denial: true}
+
+- id: GQL-C26.aliased-search
+  claim: GQL-C26
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: An aliased root search is still rejected (the analyzer checks field names, not aliases).
+  profile: repo-A
+  kind: graphql
+  query: |
+    {
+      repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { name }
+      innocuous: search(query: "scoperig", type: REPOSITORY, first: 1) { repositoryCount }
+    }
+  expect: {status: 403, body_contains: ["GraphQL request references unmapped fields", "search"], ghp_denial: true}
+
+# GQL-C27: the mutation is denied before it reaches GitHub. It still targets
+# only W (repositoryId captured from a query that pins W) and requires
+# repo_w_push, so a regression that forwards it cannot touch A or B.
+- id: GQL-C27.createissue-repo-w
+  claim: GQL-C27
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A repository-scoped token cannot send a mutation, even for its own repository.
+  profile: repo-W
+  kind: graphql
+  requires: [repo_w_push]
+  steps:
+    - name: repo
+      method: POST
+      path: /graphql
+      body:
+        query: |
+          { repository(owner: "{{.RepoW.Owner}}", name: "{{.RepoW.Name}}") { id } }
+      expect: {status: 200}
+      capture: {rid: "$.data.repository.id"}
+    - name: create
+      method: POST
+      path: /graphql
+      body:
+        query: |
+          mutation($rid: ID!) { createIssue(input: {repositoryId: $rid, title: "scoperig {{.RunID}} C27", body: "automated; must be denied"}) { issue { number } } }
+        variables: {rid: "{{.Step.repo.rid}}"}
+      expect: {status: 403, body_contains: ["GraphQL mutations are not supported"], ghp_denial: true}
+
+- id: GQL-C28.variable-only
+  claim: GQL-C28
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A variable-driven repository lookup is rejected for a repository-scoped token.
+  profile: repo-A
+  kind: graphql
+  query: |
+    query($o: String!, $n: String!) { repository(owner: $o, name: $n) { name } }
+  variables: {o: "{{.RepoA.Owner}}", n: "{{.RepoA.Name}}"}
+  expect: {status: 403, body_contains: ["literal string arguments"], ghp_denial: true}
+
+- id: GQL-C28.mixed-literal-and-variable
+  claim: GQL-C28
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A variable-driven lookup is rejected even alongside an allowed literal lookup.
+  profile: repo-A
+  kind: graphql
+  query: |
+    query($o:String!,$n:String!){
+      a: repository(owner:"{{.RepoA.Owner}}", name:"{{.RepoA.Name}}"){ name }
+      b: repository(owner:$o, name:$n){ name }
+    }
+  variables: {o: "{{.RepoA.Owner}}", n: "{{.RepoA.Name}}"}
+  expect:
+    status: 403
+    body_contains: ["literal string arguments"]
+    ghp_denial: true
+
+- id: GQL-C29.pullrequests-needs-scope
+  claim: GQL-C29
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: issues:read does not cover a pullRequests selection.
+  profile: perm-issues-ro
+  kind: graphql
+  query: |
+    { repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { pullRequests(first: 1) { nodes { number } } } }
+  expect: {status: 403, body_contains: ["Token does not grant required GraphQL scopes", "pull_requests:read"], ghp_denial: true}
+
+# GQL-C31: these two IDs are the reviewed entries in mutationWriteAllowlist
+# (tools/scoperig/scenario/gqlcheck.go). The profiles have no repository
+# restriction, so the mutation may only name W: repositoryId is captured from
+# a query that pins W.
+- id: GQL-C31.createissue-ro-denied
+  claim: GQL-C31
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: createIssue needs issues:write; issues:read is denied before GitHub.
+  profile: perm-issues-ro
+  kind: graphql
+  requires: [repo_w_push]
+  steps:
+    - name: repo
+      method: POST
+      path: /graphql
+      body:
+        query: |
+          { repository(owner: "{{.RepoW.Owner}}", name: "{{.RepoW.Name}}") { id } }
+      expect: {status: 200}
+      capture: {rid: "$.data.repository.id"}
+    - name: create
+      method: POST
+      path: /graphql
+      body:
+        query: |
+          mutation($rid: ID!) { createIssue(input: {repositoryId: $rid, title: "scoperig {{.RunID}} C31 ro", body: "automated; must be denied"}) { issue { number } } }
+        variables: {rid: "{{.Step.repo.rid}}"}
+      expect: {status: 403, body_contains: ["Token does not grant required GraphQL scopes", "issues:write"], ghp_denial: true}
+
+- id: GQL-C31.createissue-rw-allowed
+  claim: GQL-C31
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: createIssue on W is allowed with issues:write; the issue is closed in cleanup.
+  profile: perm-rw
+  kind: graphql
+  requires: [repo_w_push]
+  steps:
+    - name: repo
+      method: POST
+      path: /graphql
+      body:
+        query: |
+          { repository(owner: "{{.RepoW.Owner}}", name: "{{.RepoW.Name}}") { id } }
+      expect: {status: 200}
+      capture: {rid: "$.data.repository.id"}
+    - name: create
+      method: POST
+      path: /graphql
+      body:
+        query: |
+          mutation($rid: ID!) { createIssue(input: {repositoryId: $rid, title: "scoperig {{.RunID}} C31", body: "automated; closed immediately"}) { issue { number } } }
+        variables: {rid: "{{.Step.repo.rid}}"}
+      expect: {status: 200, body_not_contains: ['"errors"']}
+      capture: {number: "$.data.createIssue.issue.number"}
+  cleanup:
+    - method: PATCH
+      path: /repos/{{.RepoW}}/issues/{{.Step.create.number}}
+      body: {state: closed}
+
+- id: GQL-C32.subscription
+  claim: GQL-C32
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: GraphQL subscriptions are rejected.
+  profile: perm-ro
+  kind: graphql
+  query: "subscription { viewer { login } }"
+  expect: {status: 403, body_contains: ["GraphQL subscriptions are not supported"], ghp_denial: true}
+
+- id: GQL-C33.unknown-object-field
+  claim: GQL-C33
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: An unknown object-typed field is rejected (deny by default).
+  profile: perm-ro
+  kind: graphql
+  query: |
+    { repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { foo { bar } } }
+  expect: {status: 403, body_contains: ["unmapped fields: foo"], ghp_denial: true}

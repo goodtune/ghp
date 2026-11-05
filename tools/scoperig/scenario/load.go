@@ -106,6 +106,7 @@ func (s *Scenario) Normalise() {
 	s.Steps = []Request{{
 		Method:  s.Method,
 		Path:    s.Path,
+		Vhost:   s.Vhost,
 		Headers: s.Headers,
 		Body:    s.Body,
 		Expect:  s.Expect,

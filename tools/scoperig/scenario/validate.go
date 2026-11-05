@@ -20,6 +20,14 @@ var (
 // read-only token. Its path must still target RepoW.
 const gapA1ProbeID = "GAP-A1.delete-ref-contents-ro"
 
+// gapA7ProbeID is the one scenario allowed to send dot segments in its
+// path, and only on a GET: it probes that "/repos/A/../../B" cannot escape
+// the repository allowlist.
+const gapA7ProbeID = "GAP-A7.dotdot-path"
+
+// validVhosts are the virtual hosts a rest request may target.
+var validVhosts = map[string]bool{"github.com": true}
+
 // maxProfileDuration bounds every profile so leaked tokens expire quickly.
 const maxProfileDuration = 2 * time.Hour
 
@@ -201,6 +209,21 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			}
 			method = "GET" // explicit default for body-less requests
 		}
+		if r.Vhost != "" {
+			switch {
+			case s.Kind != "rest":
+				add("%s: vhost is only valid for kind rest", where)
+			case !validVhosts[r.Vhost]:
+				add("%s: vhost %q must be github.com", where, r.Vhost)
+			case method != "GET" && method != "HEAD":
+				add("%s: vhost requests must be GET or HEAD, not %s", where, method)
+			case !hasString(s.Requires, "github_vhost"):
+				add("%s: vhost requests need requires: [github_vhost]", where)
+			}
+		}
+		if s.ID == gapA7ProbeID && method == "GET" {
+			return // the traversal probe: a read, sent verbatim by design
+		}
 		clean, perr := normalisePath(path)
 		if perr != nil {
 			add("%s: %v", where, perr)
@@ -258,6 +281,9 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	}
 	for i := range s.Cleanup {
 		checkReq(fmt.Sprintf("cleanup[%d]", i), -1, &s.Cleanup[i])
+	}
+	if s.Vhost != "" && len(s.Steps) == 0 {
+		add("vhost is only valid for kind rest")
 	}
 	if s.Request != nil {
 		checkReq("request", -1, s.Request)
@@ -336,4 +362,13 @@ func checkExpect(where string, e *Expect, v *Vars, add func(string, ...any)) {
 			add("%s: %v", where, err)
 		}
 	}
+}
+
+func hasString(xs []string, x string) bool {
+	for _, e := range xs {
+		if e == x {
+			return true
+		}
+	}
+	return false
 }

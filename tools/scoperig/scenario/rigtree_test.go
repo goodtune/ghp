@@ -175,3 +175,93 @@ func contains(xs []string, x string) bool {
 	}
 	return false
 }
+
+// task19Claims are the iteration-1 GraphQL claims (spec section 7) with the
+// minimum scenario count each must have.
+var task19Claims = map[string]int{
+	"GQL-C24": 1, "GQL-C25": 2, "GQL-C26": 4, "GQL-C27": 1, "GQL-C28": 2,
+	"GQL-C29": 1, "GQL-C31": 2, "GQL-C32": 1, "GQL-C33": 1,
+}
+
+// task19Scenarios are scenario IDs that other code refers to by name
+// (validator allowlists and probe exceptions), so they must exist exactly.
+var task19Scenarios = []string{
+	"GQL-C28.mixed-literal-and-variable",
+	"GQL-C31.createissue-ro-denied",
+	"GQL-C31.createissue-rw-allowed",
+	"GAP-A1.delete-ref-contents-ro",
+	"GAP-A2.repositories-by-id",
+	"GAP-A3.github-vhost-archive",
+	"GAP-A6.agent-mint",
+	"GAP-A7.dotdot-path",
+}
+
+// TestRigTreeTask19 checks GraphQL and GAP probe coverage.
+func TestRigTreeTask19(t *testing.T) {
+	tree, err := Load("../../../rig")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	count := make(map[string]int)
+	byID := make(map[string]*Scenario)
+	for _, s := range tree.Scenarios {
+		count[s.Claim]++
+		byID[s.ID] = s
+	}
+	for id, n := range task19Claims {
+		if count[id] < n {
+			t.Errorf("claim %s: got %d scenarios, want >= %d", id, count[id], n)
+		}
+	}
+	for _, id := range task19Scenarios {
+		if byID[id] == nil {
+			t.Errorf("scenario %s is missing", id)
+		}
+	}
+	for _, s := range tree.Scenarios {
+		if strings.HasPrefix(s.Claim, "GQL-") && s.Kind != "graphql" {
+			t.Errorf("scenario %s: GQL claims must use kind graphql", s.ID)
+		}
+		if strings.HasPrefix(s.Claim, "GAP-") && s.KnownIssue != "" && s.Observed == nil {
+			t.Errorf("scenario %s: known_issue without observed", s.ID)
+		}
+		// Every 403 expectation must assert that GHP (not GitHub) denied.
+		for _, e := range scenarioExpects(s) {
+			if e.Status == 403 && (e.GHPDenial == nil || !*e.GHPDenial) && strings.HasPrefix(s.Claim, "GQL-") {
+				t.Errorf("scenario %s: 403 expectation without ghp_denial: true", s.ID)
+			}
+		}
+	}
+	if s := byID["GQL-C31.createissue-rw-allowed"]; s != nil {
+		if !contains(s.Requires, "repo_w_push") || len(s.Cleanup) == 0 {
+			t.Errorf("%s: must require repo_w_push and close the issue in cleanup", s.ID)
+		}
+	}
+	if s := byID["GAP-A3.github-vhost-archive"]; s != nil {
+		if s.Vhost != "github.com" || !contains(s.Requires, "github_vhost") {
+			t.Errorf("%s: must use vhost github.com and require github_vhost", s.ID)
+		}
+	}
+	if s := byID["GAP-A6.agent-mint"]; s != nil {
+		if s.Kind != "token_api" || !contains(s.Requires, "agent_installation") {
+			t.Errorf("%s: must be token_api and require agent_installation", s.ID)
+		}
+	}
+}
+
+func scenarioExpects(s *Scenario) []*Expect {
+	out := []*Expect{s.Expect}
+	for i := range s.Steps {
+		out = append(out, s.Steps[i].Expect)
+	}
+	if s.Request != nil {
+		out = append(out, s.Request.Expect)
+	}
+	var nn []*Expect
+	for _, e := range out {
+		if e != nil {
+			nn = append(nn, e)
+		}
+	}
+	return nn
+}

@@ -438,3 +438,42 @@ func TestValidate_TokenAPIProxyGET(t *testing.T) {
 	// Neither steps nor request.
 	requireErr(t, Validate(withScenarios(&Scenario{ID: "T4", Claim: "C1", Kind: "token_api"}), nil), "T4", "needs")
 }
+
+func TestValidate_GapA7DotSegmentException(t *testing.T) {
+	a7 := func(method, path string) *Scenario {
+		return &Scenario{ID: "GAP-A7.dotdot-path", Claim: "C1", Profile: "p", Kind: "rest", Method: method, Path: path}
+	}
+	// The named probe may send a GET with dot segments.
+	requireNoErr(t, Validate(withScenarios(a7("GET", "/repos/{{.RepoA}}/../../{{.RepoB}}/contents/README.md")), nil))
+	// Only GET: a write with dot segments is still rejected.
+	requireErr(t, Validate(withScenarios(a7("DELETE", "/repos/{{.RepoW}}/../../{{.RepoB}}/git/refs/x")), nil), "GAP-A7", "dot segment")
+	// Other scenarios still may not.
+	requireErr(t, Validate(withScenarios(&Scenario{ID: "GAP-A7.other", Claim: "C1", Profile: "p", Kind: "rest",
+		Method: "GET", Path: "/repos/{{.RepoA}}/../x"}), nil), "GAP-A7.other", "dot segment")
+}
+
+func TestValidate_Vhost(t *testing.T) {
+	ok := &Scenario{ID: "V1", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "github.com",
+		Requires: []string{"github_vhost"}, Method: "GET", Path: "/{{.RepoB}}/archive/HEAD.tar.gz"}
+	requireNoErr(t, Validate(withScenarios(ok), nil))
+
+	cases := []struct {
+		name string
+		s    *Scenario
+		want string
+	}{
+		{"other host", &Scenario{ID: "V2", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "evil.example",
+			Requires: []string{"github_vhost"}, Path: "/x"}, "vhost"},
+		{"no capability", &Scenario{ID: "V3", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "github.com",
+			Path: "/x"}, "github_vhost"},
+		{"not rest", &Scenario{ID: "V4", Claim: "C1", Profile: "p", Kind: "graphql", Vhost: "github.com",
+			Requires: []string{"github_vhost"}, Query: "{viewer{login}}"}, "vhost"},
+		{"write", &Scenario{ID: "V5", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "github.com",
+			Requires: []string{"github_vhost"}, Method: "POST", Path: "/repos/{{.RepoW}}/x"}, "vhost"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requireErr(t, Validate(withScenarios(tc.s), nil), tc.s.ID, tc.want)
+		})
+	}
+}
