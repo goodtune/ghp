@@ -503,10 +503,11 @@ func TestValidate_GapA7ExceptionHardening(t *testing.T) {
 	}
 	// The rest GET probe is still accepted.
 	requireNoErr(t, Validate(withScenarios(a7("rest", "GET", "/repos/{{.RepoA}}/../../{{.RepoB}}/contents/README.md")), nil))
-	// The exception is rest-only: the same ID with kind graphql is rejected.
+	// The exception is rest-only: the same ID with kind graphql is rejected
+	// (a graphql step path must be /graphql, which rejects it first).
 	g := &Scenario{ID: "GAP-A7.dotdot-path", Claim: "C1", Profile: "p", Kind: "graphql",
 		Steps: []Request{{Method: "GET", Path: "/repos/{{.RepoA}}/../../{{.RepoB}}/contents/README.md"}}}
-	requireErr(t, Validate(withScenarios(g), nil), "GAP-A7", "dot segment")
+	requireErr(t, Validate(withScenarios(g), nil), "GAP-A7", "must be /graphql")
 	// Only the dot-segment rejection is skipped; later checks still run.
 	requireErr(t, Validate(withScenarios(a7("rest", "GET", "/repos/{{.RepoA}}/%2e%2e/{{.RepoB}}/x")), nil), "GAP-A7", "encoded dot")
 	requireErr(t, Validate(withScenarios(a7("rest", "GET", "repos/{{.RepoA}}/../x")), nil), "GAP-A7", "absolute")
@@ -632,4 +633,50 @@ func TestValidate_GHDestinationHost(t *testing.T) {
 			requireNoErr(t, Validate(withScenarios(s), nil))
 		})
 	}
+}
+
+func r4Tree(s *Scenario) *Tree {
+	s.Normalise()
+	return &Tree{Claims: map[string]Claim{"C": {ID: "C"}},
+		Profiles: map[string]Profile{
+			"open": {Name: "open", Type: "proxy", Duration: "1h"},
+			"w":    {Name: "w", Type: "proxy", Duration: "1h", Repositories: []string{"{{.RepoW}}"}},
+			"a":    {Name: "a", Type: "proxy", Duration: "1h", Repositories: []string{"{{.RepoA}}"}}},
+		Scenarios: []*Scenario{s}}
+}
+
+func errsContain(errs []error, sub string) bool {
+	for _, e := range errs {
+		if strings.Contains(e.Error(), sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestValidate_GraphQLStepPathMustBeGraphQL(t *testing.T) {
+	createA := map[string]any{"query": `mutation { createIssue(input:{repositoryId:"R_placeholderA", title:"t"}) { clientMutationId } }`}
+	t.Run("REST-looking W path is rejected", func(t *testing.T) {
+		s := &Scenario{ID: "P1", Claim: "C", Kind: "graphql", Profile: "open",
+			Steps: []Request{{Name: "s", Method: "POST", Path: "/repos/w-owner/w-repo/x", Body: createA, Expect: &Expect{Status: 200}}}}
+		errs := Validate(r4Tree(s), nil)
+		if !errsContain(errs, "must be /graphql") {
+			t.Fatalf("want path error, got %v", errs)
+		}
+	})
+	t.Run("empty path is normalised and checked", func(t *testing.T) {
+		s := &Scenario{ID: "P1e", Claim: "C", Kind: "graphql", Profile: "open",
+			Steps: []Request{{Name: "s", Method: "POST", Body: createA, Expect: &Expect{Status: 200}}}}
+		errs := Validate(r4Tree(s), nil)
+		if len(errs) == 0 || errsContain(errs, "must be /graphql") {
+			t.Fatalf("want GraphQL-check errors only, got %v", errs)
+		}
+	})
+	t.Run("query-string path is rejected", func(t *testing.T) {
+		s := &Scenario{ID: "P1q", Claim: "C", Kind: "graphql", Profile: "w",
+			Steps: []Request{{Name: "s", Method: "POST", Path: "/repos/w-owner/w-repo/x?query=1", Body: createA, Expect: &Expect{Status: 200}}}}
+		if errs := Validate(r4Tree(s), nil); !errsContain(errs, "must be /graphql") {
+			t.Fatalf("want path error, got %v", errs)
+		}
+	})
 }

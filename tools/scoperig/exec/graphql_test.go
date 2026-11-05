@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
@@ -39,5 +40,28 @@ func TestGraphQL_StepRejectsGET(t *testing.T) {
 	s := &scenario.Scenario{ID: "x", Kind: "graphql", Steps: []scenario.Request{{Name: "s", Path: "/graphql"}}}
 	if _, err := (graphqlExecutor{}).Run(context.Background(), s, tok, env); err == nil {
 		t.Fatal("want error for GET graphql step")
+	}
+}
+
+func TestGraphQL_StepRejectsNonGraphQLPath(t *testing.T) {
+	calls := 0
+	env, _, tok := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++ }))
+	for _, p := range []string{"/repos/w-owner/w-repo/x", "/graphql?x=1"} {
+		s := &scenario.Scenario{ID: "x", Kind: "graphql", Steps: []scenario.Request{{Name: "s", Method: "POST", Path: p,
+			Body: map[string]any{"query": "{ viewer { login } }"}, Expect: &scenario.Expect{Status: 200}}}}
+		if _, err := (graphqlExecutor{}).Run(context.Background(), s, tok, env); err == nil || !strings.Contains(err.Error(), "/graphql") {
+			t.Errorf("path %q: err = %v, want path error", p, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("sent %d requests, want 0", calls)
+	}
+	// Empty and /graphql paths are both accepted.
+	for _, p := range []string{"", "/graphql"} {
+		s := &scenario.Scenario{ID: "x", Kind: "graphql", Steps: []scenario.Request{{Name: "s", Method: "POST", Path: p,
+			Body: map[string]any{"query": "{ viewer { login } }"}, Expect: &scenario.Expect{Status: 200}}}}
+		if _, err := (graphqlExecutor{}).Run(context.Background(), s, tok, env); err != nil {
+			t.Errorf("path %q: %v", p, err)
+		}
 	}
 }

@@ -36,6 +36,11 @@ func (graphqlExecutor) Run(ctx context.Context, s *scenario.Scenario, tok tokens
 		if methodOf(r.Method) != http.MethodPost {
 			return nil, fmt.Errorf("graphql step %q: method %s not allowed (POST only)", r.Name, methodOf(r.Method))
 		}
+		// postGraphQL always sends to env.GraphQL; refuse a step whose path
+		// says otherwise rather than send it somewhere it did not ask for.
+		if r.Path != "" && r.Path != "/graphql" {
+			return nil, fmt.Errorf("graphql step %q: path %q not allowed (must be /graphql)", r.Name, r.Path)
+		}
 		b, err := prepareBody(r.Body, env)
 		if err != nil {
 			return nil, err

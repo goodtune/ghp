@@ -185,7 +185,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		}
 		return out, true
 	}
-	checkReq := func(where string, stepIdx int, r *Request) {
+	checkReq := func(where string, stepIdx int, cleanup bool, r *Request) {
 		path, ok := exp(where+" path", r.Path)
 		if _, err := ExpandAny(r.Headers, v); err != nil {
 			add("%s headers: %v", where, err)
@@ -220,6 +220,19 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		}
 		// The traversal probe (a rest GET, sent verbatim by design) skips
 		// only the dot-segment rejection; every later check still runs.
+		// A graphql step always goes to the GraphQL endpoint (the executor
+		// ignores the path), so it must say so: any other path would skip
+		// the GraphQL mutation check below. Cleanup is REST, not GraphQL.
+		graphqlStep := s.Kind == "graphql" && !cleanup
+		if graphqlStep {
+			if strings.TrimSpace(path) == "" {
+				path = "/graphql"
+			}
+			if path != "/graphql" {
+				add("%s: graphql step path %q must be /graphql", where, path)
+				return
+			}
+		}
 		allowDots := s.ID == gapA7ProbeID && s.Kind == "rest" && method == "GET"
 		clean, perr := normalisePath(path, allowDots)
 		if perr != nil {
@@ -246,13 +259,9 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			}
 			return
 		}
-		if s.Kind == "graphql" && (clean == "/graphql" || strings.Contains(path, "query=")) {
+		if graphqlStep {
 			if method != "POST" {
 				add("%s: graphql steps must use POST, not %s", where, method)
-				return
-			}
-			if strings.Contains(path, "?") {
-				add("%s: graphql step path must not carry a query string", where)
 				return
 			}
 			// GraphQL steps are checked by the mutation rule, not the REST
@@ -278,7 +287,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		}
 	}
 	for i := range s.Steps {
-		checkReq(fmt.Sprintf("steps[%d]", i), i, &s.Steps[i])
+		checkReq(fmt.Sprintf("steps[%d]", i), i, false, &s.Steps[i])
 	}
 	// Rule: every runnable step, and a scenario with no steps, must assert
 	// something. A missing or empty expect would otherwise be a silent PASS.
@@ -297,7 +306,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		}
 	}
 	for i := range s.Cleanup {
-		checkReq(fmt.Sprintf("cleanup[%d]", i), -1, &s.Cleanup[i])
+		checkReq(fmt.Sprintf("cleanup[%d]", i), -1, true, &s.Cleanup[i])
 	}
 	if s.Vhost != "" {
 		switch {
@@ -310,7 +319,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		}
 	}
 	if s.Request != nil {
-		checkReq("request", -1, s.Request)
+		checkReq("request", -1, false, s.Request)
 	} else if s.Kind == "token_api" && len(s.Steps) == 0 {
 		add("token_api scenario needs a request or steps")
 	}
