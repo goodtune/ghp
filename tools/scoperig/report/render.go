@@ -59,7 +59,7 @@ func (r *Report) WriteTable(w io.Writer) error {
 	}
 
 	sm := r.Summary
-	ew.printf("\nclaims: %d PASS, %d FAIL, %d KNOWN, %d GAP (of which %d ERROR)   manual: %s   untestable: %s\n",
+	ew.printf("\nclaims: %d PASS, %d FAIL (of which %d ERROR), %d KNOWN, %d GAP   manual: %s   untestable: %s\n",
 		sm.Pass, sm.Fail, sm.Error, sm.Known, sm.Gap, list(sm.Manual), list(sm.Untestable))
 	ew.printf("confidence: %s   (PASS / (base - KNOWN))\n", sm.ConfidenceText())
 	ew.printf("coverage gaps (%d): %s\n", len(sm.Gaps), list(sm.Gaps))

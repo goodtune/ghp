@@ -31,7 +31,7 @@ func goldenReport() *Report {
 			res[i].KnownIssue = "https://github.com/goodtune/ghp/issues/291"
 			res[i].Detail = "remove known_issue and observed: from " + res[i].ID
 		case StatusKnownChanged:
-			res[i].KnownIssue, res[i].Detail = "https://github.com/goodtune/ghp/issues/295", "observed status: want 200, got 502"
+			res[i].KnownIssue, res[i].Detail = "https://github.com/goodtune/ghp/issues/295", "observed status: want 200, got 401"
 			res[i].GHExit = intp(1)
 			res[i].FirstDeniedExchange = "POST /api/graphql 403 denied"
 		case StatusGap:

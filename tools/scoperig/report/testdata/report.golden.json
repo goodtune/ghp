@@ -32,7 +32,7 @@
           "id": "C-CHG.a",
           "status": "KNOWN-CHANGED",
           "known_issue": "https://github.com/goodtune/ghp/issues/295",
-          "detail": "observed status: want 200, got 502",
+          "detail": "observed status: want 200, got 401",
           "observation": {
             "status": 0,
             "ghp_message": "",
