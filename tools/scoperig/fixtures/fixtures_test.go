@@ -25,6 +25,7 @@ type fakeRepo struct {
 	id                         int64
 	label, issue, branch, file bool
 	pr, release                bool
+	empty                      bool // no commits yet: git ref reads return 409
 }
 
 func newFake(t *testing.T, login string) *fakeGitHub {
@@ -94,7 +95,20 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		rest = parts[2]
 	}
 	q := r.URL.Query()
+	if rp.empty && r.Method == "GET" && strings.HasPrefix(rest, "git/ref/") {
+		writeJSON(w, 409, map[string]string{"message": "Git Repository is empty."})
+		return
+	}
 	switch {
+	case r.Method == "PUT" && rest == "contents/README.md":
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		if !rp.empty || b["branch"] != nil || b["content"] == "" {
+			writeJSON(w, 422, nil)
+			return
+		}
+		rp.empty = false
+		writeJSON(w, 201, nil)
 	case r.Method == "GET" && rest == "":
 		writeJSON(w, 200, map[string]any{"id": rp.id, "default_branch": "main", "owner": map[string]any{"login": parts[0]}, "name": parts[1]})
 	case r.Method == "GET" && rest == "labels/scoperig":
@@ -358,5 +372,30 @@ func TestErrorIncludesRedactedBody(t *testing.T) {
 	}
 	if len(msg) > 700 {
 		t.Errorf("body not truncated: %d bytes", len(msg))
+	}
+}
+
+// A repo made by hand with 'gh repo create --private' has no commits; GitHub
+// answers git ref reads with 409. Ensure must make an initial commit first.
+func TestEnsure_SeedsEmptyRepo(t *testing.T) {
+	f := newFake(t, "goodtune")
+	f.repos["goodtune/ghp-scoperig-a"] = &fakeRepo{id: 101, empty: true}
+	p, err := Ensure(context.Background(), api(f), "goodtune/ghp-scoperig-a", "goodtune", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := f.nonGET()
+	if len(got) < 3 || got[2] != "PUT /repos/goodtune/ghp-scoperig-a/contents/README.md" {
+		t.Fatalf("calls: %v", got)
+	}
+	if len(p.Seed) != 7 {
+		t.Errorf("plan seed = %v", p.Seed)
+	}
+	before := len(f.nonGET())
+	if _, err := Ensure(context.Background(), api(f), "goodtune/ghp-scoperig-a", "goodtune", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if after := len(f.nonGET()); after != before {
+		t.Errorf("second ensure made %d non-GET calls", after-before)
 	}
 }

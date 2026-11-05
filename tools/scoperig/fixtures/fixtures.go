@@ -344,6 +344,24 @@ func Ensure(ctx context.Context, api API, repo, login string, create, canCreate 
 		add(allSeeds[1])
 	}
 
+	// A repo created by hand (gh repo create --private) has no commits and
+	// GitHub answers git ref reads with 409. Make an initial commit on the
+	// default branch so the branch, PR and release can be seeded.
+	if st, b, err := api.Do(ctx, http.MethodGet, rp+"/git/ref/heads/"+url.PathEscape(ri.DefaultBranch), nil); err != nil {
+		return plan, err
+	} else if st == http.StatusConflict {
+		body := map[string]any{
+			"message": "scoperig initial commit",
+			"content": base64.StdEncoding.EncodeToString([]byte("# " + name + "\n\nFixture repository for the GHP scope regression rig.\n")),
+		}
+		if err := send(ctx, api, http.MethodPut, rp+"/contents/README.md", body, nil); err != nil {
+			return plan, fmt.Errorf("initial commit: %w", err)
+		}
+		add("initial commit README.md on " + ri.DefaultBranch)
+	} else if st != http.StatusOK && st != http.StatusNotFound {
+		return plan, statusErr(http.MethodGet, rp+"/git/ref/heads/"+ri.DefaultBranch, st, b)
+	}
+
 	// Branch from the default branch head.
 	if ok, err := getJSON(ctx, api, rp+"/git/ref/heads/"+Branch, nil); err != nil {
 		return plan, err
