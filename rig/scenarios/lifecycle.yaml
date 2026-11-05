@@ -1,4 +1,4 @@
-# Token lifecycle scenarios (spec section 7: LIFE-C37, C38, C40).
+# Token lifecycle scenarios (spec section 7: LIFE-C37, C38, C40; GAP-A5 for #293).
 - id: LIFE-C37.default-duration
   claim: LIFE-C37
   doc: docs/features/token-scoping.md#expiration-and-revocation
@@ -29,3 +29,15 @@
     - {name: revoke, method: DELETE, path: "/api/tokens/{{index .ProfileIDs \"lifecycle-revoke\"}}", expect: {status_in: [200, 204]}}
     - {name: probe, method: GET, path: /api/v3/user, expect: {status: 401, body_contains: ["token has been revoked"]}}
   poll: {interval: 2s, timeout: 35s}
+
+- id: GAP-A5.pulls-alias-rejected
+  claim: GAP-A5
+  doc: docs/features/token-scoping.md#valid-permission-names
+  description: >-
+    Token creation rejects a non-canonical permission name (#293). The GitHub
+    permission is pull_requests; pulls:write must be refused with 400 and a
+    message that lists the valid names. If the server returns 201 the manager
+    revokes the new token.
+  kind: token_api
+  request: {method: POST, path: /api/tokens, body: {type: proxy, scopes: "pulls:write", session_id: "scoperig-{{.RunID}}"}}
+  expect: {status: 400, body_contains: ["pull_requests"]}
