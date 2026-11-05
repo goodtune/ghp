@@ -2,6 +2,7 @@ package permissions
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -56,6 +57,21 @@ func TestNamesSortedAndKnown(t *testing.T) {
 		}
 		if i > 0 && names[i-1] >= n {
 			t.Errorf("names not sorted/unique at %q", n)
+		}
+	}
+}
+
+// TestDocsListEveryName keeps the user-facing list in token-scoping.md in
+// step with the canonical list.
+func TestDocsListEveryName(t *testing.T) {
+	data, err := os.ReadFile("../../docs/features/token-scoping.md")
+	if err != nil {
+		t.Fatalf("read docs: %v", err)
+	}
+	doc := string(data)
+	for _, n := range Names() {
+		if !strings.Contains(doc, "`"+n+"`") {
+			t.Errorf("docs/features/token-scoping.md does not list %q", n)
 		}
 	}
 }

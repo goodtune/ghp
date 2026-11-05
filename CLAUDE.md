@@ -120,6 +120,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_client_request_total` — requests by originating client IP (`client`, `backend`, `token_type`, `status`); the `client` label honours only the single forwarded header named by `server.client_ip_header` (empty = peer address)
 - `ghp_proxy_request_duration_seconds` / `ghp_proxy_request_total` — proxied GitHub requests with full labels
 - `ghp_token_active` / `ghp_token_created_total` / `ghp_token_revoked_total` — token lifecycle
+- `ghp_token_scope_rejected_total` — token scope entries rejected at creation/update by `reason` (`unknown_permission`, `invalid_level`)
 - `ghp_github_ratelimit_remaining` / `ghp_github_ratelimit_limit` — GitHub rate limit gauges
 - `ghp_github_token_refresh_total` — OAuth token refresh attempts
 - `ghp_auth_rate_limit_total` — rate limiter rejections

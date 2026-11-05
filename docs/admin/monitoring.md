@@ -148,6 +148,7 @@ See [Git Cache](../features/git-cache.md) for configuration details.
 | `ghp_token_active` | Gauge | Number of active (non-expired, non-revoked) tokens per user (label: `user`) |
 | `ghp_token_created_total` | Counter | Total tokens created per user (label: `user`) |
 | `ghp_token_revoked_total` | Counter | Total tokens revoked per user (label: `user`) |
+| `ghp_token_scope_rejected_total` | Counter | Token scope entries rejected at creation or scope update (label: `reason` = `unknown_permission`, `invalid_level`) |
 
 #### GitHub Rate Limit Metrics
 

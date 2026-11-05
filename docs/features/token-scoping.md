@@ -125,6 +125,36 @@ Rules that differ from the general area of the path:
 | `pulls/comments/*`, `PUT pulls/{n}/update-branch` | `pull_requests:read` / `pull_requests:write` |
 | `PATCH check-runs/{id}`, `check-suites` writes | `checks:write` |
 
+### Valid permission names
+
+GHP accepts only canonical permission names. These are the names that scope
+enforcement uses, plus the GitHub App repository and organization permission
+names that agent tokens pass to GitHub:
+
+`actions`, `administration`, `checks`, `codespaces`, `contents`,
+`dependabot_secrets`, `deployments`, `discussions`, `environments`, `issues`,
+`members`, `metadata`, `organization_administration`,
+`organization_custom_roles`, `organization_hooks`, `organization_packages`,
+`organization_plan`, `organization_projects`, `organization_secrets`,
+`organization_self_hosted_runners`, `organization_user_blocking`, `packages`,
+`pages`, `projects`, `pull_requests`, `repository_custom_properties`,
+`repository_hooks`, `repository_projects`, `secret_scanning_alerts`,
+`secrets`, `security_events`, `single_file`, `statuses`, `team_discussions`,
+`vulnerability_alerts`, `workflows`.
+
+The level must be `read` or `write`. GHP does not accept aliases. For example,
+`pulls:write` is rejected: the GitHub permission is `pull_requests`.
+
+Token creation (`POST /api/tokens`, `ghp token create`) and scope updates
+(`PATCH /api/tokens/{id}`) return HTTP 400 for an unknown name or level. The
+error message lists the valid names. Each rejection increments
+`ghp_token_scope_rejected_total` (label `reason`: `unknown_permission` or
+`invalid_level`).
+
+Tokens created before this check may still hold an unknown name. GHP does not
+migrate them. They resolve as before, but the unknown entry never satisfies a
+permission check. The server logs one warning per unknown name.
+
 ## Open-Scoped Tokens
 
 When a token has neither repository nor permission restrictions, it is

@@ -167,7 +167,7 @@ Save the `session_token` from the response, then create a scoped proxy token:
     curl -s -X POST http://127.0.0.1:8080/api/tokens \
       -H "Authorization: Bearer <session_token>" \
       -H 'Content-Type: application/json' \
-      -d '{"repository": "owner/repo", "scopes": "contents:read,pulls:write", "duration": "1h"}'
+      -d '{"repository": "owner/repo", "scopes": "contents:read,pull_requests:write", "duration": "1h"}'
 
 ## Scope Regression Rig
 
