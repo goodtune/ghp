@@ -147,3 +147,29 @@ func TestConfig_StringRedacts(t *testing.T) {
 		}
 	}
 }
+
+// run must find gh on PATH when GHP_RIG_GH is unset, like the oracle does.
+func TestLoadConfig_GHPathFallback(t *testing.T) {
+	old := lookPath
+	t.Cleanup(func() { lookPath = old })
+	lookPath = func(name string) (string, error) {
+		if name != "gh" {
+			t.Fatalf("lookPath(%q)", name)
+		}
+		return "/opt/bin/gh", nil
+	}
+	c, err := LoadConfig(envMap(nil), writeCfg(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.GHPath != "/opt/bin/gh" {
+		t.Errorf("GHPath = %q, want PATH fallback", c.GHPath)
+	}
+	c, err = LoadConfig(envMap(map[string]string{"GHP_RIG_GH": "/x/gh"}), writeCfg(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.GHPath != "/x/gh" {
+		t.Errorf("GHPath = %q, want env value", c.GHPath)
+	}
+}

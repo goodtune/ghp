@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	osexec "os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,9 @@ type fileConfig struct {
 	} `yaml:"fixtures"`
 }
 
+// lookPath finds gh on PATH when GHP_RIG_GH is unset (a var for tests).
+var lookPath = osexec.LookPath
+
 // LoadConfig reads configFile and applies environment overrides. It does not
 // require GHP_SERVER_URL or GHP_USER_TOKEN; call RequireServer before any
 // network use.
@@ -78,6 +82,11 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 			Host:           fc.Instance.Host,
 			ManagementHost: firstNonEmpty(fc.Instance.ManagementHost, fc.Instance.Host),
 		},
+	}
+	if c.GHPath == "" {
+		if p, err := lookPath("gh"); err == nil {
+			c.GHPath = p
+		}
 	}
 	if c.ServerURL != "" {
 		u, err := url.Parse(c.ServerURL)
