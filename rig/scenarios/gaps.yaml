@@ -1,6 +1,8 @@
 # GAP probes (spec section 7; consensus section A). Expectations are the
-# DESIRED behaviour. known_issue and observed stay empty until the first
-# live run records today's behaviour.
+# DESIRED behaviour. known_issue and observed record today's behaviour from
+# the first live run (20261105T0534Z). GAP-A7 passed (GHP denies the
+# dot-segment path for B), so it carries no known_issue; GAP-A6 needs the
+# agent_installation capability and has not run yet.
 #
 # Consensus issue links, for triage: A1 goodtune/ghp#290, A2 #291,
 # A3 #292, A6 #294, A7 #295.
@@ -18,6 +20,9 @@
   method: DELETE
   path: /repos/{{.RepoW}}/git/refs/heads/scoperig-absent-{{.RunID}}
   expect: {status: 403, ghp_denial: true}
+  known_issue: https://github.com/goodtune/ghp/issues/290
+  # Run 20261105T0534Z: forwarded unchecked, GitHub answered 422.
+  observed: {status: 422, ghp_denial: false, body_contains: ["Reference does not exist"]}
 
 - id: GAP-A2.repositories-by-id
   claim: GAP-A2
@@ -28,6 +33,9 @@
   method: GET
   path: /repositories/{{.RepoB.ID}}
   expect: {status: 403, ghp_denial: true}
+  known_issue: https://github.com/goodtune/ghp/issues/291
+  # Run 20261105T0534Z: B's repository object returned to the repo-A token.
+  observed: {status: 200, ghp_denial: false, json: {"$.full_name": "{{.RepoB}}"}}
 
 # GAP-A3: sent to the instance with TLS SNI and Host github.com (the
 # github.com virtual host), path without /api/v3.
@@ -42,6 +50,10 @@
   method: GET
   path: /{{.RepoB}}/archive/HEAD.tar.gz
   expect: {status: 403}
+  known_issue: https://github.com/goodtune/ghp/issues/292
+  # Run 20261105T0534Z: no GHP denial; a non-GHP 404 came back (no scope
+  # check ran). The archive body itself was not returned.
+  observed: {status: 404, ghp_denial: false}
 
 # GAP-A6: an agent (gha_) token for an owner/repo repository. Notes:
 # - Creation does not call GitHub. The installation token is minted lazily
