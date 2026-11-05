@@ -11,6 +11,14 @@ When a request arrives with a token that is not a ghp-managed token (`ghx_` or
 is blocked in the configuration, the request is rejected with `403 Forbidden`
 before it reaches GitHub.
 
+!!! note "Management host API paths"
+    The border policy applies to the api.github.com virtual host. On the
+    management host's GitHub Enterprise Server-style paths (`/api/v3/` and
+    `/api/graphql`), ghp accepts only `ghx_` and `gha_` tokens: native tokens
+    get `403 Forbidden` even when their type is not blocked, and requests
+    without a credential get `401 Unauthorized`. When the border policy blocks
+    the token type, the 403 body keeps the border policy message.
+
 GitHub uses these token prefixes:
 
 | Prefix | Token Type | Config Key |
