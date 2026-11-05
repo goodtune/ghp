@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -13,14 +14,68 @@ import (
 )
 
 // graphQLRequestBody is the JSON envelope GitHub's GraphQL endpoint expects.
-// Variables are kept as json.RawMessage rather than `map[string]any`: the
-// analyser only reads the members that a `repository(owner:, name:)`
-// lookup references (see resolveVariables), so it does not decode the
-// whole object into Go values.
+// It is decoded by parseGraphQLEnvelope, never by encoding/json struct-field
+// matching (which folds case and Unicode, so `Query` or `variableſ` would be
+// read as `query` or `variables` while GitHub ignores them). Variables are
+// kept as json.RawMessage: the analyser only reads the members that a
+// `repository(owner:, name:)` lookup references (see resolveVariables).
 type graphQLRequestBody struct {
-	Query         string          `json:"query"`
-	OperationName string          `json:"operationName,omitempty"`
-	Variables     json.RawMessage `json:"variables,omitempty"`
+	Query         string
+	OperationName string
+	Variables     json.RawMessage
+}
+
+// graphQLEnvelopeKeys are the only top-level members a request body may have.
+var graphQLEnvelopeKeys = map[string]bool{
+	"query": true, "operationName": true, "variables": true, "extensions": true,
+}
+
+// parseGraphQLEnvelope decodes the request envelope strictly: the body must
+// be a JSON object whose keys are each exactly one of graphQLEnvelopeKeys,
+// with no duplicates. Anything else is an error (400), because the proxy and
+// GitHub could otherwise read different queries or variables from the same
+// bytes. `query` and `operationName` must be strings (or null); `variables`
+// is kept raw.
+func parseGraphQLEnvelope(body []byte) (graphQLRequestBody, error) {
+	var req graphQLRequestBody
+	members, ok := objectMembers(body)
+	if !ok {
+		return req, fmt.Errorf("graphql: invalid request envelope: body must be a JSON object")
+	}
+	seen := map[string]bool{}
+	for _, m := range members {
+		if !graphQLEnvelopeKeys[m.key] {
+			return req, fmt.Errorf("graphql: invalid request envelope: unexpected top-level key %q (allowed: query, operationName, variables, extensions)", m.key)
+		}
+		if seen[m.key] {
+			return req, fmt.Errorf("graphql: invalid request envelope: duplicate top-level key %q", m.key)
+		}
+		seen[m.key] = true
+		switch m.key {
+		case "query":
+			if err := decodeOptionalString(m.value, &req.Query); err != nil {
+				return req, fmt.Errorf("graphql: invalid request envelope: query must be a string")
+			}
+		case "operationName":
+			if err := decodeOptionalString(m.value, &req.OperationName); err != nil {
+				return req, fmt.Errorf("graphql: invalid request envelope: operationName must be a string")
+			}
+		case "variables":
+			req.Variables = m.value
+		}
+	}
+	return req, nil
+}
+
+func decodeOptionalString(raw json.RawMessage, dst *string) error {
+	raw = bytes.TrimSpace(raw)
+	if string(raw) == "null" {
+		return nil
+	}
+	if len(raw) == 0 || raw[0] != '"' {
+		return fmt.Errorf("not a string")
+	}
+	return json.Unmarshal(raw, dst)
 }
 
 // graphQLAnalysis is the result of statically analysing a GraphQL request
@@ -400,9 +455,9 @@ var mutationScopeRequirements = map[string]scopeRequirement{
 // An empty or unparseable body returns an error so the caller can fail
 // closed. A request that contains no operations is treated the same way.
 func analyzeGraphQLRequest(body []byte) (graphQLAnalysis, error) {
-	var req graphQLRequestBody
-	if err := json.Unmarshal(body, &req); err != nil {
-		return graphQLAnalysis{}, fmt.Errorf("graphql: invalid JSON body: %w", err)
+	req, err := parseGraphQLEnvelope(body)
+	if err != nil {
+		return graphQLAnalysis{}, err
 	}
 	if strings.TrimSpace(req.Query) == "" {
 		return graphQLAnalysis{}, fmt.Errorf("graphql: empty query")
@@ -432,7 +487,7 @@ func analyzeGraphQLRequest(body []byte) (graphQLAnalysis, error) {
 
 	a := &gqlAnalyzer{
 		varDefs:       op.VariableDefinitions,
-		vars:          resolveVariables(body, req.Variables, len(doc.Operations)),
+		vars:          resolveVariables(req.Variables, len(doc.Operations)),
 		fragments:     fragments,
 		fragmentStack: map[string]bool{},
 		seenScopes:    map[scopeRequirement]struct{}{},
@@ -744,57 +799,39 @@ func (a *gqlAnalyzer) stringArg(v *ast.Value) (string, bool) {
 }
 
 // resolveVariables returns the request's variables for repository pinning,
-// or nil when they must not be trusted. It returns nil when:
-//
-//   - the document has more than one operation;
-//   - the body has duplicate top-level keys (compared case-insensitively,
-//     because encoding/json matches struct fields case-insensitively), or a
-//     variables member whose key is not exactly "variables";
-//   - `variables` is absent, not a JSON object, or has duplicate keys.
-//
-// Duplicate keys are rejected so that the proxy and GitHub cannot read
-// different values for the same name. The body that is analysed is the
-// body that handleGraphQL forwards, byte for byte.
-func resolveVariables(body []byte, variables json.RawMessage, operations int) map[string]json.RawMessage {
+// or nil when they must not be trusted: the document has more than one
+// operation, or `variables` is absent, not a JSON object, or has duplicate
+// keys (so the proxy and GitHub cannot read different values for the same
+// name). The envelope itself was already checked by parseGraphQLEnvelope,
+// and the body that is analysed is the body handleGraphQL forwards, byte
+// for byte.
+func resolveVariables(variables json.RawMessage, operations int) map[string]json.RawMessage {
 	if operations != 1 {
 		return nil
 	}
-	keys, ok := objectKeys(body)
+	members, ok := objectMembers(variables)
 	if !ok {
 		return nil
 	}
-	seen := map[string]bool{}
-	for _, k := range keys {
-		lk := strings.ToLower(k)
-		if seen[lk] {
+	vars := make(map[string]json.RawMessage, len(members))
+	for _, m := range members {
+		if _, dup := vars[m.key]; dup {
 			return nil
 		}
-		seen[lk] = true
-		if lk == "variables" && k != "variables" {
-			return nil
-		}
-	}
-	vkeys, ok := objectKeys(variables)
-	if !ok {
-		return nil
-	}
-	vseen := map[string]bool{}
-	for _, k := range vkeys {
-		if vseen[k] {
-			return nil
-		}
-		vseen[k] = true
-	}
-	var vars map[string]json.RawMessage
-	if err := json.Unmarshal(variables, &vars); err != nil || vars == nil {
-		return nil
+		vars[m.key] = m.value
 	}
 	return vars
 }
 
-// objectKeys returns the member names of a JSON object in document order,
-// duplicates included. It reports false when raw is not a JSON object.
-func objectKeys(raw []byte) ([]string, bool) {
+type jsonMember struct {
+	key   string
+	value json.RawMessage
+}
+
+// objectMembers returns the members of a JSON object in document order,
+// duplicates included, with keys exactly as decoded (no case folding). It
+// reports false when raw is not a single JSON object.
+func objectMembers(raw []byte) ([]jsonMember, bool) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	tok, err := dec.Token()
 	if err != nil {
@@ -803,7 +840,7 @@ func objectKeys(raw []byte) ([]string, bool) {
 	if d, ok := tok.(json.Delim); !ok || d != '{' {
 		return nil, false
 	}
-	var keys []string
+	var members []jsonMember
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
@@ -813,16 +850,19 @@ func objectKeys(raw []byte) ([]string, bool) {
 		if !ok {
 			return nil, false
 		}
-		keys = append(keys, k)
-		var skip json.RawMessage
-		if err := dec.Decode(&skip); err != nil {
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
 			return nil, false
 		}
+		members = append(members, jsonMember{key: k, value: v})
 	}
 	if _, err := dec.Token(); err != nil {
 		return nil, false
 	}
-	return keys, true
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false
+	}
+	return members, true
 }
 
 // satisfiedBy reports whether the given proxy-token scopes grant every

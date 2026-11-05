@@ -108,11 +108,6 @@ func TestAnalyzeGraphQLRequest_VariablePinning(t *testing.T) {
 			wantUnpin: true,
 		},
 		{
-			name:      "duplicate top-level variables member",
-			body:      `{"query":` + jsonString(ghRepoQuery) + `,"variables":{"owner":"OWNER","name":"REPO"},"variables":{"owner":"EVIL","name":"REPO"}}`,
-			wantUnpin: true,
-		},
-		{
 			name:      "multiple operations",
 			body:      `{"query":` + jsonString(ghRepoQuery+" query Other { viewer { login } }") + `,"variables":{"owner":"OWNER","name":"REPO"},"operationName":"RepositoryInfo"}`,
 			wantUnpin: true,
@@ -235,6 +230,65 @@ func TestServeHTTP_GraphQL_RepoScoped_VariablePinning(t *testing.T) {
 				}
 			} else if bt.body != nil {
 				t.Errorf("denied request reached upstream")
+			}
+		})
+	}
+}
+
+func TestAnalyzeGraphQLRequest_StrictEnvelope(t *testing.T) {
+	q := jsonString(ghRepoQuery)
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{"long s raw", `{"query":` + q + `,"variables":{"owner":"evil","name":"x"},"variableſ":{"owner":"OWNER","name":"REPO"}}`, true},
+		{"long s escaped", `{"query":` + q + `,"variables":{"owner":"evil","name":"x"},"variableſ":{"owner":"OWNER","name":"REPO"}}`, true},
+		{"Query and query", `{"query":"{ viewer { login } }","Query":` + q + `}`, true},
+		{"operationName and OperationName", `{"query":` + q + `,"operationName":"RepositoryInfo","OperationName":"X"}`, true},
+		{"unknown key", `{"query":` + q + `,"foo":1}`, true},
+		{"duplicate query", `{"query":"{ viewer { login } }","query":` + q + `}`, true},
+		{"duplicate variables", `{"query":` + q + `,"variables":{"owner":"OWNER","name":"REPO"},"variables":{"owner":"EVIL","name":"REPO"}}`, true},
+		{"body not an object", `["query"]`, true},
+		{"extensions allowed", `{"query":` + q + `,"variables":{"owner":"OWNER","name":"REPO"},"extensions":{"persistedQuery":{}}}`, false},
+		{"query not a string", `{"query":1}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := analyzeGraphQLRequest([]byte(tt.body))
+			if (err != nil) != tt.wantErr {
+				t.Errorf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestServeHTTP_GraphQL_StrictEnvelopeRejectedBeforeUpstream(t *testing.T) {
+	q := jsonString(ghRepoQuery)
+	bodies := map[string]string{
+		"long s":        `{"query":` + q + `,"variables":{"owner":"evil","name":"x"},"variableſ":{"owner":"goodtune","name":"ghp"}}`,
+		"Query":         `{"query":"{ repository(owner: \"goodtune\", name: \"ghp\") { name } }","Query":"{ viewer { login } }"}`,
+		"OperationName": `{"query":` + q + `,"variables":{"owner":"goodtune","name":"ghp"},"OperationName":"X"}`,
+		"unknown key":   `{"query":` + q + `,"variables":{"owner":"goodtune","name":"ghp"},"foo":1}`,
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			h, ghpToken := newRepoOnlyHandler(t, "goodtune/ghp")
+			bt := &bodyCaptureTransport{}
+			h.client.Transport = bt
+			req := httptest.NewRequest("POST", "http://api.github.com/graphql", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+ghpToken)
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body: %s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "request envelope") {
+				t.Errorf("body %q does not explain the envelope error", rr.Body.String())
+			}
+			if bt.body != nil {
+				t.Errorf("rejected request reached upstream")
 			}
 		})
 	}

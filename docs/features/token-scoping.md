@@ -135,10 +135,15 @@ of `owner` and `name` is one of these:
 A variable does not pin the lookup when its value is `null`, a number, a
 boolean, an array or an object, or when the key is not in `variables`.
 The default value in the operation (`$v: String = "app"`) is never used.
-No variable pins a lookup when the request body or the `variables` object
-has duplicate keys, or when the document has more than one operation:
-in these cases the proxy and GitHub could read different values. The
-proxy forwards the same bytes that it analyses.
+No variable pins a lookup when the `variables` object has duplicate keys,
+or when the document has more than one operation: in these cases the
+proxy and GitHub could read different values. The proxy forwards the
+same bytes that it analyses.
+
+For scoped tokens the request body must be a JSON object whose top-level
+keys are each exactly `query`, `operationName`, `variables` or
+`extensions` (exact bytes, case-sensitive), with no duplicates. Any other
+key, including `Query` or a look-alike such as `variableſ`, gives a 400.
 
 For repository-restricted tokens, the proxy rejects any request that
 contains even one unpinned `repository(...)` selection, even if other
@@ -171,7 +176,7 @@ fields" message can use the named field as a hint for extending
 - **Variable pinning trusts the `variables` object of the forwarded
   body.** A lookup with variables is checked against the values that the
   request sends, which are the values that GitHub uses. A client that
-  sends duplicate keys, more than one operation, or a non-string value
+  sends duplicate keys in `variables`, more than one operation, or a non-string value
   gets a 403 for a repository-restricted token. gh queries that have
   object fields with no analyzer table entry are still rejected as
   unmapped (tracked separately).
