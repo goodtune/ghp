@@ -239,6 +239,23 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			add("%s: %v", where, perr)
 			return
 		}
+		if cleanup {
+			// Cleanup runs with the unrestricted open token and is never
+			// passed through the GraphQL mutation check, so it must not be
+			// a GraphQL request at all: cleanup is a REST write on W.
+			if clean == "/graphql" {
+				add("%s: GraphQL requests are not allowed in cleanup", where)
+				return
+			}
+			if m, ok := body.(map[string]any); ok {
+				if q, ok := m["query"].(string); ok {
+					if f, err := parseGraphQL(q); err == nil && f.mutation {
+						add("%s: GraphQL mutations are not allowed in cleanup", where)
+						return
+					}
+				}
+			}
+		}
 		if s.Kind == "token_api" {
 			// token_api scenarios (steps, request and cleanup alike) talk
 			// to the management API, plus read-only GETs to the proxy host

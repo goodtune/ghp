@@ -680,3 +680,20 @@ func TestValidate_GraphQLStepPathMustBeGraphQL(t *testing.T) {
 		}
 	})
 }
+
+func TestValidate_CleanupRejectsGraphQLMutation(t *testing.T) {
+	mut := map[string]any{"query": `mutation { createIssue(input:{repositoryId:"R_placeholderW", title:"t"}) { clientMutationId } }`}
+	cases := map[string]*Scenario{
+		"graphql kind /graphql cleanup": {ID: "P2", Claim: "C", Kind: "graphql", Profile: "w", Query: "{ viewer { login } }", Expect: &Expect{Status: 200},
+			Cleanup: []Request{{Method: "POST", Path: "/graphql", Body: mut}}},
+		"rest kind mutation body on W path": {ID: "P2r", Claim: "C", Kind: "rest", Profile: "w", Method: "GET", Path: "/user", Expect: &Expect{Status: 200},
+			Cleanup: []Request{{Method: "POST", Path: "/repos/w-owner/w-repo/issues", Body: mut}}},
+	}
+	for name, s := range cases {
+		t.Run(name, func(t *testing.T) {
+			if errs := Validate(r4Tree(s), nil); !errsContain(errs, "cleanup[0]: GraphQL") {
+				t.Fatalf("want cleanup GraphQL error, got %v", errs)
+			}
+		})
+	}
+}
