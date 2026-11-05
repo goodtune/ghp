@@ -40,9 +40,10 @@ func TestLive(t *testing.T) {
 			t.Errorf("user token appears in %s", name)
 		}
 	}
-	t.Logf("scoperig run exit code %d\n%s", code, stdout.String())
+	redact := func(s string) string { return strings.ReplaceAll(s, token, "[REDACTED]") }
+	t.Logf("scoperig run exit code %d\n%s", code, redact(stdout.String()))
 	if code >= 2 {
-		t.Fatalf("scoperig run exit code %d (ERROR or could not start): %s", code, stderr.String())
+		t.Fatalf("scoperig run exit code %d (ERROR or could not start): %s", code, redact(stderr.String()))
 	}
 	if code == 1 {
 		t.Log("scoperig run reported scenario FAILs (exit 1); see the table above")
