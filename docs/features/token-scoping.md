@@ -127,9 +127,11 @@ Rules that differ from the general area of the path:
 
 ### Valid permission names
 
-GHP accepts only canonical permission names. These are the names that scope
-enforcement uses, plus the GitHub App repository and organization permission
-names that agent tokens pass to GitHub:
+GHP accepts only canonical permission names. These are the GitHub App
+repository and organization permission names that agent tokens pass to
+GitHub, plus the names that scope enforcement uses. One name, `projects`, is
+enforcement-only: the GraphQL Projects v2 tables use it, but it is not a
+GitHub App permission name, so agent tokens should not rely on it.
 
 `actions`, `administration`, `checks`, `codespaces`, `contents`,
 `dependabot_secrets`, `deployments`, `discussions`, `environments`, `issues`,

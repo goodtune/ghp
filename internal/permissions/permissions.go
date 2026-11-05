@@ -106,9 +106,9 @@ type ValidationError struct {
 func (e *ValidationError) Error() string {
 	switch e.Reason {
 	case ReasonInvalidLevel:
-		return fmt.Sprintf("invalid scope level %q for %q (must be read or write)", e.Level, e.Permission)
+		return fmt.Sprintf("invalid scope level %q for %q (must be read or write)", truncate(e.Level), truncate(e.Permission))
 	default:
-		return fmt.Sprintf("unknown scope permission %q (valid permissions: %s)", e.Permission, strings.Join(sortedNames, ", "))
+		return fmt.Sprintf("unknown scope permission %q (valid permissions: %s)", truncate(e.Permission), strings.Join(sortedNames, ", "))
 	}
 }
 
@@ -122,4 +122,15 @@ func Validate(permission, level string) error {
 		return &ValidationError{Reason: ReasonInvalidLevel, Permission: permission, Level: level}
 	}
 	return nil
+}
+
+// maxEcho bounds how much of a user-supplied value an error message repeats.
+const maxEcho = 64
+
+func truncate(s string) string {
+	r := []rune(s)
+	if len(r) <= maxEcho {
+		return s
+	}
+	return string(r[:maxEcho]) + "…"
 }

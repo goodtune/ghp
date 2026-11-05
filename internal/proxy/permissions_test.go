@@ -41,8 +41,11 @@ func TestEnforcementPermissionsAreCanonical(t *testing.T) {
 
 func TestParseScopeInfo_StoredUnknownNameResolvesAndWarnsOnce(t *testing.T) {
 	var buf bytes.Buffer
-	w := &scopeNameWarner{}
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	origWarner, origLogger := storedScopeWarner, scopeWarnLogger
+	storedScopeWarner = &scopeNameWarner{}
+	scopeWarnLogger = func() *slog.Logger { return logger }
+	t.Cleanup(func() { storedScopeWarner, scopeWarnLogger = origWarner, origLogger })
 
 	scopes, _ := json.Marshal(map[string]string{"pulls": "write", "contents": "read"})
 	pt := &database.ProxyToken{ID: "t1", Repositories: json.RawMessage("null"), Scopes: scopes}
@@ -55,7 +58,6 @@ func TestParseScopeInfo_StoredUnknownNameResolvesAndWarnsOnce(t *testing.T) {
 		if si.Scopes["pulls"] != "write" {
 			t.Fatalf("stored scope not preserved: %v", si.Scopes)
 		}
-		w.warn(logger, pt.ID, si.Scopes)
 	}
 	if n := strings.Count(buf.String(), "unknown permission"); n != 1 {
 		t.Errorf("expected exactly one warning, got %d: %s", n, buf.String())

@@ -75,3 +75,19 @@ func TestDocsListEveryName(t *testing.T) {
 		}
 	}
 }
+
+func TestValidationErrorBoundsEcho(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	for _, err := range []error{Validate(long, "read"), Validate("contents", long)} {
+		msg := err.Error()
+		if strings.Contains(msg, strings.Repeat("x", 65)) {
+			t.Errorf("echoed value not truncated (len %d)", len(msg))
+		}
+		if !strings.Contains(msg, "…") {
+			t.Errorf("missing truncation marker: %.100s", msg)
+		}
+		if len(msg) > 1200 {
+			t.Errorf("message too long: %d", len(msg))
+		}
+	}
+}

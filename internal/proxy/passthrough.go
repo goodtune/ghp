@@ -524,7 +524,7 @@ func parseScopeInfo(pt *database.ProxyToken) (tokenScopeInfo, error) {
 	if err := json.Unmarshal(pt.Scopes, &scopes); err != nil {
 		return tokenScopeInfo{}, fmt.Errorf("parsing token scopes: %w", err)
 	}
-	storedScopeWarner.warn(slog.Default(), pt.ID, scopes)
+	storedScopeWarner.warn(scopeWarnLogger(), pt.ID, scopes)
 	return tokenScopeInfo{Repos: repos, Scopes: scopes}, nil
 }
 
@@ -538,6 +538,9 @@ type scopeNameWarner struct {
 }
 
 var storedScopeWarner = &scopeNameWarner{}
+
+// scopeWarnLogger returns the logger for stored-scope warnings; tests swap it.
+var scopeWarnLogger = slog.Default
 
 func (w *scopeNameWarner) warn(logger *slog.Logger, tokenID string, scopes database.Scopes) {
 	for name := range scopes {
