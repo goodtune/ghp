@@ -782,7 +782,7 @@ func TestRun_KnownIssueStepFailureIsKnownChanged(t *testing.T) {
   expect: `+tc.scenarioExpect+`
   steps:
     - {name: one, method: GET, path: "/repos/{{.RepoA}}/branches", expect: {status: 404}}
-    - {name: two, method: GET, path: "/repos/{{.RepoA}}/tags"}
+    - {name: two, method: GET, path: "/repos/{{.RepoA}}/tags", expect: {status: 200}}
 `)
 			out := filepath.Join(t.TempDir(), "r.json")
 			res := runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--out", out)

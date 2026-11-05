@@ -280,6 +280,22 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	for i := range s.Steps {
 		checkReq(fmt.Sprintf("steps[%d]", i), i, &s.Steps[i])
 	}
+	// Rule: every runnable step, and a scenario with no steps, must assert
+	// something. A missing or empty expect would otherwise be a silent PASS.
+	for i := range s.Steps {
+		if !hasAssertion(s.Steps[i].Expect) {
+			add("steps[%d]: expect is required and must have at least one assertion", i)
+		}
+	}
+	if len(s.Steps) == 0 {
+		e := s.Expect
+		if s.Request != nil && s.Request.Expect != nil {
+			e = s.Request.Expect
+		}
+		if !hasAssertion(e) {
+			add("expect is required and must have at least one assertion")
+		}
+	}
 	for i := range s.Cleanup {
 		checkReq(fmt.Sprintf("cleanup[%d]", i), -1, &s.Cleanup[i])
 	}
@@ -362,6 +378,17 @@ func normalisePath(p string, allowDots bool) (string, error) {
 		return "", fmt.Errorf("path %q contains a dot-dot segment", p)
 	}
 	return c, nil
+}
+
+// hasAssertion reports whether e has at least one matcher set.
+func hasAssertion(e *Expect) bool {
+	if e == nil {
+		return false
+	}
+	return e.Status != 0 || len(e.StatusIn) > 0 || len(e.BodyContains) > 0 ||
+		len(e.BodyNotContains) > 0 || len(e.Header) > 0 || len(e.JSON) > 0 ||
+		e.GHPDenial != nil || e.ExitCode != nil || len(e.ExitCodeIn) > 0 ||
+		len(e.StdoutContains) > 0 || len(e.StderrContains) > 0
 }
 
 func checkExpect(where string, e *Expect, v *Vars, add func(string, ...any)) {

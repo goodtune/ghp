@@ -16,7 +16,26 @@ func baseTree() *Tree {
 	}
 }
 
+// withScenarios builds a tree for tests of rules other than the expect
+// rule. It fills a placeholder expect ({status: 200}) on a scenario or step
+// that has none, so those tests stay focused on their own rule. Tests of the
+// expect rule use rawScenarios.
 func withScenarios(ss ...*Scenario) *Tree {
+	for _, s := range ss {
+		if len(s.Steps) == 0 && s.Expect == nil {
+			s.Expect = &Expect{Status: 200}
+		}
+		for i := range s.Steps {
+			if s.Steps[i].Expect == nil {
+				s.Steps[i].Expect = &Expect{Status: 200}
+			}
+		}
+	}
+	return rawScenarios(ss...)
+}
+
+// rawScenarios builds a tree exactly as given (no placeholder expect).
+func rawScenarios(ss ...*Scenario) *Tree {
 	t := baseTree()
 	for _, s := range ss {
 		if s.File == "" {
@@ -527,4 +546,50 @@ func TestValidate_ExitCodeAndExitCodeIn(t *testing.T) {
 	o := &Scenario{ID: "E2", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user",
 		Expect: &Expect{Status: 200, ExitCodeIn: []int{0, 1}}}
 	requireNoErr(t, Validate(withScenarios(o), nil))
+}
+
+func TestValidate_ExpectRequired(t *testing.T) {
+	ok := &Expect{Status: 200}
+	cases := []struct {
+		name string
+		s    *Scenario
+		want []string // nil = valid
+	}{
+		{"shorthand without expect", &Scenario{ID: "E1", Claim: "C1", Profile: "p", Kind: "rest",
+			Method: "GET", Path: "/repos/{{.RepoA}}/issues"}, []string{"E1", "steps[0]", "expect is required"}},
+		{"middle step without expect", &Scenario{ID: "E2", Claim: "C1", Profile: "p", Kind: "rest",
+			Steps: []Request{
+				{Method: "GET", Path: "/repos/{{.RepoA}}/issues", Expect: ok},
+				{Method: "GET", Path: "/repos/{{.RepoA}}/pulls"},
+				{Method: "GET", Path: "/repos/{{.RepoA}}/labels", Expect: ok},
+			}}, []string{"E2", "steps[1]", "expect is required"}},
+		{"final step without expect", &Scenario{ID: "E3", Claim: "C1", Profile: "p", Kind: "rest",
+			Steps: []Request{
+				{Method: "GET", Path: "/repos/{{.RepoA}}/issues", Expect: ok},
+				{Method: "GET", Path: "/repos/{{.RepoA}}/pulls"},
+			}}, []string{"E3", "steps[1]", "expect is required"}},
+		{"empty expect", &Scenario{ID: "E4", Claim: "C1", Profile: "p", Kind: "rest",
+			Method: "GET", Path: "/repos/{{.RepoA}}/issues", Expect: &Expect{}}, []string{"E4", "steps[0]", "expect is required"}},
+		{"gh without expect", &Scenario{ID: "E5", Claim: "C1", Profile: "p", Kind: "gh",
+			Args: []string{"issue", "list"}, Repo: "A"}, []string{"E5", "expect is required"}},
+		{"valid multi-step", &Scenario{ID: "E6", Claim: "C1", Profile: "p", Kind: "rest",
+			Steps: []Request{
+				{Method: "GET", Path: "/repos/{{.RepoA}}/issues", Expect: ok},
+				{Method: "GET", Path: "/repos/{{.RepoA}}/pulls", Expect: &Expect{GHPDenial: new(bool)}},
+			}}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := Validate(rawScenarios(tc.s), nil)
+			if tc.want == nil {
+				for _, e := range errs {
+					if strings.Contains(e.Error(), "expect is required") {
+						t.Fatalf("unexpected: %v", e)
+					}
+				}
+				return
+			}
+			requireErr(t, errs, tc.want...)
+		})
+	}
 }
