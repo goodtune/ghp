@@ -370,9 +370,15 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 	var sf exec.StepFailure
 	switch {
 	case errors.As(rerr, &sf) && obs != nil:
+		// A failed step is never PASS, KNOWN or KNOWN-FIXED: the step's
+		// response must not be classified against the scenario's
+		// expect:/observed:, or a regression could hide behind them.
 		r = report.NewResult(s, obs, nil)
-		if s.KnownIssue == "" && r.Status != report.StatusError {
+		if r.Status != report.StatusError {
 			r.Status = report.StatusFail
+			if s.KnownIssue != "" {
+				r.Status = report.StatusKnownChanged
+			}
 			r.Detail = sf.Error()
 		}
 	default:

@@ -761,3 +761,42 @@ func TestPlaceholderFixtureOwner_Exit3(t *testing.T) {
 		})
 	}
 }
+
+// A failed intermediate step in a known_issue scenario must surface as
+// KNOWN-CHANGED with the step error, even when the failed step's response
+// happens to match observed: (KNOWN) or expect: (KNOWN-FIXED).
+func TestRun_KnownIssueStepFailureIsKnownChanged(t *testing.T) {
+	for _, tc := range []struct{ name, scenarioExpect string }{
+		{"matchesObserved", "{status: 403}"},
+		{"matchesExpect", "{status: 200}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeGHP(t)
+			root, cfg := writeTree(t, f.host(), `
+- id: REPO-C07.steps
+  claim: REPO-C07
+  profile: repo-A
+  kind: rest
+  known_issue: https://github.com/goodtune/ghp/issues/290
+  observed: {status: 200}
+  expect: `+tc.scenarioExpect+`
+  steps:
+    - {name: one, method: GET, path: "/repos/{{.RepoA}}/branches", expect: {status: 404}}
+    - {name: two, method: GET, path: "/repos/{{.RepoA}}/tags"}
+`)
+			out := filepath.Join(t.TempDir(), "r.json")
+			res := runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--out", out)
+			raw, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatalf("%v\nstdout:\n%s\nstderr:\n%s", err, res.stdout, res.stderr)
+			}
+			got := statusesByID(t, raw)["REPO-C07.steps"]
+			if got["status"] != "KNOWN-CHANGED" {
+				t.Fatalf("status = %v, want KNOWN-CHANGED (%v)", got["status"], got)
+			}
+			if d, _ := got["detail"].(string); !strings.Contains(d, "one") {
+				t.Errorf("detail = %q, want the step error", d)
+			}
+		})
+	}
+}
