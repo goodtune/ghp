@@ -158,3 +158,9 @@ func TestREST_WriteNotRetriedAfterAmbiguousError(t *testing.T) {
 		t.Errorf("server saw %d calls", calls.Load())
 	}
 }
+
+func TestFor_GH(t *testing.T) {
+	if e, err := For("gh"); err != nil || e.Kind() != "gh" {
+		t.Fatalf("For(gh) = %v, %v", e, err)
+	}
+}
