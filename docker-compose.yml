@@ -1,6 +1,6 @@
 services:
   vault:
-    image: hashicorp/vault:2.0
+    image: hashicorp/vault:2.1
     container_name: ghp-vault
     ports:
       - "8200:8200"
@@ -17,7 +17,7 @@ services:
       retries: 10
 
   vault-init:
-    image: hashicorp/vault:2.0
+    image: hashicorp/vault:2.1
     container_name: ghp-vault-init
     depends_on:
       vault:
