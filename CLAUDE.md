@@ -76,6 +76,8 @@ internal/
   backend/        Database abstraction interface
   docs/           Embedded MkDocs output
 e2e/              Playwright end-to-end tests
+tools/scoperig/   Scope regression rig (operator tool, not shipped)
+rig/              Rig claims, profiles, scenarios and gh query corpus
 docs/             MkDocs documentation source
 packaging/        Systemd units, default config, install scripts
 ```

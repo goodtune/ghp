@@ -1,0 +1,90 @@
+# Repository restriction scenarios (spec section 7: REPO-C05, C06, C07, C10).
+- id: REPO-C05.other-repo-pulls
+  claim: REPO-C05
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: A token scoped to A cannot list pulls on B.
+  profile: repo-A
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoB}}/pulls
+  expect: {status: 403, body_contains: ["Token is not scoped to"], ghp_denial: true}
+
+- id: REPO-C06.repo-a-repo
+  claim: REPO-C06
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: A token scoped to A can read A.
+  profile: repo-A
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}
+  expect: {status: 200, json: {"$.full_name": "{{.RepoA}}"}}
+
+- id: REPO-C06.repo-a-pulls
+  claim: REPO-C06
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: A token scoped to A can list pulls on A.
+  profile: repo-A
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}/pulls
+  expect: {status: 200}
+
+- id: REPO-C06.repo-ab-repo-a
+  claim: REPO-C06
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: A token scoped to A and B can read A.
+  profile: repo-AB
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}
+  expect: {status: 200}
+
+- id: REPO-C06.repo-ab-pulls
+  claim: REPO-C06
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: A token scoped to A and B can list pulls on A.
+  profile: repo-AB
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}/pulls
+  expect: {status: 200}
+
+- id: REPO-C06.repo-ab-repo-b
+  claim: REPO-C06
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: A token scoped to A and B can read B.
+  profile: repo-AB
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoB}}
+  expect: {status: 200, json: {"$.full_name": "{{.RepoB}}"}}
+
+- id: REPO-C07.open-repo-a
+  claim: REPO-C07
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: A token with no repositories can read A.
+  profile: open
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}
+  expect: {status: 200}
+
+- id: REPO-C07.open-repo-b
+  claim: REPO-C07
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: A token with no repositories can read B.
+  profile: open
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoB}}
+  expect: {status: 200}
+
+- id: REPO-C10.case-insensitive
+  claim: REPO-C10
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: Repository matching is case-insensitive.
+  profile: repo-A
+  kind: rest
+  method: GET
+  path: /repos/{{upper .RepoA.Owner}}/{{upper .RepoA.Name}}
+  expect: {status: 200}

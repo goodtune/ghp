@@ -1,0 +1,99 @@
+# GAP probes (spec section 7; consensus section A). Expectations are the
+# DESIRED behaviour. known_issue and observed record today's behaviour from
+# the first live run (20261105T0534Z). GAP-A7 passed (GHP denies the
+# dot-segment path for B), so it carries no known_issue; GAP-A6 needs the
+# agent_installation capability and has not run yet.
+#
+# Consensus issue links, for triage: A1 goodtune/ghp#290, A2 #291,
+# A3 #292, A6 #294, A7 #295.
+
+# GAP-A1: DELETE git/refs is not in the REST permission table, so today it is
+# forwarded unchecked (GitHub answers 422 for the absent ref). The ref never
+# exists, so a forwarded request is harmless. The path targets W only.
+- id: GAP-A1.delete-ref-contents-ro
+  claim: GAP-A1
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: contents:read must not delete a ref on W (unmapped write endpoint).
+  profile: perm-contents-ro-W
+  kind: rest
+  requires: [repo_w_push]
+  method: DELETE
+  path: /repos/{{.RepoW}}/git/refs/heads/scoperig-absent-{{.RunID}}
+  expect: {status: 403, ghp_denial: true}
+  known_issue: https://github.com/goodtune/ghp/issues/290
+  # Run 20261105T0534Z: forwarded unchecked, GitHub answered 422.
+  observed: {status: 422, ghp_denial: false, body_contains: ["Reference does not exist"]}
+
+- id: GAP-A2.repositories-by-id
+  claim: GAP-A2
+  doc: docs/how-it-works.md#request-flow
+  description: A token scoped to A must not read B through /repositories/{id}.
+  profile: repo-A
+  kind: rest
+  method: GET
+  path: /repositories/{{.RepoB.ID}}
+  expect: {status: 403, ghp_denial: true}
+  known_issue: https://github.com/goodtune/ghp/issues/291
+  # Run 20261105T0534Z: B's repository object returned to the repo-A token.
+  observed: {status: 200, ghp_denial: false, json: {"$.full_name": "{{.RepoB}}"}}
+
+# GAP-A3: sent to the instance with TLS SNI and Host github.com (the
+# github.com virtual host), path without /api/v3.
+- id: GAP-A3.github-vhost-archive
+  claim: GAP-A3
+  doc: docs/how-it-works.md#virtualhost-routing
+  description: A token scoped to A must not download B's archive through the github.com vhost.
+  profile: repo-A
+  kind: rest
+  requires: [github_vhost]
+  vhost: github.com
+  method: GET
+  path: /{{.RepoB}}/archive/HEAD.tar.gz
+  expect: {status: 403}
+  known_issue: https://github.com/goodtune/ghp/issues/292
+  # Run 20261105T0534Z: no GHP denial; a non-GHP 404 came back (no scope
+  # check ran). The archive body itself was not returned.
+  observed: {status: 404, ghp_denial: false}
+
+# GAP-A6: an agent (gha_) token for an owner/repo repository. Notes:
+# - Creation does not call GitHub. The installation token is minted lazily
+#   on the first proxied request (AppTokenProvider.GetInstallationToken), so
+#   a 201 shows the request is accepted, not that GitHub accepts owner/repo
+#   names. A probe that sends a request with the new gha_ token is follow-up
+#   work (the executor never sees the raw token).
+# - Revocation: token.Service.Revoke marks the record revoked and drops the
+#   cache entry; it does not call DELETE /installation/token. A minted
+#   installation token stays valid at GitHub until its natural expiry (up to
+#   1h) and stays in GHP's in-memory cache for up to 55m. It never leaves
+#   GHP, so the leftover exposure is server-side only; requests with the
+#   revoked gha_ token are refused.
+- id: GAP-A6.agent-mint
+  claim: GAP-A6
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  description: An agent token for an owner/repo repository is created.
+  kind: token_api
+  requires: [agent_installation]
+  request:
+    method: POST
+    path: /api/tokens
+    body:
+      type: agent
+      repositories: ["{{.RepoA}}"]
+      installation_id: "$int:InstallationID"
+      duration: 1h
+      session_id: "scoperig-{{.RunID}}"
+  expect: {status: 201}
+
+# GAP-A7: the path is sent verbatim (URL.Opaque). The validator allows dot
+# segments for this scenario ID only, and only on GET.
+- id: GAP-A7.dotdot-path
+  claim: GAP-A7
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: Dot segments after A must not reach B's contents.
+  profile: repo-A
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}/../../{{.RepoB}}/contents/README.md
+  expect:
+    status_in: [403, 404]
+    body_not_contains: ['"path": "README.md"', '"path":"README.md"']

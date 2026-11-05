@@ -1,0 +1,53 @@
+* Request at 2026-11-05 12:00:00.000000 +1100 AEDT m=+0.010000000
+* Request to https://api.github.com/repos/cli/cli/readme
+> GET /repos/cli/cli/readme HTTP/1.1
+> Host: api.github.com
+> Accept: application/vnd.github.v3.html
+> Authorization: token REDACTED
+> User-Agent: GitHub CLI 2.102.0
+
+< HTTP/2.0 200 OK
+< Content-Type: application/json; charset=utf-8
+
+{
+  "name": "README.md"
+}
+
+* Request took 100.0ms
+* Request at 2026-11-05 12:00:01.000000 +1100 AEDT m=+0.020000000
+* Request to https://api.github.com/graphql
+> POST /graphql HTTP/1.1
+> Host: api.github.com
+> Authorization: token REDACTED
+> Content-Type: application/json; charset=utf-8
+
+GraphQL query:
+fragment pr on PullRequest{number,title}
+    query PullRequestList(
+      $owner: String!,
+      $repo: String!,
+      $limit: Int!,
+      $endCursor: String
+    ) {
+      repository(owner: $owner, name: $repo) {
+        pullRequests(first: $limit, after: $endCursor) {
+          nodes { ...pr }
+        }
+      }
+    }
+GraphQL variables: {"limit":30,"owner":"cli","repo":"cli","endCursor":"Y3Vyc29yOjE="}
+
+< HTTP/2.0 200 OK
+< Content-Type: application/json; charset=utf-8
+
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": []
+      }
+    }
+  }
+}
+
+* Request took 200.0ms

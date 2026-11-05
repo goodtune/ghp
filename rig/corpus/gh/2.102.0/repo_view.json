@@ -1,0 +1,33 @@
+{
+  "gh_version": "2.102.0",
+  "command": "repo view",
+  "rest": [
+    "GET /repos/OWNER/REPO/readme"
+  ],
+  "graphql": [
+    {
+      "operation": "RepositoryInfo",
+      "body": {
+        "query": "query RepositoryInfo($owner: String!, $name: String!) {\n    repository(owner: $owner, name: $name) {name,owner{id,login},description}\n  }",
+        "variables": {
+          "name": "REPO",
+          "owner": "OWNER"
+        },
+        "operationName": "RepositoryInfo"
+      },
+      "expect": {
+        "open": {
+          "verdict": "allow"
+        },
+        "perm-ro": {
+          "verdict": "allow"
+        },
+        "repo": {
+          "verdict": "allow",
+          "known_issue": "https://github.com/goodtune/ghp/issues/297",
+          "current": "deny:unpinned"
+        }
+      }
+    }
+  ]
+}

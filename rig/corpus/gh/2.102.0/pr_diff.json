@@ -1,0 +1,34 @@
+{
+  "gh_version": "2.102.0",
+  "command": "pr diff",
+  "rest": [
+    "GET /repos/OWNER/REPO/pulls/1"
+  ],
+  "graphql": [
+    {
+      "operation": "PullRequestByNumber",
+      "body": {
+        "query": "query PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {\n    repository(owner: $owner, name: $repo) {\n      pullRequest(number: $pr_number) {number,id}\n    }\n  }",
+        "variables": {
+          "owner": "OWNER",
+          "pr_number": 1,
+          "repo": "REPO"
+        },
+        "operationName": "PullRequestByNumber"
+      },
+      "expect": {
+        "open": {
+          "verdict": "allow"
+        },
+        "perm-ro": {
+          "verdict": "allow"
+        },
+        "repo": {
+          "verdict": "allow",
+          "known_issue": "https://github.com/goodtune/ghp/issues/297",
+          "current": "deny:unpinned"
+        }
+      }
+    }
+  ]
+}

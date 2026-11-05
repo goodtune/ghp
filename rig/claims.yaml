@@ -1,0 +1,317 @@
+# Claim catalogue for the scope regression rig (spec section 3.2).
+# IDs reuse the recon claim numbers C1-C54; GAP-A* are the consensus gap probes.
+- id: TOK-C01
+  doc: docs/features/token-scoping.md#proxy-tokens-ghx_
+  claim: "A ghx_ token forwards with the user's credential, and the client never sees the real token."
+  iteration: 2
+  testable: periodic
+- id: TOK-C02
+  doc: docs/features/token-scoping.md#agent-tokens-gha_
+  claim: "Only admins can create gha_ tokens."
+  iteration: 2
+  testable: periodic
+- id: TOK-C03
+  doc: docs/getting-started.md#cli
+  claim: "The --app and --installation names resolve to IDs."
+  iteration: 2
+  testable: periodic
+- id: TOK-C04
+  doc: docs/getting-started.md#cli
+  claim: "With one app or a default app, --app can be omitted."
+  iteration: 2
+  testable: periodic
+- id: REPO-C05
+  doc: docs/features/token-scoping.md#repository-restrictions
+  claim: "A repository-restricted token is rejected for repositories outside its list."
+  iteration: 1
+  testable: periodic
+- id: REPO-C06
+  doc: docs/features/token-scoping.md#repository-restrictions
+  claim: "A repository-restricted token can access the repositories in its list."
+  iteration: 1
+  testable: periodic
+- id: REPO-C07
+  doc: docs/features/token-scoping.md#repository-restrictions
+  claim: "A token with no repositories can reach any repository the credential can."
+  iteration: 1
+  testable: periodic
+- id: REPO-C08
+  doc: docs/features/token-scoping.md#repository-restrictions
+  claim: "Proxy tokens take --repo (single) and agent tokens take --repos."
+  iteration: 2
+  testable: periodic
+- id: REPO-C09
+  doc: docs/how-it-works.md#request-flow
+  claim: "The proxy verifies the request targets an allowed repository."
+  iteration: 2
+  testable: periodic
+- id: REPO-C10
+  doc: docs/features/token-scoping.md#repository-restrictions
+  claim: "Repository matching is case-insensitive."
+  iteration: 1
+  testable: periodic
+- id: PERM-C11
+  doc: docs/features/token-scoping.md#permission-restrictions
+  claim: "A contents:read token cannot write contents."
+  iteration: 1
+  testable: periodic
+- id: PERM-C12
+  doc: docs/features/token-scoping.md#permission-restrictions
+  claim: "A contents:write token can write contents."
+  iteration: 1
+  testable: periodic
+- id: PERM-C13
+  doc: docs/features/token-scoping.md#permission-restrictions
+  claim: "pull_requests:read blocks creating a pull request; pull_requests:write allows it."
+  iteration: 1
+  testable: periodic
+- id: PERM-C14
+  doc: docs/features/token-scoping.md#permission-restrictions
+  claim: "issues:read blocks creating an issue; issues:write allows it."
+  iteration: 1
+  testable: periodic
+- id: PERM-C15
+  doc: docs/features/token-scoping.md#permission-restrictions
+  claim: "metadata:read is always permitted."
+  iteration: 1
+  testable: periodic
+- id: PERM-C16
+  doc: docs/features/token-scoping.md#permission-restrictions
+  claim: "Write permission implies read."
+  iteration: 1
+  testable: periodic
+- id: PERM-C17
+  doc: docs/features/token-scoping.md#permission-restrictions
+  claim: "A token with no scopes uses the full credential."
+  iteration: 2
+  testable: periodic
+- id: PERM-C18
+  doc: docs/cli/token.md#ghp-token-create
+  claim: "pulls:write is shown as a valid scope."
+  iteration: 2
+  testable: periodic
+- id: PERM-C19
+  doc: docs/how-it-works.md#security-model
+  claim: "Requests are restricted to the token's permission levels."
+  iteration: 2
+  testable: periodic
+- id: OPEN-C20
+  doc: docs/features/token-scoping.md#open-scoped-tokens
+  claim: "A token with neither repositories nor scopes forwards all requests."
+  iteration: 1
+  testable: periodic
+- id: OPEN-C21
+  doc: docs/features/token-scoping.md#open-scoped-tokens
+  claim: "Open-scoped is the default when no restrictions are given."
+  iteration: 1
+  testable: periodic
+- id: GQL-C22
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "Open-scoped tokens bypass GraphQL analysis."
+  iteration: 2
+  testable: periodic
+- id: GQL-C23
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "The 1 MiB GraphQL body cap applies only to scoped tokens."
+  iteration: 2
+  testable: periodic
+- id: GQL-C24
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "Repository-restricted tokens need a literal repository(owner, name) in GraphQL."
+  iteration: 1
+  testable: periodic
+- id: GQL-C25
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "Every repository referenced in GraphQL must be in the allowlist."
+  iteration: 1
+  testable: periodic
+- id: GQL-C26
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "Cross-repository GraphQL fields are rejected for repository-scoped tokens."
+  iteration: 1
+  testable: periodic
+- id: GQL-C27
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "GraphQL mutations are rejected for repository-scoped tokens."
+  iteration: 1
+  testable: periodic
+- id: GQL-C28
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "Variable-driven repository lookups are rejected, even when mixed with a literal."
+  iteration: 1
+  testable: periodic
+- id: GQL-C29
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "Permission-scoped tokens must grant every scope the GraphQL query needs."
+  iteration: 1
+  testable: periodic
+- id: GQL-C30
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "Unmapped GraphQL mutations are rejected."
+  iteration: 2
+  testable: periodic
+- id: GQL-C31
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "GraphQL mutations need the mapped write scope."
+  iteration: 1
+  testable: periodic
+- id: GQL-C32
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "GraphQL subscriptions are rejected."
+  iteration: 1
+  testable: periodic
+- id: GQL-C33
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "Unknown GraphQL object fields are rejected."
+  iteration: 1
+  testable: periodic
+- id: GQL-C34
+  doc: docs/features/token-scoping.md#known-limitations
+  claim: "Scalar leaves under an allowed parent pass (documented limitation)."
+  iteration: 2
+  testable: periodic
+- id: GQL-C35
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "Permission-only and open-scoped tokens are unaffected by the variable rule."
+  iteration: 2
+  testable: periodic
+- id: GQL-C36
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "Fragments, aliases and multiple operations are handled."
+  iteration: 2
+  testable: periodic
+- id: LIFE-C37
+  doc: docs/features/token-scoping.md#expiration-and-revocation
+  claim: "The default token lifetime is 24h."
+  iteration: 1
+  testable: periodic
+- id: LIFE-C38
+  doc: docs/features/token-scoping.md#expiration-and-revocation
+  claim: "The maximum token lifetime (default 7d) is enforced."
+  iteration: 1
+  testable: periodic
+- id: LIFE-C39
+  doc: docs/features/token-scoping.md#expiration-and-revocation
+  claim: "A never-expiring token is allowed only with allow_no_expiry."
+  iteration: 3
+  testable: periodic
+- id: LIFE-C40
+  doc: docs/features/token-scoping.md#expiration-and-revocation
+  claim: "Revocation is immediate (up to 30s across instances)."
+  iteration: 1
+  testable: periodic
+- id: LIFE-C41
+  doc: docs/features/token-scoping.md#expiration-and-revocation
+  claim: "An expired token is rejected."
+  iteration: 3
+  testable: periodic
+- id: LIFE-C42
+  doc: docs/how-it-works.md#security-model
+  claim: "Expired and revoked token records are hard-deleted after 30 days."
+  iteration: 4
+  testable: never
+- id: BORDER-C43
+  doc: docs/features/border-policy.md#how-it-works
+  claim: "Blocked native token prefixes return 403 before reaching GitHub."
+  iteration: 1
+  testable: periodic
+- id: BORDER-C44
+  doc: docs/features/border-policy.md#how-it-works
+  claim: "ghx_ and gha_ tokens are always accepted."
+  iteration: 1
+  testable: periodic
+- id: BORDER-C45
+  doc: docs/features/border-policy.md#hot-reloading
+  claim: "SIGUSR1 hot-reloads the border policy."
+  iteration: 4
+  testable: manual
+- id: BORDER-C46
+  doc: docs/how-it-works.md#blocking-anonymous-git-traffic
+  claim: "With anonymous_git, an unauthenticated request carrying Git-Protocol returns 401."
+  iteration: 3
+  testable: periodic
+- id: BORDER-C47
+  doc: docs/features/border-policy.md#how-it-works
+  claim: "Basic auth with a blocked native token as the password is also blocked."
+  iteration: 2
+  testable: periodic
+- id: GIT-C48
+  doc: docs/how-it-works.md#virtualhost-routing
+  claim: "Clone needs contents:read, push needs contents:write, and the wrong repository returns 403."
+  iteration: 2
+  testable: periodic
+- id: AGENT-C49
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  claim: "An agent token's repositories and scopes are enforced by the proxy and by GitHub."
+  iteration: 2
+  testable: periodic
+- id: ENT-C50
+  doc: docs/admin/github-app.md#enterprise-restriction
+  claim: "The enterprise restriction header is injected, with exceptions applied as documented."
+  iteration: 3
+  testable: periodic
+- id: GH-C51
+  doc: docs/getting-started.md#configure-your-agent
+  claim: "The standard gh CLI works transparently."
+  iteration: 1
+  testable: periodic
+- id: MISC-C52
+  doc: docs/features/token-scoping.md#permission-restrictions
+  claim: "On GET /, a scoped token gets a synthetic X-OAuth-Scopes header."
+  iteration: 1
+  testable: periodic
+- id: MISC-C53
+  doc: docs/how-it-works.md#copilot-passthrough
+  claim: "Copilot traffic is not scoped (informational)."
+  iteration: 4
+  testable: never
+- id: MISC-C54
+  doc: docs/how-it-works.md#security-model
+  claim: "Every proxied request produces an audit log record."
+  iteration: 4
+  testable: manual
+- id: GAP-A1
+  doc: docs/features/token-scoping.md#permission-restrictions
+  claim: "Unmapped REST write endpoints are permission-checked for scoped tokens."
+  iteration: 1
+  testable: periodic
+- id: GAP-A2
+  doc: docs/how-it-works.md#request-flow
+  claim: "The repository allowlist applies to non-/repos paths such as /repositories/{id}."
+  iteration: 1
+  testable: periodic
+- id: GAP-A3
+  doc: docs/how-it-works.md#virtualhost-routing
+  claim: "github.com passthrough paths (archives, non-.git paths) enforce the repository allowlist."
+  iteration: 1
+  testable: periodic
+- id: GAP-A4
+  doc: docs/how-it-works.md#virtualhost-routing
+  claim: "The codeload.github.com handler resolves ghx_ tokens and never forwards them raw."
+  iteration: 2
+  testable: periodic
+- id: GAP-A5
+  doc: docs/cli/token.md#ghp-token-create
+  claim: "Scope permission names are validated at creation (pulls vs pull_requests)."
+  iteration: 2
+  testable: periodic
+- id: GAP-A6
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  claim: "Agent tokens for owner/repo repositories mint successfully."
+  iteration: 1
+  testable: periodic
+- id: GAP-A7
+  doc: docs/features/token-scoping.md#repository-restrictions
+  claim: "Dot segments in API paths cannot escape the repository allowlist."
+  iteration: 1
+  testable: periodic
+- id: GAP-A8
+  doc: docs/how-it-works.md#virtualhost-routing
+  claim: "The management host does not proxy anonymous or native-token requests to GitHub."
+  iteration: 2
+  testable: periodic
+- id: GAP-A9
+  doc: docs/getting-started.md#configure-your-agent
+  claim: "The GraphQL analyzer accepts the queries real gh sends."
+  iteration: 2
+  testable: periodic

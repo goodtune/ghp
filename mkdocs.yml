@@ -55,4 +55,6 @@ nav:
     - ghp apptoken: cli/apptoken.md
     - ghp webhooks: cli/webhooks.md
   - Web UI: web-ui.md
-  - Development: development.md
+  - Development:
+    - Overview: development.md
+    - Scope Regression Rig: development/scope-regression-rig.md

@@ -1,0 +1,31 @@
+# Token lifecycle scenarios (spec section 7: LIFE-C37, C38, C40).
+- id: LIFE-C37.default-duration
+  claim: LIFE-C37
+  doc: docs/features/token-scoping.md#expiration-and-revocation
+  description: >-
+    A token created without a duration gets an expiry. The matcher cannot yet
+    compare expires_at against now + .Instance.DefaultDuration, so this only
+    asserts that expires_at is set (not null).
+  kind: token_api
+  request: {method: POST, path: /api/tokens, body: {session_id: "scoperig-{{.RunID}}"}}
+  expect: {status: 201, body_contains: ["\"expires_at\":\""], body_not_contains: ["\"expires_at\":null"]}
+
+- id: LIFE-C38.max-duration
+  claim: LIFE-C38
+  doc: docs/features/token-scoping.md#expiration-and-revocation
+  description: A duration over the instance maximum is rejected. If the server returns 201 the manager revokes the new token.
+  kind: token_api
+  request: {method: POST, path: /api/tokens, body: {type: proxy, duration: "{{add .Instance.MaxDuration \"1h\"}}", session_id: "scoperig-{{.RunID}}"}}
+  expect: {status: 400}
+
+- id: LIFE-C40.revoked-rejected
+  claim: LIFE-C40
+  doc: docs/features/token-scoping.md#expiration-and-revocation
+  description: A revoked token is rejected within the 30 s resolution cache window.
+  profile: lifecycle-revoke
+  kind: token_api
+  steps:
+    - {name: before, method: GET, path: /api/v3/user, expect: {status: 200}}
+    - {name: revoke, method: DELETE, path: "/api/tokens/{{index .ProfileIDs \"lifecycle-revoke\"}}", expect: {status_in: [200, 204]}}
+    - {name: probe, method: GET, path: /api/v3/user, expect: {status: 401, body_contains: ["token has been revoked"]}}
+  poll: {interval: 2s, timeout: 35s}

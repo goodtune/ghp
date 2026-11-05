@@ -1,0 +1,32 @@
+{
+  "gh_version": "2.102.0",
+  "command": "search prs",
+  "rest": [
+    "GET /search/issues"
+  ],
+  "graphql": [
+    {
+      "operation": "SearchType_enumValues",
+      "body": {
+        "query": "query SearchType_enumValues{SearchType: __type(name: \"SearchType\"){enumValues(includeDeprecated: true){name}}}",
+        "variables": {},
+        "operationName": "SearchType_enumValues"
+      },
+      "expect": {
+        "open": {
+          "verdict": "allow"
+        },
+        "perm-ro": {
+          "verdict": "allow",
+          "known_issue": "https://github.com/goodtune/ghp/issues/298",
+          "current": "deny:unmapped"
+        },
+        "repo": {
+          "verdict": "allow",
+          "known_issue": "https://github.com/goodtune/ghp/issues/298",
+          "current": "deny:unmapped"
+        }
+      }
+    }
+  ]
+}

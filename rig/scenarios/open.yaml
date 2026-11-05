@@ -1,0 +1,38 @@
+# Open-scoped token scenarios (spec section 7: OPEN-C20, C21).
+- id: OPEN-C20.user
+  claim: OPEN-C20
+  doc: docs/features/token-scoping.md#open-scoped-tokens
+  description: An open token reads /user as the session user.
+  profile: open
+  kind: rest
+  method: GET
+  path: /user
+  expect: {status: 200, json: {"$.login": "{{.Login}}"}}
+
+- id: OPEN-C20.readme
+  claim: OPEN-C20
+  doc: docs/features/token-scoping.md#open-scoped-tokens
+  description: An open token reads A's README.
+  profile: open
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}/readme
+  expect: {status: 200}
+
+- id: OPEN-C20.rate-limit
+  claim: OPEN-C20
+  doc: docs/features/token-scoping.md#open-scoped-tokens
+  description: An open token reads /rate_limit.
+  profile: open
+  kind: rest
+  method: GET
+  path: /rate_limit
+  expect: {status: 200}
+
+- id: OPEN-C21.default-unrestricted
+  claim: OPEN-C21
+  doc: docs/features/token-scoping.md#open-scoped-tokens
+  description: A token created with only session_id has no repositories and no scopes.
+  kind: token_api
+  request: {method: POST, path: /api/tokens, body: {session_id: "scoperig-{{.RunID}}"}}
+  expect: {status: 201, json: {"$.repositories": "null", "$.scopes": "null", "$.type": "proxy"}}

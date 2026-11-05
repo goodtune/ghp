@@ -1,0 +1,18 @@
+# Copy to rig/config.yaml (git-ignored) and replace OWNER with the fixture
+# repositories' owner: cp rig/config.example.yaml rig/config.yaml
+instance:
+  host: ""             # derived from GHP_SERVER_URL when empty
+  default_duration: 24h
+  max_duration: 168h
+  token_create_rate: 20/min                  # api.go:125; the manager paces at 75% of this; 20/min when omitted
+  # Token prefixes the instance's border policy blocks. Operator-declared:
+  # the rig does not probe it. Each listed prefix sets capability
+  # border_block_<prefix> (ghp, gho, github_pat); BORDER-C43 scenarios for an
+  # unlisted prefix report GAP. Edit this if the instance's policy differs.
+  # Leave it empty unless the instance sets block.*; BORDER-C43 then
+  # reports GAP.
+  border_block: []
+fixtures:
+  repo_a: OWNER/ghp-scoperig-a
+  repo_b: OWNER/ghp-scoperig-b
+  repo_w: OWNER/ghp-scoperig-w
