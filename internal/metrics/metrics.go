@@ -158,6 +158,16 @@ var (
 		Help: "Total number of anonymous git requests blocked by the anonymous git blocking feature.",
 	})
 
+	// ManagementHostRejectedTotal counts requests to the management host's
+	// GHES-style API paths (/api/v3/, /api/graphql) rejected because they did
+	// not carry a GHP-issued token, labeled by reason:
+	//   "anonymous"    — no usable credential (401)
+	//   "native_token" — a native GitHub token or other credential (403)
+	ManagementHostRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_management_host_rejected_total",
+		Help: "Total number of management host API requests rejected for lack of a GHP-issued token, by reason.",
+	}, []string{"reason"})
+
 	// EnterpriseExceptionTotal counts evaluations of enterprise access
 	// restriction exceptions that matched a request's target, labeled by
 	// outcome:

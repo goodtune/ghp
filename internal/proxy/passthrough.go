@@ -183,7 +183,7 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 			if blockCfg != nil && blockCfg.IsTokenBlocked(rawCredential) {
 				metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
 				metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
-				writeError(w, http.StatusForbidden, "Token type is not permitted by the border policy")
+				writeError(w, http.StatusForbidden, msgBorderPolicy)
 				return
 			}
 			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))

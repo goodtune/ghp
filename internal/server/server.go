@@ -451,7 +451,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// bypasses the host-dispatch wrapping below, so the forward proxy
 	// route-info middleware must be applied here too or these requests
 	// would silently fall back to ambient egress.
-	mgmtProxyHandler := forwardProxyRouteInfoMiddleware(proxyHandler, s.cfg, netutil.IPHeader(s.cfg.Server.ClientIPHeader))
+	mgmtProxyHandler := managementProxyHandler(proxyHandler, s.cfg)
 	mux.Handle("/api/v3/", mgmtProxyHandler)
 	mux.Handle("/api/graphql", mgmtProxyHandler)
 
@@ -905,6 +905,15 @@ func systemdListeners() ([]net.Listener, error) {
 // egress proxy per request. Client-selected proxy headers are validated and
 // stripped here — they must never reach the upstream — and only honoured
 // when forward_proxy.allow_request_header is enabled.
+// managementProxyHandler wraps the API proxy handler for the management
+// host's GHES-style routes (/api/v3/ and /api/graphql). RequireGHPToken
+// rejects anonymous requests and native GitHub tokens (#296): without it the
+// management host is an open pass-through to api.github.com that shares the
+// instance's egress rate limit.
+func managementProxyHandler(proxyHandler http.Handler, cfg *config.Config) http.Handler {
+	return forwardProxyRouteInfoMiddleware(proxy.RequireGHPToken(proxyHandler, cfg), cfg, netutil.IPHeader(cfg.Server.ClientIPHeader))
+}
+
 func forwardProxyRouteInfoMiddleware(next http.Handler, cfg *config.Config, clientIPHeader netutil.IPHeader) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clientProxy, err := proxy.ExtractClientForwardProxy(r, cfg.ForwardProxy.AllowRequestHeader)
