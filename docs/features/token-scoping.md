@@ -52,6 +52,19 @@ If no repository is specified, the token is not restricted to any particular
 repository — it can access any repository the underlying credential has access
 to.
 
+A repo-restricted token can only reach REST paths of the form
+`/repos/{owner}/{repo}/...` for an allowed repository, plus a short list of
+identity and service endpoints: `GET /`, `/user`, `/rate_limit`, `/meta`,
+`/octocat` and `/zen`. Every other path is rejected with `403 Forbidden`,
+because ghp cannot tie it to the allowlist. This includes
+`/repositories/{id}`, `/search/*`, `/user/repos`, `/orgs/*`, `/users/*`,
+`/gists` and package endpoints.
+
+Request paths that contain `.` or `..` segments, or empty segments (`//`),
+are rejected with `403 Forbidden` for all `ghx_` and `gha_` tokens before any
+scope check. This stops a path such as `/repos/A/x/../../B/y/contents` from
+passing the check as `A/x`.
+
 ## Permission Restrictions
 
 Tokens can specify which operations are permitted using permission scopes.
@@ -69,6 +82,26 @@ These follow the GitHub API permission model:
 
 If no scopes are specified, the token carries the full permissions of the
 underlying credential without additional filtering.
+
+### Deny by default
+
+For any scoped token (a repository restriction, a permission restriction, or
+both), REST requests are deny-by-default. ghp keeps a curated table that maps
+each known REST method and path to a permission and level. A request that
+matches no entry in the table, and is not on the identity allowlist above, is
+rejected with `403 Forbidden`. The message names the method and path, for
+example `Endpoint POST /user/repos is not permitted for scoped tokens`. The
+counter `ghp_scope_unmapped_denied_total` records these denials.
+
+Known limitations:
+
+- The table is curated, so some legitimate GitHub endpoints are denied for
+  scoped tokens until an entry is added. Use an open-scoped token, or ask the
+  operator to add the endpoint.
+- `GET /search/issues` (used by `gh search prs` and `gh search issues`) is
+  denied for every scoped token. Search spans repositories and has no single
+  permission.
+- `HEAD` is evaluated as `GET`.
 
 ## Open-Scoped Tokens
 

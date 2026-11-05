@@ -18,7 +18,7 @@ token (any repo restriction or any permission restriction), the API host
 evaluates each REST request in this order:
 
 1. Path hygiene (all `ghx_`/`gha_` requests, before token resolution): a
-   path with a `.` or `..` segment, or an empty segment (`//`), is a 400.
+   path with a `.` or `..` segment, or an empty segment (`//`), is a 403.
 2. Non-repository allowlist: `GET`/`HEAD` on `/`, `/user`, `/rate_limit`,
    `/meta`, `/octocat`, `/zen`. These are allowed with no further check.
    They expose only the identity and service metadata that `gh auth status`
