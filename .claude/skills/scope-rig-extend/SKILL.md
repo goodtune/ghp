@@ -23,6 +23,7 @@ Scenarios (`rig/scenarios/*.yaml`) test claims (`rig/claims.yaml`) with token pr
 | Validate | `/tmp/scoperig validate` |
 | Try one | `/tmp/scoperig run --only '<scenario id>'` |
 | Capture gh | `/tmp/scoperig oracle --gh-version auto` (flags: `--out` default `rig/corpus/gh`, `--oracle-repo` default `cli/cli`, `--pr` / `--issue` default 1, `--gh` default `$GHP_RIG_GH` then PATH) |
+| Oracle notes | Only `pr_create_dryrun` "creates" (`--dry-run`, explicit `--head`, non-git temp dir). gh credential must be in `hosts.yml` or macOS keychain (no Linux DBUS). Review every `+ operation` / `+ field` diff line: new operations default to `verdict: allow`. |
 | Import captures | `go run ./tools/scoperig/corpus/importghdebug -in <dir> -out rig/corpus/gh/<ver> -gh-version <ver> -owner cli -repo cli` |
 | Corpus test | `go test ./internal/proxy -run GHCorpus -count=1` |
 
