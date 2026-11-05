@@ -265,3 +265,50 @@ func scenarioExpects(s *Scenario) []*Expect {
 	}
 	return nn
 }
+
+// TestRigTreeTask20 checks the gh command matrix (GH-C51): 11 commands x
+// profiles open, perm-ro and repo-A, all kind gh against repository A, with
+// no gh writes.
+func TestRigTreeTask20(t *testing.T) {
+	tree, err := Load("../../../rig")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	slugs := []string{"repo-view", "pr-list", "pr-view", "pr-status", "pr-checks", "issue-list",
+		"issue-view", "release-list", "label-list", "run-list", "api-viewer"}
+	want := map[string]bool{}
+	for _, slug := range slugs {
+		for _, p := range []string{"open", "perm-ro", "repo-A"} {
+			want["GH-C51."+slug+"."+p] = true
+		}
+	}
+	n := 0
+	for _, s := range tree.Scenarios {
+		if s.Claim != "GH-C51" {
+			continue
+		}
+		n++
+		if !want[s.ID] {
+			t.Errorf("unexpected GH-C51 scenario %s", s.ID)
+		}
+		delete(want, s.ID)
+		if s.Kind != "gh" || s.Repo != "A" {
+			t.Errorf("%s: kind=%q repo=%q, want gh/A", s.ID, s.Kind, s.Repo)
+		}
+		if !strings.HasSuffix(s.ID, "."+s.Profile) {
+			t.Errorf("%s: profile %q does not match id", s.ID, s.Profile)
+		}
+		// repo-A is denied by design (root node(id:) is cross-repository).
+		if strings.Contains(s.ID, ".pr-checks.") && s.Profile != "repo-A" {
+			if s.Expect == nil || len(s.Expect.ExitCodeIn) == 0 {
+				t.Errorf("%s: want exit_code_in", s.ID)
+			}
+		}
+	}
+	if n != 33 {
+		t.Errorf("GH-C51 scenarios: got %d, want 33", n)
+	}
+	for id := range want {
+		t.Errorf("missing scenario %s", id)
+	}
+}

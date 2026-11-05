@@ -112,6 +112,13 @@ func Match(e *scenario.Expect, o *Observation) []error {
 			add("exit_code: want %d, got %d", *e.ExitCode, *o.GHExit)
 		}
 	}
+	if len(e.ExitCodeIn) > 0 {
+		if o.GHExit == nil {
+			add("exit_code_in: want one of %v, got none", e.ExitCodeIn)
+		} else if !containsInt(e.ExitCodeIn, *o.GHExit) {
+			add("exit_code_in: want one of %v, got %d", e.ExitCodeIn, *o.GHExit)
+		}
+	}
 	for _, s := range e.StdoutContains {
 		if !strings.Contains(o.Stdout, s) {
 			add("stdout: want contains %q, got %s", s, snippet([]byte(o.Stdout)))

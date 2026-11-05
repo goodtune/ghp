@@ -44,6 +44,7 @@ type Expect struct {
 	JSON            map[string]string `yaml:"json"`
 	GHPDenial       *bool             `yaml:"ghp_denial"`
 	ExitCode        *int              `yaml:"exit_code"`
+	ExitCodeIn      []int             `yaml:"exit_code_in"`
 	StdoutContains  []string          `yaml:"stdout_contains"`
 	StderrContains  []string          `yaml:"stderr_contains"`
 }
