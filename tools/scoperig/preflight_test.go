@@ -28,6 +28,10 @@ func TestPreflight(t *testing.T) {
 			case "/login":
 				fmt.Fprint(w, `<footer>ghp version v1.2.3-rc1</footer>`)
 			case "/api/tokens":
+				if tokStatus == http.StatusFound {
+					http.Redirect(w, r, "/login", http.StatusFound)
+					return
+				}
 				if r.Header.Get("Authorization") != "Bearer ghpr_test0000" {
 					w.WriteHeader(401)
 					return
@@ -47,6 +51,7 @@ func TestPreflight(t *testing.T) {
 		{"ok 200", 200, 200, false, "v1.2.3-rc1"},
 		{"root 500", 500, 200, true, ""},
 		{"session 401", 303, 401, true, ""},
+		{"session redirect not accepted", 303, 302, true, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -170,8 +175,8 @@ func TestProbeCapabilities(t *testing.T) {
 			// TLS handshake with ServerName github.com fails -> false.
 			got, err := ProbeCapabilities(context.Background(), c, srv.Client(), open, v)
 			if tt.wantErr {
-				if err == nil {
-					t.Fatal("want error")
+				if !errors.Is(err, ErrPreflight) {
+					t.Fatalf("want ErrPreflight, got %v", err)
 				}
 				return
 			}
@@ -191,6 +196,12 @@ func TestProbeCapabilities(t *testing.T) {
 			}
 		})
 	}
+	t.Run("empty host", func(t *testing.T) {
+		_, err := ProbeCapabilities(context.Background(), &Config{}, http.DefaultClient, tokens.Handle{}, &scenario.Vars{})
+		if !errors.Is(err, ErrPreflight) || !strings.Contains(err.Error(), "instance.host not set") {
+			t.Fatalf("got %v", err)
+		}
+	})
 	t.Run("vhost dial fails", func(t *testing.T) {
 		srv := probeServer(t, probeOpts{tokensAll: 200})
 		srv.Close()

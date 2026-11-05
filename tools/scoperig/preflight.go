@@ -58,7 +58,7 @@ func Preflight(ctx context.Context, c *Config, hc *http.Client) (string, error) 
 		}
 	}
 
-	status, _, _, err = get(ctx, hc, c.ServerURL+"/api/tokens", c.session)
+	status, _, _, err = get(ctx, &noFollow, c.ServerURL+"/api/tokens", c.session)
 	if err != nil {
 		return "", fmt.Errorf("%w: session check: %v", ErrPreflight, err)
 	}
@@ -74,18 +74,21 @@ func (c *Config) session(r *http.Request) { r.Header.Set("Authorization", "Beare
 // fixtures allow. Only an identity failure is an error (fail closed); every
 // other probe failure just leaves its capability false.
 func ProbeCapabilities(ctx context.Context, c *Config, hc *http.Client, open tokens.Handle, v *scenario.Vars) (Capabilities, error) {
+	if c.Instance.Host == "" {
+		return nil, fmt.Errorf("%w: instance.host not set in config", ErrPreflight)
+	}
 	api := "https://" + c.Instance.Host + "/api/v3"
 	caps := Capabilities{"repo_w_push": false, "repo_create": false, "github_vhost": false, "agent_installation": false}
 
 	status, body, _, err := get(ctx, hc, api+"/user", open.Authorize)
 	if err != nil {
-		return nil, fmt.Errorf("probe login: %w", err)
+		return nil, fmt.Errorf("%w: probe login: %v", ErrPreflight, err)
 	}
 	var user struct {
 		Login string `json:"login"`
 	}
 	if status != http.StatusOK || json.Unmarshal(body, &user) != nil || user.Login == "" {
-		return nil, fmt.Errorf("probe login: GET /api/v3/user returned %d without a login", status)
+		return nil, fmt.Errorf("%w: probe login: GET /api/v3/user returned %d without a login", ErrPreflight, status)
 	}
 	v.Login = user.Login
 
