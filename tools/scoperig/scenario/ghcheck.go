@@ -96,7 +96,7 @@ var ghCommentFlags = []ghFlag{
 
 var (
 	ghRepoRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
-	ghURLRE  = regexp.MustCompile(`^https?://[^/]+/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)`)
+	ghURLRE  = regexp.MustCompile(`^https?://([^/]+)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)`)
 )
 
 type ghArgs struct {
@@ -163,20 +163,78 @@ func parseGHStrict(args []string, cmd string, table []ghFlag) (ghArgs, error) {
 	return g, nil
 }
 
-// repoFromSpec resolves OWNER/REPO, HOST/OWNER/REPO or a GitHub URL to
-// "owner/name". ok is false when spec does not resolve.
-func repoFromSpec(spec string) (string, bool) {
+// repoFromSpec resolves OWNER/REPO, HOST/OWNER/REPO or a URL to its host
+// (empty when the spec names none) and "owner/name". ok is false when spec
+// does not resolve.
+func repoFromSpec(spec string) (host, repo string, ok bool) {
 	if m := ghURLRE.FindStringSubmatch(spec); m != nil {
-		return m[1] + "/" + strings.TrimSuffix(m[2], ".git"), true
+		return m[1], m[2] + "/" + strings.TrimSuffix(m[3], ".git"), true
 	}
 	parts := strings.Split(spec, "/")
 	if len(parts) == 3 { // host/owner/name
-		parts = parts[1:]
+		host, parts = parts[0], parts[1:]
 	}
 	if len(parts) == 2 && ghRepoRE.MatchString(parts[0]+"/"+parts[1]) {
-		return parts[0] + "/" + parts[1], true
+		return host, parts[0] + "/" + parts[1], true
 	}
-	return "", false
+	return "", "", false
+}
+
+// checkHost fails closed unless host is empty (gh then uses GH_HOST, the
+// proxy) or equals the proxy host. gh sends the minted token to any other
+// non-github.com host, so a foreign host would leak it.
+func checkHost(what, host string, v *Vars, add func(string, ...any)) bool {
+	if host == "" || strings.EqualFold(host, v.Host) {
+		return true
+	}
+	add("gh: %s targets host %q; only {{.Host}} is allowed", what, host)
+	return false
+}
+
+// checkGHReadOnlyHosts applies the destination host rule to a read-only
+// invocation, which is otherwise parsed permissively. Any argument that
+// could name a host must name the proxy host.
+func checkGHReadOnlyHosts(args []string, v *Vars, add func(string, ...any)) {
+	for i, a := range args {
+		name, val, hasVal := strings.Cut(a, "=")
+		switch {
+		case name == "--hostname" || a == "-h" || strings.HasPrefix(a, "-h="):
+			add("gh: --hostname is not allowed; the rig must only reach the proxy")
+			return
+		case name == "--repo" || name == "-R" || (strings.HasPrefix(a, "-R") && len(a) > 2):
+			if !hasVal && name == a && len(a) > 2 && a[1] == 'R' {
+				val, hasVal = a[2:], true
+			}
+			if !hasVal {
+				if i+1 >= len(args) {
+					add("gh: --repo needs a value")
+					return
+				}
+				val = args[i+1]
+			}
+			host, _, ok := repoFromSpec(val)
+			if !ok {
+				add("gh: --repo value %q is not OWNER/REPO, HOST/OWNER/REPO or a URL", val)
+				return
+			}
+			if !checkHost("--repo value "+val, host, v, add) {
+				return
+			}
+		case strings.Contains(a, "://") || strings.HasPrefix(a, "//"):
+			if !strings.HasPrefix(a, "https://") {
+				add("gh: argument %q: only https URLs to {{.Host}} are allowed", a)
+				return
+			}
+			host, _, _ := strings.Cut(strings.TrimPrefix(a, "https://"), "/")
+			if !checkHost("argument "+a, host, v, add) {
+				return
+			}
+		case strings.Contains(a, "/"):
+			if host, _, ok := repoFromSpec(a); ok && !checkHost("argument "+a, host, v, add) {
+				return
+			}
+		}
+	}
 }
 
 // checkGH applies the write target rule to a gh invocation. The scenario's
@@ -220,7 +278,10 @@ func checkGH(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, add f
 		return
 	}
 	if args[0] == "search" || (len(args) > 1 && ghReadOnly[args[0]+" "+args[1]]) {
-		return // read-only: permissive parsing cannot cause a write
+		// Read-only: permissive parsing cannot cause a write, but the
+		// destination host is still checked so the token stays on the proxy.
+		checkGHReadOnlyHosts(args[1:], v, add)
+		return
 	}
 
 	// Everything else is a write and is parsed strictly.
@@ -244,9 +305,12 @@ func checkGH(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, add f
 			add("gh: --repo value %q looks like a flag", r)
 			return
 		}
-		rr, ok := repoFromSpec(r)
+		host, rr, ok := repoFromSpec(r)
 		if !ok {
 			add("gh: --repo value %q is not OWNER/REPO, HOST/OWNER/REPO or a URL", r)
+			return
+		}
+		if !checkHost("--repo value "+r, host, v, add) {
 			return
 		}
 		refs = append(refs, rr)
@@ -255,9 +319,16 @@ func checkGH(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, add f
 		if !strings.Contains(p, "/") {
 			continue
 		}
-		rr, ok := repoFromSpec(p)
+		if strings.Contains(p, "://") && !strings.HasPrefix(p, "https://") {
+			add("gh: positional %q: only https URLs to {{.Host}} are allowed", p)
+			continue
+		}
+		host, rr, ok := repoFromSpec(p)
 		if !ok {
 			add("gh: positional %q looks like a repository reference but does not resolve", p)
+			continue
+		}
+		if !checkHost("positional "+p, host, v, add) {
 			continue
 		}
 		refs = append(refs, rr)
@@ -303,6 +374,11 @@ func checkGHAPI(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, ad
 			add("gh: api field %q: nested field syntax not supported in scenarios", k)
 			return
 		}
+	}
+	if raw := g.positionals[0]; strings.Contains(raw, "://") || strings.HasPrefix(raw, "//") {
+		// gh api sends the token to whatever host an absolute URL names.
+		add("gh: api endpoint %q must be a path; absolute URLs are not allowed", raw)
+		return
 	}
 	endpoint := strings.TrimPrefix(g.positionals[0], "/")
 	if endpoint == "graphql" {

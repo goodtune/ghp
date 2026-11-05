@@ -408,11 +408,11 @@ func TestValidate_Round3Bypasses(t *testing.T) {
 	}
 	good := []*Scenario{
 		ghScenario("G1", "W", "pr", "merge", "1", "-s", "-d"),
-		ghScenario("G2", "", "pr", "merge", "1", "--squash", "-R", "github.com/{{.RepoW}}"),
+		ghScenario("G2", "", "pr", "merge", "1", "--squash", "-R", "{{.Host}}/{{.RepoW}}"),
 		ghScenario("G3", "", "api", "-X", "POST", "-H", "Accept: x", "repos/{{.RepoW}}/issues", "-f", "title=x", "--jq", ".number"),
 		ghScenario("G4", "W", "issue", "close", "1", "--reason", "completed", "-c", "done"),
 		ghScenario("G5", "", "label", "create", "x", "--repo={{.RepoW}}", "--color", "ff0000"),
-		ghScenario("G6", "", "issue", "comment", "https://github.com/{{.RepoW}}/issues/1", "-b", "hi"),
+		ghScenario("G6", "", "issue", "comment", "https://{{.Host}}/{{.RepoW}}/issues/1", "-b", "hi"),
 	}
 	for _, s := range good {
 		t.Run(s.ID, func(t *testing.T) {
@@ -590,6 +590,46 @@ func TestValidate_ExpectRequired(t *testing.T) {
 				return
 			}
 			requireErr(t, errs, tc.want...)
+		})
+	}
+}
+
+func TestValidate_GHDestinationHost(t *testing.T) {
+	for _, s := range []*Scenario{
+		ghScenario("D1", "A", "api", "https://evil.example/x"),
+		ghScenario("D2", "A", "api", "//evil.example/x"),
+		ghScenario("D2b", "A", "api", "http://{{.Host}}/x"),
+		ghScenario("D2c", "", "api", "https://evil.example/graphql", "-f", "query={viewer{login}}"),
+		ghScenario("D3", "", "auth", "status", "--hostname", "github.com"),
+		ghScenario("D3b", "", "auth", "status", "--hostname=evil.example"),
+		ghScenario("D3c", "", "auth", "status", "-h", "evil.example"),
+		ghScenario("D4", "", "repo", "view", "https://evil.example/{{.RepoA}}"),
+		ghScenario("D5", "", "pr", "list", "--repo", "evil.example/{{.RepoA}}"),
+		ghScenario("D5b", "", "pr", "list", "-R", "evil.example/{{.RepoA}}"),
+		ghScenario("D5c", "", "pr", "list", "--repo=evil.example/{{.RepoA}}"),
+		ghScenario("D6", "", "issue", "list", "--repo", "github.com/{{.RepoA}}"),
+		ghScenario("D7", "", "issue", "create", "--repo", "github.com/{{.RepoW}}", "-t", "x", "-b", "y"),
+		ghScenario("D8", "", "issue", "create", "--repo", "evil.example/{{.RepoW}}", "-t", "x", "-b", "y"),
+		ghScenario("D9", "", "issue", "comment", "https://evil.example/{{.RepoW}}/issues/1", "-b", "hi"),
+		ghScenario("D10", "", "search", "repos", "x", "--repo", "evil.example/{{.RepoA}}"),
+	} {
+		t.Run(s.ID, func(t *testing.T) {
+			if errs := Validate(withScenarios(s), nil); len(errs) == 0 {
+				t.Fatalf("accepted")
+			}
+		})
+	}
+	for _, s := range []*Scenario{
+		ghScenario("OK1", "", "repo", "view", "{{.Host}}/{{.RepoA}}"),
+		ghScenario("OK2", "A", "pr", "list"),
+		ghScenario("OK3", "", "pr", "list", "--repo", "{{.RepoA}}"),
+		ghScenario("OK4", "", "issue", "create", "--repo", "{{.Host}}/{{.RepoW}}", "-t", "x", "-b", "y"),
+		ghScenario("OK5", "", "issue", "create", "--repo", "{{.RepoW}}", "-t", "x", "-b", "y"),
+		ghScenario("OK6", "A", "api", "repos/{{.RepoA}}"),
+		ghScenario("OK7", "", "repo", "view", "https://{{.Host}}/{{.RepoA}}"),
+	} {
+		t.Run(s.ID, func(t *testing.T) {
+			requireNoErr(t, Validate(withScenarios(s), nil))
 		})
 	}
 }
