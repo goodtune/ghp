@@ -261,6 +261,14 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 		rep = nil
 		return nil, &exitError{code: 3, err: err}
 	}
+	// Repo W receives every write; apply the fixtures safety guard to it
+	// now that the login is known, before any scenario runs.
+	if c.RepoW != "" {
+		if err := fixtures.CheckSafe(c.RepoW, vars.Login); err != nil {
+			rep = nil
+			return nil, &exitError{code: 3, err: err}
+		}
+	}
 
 	// 6. Fixture discovery.
 	api := &handleAPI{hc: hc, base: "https://" + c.Instance.Host + "/api/v3", tok: open}

@@ -35,6 +35,7 @@ type fakeGHP struct {
 	order      []string
 	nextID     int
 	requests   int
+	apiWrites  int // non-GET requests to /api/v3
 	creates    int
 	failRevoke bool
 	failList   bool // fail GET /api/tokens after the preflight call
@@ -86,6 +87,9 @@ func (f *fakeGHP) tokenOK(r *http.Request) bool {
 func (f *fakeGHP) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.requests++
+	if strings.HasPrefix(r.URL.Path, "/api/v3") && r.Method != http.MethodGet {
+		f.apiWrites++
+	}
 	f.mu.Unlock()
 	p := r.URL.Path
 	switch {
@@ -807,5 +811,41 @@ func TestWriteJSON_CreatesParentDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(name); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// run must refuse a repo W that fails the fixture safety check (name lacks
+// "scoperig", or owner differs from the token's login) before any scenario
+// can write to it.
+func TestRun_UnsafeRepoWExits3(t *testing.T) {
+	for _, repoW := range []string{"me/other", "me/ghp-scoperig-w", "goodtune/prod"} {
+		t.Run(repoW, func(t *testing.T) {
+			f := newFakeGHP(t)
+			root, cfg := writeTree(t, f.host(), testScenarios)
+			raw, err := os.ReadFile(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			patched := strings.Replace(string(raw), "repo_w: goodtune/ghp-scoperig-w", "repo_w: "+repoW, 1)
+			if err := os.WriteFile(cfg, []byte(patched), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			res := runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg)
+			if res.code != 3 {
+				t.Fatalf("exit = %d, want 3\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+			}
+			if !strings.Contains(res.stderr, "refusing to touch") {
+				t.Errorf("stderr = %q, want the safety refusal", res.stderr)
+			}
+			f.mu.Lock()
+			writes := f.apiWrites
+			f.mu.Unlock()
+			if writes != 0 {
+				t.Errorf("made %d non-GET API requests, want 0", writes)
+			}
+			if left := f.liveRunTokens(); len(left) != 0 {
+				t.Errorf("tokens left live: %v", left)
+			}
+		})
 	}
 }

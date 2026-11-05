@@ -261,10 +261,10 @@ func statusErr(method, path string, st int, body []byte) error {
 	return fmt.Errorf("%s %s: status %d: %s", method, path, st, msg)
 }
 
-// checkSafe enforces the safety guard: the repo name must contain
+// CheckSafe enforces the safety guard: the repo name must contain
 // "scoperig" (matched case-insensitively) and its owner must equal the
 // probed login (also case-insensitive, as GitHub logins are).
-func checkSafe(repo, login string) error {
+func CheckSafe(repo, login string) error {
 	owner, name, err := splitRepo(repo)
 	if err != nil {
 		return fmt.Errorf("refusing to touch %q: %w", repo, err)
@@ -284,7 +284,7 @@ func checkSafe(repo, login string) error {
 // fails the safety guard.
 func Ensure(ctx context.Context, api API, repo, login string, create, canCreate bool) (Plan, error) {
 	plan := Plan{Repo: repo}
-	if err := checkSafe(repo, login); err != nil {
+	if err := CheckSafe(repo, login); err != nil {
 		return plan, err
 	}
 	owner, name, _ := splitRepo(repo)
