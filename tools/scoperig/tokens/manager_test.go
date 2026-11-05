@@ -3,6 +3,7 @@ package tokens
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ type fakeTok struct {
 	SessionID string     `json:"session_id"`
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 	mine      bool
+	hidden    bool // omitted from list responses
 }
 
 // fakeAPI mirrors the shapes of internal/server/api.go token endpoints.
@@ -33,10 +35,13 @@ type fakeAPI struct {
 	postFail       string          // if set, return 400 with this message
 	allFor403      bool            // GET ?all=true -> 403
 	alreadyRevoked map[string]bool // DELETE answers 400 and marks revoked
+	failDelete     map[string]bool // DELETE answers 500
+	onPost         func()          // called (unlocked) before handling POST
+	onDelete       func(id string) // called (unlocked) after each DELETE
 }
 
 func newFake() *fakeAPI {
-	return &fakeAPI{deletes: map[string]int{}, alreadyRevoked: map[string]bool{}}
+	return &fakeAPI{deletes: map[string]int{}, alreadyRevoked: map[string]bool{}, failDelete: map[string]bool{}}
 }
 
 func (f *fakeAPI) find(id string) *fakeTok {
@@ -57,6 +62,9 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func (f *fakeAPI) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/tokens", func(w http.ResponseWriter, r *http.Request) {
+		if f.onPost != nil {
+			f.onPost()
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.auth = append(f.auth, r.Header.Get("Authorization"))
@@ -90,7 +98,7 @@ func (f *fakeAPI) handler() http.Handler {
 		}
 		out := make([]*fakeTok, 0)
 		for _, t := range f.toks {
-			if t.mine || r.URL.Query().Get("all") == "true" {
+			if !t.hidden && (t.mine || r.URL.Query().Get("all") == "true") {
 				out = append(out, t)
 			}
 		}
@@ -107,10 +115,17 @@ func (f *fakeAPI) handler() http.Handler {
 		writeJSON(w, http.StatusOK, t)
 	})
 	mux.HandleFunc("DELETE /api/tokens/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if f.onDelete != nil {
+			defer f.onDelete(id)
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		id := r.PathValue("id")
 		f.deletes[id]++
+		if f.failDelete[id] {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Internal error"})
+			return
+		}
 		t := f.find(id)
 		if t == nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"message": "Token not found"})
@@ -327,5 +342,87 @@ func TestManager_CreateRawSharesPacer(t *testing.T) {
 	}
 	if m.Created() != 2 {
 		t.Fatalf("created = %d", m.Created())
+	}
+}
+
+func TestManager_RevokeAllWaitsForInFlightCreate(t *testing.T) {
+	f := newFake()
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	f.onPost = func() { close(arrived); <-release }
+	m, _ := setup(t, f, 0)
+	ctx := context.Background()
+	created := make(chan error, 1)
+	go func() { _, err := m.Create(ctx, prof, vars()); created <- err }()
+	<-arrived
+	done := make(chan []string, 1)
+	go func() { done <- m.RevokeAll(ctx) }()
+	time.Sleep(20 * time.Millisecond) // let RevokeAll reach its barrier
+	close(release)
+	if err := <-created; err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if left := <-done; len(left) != 0 {
+		t.Fatalf("leftover %v", left)
+	}
+	if len(f.deletes) != 1 {
+		t.Fatalf("in-flight token not revoked: %v", f.deletes)
+	}
+	f.onPost = nil
+	if _, err := m.Create(ctx, prof, vars()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("create after close: %v", err)
+	}
+}
+
+func TestManager_VerifyNoneLeftFailsClosed(t *testing.T) {
+	f := newFake()
+	m, _ := setup(t, f, 0)
+	ctx := context.Background()
+	h1, _ := m.Create(ctx, prof, vars())
+	h2, _ := m.Create(ctx, prof, vars())
+	if err := m.Revoke(ctx, h2.ID()); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.find(h1.ID()).hidden = true // unrevoked, absent from list
+	f.find(h2.ID()).hidden = true // revoked, absent from list
+	f.mu.Unlock()
+	left, err := m.VerifyNoneLeft(ctx)
+	if err != nil || len(left) != 1 || left[0] != h1.ID() {
+		t.Fatalf("left=%v err=%v", left, err)
+	}
+}
+
+func TestManager_RevokeAllErrReportsReasons(t *testing.T) {
+	f := newFake()
+	m, _ := setup(t, f, 0)
+	ctx := context.Background()
+	h1, _ := m.Create(ctx, prof, vars())
+	h2, _ := m.Create(ctx, prof, vars())
+	f.failDelete[h1.ID()] = true
+	left, err := m.RevokeAllErr(ctx)
+	if len(left) != 1 || left[0] != h1.ID() || err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("left=%v err=%v", left, err)
+	}
+	if f.deletes[h2.ID()] != 1 {
+		t.Fatalf("h2 not revoked")
+	}
+}
+
+func TestManager_RevokeAllSurvivesCancelMidLoop(t *testing.T) {
+	f := newFake()
+	m, _ := setup(t, f, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	for i := 0; i < 3; i++ {
+		if _, err := m.Create(ctx, prof, vars()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.onDelete = func(string) { cancel() }
+	if left := m.RevokeAll(ctx); len(left) != 0 {
+		t.Fatalf("leftover %v", left)
+	}
+	if len(f.deletes) != 3 {
+		t.Fatalf("deletes = %v", f.deletes)
 	}
 }
