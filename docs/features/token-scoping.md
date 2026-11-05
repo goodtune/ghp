@@ -141,8 +141,8 @@ proxy and GitHub could read different values. The proxy forwards the
 same bytes that it analyses.
 
 For scoped tokens the request body must be a JSON object whose top-level
-keys are each exactly `query`, `operationName`, `variables` or
-`extensions` (exact bytes, case-sensitive), with no duplicates. Any other
+keys are each `query`, `operationName`, `variables` or
+`extensions` exactly, after JSON string decoding (case-sensitive, no Unicode folding), with no duplicates. Any other
 key, including `Query` or a look-alike such as `variableſ`, gives a 400.
 
 For repository-restricted tokens, the proxy rejects any request that
