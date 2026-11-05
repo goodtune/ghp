@@ -1,4 +1,4 @@
-FROM python:3.14 AS docs
+FROM python:3.15 AS docs
 WORKDIR /src
 COPY mkdocs.yml ./
 COPY docs/ docs/
