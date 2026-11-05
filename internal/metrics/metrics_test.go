@@ -736,3 +736,16 @@ func TestScopeUnmappedDeniedTotal(t *testing.T) {
 		})
 	}
 }
+
+func TestTokenScopeRejectedTotal(t *testing.T) {
+	for _, reason := range []string{"unknown_permission", "invalid_level"} {
+		t.Run(reason, func(t *testing.T) {
+			labels := prometheus.Labels{"reason": reason}
+			before := getCounterValue(t, TokenScopeRejectedTotal, labels)
+			TokenScopeRejectedTotal.WithLabelValues(reason).Inc()
+			if after := getCounterValue(t, TokenScopeRejectedTotal, labels); after-before != 1 {
+				t.Errorf("expected increment of 1, got %f", after-before)
+			}
+		})
+	}
+}

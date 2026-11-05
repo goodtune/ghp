@@ -19,7 +19,9 @@ import (
 	"github.com/goodtune/ghp/internal/crypto"
 	"github.com/goodtune/ghp/internal/database"
 	ghpgithub "github.com/goodtune/ghp/internal/github"
+	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/token"
+	dto "github.com/prometheus/client_model/go"
 )
 
 func TestHandleCreateToken_BodyTooLarge(t *testing.T) {
@@ -816,4 +818,105 @@ func TestAppWebhookSecret_CreateUpdateClear(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"has_webhook_secret":false`) {
 		t.Errorf("get after clear: %s", w.Body.String())
 	}
+}
+
+// seedGitHubToken stores a user and GitHub credential so proxy token creation
+// reaches the token service.
+func seedGitHubToken(t *testing.T, a *API, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := a.store.UpsertUser(ctx, &database.User{ID: userID, GitHubUsername: "u-" + userID, GitHubID: 4242}); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	gt := &database.GitHubToken{
+		UserID:                userID,
+		AccessToken:           "enc",
+		RefreshToken:          "enc",
+		AccessTokenExpiresAt:  time.Now().Add(time.Hour),
+		RefreshTokenExpiresAt: time.Now().Add(time.Hour),
+	}
+	if err := a.store.UpsertGitHubToken(ctx, gt); err != nil {
+		t.Fatalf("upsert github token: %v", err)
+	}
+}
+
+func TestHandleCreateToken_ScopeNames(t *testing.T) {
+	tests := []struct {
+		name       string
+		scopes     string
+		wantStatus int
+		wantReason string
+		wantBody   string
+	}{
+		{"pulls alias rejected", "pulls:write", http.StatusBadRequest, "unknown_permission", "pull_requests"},
+		{"unknown name rejected", "foo:read", http.StatusBadRequest, "unknown_permission", "valid permissions"},
+		{"admin level rejected", "contents:admin", http.StatusBadRequest, "invalid_level", "must be read or write"},
+		{"canonical accepted", "contents:read,pull_requests:write,issues:write", http.StatusCreated, "", "\"pull_requests\":\"write\""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newTestAPIFull(t)
+			a.cfg = &config.Config{}
+			a.cfg.Tokens.DefaultDuration = time.Hour
+			seedGitHubToken(t, a, "user-1")
+
+			var before float64
+			if tt.wantReason != "" {
+				before = counterValue(t, metrics.TokenScopeRejectedTotal.WithLabelValues(tt.wantReason))
+			}
+
+			body, _ := json.Marshal(map[string]string{"type": "proxy", "scopes": tt.scopes, "duration": "1h"})
+			req := httptest.NewRequest("POST", "/api/tokens", strings.NewReader(string(body)))
+			req = req.WithContext(auth.NewContextWithSession(req.Context(), adminSession()))
+			w := httptest.NewRecorder()
+			a.handleCreateToken(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tt.wantBody) {
+				t.Errorf("body %s does not contain %q", w.Body.String(), tt.wantBody)
+			}
+			if tt.wantReason != "" {
+				if got := counterValue(t, metrics.TokenScopeRejectedTotal.WithLabelValues(tt.wantReason)) - before; got != 1 {
+					t.Errorf("rejected counter delta = %v, want 1", got)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleUpdateTokenScopes_UnknownPermission(t *testing.T) {
+	a := newTestAPIFull(t)
+	pt := &database.ProxyToken{
+		TokenHash:   "hash_scope_name_test",
+		TokenPrefix: "ghx_sn1",
+		TokenType:   "proxy",
+		ExpiresAt:   timePtrServer(time.Now().Add(time.Hour)),
+	}
+	if err := a.store.CreateProxyToken(context.Background(), pt); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	for _, body := range []string{`{"scopes":{"pulls":"write"}}`, `{"scopes":{"foo":"read"}}`} {
+		req := httptest.NewRequest("PATCH", "/api/tokens/"+pt.ID, strings.NewReader(body))
+		req.SetPathValue("id", pt.ID)
+		req = req.WithContext(auth.NewContextWithSession(req.Context(), adminSession()))
+		w := httptest.NewRecorder()
+		a.handleUpdateTokenScopes(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d: %s", body, w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "pull_requests") {
+			t.Errorf("%s: message should list valid names: %s", body, w.Body.String())
+		}
+	}
+}
+
+func counterValue(t *testing.T, c interface{ Write(*dto.Metric) error }) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := c.Write(&m); err != nil {
+		t.Fatalf("write metric: %v", err)
+	}
+	return m.GetCounter().GetValue()
 }
