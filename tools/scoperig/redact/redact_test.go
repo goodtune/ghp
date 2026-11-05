@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -19,8 +20,12 @@ func TestString(t *testing.T) {
 		{"ghp", "ghp_test00000000", "ghp_[REDACTED]"},
 		{"ghr", "ghr_test00000000", "ghr_[REDACTED]"},
 		{"github_pat", "github_pat_11ABCtest0000_fake", "github_pat_[REDACTED]"},
-		{"embedded", "Authorization: token ghx_test00000000 end", "Authorization: token ghx_[REDACTED] end"},
+		{"embedded", "Authorization: token ghx_test00000000 end", "Authorization: token [REDACTED] end"},
+		{"embedded no header", "saw ghx_test00000000 end", "saw ghx_[REDACTED] end"},
 		{"two", "ghx_test00000000 gha_test11111111", "ghx_[REDACTED] gha_[REDACTED]"},
+		{"upper ghx", "GHX_TEST00000000", "GHX_[REDACTED]"},
+		{"mixed github_pat", "Github_Pat_11ABCtest0000", "Github_Pat_[REDACTED]"},
+		{"basic line", "Authorization: Basic eDpzZWNyZXQ=", "Authorization: Basic [REDACTED]"},
 		{"already redacted", "token REDACTED", "token REDACTED"},
 		{"prefix alone", "ghx_", "ghx_"},
 		{"too short", "ghx_abc1234", "ghx_abc1234"},
@@ -92,6 +97,10 @@ func TestContains(t *testing.T) {
 		{"ghx_[REDACTED]", false},
 		{"nothing here", false},
 		{"github_pat_11ABCtest0000", true},
+		{"GHX_TEST00000000", true},
+		{"Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x:ghx_test00000000")), true},
+		{"Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x:plainpass")), false},
+		{"Authorization: Basic [REDACTED]", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
@@ -103,18 +112,25 @@ func TestContains(t *testing.T) {
 }
 
 func TestRedact_ExecutorOutputs(t *testing.T) {
-	outputs := []string{
-		"HTTP 401: Bad credentials (https://h/api/v3/user)\nGH_ENTERPRISE_TOKEN=ghx_test00000000",
-		`{"message":"echo","token":"gha_test00000000","nested":{"t":"ghs_test00000000"}}`,
-		"git: fatal: Authentication failed for 'https://x-access-token:ghx_test00000000@h/o/r.git/'",
+	basic := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:ghx_test00000000"))
+	outputs := []struct{ name, in string }{
+		{"gh stderr", "HTTP 401: Bad credentials (https://h/api/v3/user)\nGH_ENTERPRISE_TOKEN=ghx_test00000000"},
+		{"rest body", `{"message":"echo","token":"gha_test00000000","nested":{"t":"ghs_test00000000"}}`},
+		{"git url", "git: fatal: Authentication failed for 'https://x-access-token:ghx_test00000000@h/o/r.git/'"},
+		{"basic header line", "> GET /o/r.git/info/refs\n> " + basic + "\n"},
 	}
 	for _, o := range outputs {
-		if !Contains([]byte(o)) {
-			t.Fatalf("fixture should contain a token: %q", o)
-		}
-		if r := String(o); Contains([]byte(r)) {
-			t.Errorf("token survived String: %q", r)
-		}
+		t.Run(o.name, func(t *testing.T) {
+			if !Contains([]byte(o.in)) {
+				t.Fatalf("fixture should contain a token: %q", o.in)
+			}
+			if r := String(o.in); Contains([]byte(r)) {
+				t.Errorf("token survived String: %q", r)
+			}
+			if r := Bytes([]byte(o.in)); Contains(r) {
+				t.Errorf("token survived Bytes: %q", r)
+			}
+		})
 	}
 
 	h := http.Header{"Authorization": {"token ghx_test00000000"}, "X-Other": {"ghp_test00000000"}}
