@@ -443,3 +443,18 @@ func TestManager_SweepSessionMatchesExactSessionOnly(t *testing.T) {
 		t.Fatalf("deletes=%v", f.deletes)
 	}
 }
+
+func TestManager_CreateRawOverwritesSessionID(t *testing.T) {
+	f := newFake()
+	m, _ := setup(t, f, 0)
+	body := map[string]any{"type": "proxy", "scopes": "contents:read", "session_id": "evil"}
+	if _, _, err := m.CreateRaw(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	if f.posts[0]["session_id"] != "scoperig-run1" {
+		t.Fatalf("sent session_id = %v, want scoperig-run1", f.posts[0]["session_id"])
+	}
+	if body["session_id"] != "evil" {
+		t.Fatal("CreateRaw must not modify the caller's body")
+	}
+}
