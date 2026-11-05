@@ -124,7 +124,7 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 	cmd := osexec.CommandContext(rctx, env.GHPath, args...)
 	cmd.Dir = filepath.Join(tmp, "work")
 	cmd.Env = ghEnv(host, repo, tok, tmp)
-	setProcessGroup(cmd)
+	SetProcessGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	stdout := &capWriter{max: MaxBody}
 	stderr := &capWriter{max: maxGHStderr}

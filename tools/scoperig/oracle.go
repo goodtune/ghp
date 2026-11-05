@@ -29,6 +29,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/goodtune/ghp/tools/scoperig/corpus"
+	"github.com/goodtune/ghp/tools/scoperig/exec"
 	"github.com/goodtune/ghp/tools/scoperig/ghdebug"
 	"github.com/goodtune/ghp/tools/scoperig/redact"
 )
@@ -284,6 +285,7 @@ func runOracleGH(ctx context.Context, ghPath, tmp string, env, args []string, st
 	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = 2 * time.Second
+	exec.SetProcessGroup(cmd) // a timeout kills gh and every child it started
 	err := cmd.Run()
 	if rctx.Err() != nil {
 		return 0, fmt.Errorf("gh timed out: %w", rctx.Err())
