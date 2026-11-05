@@ -25,7 +25,7 @@ func TestMatch(t *testing.T) {
 		{"status ok", scenario.Expect{Status: 403}, obs, nil},
 		{"status miss", scenario.Expect{Status: 200}, obs, []string{"status: want 200, got 403"}},
 		{"status_in ok", scenario.Expect{StatusIn: []int{401, 403}}, obs, nil},
-		{"status_in miss", scenario.Expect{StatusIn: []int{200, 204}}, obs, []string{"status: want one of [200 204], got 403"}},
+		{"status_in miss", scenario.Expect{StatusIn: []int{200, 204}}, obs, []string{"status_in: want one of [200 204], got 403"}},
 		{"body_contains miss", scenario.Expect{BodyContains: []string{"nope"}}, obs, []string{`body: want contains "nope"`}},
 		{"body_not_contains hit", scenario.Expect{BodyNotContains: []string{"scoped"}}, obs, []string{`body: want not contains "scoped"`}},
 		{"header ok", scenario.Expect{Header: map[string]string{"x-github-request-id": "abc"}}, obs, nil},
@@ -36,6 +36,9 @@ func TestMatch(t *testing.T) {
 		{"denial true ok", scenario.Expect{GHPDenial: boolp(true)}, obs, nil},
 		{"denial false miss", scenario.Expect{GHPDenial: boolp(false)}, obs, []string{"ghp_denial: want false, got true"}},
 		{"denial true miss", scenario.Expect{GHPDenial: boolp(true)}, &Observation{Body: []byte(`{"message":"Not Found"}`)}, []string{"ghp_denial: want true, got false"}},
+		{"denial needs 4xx", scenario.Expect{GHPDenial: boolp(false)}, &Observation{Status: 200, Body: denial}, nil},
+		{"denial true on 200 miss", scenario.Expect{GHPDenial: boolp(true)}, &Observation{Status: 200, Body: denial}, []string{"ghp_denial: want true, got false"}},
+		{"github 403 not denial", scenario.Expect{GHPDenial: boolp(false)}, &Observation{Status: 403, Body: []byte(`{"message":"Resource not accessible by integration"}`)}, nil},
 		{"exit ok", scenario.Expect{ExitCode: intp(1)}, obs, nil},
 		{"exit miss", scenario.Expect{ExitCode: intp(0)}, obs, []string{"exit_code: want 0, got 1"}},
 		{"exit nil", scenario.Expect{ExitCode: intp(0)}, &Observation{}, []string{"exit_code: want 0, got none"}},
@@ -60,6 +63,14 @@ func TestMatch(t *testing.T) {
 				}
 			}
 		})
+	}
+	for _, m := range []string{MsgTokenResolutionFailed, MsgInvalidPrefix, MsgLookupFailed} {
+		if !IsGHPDenialResponse(401, []byte(`{"message":"`+m+` x"}`)) {
+			t.Errorf("want 401 denial for %q", m)
+		}
+	}
+	if IsGHPDenialResponse(200, denial) {
+		t.Error("200 must not be a denial")
 	}
 	if Match(nil, obs) != nil {
 		t.Error("nil expect should match")
@@ -106,12 +117,12 @@ func TestIsGHPDenial(t *testing.T) {
 			}
 		})
 	}
-	for _, b := range []string{`{"message":"Not Found"}`, `not json`, `{"message":"Bad credentials"}`, ``} {
+	for _, b := range []string{`{"message":"Not Found"}`, `not json`, `{"message":"Bad credentials"}`, `{"message":"Resource not accessible by integration"}`, `{"message":"API rate limit exceeded for 1.2.3.4"}`, ``} {
 		if IsGHPDenial([]byte(b)) {
 			t.Errorf("unexpected denial for %q", b)
 		}
 	}
-	if GHPMessage([]byte(`{"message":"hi"}`)) != "hi" || GHPMessage([]byte(`[1]`)) != "" {
+	if GHPMessage([]byte(`{"message":"hi"}`)) != "hi" || GHPMessage([]byte(`[1]`)) != "" || GHPMessage([]byte(`{"message":42}`)) != "" {
 		t.Error("GHPMessage")
 	}
 }

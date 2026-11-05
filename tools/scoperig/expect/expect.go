@@ -18,28 +18,32 @@ import (
 
 // GHP denial message prefixes, copied from internal/proxy and internal/token.
 const (
-	MsgNotScoped        = "Token is not scoped to"
-	MsgNoPermission     = "Token does not have permission"
-	MsgGraphQLScopes    = "Token does not grant required GraphQL scopes"
-	MsgRepoRestricted   = "Token is repository-restricted"
-	MsgUnmappedFields   = "GraphQL request references unmapped fields"
-	MsgSubscriptions    = "GraphQL subscriptions are not supported"
-	MsgMutationUnscoped = "GraphQL mutation could not be statically scoped"
-	MsgRevoked          = "token has been revoked"
-	MsgExpired          = "token has expired"
-	MsgBorderPolicy     = "Token type is not permitted by the border policy"
-	MsgInvalidToken     = "Invalid token"
-	MsgAnonymousGit     = "Anonymous git access is not permitted"
-	MsgReleaseDownloads = "Release downloads are not permitted"
-	DocsURLREST         = "https://docs.github.com/rest"
-	DocsURLGraphQL      = "https://docs.github.com/graphql"
+	MsgNotScoped             = "Token is not scoped to"
+	MsgNoPermission          = "Token does not have permission"
+	MsgGraphQLScopes         = "Token does not grant required GraphQL scopes"
+	MsgRepoRestricted        = "Token is repository-restricted"
+	MsgUnmappedFields        = "GraphQL request references unmapped fields"
+	MsgSubscriptions         = "GraphQL subscriptions are not supported"
+	MsgMutationUnscoped      = "GraphQL mutation could not be statically scoped"
+	MsgRevoked               = "token has been revoked"
+	MsgExpired               = "token has expired"
+	MsgBorderPolicy          = "Token type is not permitted by the border policy"
+	MsgInvalidToken          = "Invalid token"
+	MsgAnonymousGit          = "Anonymous git access is not permitted"
+	MsgReleaseDownloads      = "Release downloads are not permitted"
+	MsgTokenResolutionFailed = "Token resolution failed"
+	MsgInvalidPrefix         = "invalid token prefix"
+	MsgLookupFailed          = "looking up token:"
+	DocsURLREST              = "https://docs.github.com/rest"
+	DocsURLGraphQL           = "https://docs.github.com/graphql"
 )
 
 var denialPrefixes = []string{
 	MsgNotScoped, MsgNoPermission, MsgGraphQLScopes, MsgRepoRestricted,
 	MsgUnmappedFields, MsgSubscriptions, MsgMutationUnscoped, MsgRevoked,
 	MsgExpired, MsgBorderPolicy, MsgInvalidToken, MsgAnonymousGit,
-	MsgReleaseDownloads,
+	MsgReleaseDownloads, MsgTokenResolutionFailed, MsgInvalidPrefix,
+	MsgLookupFailed,
 }
 
 // Observation is what an executor saw for one step.
@@ -70,7 +74,7 @@ func Match(e *scenario.Expect, o *Observation) []error {
 		add("status: want %d, got %d", e.Status, o.Status)
 	}
 	if len(e.StatusIn) > 0 && !containsInt(e.StatusIn, o.Status) {
-		add("status: want one of %v, got %d", e.StatusIn, o.Status)
+		add("status_in: want one of %v, got %d", e.StatusIn, o.Status)
 	}
 	for _, s := range e.BodyContains {
 		if !bytes.Contains(o.Body, []byte(s)) {
@@ -82,6 +86,7 @@ func Match(e *scenario.Expect, o *Observation) []error {
 			add("body: want not contains %q, got %s", s, snippet(o.Body))
 		}
 	}
+	// header: compares against the first value of the header only.
 	for _, k := range sortedKeys(e.Header) {
 		if got := o.Header.Get(k); got != e.Header[k] {
 			add("header %s: want %q, got %q", k, e.Header[k], got)
@@ -96,7 +101,7 @@ func Match(e *scenario.Expect, o *Observation) []error {
 		}
 	}
 	if e.GHPDenial != nil {
-		if got := IsGHPDenial(o.Body); got != *e.GHPDenial {
+		if got := IsGHPDenialResponse(o.Status, o.Body); got != *e.GHPDenial {
 			add("ghp_denial: want %t, got %t (message %q)", *e.GHPDenial, got, GHPMessage(o.Body))
 		}
 	}
@@ -155,7 +160,8 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // JSONPath evaluates a minimal path ("$.a.b", "$.items[0].id") against a
-// JSON body. Strings are returned unquoted, numbers verbatim (no exponent),
+// JSON body. Strings are returned unquoted, numbers exactly as written in
+// the body (full integer precision; no float re-formatting),
 // booleans and null as literals, objects and arrays as compact JSON.
 func JSONPath(body []byte, path string) (string, error) {
 	if !strings.HasPrefix(path, "$") {
@@ -251,4 +257,10 @@ func IsGHPDenial(body []byte) bool {
 		}
 	}
 	return false
+}
+
+// IsGHPDenialResponse reports whether a response is a GHP denial: a 401 or
+// 403 status carrying a GHP denial message.
+func IsGHPDenialResponse(status int, body []byte) bool {
+	return (status == 401 || status == 403) && IsGHPDenial(body)
 }
