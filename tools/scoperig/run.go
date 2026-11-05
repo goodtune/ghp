@@ -119,7 +119,8 @@ func repoRef(s string) scenario.RepoRef {
 
 // runRig executes spec §3.5 steps 1-9 (writing is the caller's job). The
 // returned error is an *exitError (code 3) for validation, config and
-// preflight failures; in that case no report is returned. Tokens created by
+// preflight failures (no report is returned), and code 2 for a failed
+// startup sweep. Tokens created by
 // the run are revoked exactly once, before runRig returns, even on panic or
 // cancellation.
 func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, err error) {
@@ -203,9 +204,13 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	}()
 
 	// 3. Sweep.
-	if swept, err := mgr.Sweep(ctx); err != nil {
-		_, _ = fmt.Fprintf(out, "sweep: %s\n", redact.String(err.Error()))
-	} else if len(swept) > 0 {
+	// A failed sweep is an operational error: stale tokens from an earlier
+	// run may still be live. The revoke defer above still runs.
+	swept, serr := mgr.Sweep(ctx)
+	if serr != nil {
+		return rep, &exitError{code: 2, err: fmt.Errorf("sweep: %s", redact.String(serr.Error()))}
+	}
+	if len(swept) > 0 {
 		_, _ = fmt.Fprintf(out, "sweep: revoked %d leftover token(s): %s\n", len(swept), strings.Join(swept, " "))
 	}
 

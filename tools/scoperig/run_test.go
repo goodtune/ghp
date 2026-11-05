@@ -37,6 +37,8 @@ type fakeGHP struct {
 	requests   int
 	creates    int
 	failRevoke bool
+	failList   bool // fail GET /api/tokens after the preflight call
+	listCalls  int
 	pushW      bool
 	deletes    []string          // ids passed to DELETE /api/tokens/{id}, in order
 	onScenario func(path string) // called for scenario (non-fixture) GETs
@@ -113,7 +115,10 @@ func (f *fakeGHP) serveTokens(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	id := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/tokens"), "/")
 	switch {
+	case r.Method == http.MethodGet && id == "" && f.failList && f.listCalls > 0:
+		writeJSONResp(w, 500, map[string]string{"message": "list failed"})
 	case r.Method == http.MethodGet && id == "":
+		f.listCalls++
 		list := make([]map[string]any, 0)
 		for _, k := range f.order {
 			t := f.tokens[k]
@@ -505,6 +510,30 @@ func TestRun_SignalTriggersRevoke(t *testing.T) {
 		if got[id]["status"] != "ERROR" {
 			t.Errorf("%s status = %v, want ERROR", id, got[id]["status"])
 		}
+	}
+}
+
+func TestRun_SweepFailureExits2(t *testing.T) {
+	f := newFakeGHP(t)
+	f.failList = true
+	root, cfg := writeTree(t, f.host(), `
+- id: REPO-C06.own-repo
+  claim: REPO-C06
+  profile: repo-A
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}/commits
+  expect: {status: 200}
+`)
+	res := runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg)
+	if res.code != 2 {
+		t.Fatalf("exit = %d, want 2\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+	}
+	f.mu.Lock()
+	creates := f.creates
+	f.mu.Unlock()
+	if creates != 0 {
+		t.Errorf("created %d tokens after a failed sweep, want 0", creates)
 	}
 }
 
