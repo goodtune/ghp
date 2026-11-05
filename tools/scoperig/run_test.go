@@ -634,6 +634,33 @@ func TestRun_OnlyFilter(t *testing.T) {
 	}
 }
 
+type failTransport struct{ t *testing.T }
+
+func (f failTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.t.Errorf("unexpected network request: %s %s", r.Method, r.URL)
+	return nil, fmt.Errorf("no network in this test")
+}
+
+// TestRun_OnlyNoMatchExits3: a --only pattern that selects nothing is a
+// usage error caught before any network use.
+func TestRun_OnlyNoMatchExits3(t *testing.T) {
+	f := newFakeGHP(t)
+	root, cfg := writeTree(t, f.host(), testScenarios)
+	deps := fakeDeps(f, nil)
+	deps.HTTP = &http.Client{Transport: failTransport{t}}
+	out := filepath.Join(t.TempDir(), "r.json")
+	res := runCLI(t, fakeEnv(f, root), deps, "run", "--config", cfg, "--out", out, "--only", "NOMATCH-*")
+	if res.code != 3 {
+		t.Fatalf("exit = %d, want 3\n%s\n%s", res.code, res.stdout, res.stderr)
+	}
+	if !strings.Contains(res.stdout+res.stderr, "--only matched no scenarios") {
+		t.Errorf("missing message:\n%s%s", res.stdout, res.stderr)
+	}
+	if _, err := os.Stat(out); err == nil {
+		t.Error("report written for an empty selection")
+	}
+}
+
 func TestRun_SkipKnown(t *testing.T) {
 	f := newFakeGHP(t)
 	root, cfg := writeTree(t, f.host(), testScenarios)

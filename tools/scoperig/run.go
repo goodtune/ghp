@@ -136,6 +136,9 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	if err != nil {
 		return nil, &exitError{code: 3, err: err}
 	}
+	if c.Only != "" && len(selected) == 0 {
+		return nil, &exitError{code: 3, err: errors.New("--only matched no scenarios")}
+	}
 
 	// 2. Preflight (first network use).
 	if err := c.RequireServer(); err != nil {
