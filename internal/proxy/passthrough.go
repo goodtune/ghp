@@ -10,12 +10,14 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
+	"github.com/goodtune/ghp/internal/permissions"
 	"github.com/goodtune/ghp/internal/token"
 )
 
@@ -522,5 +524,30 @@ func parseScopeInfo(pt *database.ProxyToken) (tokenScopeInfo, error) {
 	if err := json.Unmarshal(pt.Scopes, &scopes); err != nil {
 		return tokenScopeInfo{}, fmt.Errorf("parsing token scopes: %w", err)
 	}
+	storedScopeWarner.warn(slog.Default(), pt.ID, scopes)
 	return tokenScopeInfo{Repos: repos, Scopes: scopes}, nil
+}
+
+// scopeNameWarner logs a warning the first time a stored token is seen with
+// a permission name outside the canonical list (#293). Such tokens predate
+// creation-time validation; they still resolve unchanged (no migration), but
+// the unknown entry never satisfies an enforcement check. Each name is
+// logged once per process to keep the log quiet on hot paths.
+type scopeNameWarner struct {
+	seen sync.Map // permission name -> struct{}
+}
+
+var storedScopeWarner = &scopeNameWarner{}
+
+func (w *scopeNameWarner) warn(logger *slog.Logger, tokenID string, scopes database.Scopes) {
+	for name := range scopes {
+		if permissions.IsKnown(name) {
+			continue
+		}
+		if _, loaded := w.seen.LoadOrStore(name, struct{}{}); loaded {
+			continue
+		}
+		logger.Warn("stored token scope has unknown permission name; it will never satisfy an enforcement check",
+			"permission", name, "token_id", tokenID)
+	}
 }
