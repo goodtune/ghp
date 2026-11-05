@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/goodtune/ghp/tools/scoperig/redact"
@@ -17,11 +18,14 @@ var (
 )
 
 // Sanitise replaces concrete owner/repo/number values in Variables with
-// OWNER, REPO and 1, clears endCursor, and rewrites "owner/repo" inside other
-// string values to "OWNER/REPO". It returns an error if a token-shaped string
-// remains in the query, operation name or any variable. g is not modified.
+// OWNER, REPO and 1, clears endCursor, and rewrites "owner/repo"
+// (case-insensitive) to "OWNER/REPO" in the query and in other string values.
+// It fails closed: it returns an error if a token-shaped string, or the real
+// owner, repo or owner/repo, remains in the query, operation name or any
+// variable. g is not modified.
 func Sanitise(g GraphQLRequest, owner, repo string) (GraphQLRequest, error) {
-	out := GraphQLRequest{Query: g.Query, OperationName: g.OperationName}
+	slug := slugPattern(owner, repo)
+	out := GraphQLRequest{Query: replaceSlug(g.Query, slug).(string), OperationName: g.OperationName}
 	if g.Variables != nil {
 		out.Variables = make(map[string]any, len(g.Variables))
 		for k, v := range g.Variables {
@@ -39,12 +43,17 @@ func Sanitise(g GraphQLRequest, owner, repo string) (GraphQLRequest, error) {
 			case nilKeys[k]:
 				out.Variables[k] = nil
 			default:
-				out.Variables[k] = replaceSlug(v, owner, repo)
+				out.Variables[k] = replaceSlug(v, slug)
 			}
 		}
 	}
-	if redact.Contains([]byte(out.Query)) || redact.Contains([]byte(out.OperationName)) {
+	ident := identityPattern(owner, repo)
+	text := []byte(out.Query + "\n" + out.OperationName)
+	if redact.Contains(text) {
 		return GraphQLRequest{}, errors.New("ghdebug: token-shaped string in GraphQL query")
+	}
+	if ident != nil && ident.Match(text) {
+		return GraphQLRequest{}, errors.New("ghdebug: owner or repo name remains in GraphQL query")
 	}
 	if out.Variables != nil {
 		b, err := json.Marshal(out.Variables)
@@ -54,27 +63,52 @@ func Sanitise(g GraphQLRequest, owner, repo string) (GraphQLRequest, error) {
 		if redact.Contains(b) {
 			return GraphQLRequest{}, errors.New("ghdebug: token-shaped string in GraphQL variables")
 		}
+		if ident != nil && ident.Match(b) {
+			return GraphQLRequest{}, errors.New("ghdebug: owner or repo name remains in GraphQL variables")
+		}
 	}
 	return out, nil
 }
 
-func replaceSlug(v any, owner, repo string) any {
+// slugPattern matches "owner/repo" case-insensitively; nil if either is empty.
+func slugPattern(owner, repo string) *regexp.Regexp {
+	if owner == "" || repo == "" {
+		return nil
+	}
+	return regexp.MustCompile(`(?i)` + regexp.QuoteMeta(owner+"/"+repo))
+}
+
+// identityPattern matches the owner or repo as a whole word, case-insensitively.
+func identityPattern(owner, repo string) *regexp.Regexp {
+	var alts []string
+	for _, s := range []string{owner, repo} {
+		if s != "" {
+			alts = append(alts, regexp.QuoteMeta(s))
+		}
+	}
+	if len(alts) == 0 {
+		return nil
+	}
+	return regexp.MustCompile(`(?i)\b(?:` + strings.Join(alts, "|") + `)\b`)
+}
+
+func replaceSlug(v any, slug *regexp.Regexp) any {
 	switch t := v.(type) {
 	case string:
-		if owner != "" && repo != "" {
-			return strings.ReplaceAll(t, owner+"/"+repo, "OWNER/REPO")
+		if slug == nil {
+			return t
 		}
-		return t
+		return slug.ReplaceAllLiteralString(t, "OWNER/REPO")
 	case []any:
 		cp := make([]any, len(t))
 		for i, e := range t {
-			cp[i] = replaceSlug(e, owner, repo)
+			cp[i] = replaceSlug(e, slug)
 		}
 		return cp
 	case map[string]any:
 		cp := make(map[string]any, len(t))
 		for k, e := range t {
-			cp[k] = replaceSlug(e, owner, repo)
+			cp[k] = replaceSlug(e, slug)
 		}
 		return cp
 	}

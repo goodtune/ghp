@@ -27,7 +27,12 @@ type Exchange struct {
 	RequestHeaders    http.Header     // redacted
 	GraphQL           *GraphQLRequest // non-nil for GraphQL requests
 	Status            int             // from "< HTTP/2.0 200 OK"; 0 if none
-	ResponseBody      string          // redacted, capped at 64 KiB
+	// ResponseBody is redacted and capped at 64 KiB. It may hold private
+	// repository data, so it must never be written to the checked-in corpus.
+	ResponseBody string
+	// Interleaved is set when gh's debug output for this exchange overlaps
+	// another concurrent request, so its fields cannot be trusted.
+	Interleaved bool
 }
 
 // GraphQLRequest is the query, variables and operation name of a GraphQL call.
@@ -84,10 +89,16 @@ func Parse(r io.Reader) ([]Exchange, error) {
 		line := sc.Text()
 		switch {
 		case strings.HasPrefix(line, "* Request at "):
+			interleaved := false
+			if b != nil && !b.respLine {
+				// The next request started before this one got a status line.
+				b.ex.Interleaved = true
+				interleaved = true
+			}
 			if err := flush(); err != nil {
 				return nil, err
 			}
-			b = &builder{ex: Exchange{RequestHeaders: http.Header{}}}
+			b = &builder{ex: Exchange{RequestHeaders: http.Header{}, Interleaved: interleaved}}
 			continue
 		case b == nil:
 			continue
@@ -109,6 +120,10 @@ func Parse(r io.Reader) ([]Exchange, error) {
 				b.query.WriteByte('\n')
 			}
 			continue
+		}
+		if b.sec == secRespBody && strings.HasPrefix(line, "< HTTP/") {
+			// A second status line inside the body: two responses merged.
+			b.ex.Interleaved = true
 		}
 		switch {
 		case strings.HasPrefix(line, "> ") && b.sec <= secReqHeaders:
@@ -193,9 +208,11 @@ func (b *builder) finish() (Exchange, error) {
 		if err := json.Unmarshal([]byte(b.reqBody.String()), &req); err == nil && req.Query != "" {
 			g := &GraphQLRequest{Query: req.Query}
 			if len(req.Variables) > 0 && string(req.Variables) != "null" {
-				if vars, err := decodeVars(req.Variables); err == nil {
-					g.Variables = vars
+				vars, err := decodeVars(req.Variables)
+				if err != nil {
+					return Exchange{}, fmt.Errorf("ghdebug: %s: decode GraphQL variables: %w", ex.URL, err)
 				}
+				g.Variables = vars
 			}
 			ex.GraphQL = g
 		}

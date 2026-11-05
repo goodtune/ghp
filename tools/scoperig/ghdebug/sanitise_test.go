@@ -40,4 +40,11 @@ func TestSanitise(t *testing.T) {
 	if _, err := Sanitise(GraphQLRequest{Query: "q", Variables: map[string]any{"body": []any{"gho_aaaaaaaaaaaa"}}}, "o", "r"); err == nil {
 		t.Error("want error for token in variables")
 	}
+	if _, err := Sanitise(GraphQLRequest{Query: "q", Variables: map[string]any{"login": "Octo"}}, "octo", "hello"); err == nil {
+		t.Error("want error for owner in unknown variable")
+	}
+	out2, err := Sanitise(GraphQLRequest{Query: "q", Variables: map[string]any{"q": "repo:OCTO/Hello x"}}, "octo", "hello")
+	if err != nil || out2.Variables["q"] != "repo:OWNER/REPO x" {
+		t.Errorf("case-insensitive slug: %v %v", out2.Variables["q"], err)
+	}
 }

@@ -118,3 +118,75 @@ func TestFirstDenied(t *testing.T) {
 		t.Error("want nil")
 	}
 }
+
+func TestParse_Interleaved(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []bool
+	}{
+		{
+			name: "clean sequence",
+			in:   "* Request at x\n* Request to https://h/a\n> GET /a HTTP/1.1\n\n< HTTP/2.0 200 OK\n\n{}\n* Request at y\n* Request to https://h/b\n> GET /b HTTP/1.1\n\n< HTTP/2.0 200 OK\n\n{}\n",
+			want: []bool{false, false},
+		},
+		{
+			name: "next request before status line",
+			in:   "* Request at x\n* Request to https://h/a\n> GET /a HTTP/1.1\n* Request at y\n* Request to https://h/b\n> GET /b HTTP/1.1\n\n< HTTP/2.0 200 OK\n\n{}\n",
+			want: []bool{true, true},
+		},
+		{
+			name: "second status line in body",
+			in:   "* Request at x\n* Request to https://h/a\n> GET /a HTTP/1.1\n\n< HTTP/2.0 200 OK\n\n{}\n< HTTP/2.0 200 OK\n< X-A: b\n\n{}\n",
+			want: []bool{true},
+		},
+		{
+			name: "no response at end of capture is not interleaved",
+			in:   "* Request at x\n* Request to https://h/a\n> GET /a HTTP/1.1\n",
+			want: []bool{false},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ex, err := Parse(strings.NewReader(tt.in))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(ex) != len(tt.want) {
+				t.Fatalf("got %d exchanges", len(ex))
+			}
+			for i, w := range tt.want {
+				if ex[i].Interleaved != w {
+					t.Errorf("ex[%d].Interleaved = %v, want %v", i, ex[i].Interleaved, w)
+				}
+			}
+		})
+	}
+}
+
+func TestParse_BadJSONBodyVariables(t *testing.T) {
+	in := "* Request at x\n* Request to https://h/graphql\n> POST /graphql HTTP/1.1\n\n{\"query\":\"query { a }\",\"variables\":[1]}\n\n< HTTP/2.0 200 OK\n\n{}\n"
+	if _, err := Parse(strings.NewReader(in)); err == nil {
+		t.Error("want decode error")
+	}
+}
+
+func TestSanitise_LiteralInJSONBodyQuery(t *testing.T) {
+	in := "* Request at x\n* Request to https://h/graphql\n> POST /graphql HTTP/1.1\n\n{\"query\":\"query { search(query: \\\"repo:Cli/CLI is:pr\\\") { issueCount } }\"}\n\n< HTTP/2.0 200 OK\n\n{}\n"
+	ex, err := Parse(strings.NewReader(in))
+	if err != nil || len(ex) != 1 || ex[0].GraphQL == nil {
+		t.Fatalf("ex=%+v err=%v", ex, err)
+	}
+	out, err := Sanitise(*ex[0].GraphQL, "cli", "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Query, "repo:OWNER/REPO is:pr") {
+		t.Errorf("query = %q", out.Query)
+	}
+
+	lit := GraphQLRequest{Query: `query { repository(owner: "CLI", name: "x") { id } }`}
+	if _, err := Sanitise(lit, "cli", "cli"); err == nil {
+		t.Error("want error for bare owner literal in query")
+	}
+}
