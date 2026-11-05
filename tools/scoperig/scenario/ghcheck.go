@@ -100,11 +100,14 @@ func repoFromSpec(spec string) string {
 // checkGH applies the write target rule to a gh invocation. repoKey is the
 // scenario's repo: field (A, B or W), which the runner exports as the
 // default repository.
-func checkGH(args []string, repoKey string, v *Vars, add func(string, ...any)) {
+func checkGH(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, add func(string, ...any)) {
+	repoKey := sc.Repo
 	if len(args) > 0 && args[0] == "gh" {
 		args = args[1:]
+		rawArgs = rawArgs[1:]
 	}
 	g := parseGHArgs(args)
+	rg := parseGHArgs(rawArgs)
 	pos := g.positionals
 
 	var refs []string
@@ -143,43 +146,31 @@ func checkGH(args []string, repoKey string, v *Vars, add func(string, ...any)) {
 	case group == "api":
 		endpoint := strings.TrimPrefix(action, "/")
 		if endpoint == "graphql" {
-			read = true
-			queries := 0
-			for _, fv := range g.all("-f", "-F", "--field", "--raw-field") {
-				k, val, _ := strings.Cut(fv, "=")
-				if k == "query" {
-					queries++
-					if mutationWordRE.MatchString(val) || strings.HasPrefix(val, "@") {
-						read = false
-					}
-					if pairs, err := graphQLRepoPairs(val); err == nil {
-						for _, p := range pairs {
-							refs = append(refs, p[0]+"/"+p[1])
-						}
-					}
-				}
-			}
-			if queries != 1 || len(g.all("--input")) > 0 {
+			checkGHGraphQL(g, rg, sc, prof, v, add)
+			return
+		}
+		read = true
+		for _, m := range g.all("-X", "--method") {
+			if !strings.EqualFold(m, "GET") {
 				read = false
 			}
-		} else {
-			read = true
-			for _, m := range g.all("-X", "--method") {
-				if !strings.EqualFold(m, "GET") {
-					read = false
-				}
+		}
+		if len(g.all("-f", "-F", "--field", "--raw-field", "--input")) > 0 {
+			read = false
+		}
+		ep := strings.SplitN(endpoint, "?", 2)[0]
+		clean, err := normalisePath("/" + ep)
+		if err != nil {
+			add("gh: api endpoint: %v", err)
+			return
+		}
+		if !read {
+			// Non-GET api calls must target W's REST namespace; no other
+			// endpoint (user/starred, repositories/<id>, orgs, ...) is allowed.
+			if !strings.HasPrefix(clean, "/repos/"+v.RepoW.String()+"/") {
+				add("gh: write api endpoint %q must start with repos/{{.RepoW}}/", endpoint)
 			}
-			if len(g.all("-f", "-F", "--field", "--raw-field", "--input")) > 0 {
-				read = false
-			}
-			if strings.HasPrefix(endpoint, "repos/") {
-				parts := strings.SplitN(strings.TrimPrefix(endpoint, "repos/"), "/", 3)
-				if len(parts) >= 2 {
-					refs = append(refs, parts[0]+"/"+strings.SplitN(parts[1], "?", 2)[0])
-				} else {
-					read = false
-				}
-			}
+			return
 		}
 		for _, p := range pos[2:] {
 			if ghRepoRE.MatchString(p) || ghURLRE.MatchString(p) {
@@ -207,4 +198,40 @@ func checkGH(args []string, repoKey string, v *Vars, add func(string, ...any)) {
 			add("gh: write command %q references %s; writes must target {{.RepoW}}", strings.Join(args, " "), r)
 		}
 	}
+}
+
+// checkGHGraphQL treats `gh api graphql` like a graphql scenario: the query
+// must parse (fail closed), and mutations go through checkGraphQL with the
+// -f/-F key=value fields as variables.
+func checkGHGraphQL(g, rg ghArgs, sc *Scenario, prof *Profile, v *Vars, add func(string, ...any)) {
+	if len(g.all("--input")) > 0 {
+		add("gh: api graphql --input is not allowed; pass the query with -f query=")
+		return
+	}
+	fields := g.all("-f", "-F", "--field", "--raw-field")
+	rawFields := rg.all("-f", "-F", "--field", "--raw-field")
+	vars, rawVars := map[string]any{}, map[string]any{}
+	query, queries := "", 0
+	for i, fv := range fields {
+		k, val, _ := strings.Cut(fv, "=")
+		if k == "query" {
+			query = val
+			queries++
+			continue
+		}
+		vars[k] = val
+		if i < len(rawFields) {
+			_, rv, _ := strings.Cut(rawFields[i], "=")
+			rawVars[k] = rv
+		}
+	}
+	if queries != 1 || strings.HasPrefix(query, "@") {
+		add("gh: api graphql needs exactly one inline -f query=")
+		return
+	}
+	if _, err := parseGraphQL(query); err != nil {
+		add("gh: api graphql query does not parse: %v", err)
+		return
+	}
+	checkGraphQL("gh: api graphql", sc, -1, query, vars, rawVars, prof, v, add)
 }

@@ -174,7 +174,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		}
 		return out, true
 	}
-	checkReq := func(where string, r *Request) {
+	checkReq := func(where string, stepIdx int, r *Request) {
 		path, ok := exp(where+" path", r.Path)
 		if _, err := ExpandAny(r.Headers, v); err != nil {
 			add("%s headers: %v", where, err)
@@ -218,7 +218,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 				if rm, ok := r.Body.(map[string]any); ok {
 					rawVars, _ = rm["variables"].(map[string]any)
 				}
-				checkGraphQL(where, s.ID, q, vars, rawVars, prof, v, add)
+				checkGraphQL(where, s, stepIdx, q, vars, rawVars, prof, v, add)
 			} else if method != "GET" && method != "HEAD" {
 				add("%s: graphql step body must be a map with a query", where)
 			}
@@ -232,13 +232,13 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		}
 	}
 	for i := range s.Steps {
-		checkReq(fmt.Sprintf("steps[%d]", i), &s.Steps[i])
+		checkReq(fmt.Sprintf("steps[%d]", i), i, &s.Steps[i])
 	}
 	for i := range s.Cleanup {
-		checkReq(fmt.Sprintf("cleanup[%d]", i), &s.Cleanup[i])
+		checkReq(fmt.Sprintf("cleanup[%d]", i), -1, &s.Cleanup[i])
 	}
 	if s.Request != nil {
-		checkReq("request", s.Request)
+		checkReq("request", -1, s.Request)
 	} else if s.Kind == "token_api" {
 		add("token_api scenario needs a request")
 	}
@@ -257,7 +257,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		args = append(args, e)
 	}
 	if s.Kind == "gh" && argsOK {
-		checkGH(args, s.Repo, v, add)
+		checkGH(args, s.Args, s, prof, v, add)
 	}
 
 	vars, err := ExpandAny(map[string]any(s.Variables), v)
@@ -266,13 +266,15 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	}
 	if q, ok := exp("query", s.Query); ok && s.Kind == "graphql" && s.Query != "" && err == nil {
 		vm, _ := vars.(map[string]any)
-		checkGraphQL("query", s.ID, q, vm, s.Variables, prof, v, add)
+		checkGraphQL("query", s, -1, q, vm, s.Variables, prof, v, add)
 	}
 	return msgs
 }
 
 // normalisePath unescapes and cleans the path part of p and rejects any
-// traversal attempt so that the prefix check cannot be bypassed.
+// traversal attempt so that the prefix check cannot be bypassed. It fails
+// closed: any "." or ".." segment, or an encoded dot, is an error even when
+// it would resolve back inside W, because no legitimate scenario needs one.
 func normalisePath(p string) (string, error) {
 	raw := p
 	if i := strings.IndexByte(raw, '?'); i >= 0 {

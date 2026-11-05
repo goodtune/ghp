@@ -319,3 +319,44 @@ func TestValidate_TokenAPIPathExact(t *testing.T) {
 		Request: &Request{Method: "POST", Path: "/api/tokens"},
 		Cleanup: []Request{{Method: "DELETE", Path: "/repos/{{.RepoW}}/x"}}}), nil), "T2", "cleanup", "/api/tokens")
 }
+
+func TestValidate_Round2Bypasses(t *testing.T) {
+	stepQ := func(owner, name string) Request {
+		return Request{Name: "q", Method: "POST", Path: "/graphql",
+			Body:    map[string]any{"query": `query { repository(owner:"` + owner + `", name:"` + name + `") { id } }`},
+			Capture: map[string]string{"rid": "$.data.repository.id"}}
+	}
+	mutStep := func(val string) Request {
+		return Request{Method: "POST", Path: "/graphql", Body: map[string]any{
+			"query":     `mutation($id: ID!) { createIssue(input:{repositoryId:$id, title:"x"}) { clientMutationId } }`,
+			"variables": map[string]any{"id": val}}}
+	}
+	cases := []*Scenario{
+		ghScenario("B1", "", "api", "graphql", "-f", `query=query Q { viewer { login } } mutation M { addStar(input:{starrableId:"x"}) { clientMutationId } }`),
+		ghScenario("B2", "", "api", "graphql", "-f", "query=# c\nmutation { addStar(input:{starrableId:\"x\"}) { clientMutationId } }"),
+		ghScenario("B3", "", "api", "graphql", "-f", `query=mutation($id: ID!) { createIssue(input:{repositoryId:$id, title:"x"}) { clientMutationId } }`, "-f", "id={{.RepoA.NodeID}}"),
+		ghScenario("B4", "", "api", "-X", "POST", "repos/{{.RepoW}}/../../{{.RepoA}}/issues"),
+		ghScenario("B5", "", "api", "-X", "PUT", "user/starred/{{.RepoA}}"),
+		ghScenario("B6", "", "api", "-X", "DELETE", "repositories/{{.RepoA.ID}}/x"),
+		ghScenario("B7", "", "api", "graphql", "-f", "query={ bad"),
+		{ID: "B8", Claim: "C1", Profile: "w", Kind: "graphql",
+			Query:     `mutation($id: ID!) { createIssue(input:{repositoryId:$id, title:"x"}) { clientMutationId } }`,
+			Variables: map[string]any{"id": "R_other"}},
+		{ID: "GQL-C31.createissue-rw-allowed", Claim: "C1", Profile: "all", Kind: "graphql",
+			Steps: []Request{stepQ("{{.RepoA.Owner}}", "{{.RepoA.Name}}"), mutStep("{{.Step.q.rid}}")}},
+		{ID: "B10", Claim: "C1", Profile: "w", Kind: "graphql",
+			Steps: []Request{stepQ("{{.RepoW.Owner}}", "{{.RepoW.Name}}"), mutStep("x{{.Step.q.rid}}")}},
+		{ID: "B11", Claim: "C1", Profile: "w", Kind: "graphql",
+			Steps: []Request{stepQ("{{.RepoW.Owner}}", "{{.RepoW.Name}}"), mutStep("{{.Step.q.other}}")}},
+	}
+	for _, s := range cases {
+		t.Run(s.ID, func(t *testing.T) {
+			if errs := Validate(withScenarios(s), nil); len(errs) == 0 {
+				t.Fatalf("bypass accepted")
+			}
+		})
+	}
+	// Valid step capture from a W-pinned query is still accepted.
+	requireNoErr(t, Validate(withScenarios(&Scenario{ID: "OK", Claim: "C1", Profile: "w", Kind: "graphql",
+		Steps: []Request{stepQ("{{.RepoW.Owner}}", "{{.RepoW.Name}}"), mutStep("{{ .Step.q.rid }}")}}), nil))
+}

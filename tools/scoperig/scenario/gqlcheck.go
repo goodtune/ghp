@@ -146,10 +146,14 @@ func forbiddenIdents(v *Vars) map[string]string {
 // checkGraphQL applies the mutation rule to one GraphQL document and its
 // expanded variables. rawVars are the unexpanded variables, used to accept
 // repositoryId values captured from an earlier step.
-func checkGraphQL(where, scenarioID, q string, vars, rawVars map[string]any, prof *Profile, v *Vars, add func(string, ...any)) {
+//
+// sc and before identify where step captures may come from: only steps of
+// sc with index < before (before < 0 means any step).
+func checkGraphQL(where string, sc *Scenario, before int, q string, vars, rawVars map[string]any, prof *Profile, v *Vars, add func(string, ...any)) {
+	scenarioID := sc.ID
 	f, err := parseGraphQL(q)
 	if err != nil {
-		if mutationWordRE.MatchString(q) || strings.Contains(q, "mutation") {
+		if strings.Contains(q, "mutation") {
 			add("%s: cannot parse GraphQL that looks like a mutation: %v", where, err)
 		}
 		return
@@ -211,34 +215,95 @@ func checkGraphQL(where, scenarioID, q string, vars, rawVars map[string]any, pro
 	// repositoryId values must come from W.
 	for _, val := range f.repoIDs {
 		if val.Kind == ast.Variable {
-			continue // checked through vars below
+			// Resolve the variable by its name in the query, whatever the
+			// name is.
+			ev, rv := vars[val.Raw], rawVars[val.Raw]
+			es, rs := flattenStrings(ev), flattenStrings(rv)
+			if len(es) == 0 {
+				add("%s: repositoryId variable $%s has no value; it must be {{.RepoW.NodeID}} or a step capture", where, val.Raw)
+			}
+			for i, e := range es {
+				r := ""
+				if i < len(rs) {
+					r = rs[i]
+				}
+				checkRepoIDValue(where, "$"+val.Raw, e, r, sc, before, v, add)
+			}
+			continue
 		}
 		if val.Raw != v.RepoW.NodeID {
 			add("%s: graphql mutation repositoryId literal %q must be {{.RepoW.NodeID}}", where, val.Raw)
 		}
 	}
-	checkRepoIDVars(where, vars, rawVars, v, add)
+	checkRepoIDVars(where, vars, rawVars, sc, before, v, add)
 }
 
-func checkRepoIDVars(where string, vars, raw map[string]any, v *Vars, add func(string, ...any)) {
+var stepRefRE = regexp.MustCompile(`^\{\{\s*\.Step\.(\w+)\.(\w+)\s*\}\}$`)
+
+// checkRepoIDValue accepts a repositoryId value only if it is W's node ID or
+// exactly a capture from an earlier step whose query pins only W.
+func checkRepoIDValue(where, name, expanded, raw string, sc *Scenario, before int, v *Vars, add func(string, ...any)) {
+	if expanded == v.RepoW.NodeID {
+		return
+	}
+	m := stepRefRE.FindStringSubmatch(raw)
+	if m == nil {
+		add("%s: repositoryId %s=%q must be {{.RepoW.NodeID}} or exactly {{.Step.<step>.<capture>}}", where, name, expanded)
+		return
+	}
+	for i, st := range sc.Steps {
+		if before >= 0 && i >= before {
+			break
+		}
+		if st.Name != m[1] {
+			continue
+		}
+		if _, ok := st.Capture[m[2]]; !ok {
+			add("%s: repositoryId %s: step %q has no capture %q", where, name, m[1], m[2])
+			return
+		}
+		bm, _ := st.Body.(map[string]any)
+		rq, _ := bm["query"].(string)
+		q, err := Expand(rq, v)
+		if err != nil {
+			add("%s: repositoryId %s: step %q query: %v", where, name, m[1], err)
+			return
+		}
+		f, err := parseGraphQL(q)
+		if err != nil || len(f.pairs) == 0 {
+			add("%s: repositoryId %s: step %q must be a GraphQL query pinning repository(owner, name) to {{.RepoW}}", where, name, m[1])
+			return
+		}
+		for _, p := range f.pairs {
+			if p[0]+"/"+p[1] != v.RepoW.String() {
+				add("%s: repositoryId %s: step %q references %s/%s, not {{.RepoW}}", where, name, m[1], p[0], p[1])
+			}
+		}
+		return
+	}
+	add("%s: repositoryId %s: no earlier step named %q", where, name, m[1])
+}
+
+func checkRepoIDVars(where string, vars, raw map[string]any, sc *Scenario, before int, v *Vars, add func(string, ...any)) {
 	for k, val := range vars {
 		var rv any
 		if raw != nil {
 			rv = raw[k]
 		}
 		if repoIDKeyRE.MatchString(k) {
+			rs := flattenStrings(rv)
 			for i, s := range flattenStrings(val) {
-				rs := flattenStrings(rv)
-				fromStep := i < len(rs) && strings.Contains(rs[i], ".Step.")
-				if s != v.RepoW.NodeID && !fromStep {
-					add("%s: variable %s=%q must be {{.RepoW.NodeID}} or captured from a step", where, k, s)
+				r := ""
+				if i < len(rs) {
+					r = rs[i]
 				}
+				checkRepoIDValue(where, k, s, r, sc, before, v, add)
 			}
 			continue
 		}
 		if m, ok := val.(map[string]any); ok {
 			rm, _ := rv.(map[string]any)
-			checkRepoIDVars(where, m, rm, v, add)
+			checkRepoIDVars(where, m, rm, sc, before, v, add)
 		}
 	}
 }
