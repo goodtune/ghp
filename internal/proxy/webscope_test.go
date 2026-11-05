@@ -174,6 +174,11 @@ func TestScopedPassthrough_GitHubVhost_Issue292(t *testing.T) {
 		{"repo page", "acme/a", nil, "GET", "/acme/a", 403, "not mapped"},
 		{"permission-only token unmapped", "", map[string]string{"contents": "read"}, "GET", "/acme/a/pulls", 403, "not mapped"},
 		{"permission-only token archive", "", map[string]string{"contents": "read"}, "GET", "/acme/z/archive/main.zip", 200, ""},
+		{"case-insensitive repo match", "o/r", nil, "GET", "/O/R/archive/x", 200, ""},
+		{"dot-segment traversal", "acme/a", nil, "GET", "/acme/a/archive/../../../acme/b/archive/HEAD.tar.gz", 403, "not mapped"},
+		{"encoded slash traversal", "acme/a", nil, "GET", "/acme/a/archive/..%2F..%2Facme/b", 403, "not mapped"},
+		{"encoded dot", "acme/a", nil, "GET", "/acme/a/archive/%2e%2e/x", 403, "not mapped"},
+		{"empty segment", "acme/a", nil, "GET", "/acme/a//archive/x", 403, "not mapped"},
 		{"open-scoped token unmapped path", "", nil, "GET", "/acme/a/pulls", 200, ""},
 	}
 	for _, tt := range tests {
@@ -215,6 +220,7 @@ func TestScopedCodeload_Issue292(t *testing.T) {
 		{"other repo archive", "acme/a", nil, "/acme/b/tar.gz/main", "", 403, ""},
 		{"no contents permission", "acme/a", map[string]string{"issues": "read"}, "/acme/a/zip/main", "", 403, ""},
 		{"unmapped path", "acme/a", nil, "/acme/a/whatever", "", 403, ""},
+		{"traversal with leading empty segment", "acme/a", nil, "//acme/a/zip/../../../acme/b/zip/main", "", 403, ""},
 		{"open-scoped token resolved", "", nil, "/acme/b/zip/main", "", 200, "Bearer real-github-pat"},
 		{"anonymous unchanged", "acme/a", nil, "/acme/b/zip/main", "none", 200, ""},
 	}

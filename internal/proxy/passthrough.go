@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	pathpkg "path"
 	"strings"
 	"sync"
 	"time"
@@ -215,6 +216,11 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 		// Map the request to a repository and permission. An unmapped
 		// request is denied below for scoped tokens (goodtune/ghp#292).
 		repo, permission, level := mapScope(r.Method, r.URL.Path, r.URL.RawQuery)
+		if !isCanonicalWebPath(r) {
+			// Dot segments, empty segments and encoded dots/slashes can make
+			// the mapped repository differ from what upstream serves.
+			permission, level = "", ""
+		}
 
 		start := time.Now()
 
@@ -323,7 +329,7 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusForbidden,
-				fmt.Sprintf("Token is scoped; %s %s on %s is not mapped to a repository permission", r.Method, r.URL.Path, vhost))
+				fmt.Sprintf("Token is scoped; %s %q on %s is not mapped to a repository permission", r.Method, r.URL.Path, vhost))
 			return
 		}
 		if len(si.Repos) > 0 && !si.repoAllowed(repo) {
@@ -566,4 +572,21 @@ func (w *scopeNameWarner) warn(logger *slog.Logger, tokenID string, scopes datab
 		logger.Warn("stored token scope has unknown permission name; it will never satisfy an enforcement check",
 			"permission", name, "token_id", tokenID)
 	}
+}
+
+// isCanonicalWebPath reports whether the request path is in canonical form:
+// no dot segments, no empty segments, and no percent-encoded dots or
+// slashes. Non-canonical paths are treated as unmapped for scoped tokens.
+func isCanonicalWebPath(r *http.Request) bool {
+	p := r.URL.Path
+	if pathpkg.Clean(p) != p || strings.Contains(p, "//") {
+		return false
+	}
+	for _, raw := range []string{r.URL.RawPath, r.RequestURI} {
+		l := strings.ToLower(raw)
+		if strings.Contains(l, "%2e") || strings.Contains(l, "%2f") {
+			return false
+		}
+	}
+	return true
 }
