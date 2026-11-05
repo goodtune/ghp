@@ -44,11 +44,9 @@
   vhost: github.com
   method: GET
   path: /{{.RepoB}}/archive/HEAD.tar.gz
-  expect: {status: 403}
-  known_issue: https://github.com/goodtune/ghp/issues/292
-  # Run 20261105T0534Z: no GHP denial; a non-GHP 404 came back (no scope
-  # check ran). The archive body itself was not returned.
-  observed: {status: 404, ghp_denial: false}
+  # Fixed by #292: before the fix no scope check ran and GitHub answered 404
+  # (run 20261105T0534Z). GHP now denies the request itself.
+  expect: {status: 403, ghp_denial: true}
 
 # GAP-A6: an agent (gha_) token for an owner/repo repository. Notes:
 # - Creation does not call GitHub. The installation token is minted lazily
