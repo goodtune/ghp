@@ -28,7 +28,7 @@ What iteration 1 does not cover:
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `GHP_SERVER_URL` | yes | none | Instance base URL, for example `https://ghp.example.com` |
+| `GHP_SERVER_URL` | yes | none | Instance base URL; must use `https`, for example `https://ghp.example.com` |
 | `GHP_USER_TOKEN` | yes | none | `ghpr_` session token for `/api/tokens` |
 | `GHP_RIG_REPO_A` | no | `fixtures.repo_a` in `rig/config.yaml` | Read fixture A |
 | `GHP_RIG_REPO_B` | no | `fixtures.repo_b` | Read fixture B (the "other" repository) |

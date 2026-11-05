@@ -88,8 +88,10 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 	}
 	if c.ServerURL != "" {
 		u, err := url.Parse(c.ServerURL)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-			return nil, fmt.Errorf("GHP_SERVER_URL must be an http(s) URL")
+		// https only: the session token travels on management calls, and
+		// gh always speaks https to the proxy host.
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return nil, fmt.Errorf("GHP_SERVER_URL must be an https URL")
 		}
 		// A host left empty in the file is derived from GHP_SERVER_URL.
 		// Management calls always use GHP_SERVER_URL itself.

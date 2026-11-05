@@ -101,6 +101,8 @@ func TestLoadConfig(t *testing.T) {
 			{"GHP_RIG_INSTALLATION_ID": "abc"},
 			{"GHP_RIG_INSTALLATION_ID": "-1"},
 			{"GHP_SERVER_URL": "ftp://x"},
+			{"GHP_SERVER_URL": "http://localhost:8080"},
+			{"GHP_SERVER_URL": "HTTP://s.test"},
 		} {
 			if _, err := LoadConfig(envMap(env), cfg); err == nil {
 				t.Errorf("%v: want error", env)
