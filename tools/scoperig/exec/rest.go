@@ -71,6 +71,10 @@ func verbatimRequest(ctx context.Context, base, path string, r *scenario.Request
 	if err != nil {
 		return nil, err
 	}
+	h, ok := hdrs.(map[string]string)
+	if !ok && hdrs != nil {
+		return nil, fmt.Errorf("headers: expanded to %T, want map[string]string", hdrs)
+	}
 	var body []byte
 	if r.Body != nil {
 		b, err := prepareBody(r.Body, env)
@@ -94,10 +98,8 @@ func verbatimRequest(ctx context.Context, base, path string, r *scenario.Request
 			req.Header.Set("Content-Type", "application/json")
 		}
 		auth(req)
-		if h, ok := hdrs.(map[string]string); ok {
-			for k, v := range h {
-				req.Header.Set(k, v)
-			}
+		for k, v := range h {
+			req.Header.Set(k, v)
 		}
 		return req, nil
 	})

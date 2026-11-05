@@ -53,6 +53,10 @@ func postGraphQL(ctx context.Context, r *scenario.Request, payload any, tok toke
 	if err != nil {
 		return nil, err
 	}
+	h, ok := hdrs.(map[string]string)
+	if !ok && hdrs != nil {
+		return nil, fmt.Errorf("headers: expanded to %T, want map[string]string", hdrs)
+	}
 	return send(ctx, env, func(ctx context.Context) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, env.GraphQL, bodyReader(body))
 		if err != nil {
@@ -61,10 +65,8 @@ func postGraphQL(ctx context.Context, r *scenario.Request, payload any, tok toke
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
 		tok.Authorize(req)
-		if h, ok := hdrs.(map[string]string); ok {
-			for k, v := range h {
-				req.Header.Set(k, v)
-			}
+		for k, v := range h {
+			req.Header.Set(k, v)
 		}
 		return req, nil
 	})

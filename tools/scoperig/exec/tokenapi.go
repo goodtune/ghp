@@ -129,6 +129,7 @@ func tokenAPIRequest(ctx context.Context, r *scenario.Request, tok tokens.Handle
 		if err := env.Tokens.Revoke(ctx, id); err != nil {
 			return nil, fmt.Errorf("DELETE %s: %s", path, redact.String(err.Error()))
 		}
+		// Synthetic observation: Revoke succeeded, so report 200 with no headers.
 		return jsonObservation(env, method, path, http.StatusOK, map[string]any{"id": id})
 	case strings.HasPrefix(path, "/api/v3/"):
 		return verbatimRequest(ctx, env.APIBase, strings.TrimPrefix(path, "/api/v3"), r, tok.Authorize, env)

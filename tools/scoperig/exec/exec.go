@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/goodtune/ghp/tools/scoperig/expect"
@@ -147,7 +149,8 @@ func typed(x any, env *RunEnv) (any, error) {
 }
 
 // send performs the request built by build, retrying once on a transport
-// error only. Product responses are never retried. The response body is
+// error only, and only when retrying cannot duplicate a write (see
+// retryable). Product responses are never retried. The response body is
 // capped at MaxBody and redacted.
 func send(ctx context.Context, env *RunEnv, build func(ctx context.Context) (*http.Request, error)) (*expect.Observation, error) {
 	client := env.HTTP
@@ -168,6 +171,9 @@ func send(ctx context.Context, env *RunEnv, build func(ctx context.Context) (*ht
 			lastErr = fmt.Errorf("%s %s: %s", req.Method, req.URL.RequestURI(), redact.String(err.Error()))
 			if ctx.Err() != nil {
 				break
+			}
+			if !retryable(req.Method, err) {
+				return nil, fmt.Errorf("%w (not retried: the write may have been applied)", lastErr)
 			}
 			continue
 		}
@@ -192,7 +198,7 @@ func verbose(env *RunEnv, method, uri string, obs *expect.Observation) {
 	fmt.Fprintf(env.Verbose, "%s %s -> %d\n%s\n", method, redact.String(uri), obs.Status, obs.Body)
 }
 
-// jsonReader encodes body; nil body gives a nil reader.
+// jsonBytes JSON-encodes body; a nil body gives nil bytes.
 func jsonBytes(body any) ([]byte, error) {
 	if body == nil {
 		return nil, nil
@@ -212,6 +218,7 @@ func bodyReader(b []byte) io.Reader {
 }
 
 // capture stores each "$.path" value of obs.Body into Vars.Step[step].
+// Vars.Step is not locked: the runner executes scenarios sequentially.
 func capture(env *RunEnv, step string, c map[string]string, obs *expect.Observation) error {
 	if len(c) == 0 {
 		return nil
@@ -272,4 +279,18 @@ func RunCleanup(ctx context.Context, s *scenario.Scenario, env *RunEnv) (residue
 		}
 	}
 	return residue
+}
+
+// retryable reports whether a failed request may be re-sent: idempotent
+// methods always, others only when the error proves nothing was sent.
+func retryable(method string, err error) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNREFUSED)
 }

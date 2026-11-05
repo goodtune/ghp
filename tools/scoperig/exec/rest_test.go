@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
@@ -58,6 +59,8 @@ func TestREST_StepsCaptureAndCleanup(t *testing.T) {
 	if res := RunCleanup(context.Background(), s, env); len(res) != 0 {
 		t.Fatalf("residue = %v", res)
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	if last := seen[len(seen)-1]; last != "PATCH /api/v3/repos/w/w/issues/7" {
 		t.Errorf("cleanup sent %q", last)
 	}
@@ -129,15 +132,29 @@ func (f *failOnce) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func TestREST_RetriesTransportErrorOnce(t *testing.T) {
-	calls := 0
-	env, _, tok := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(502) }))
+	var calls atomic.Int32
+	env, _, tok := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(502) }))
 	ft := &failOnce{}
 	env.HTTP = &http.Client{Transport: ft}
 	obs, err := (restExecutor{}).Run(context.Background(), &scenario.Scenario{ID: "x", Kind: "rest", Path: "/"}, tok, env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs.Status != 502 || calls != 1 || ft.n != 2 {
-		t.Errorf("status=%d calls=%d attempts=%d; product 502 must not be retried", obs.Status, calls, ft.n)
+	if obs.Status != 502 || calls.Load() != 1 || ft.n != 2 {
+		t.Errorf("status=%d calls=%d attempts=%d; product 502 must not be retried", obs.Status, calls.Load(), ft.n)
+	}
+}
+
+func TestREST_WriteNotRetriedAfterAmbiguousError(t *testing.T) {
+	var calls atomic.Int32
+	env, _, tok := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+	env.HTTP = &http.Client{Transport: &failOnce{}}
+	s := &scenario.Scenario{ID: "x", Kind: "rest", Method: "POST", Path: "/repos/w/w/issues", Body: map[string]any{"t": "x"}}
+	_, err := (restExecutor{}).Run(context.Background(), s, tok, env)
+	if err == nil || !strings.Contains(err.Error(), "may have been applied") {
+		t.Fatalf("err = %v", err)
+	}
+	if calls.Load() > 1 {
+		t.Errorf("server saw %d calls", calls.Load())
 	}
 }
