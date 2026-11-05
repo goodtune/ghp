@@ -196,6 +196,7 @@ configuration details.
 | Metric | Type | Description |
 |--------|------|-------------|
 | `ghp_codeload_redirect_total` | Counter | codeload.github.com archive requests handled by the codeload handler (labels: `owner`, `repo`, `archive`, `result`) |
+| `ghp_passthrough_scope_denied_total` | Counter | Scoped client-token requests denied on the `github.com` and `codeload.github.com` virtual hosts (labels: `vhost`, `reason` = `unmapped`, `repo`, `permission`) |
 
 The `archive` label is one of `tar.gz`, `zip`, `legacy.tar.gz`, or
 `legacy.zip`. The `result` label is `redirect` (302 to the configured

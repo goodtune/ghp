@@ -167,6 +167,34 @@ an agent legitimately needs broad access and scoping would be too restrictive.
 Open-scoped tokens are the default for proxy tokens created without `--repo`
 and `--scope` flags.
 
+## github.com and codeload.github.com
+
+Scoped tokens are also checked on the `github.com` and `codeload.github.com`
+virtual hosts. GHP maps each request to a repository and a permission. Then it
+applies the same repository allowlist and permission checks as on the API.
+
+| Virtual host | Path | Methods | Permission |
+|---|---|---|---|
+| `github.com` | `/{owner}/{repo}.git/info/refs?service=git-upload-pack`, `/{owner}/{repo}.git/git-upload-pack` | GET, POST | `contents:read` |
+| `github.com` | `/{owner}/{repo}.git/info/refs?service=git-receive-pack`, `/{owner}/{repo}.git/git-receive-pack` | GET, POST | `contents:write` |
+| `github.com` | `/{owner}/{repo}/archive/...` | GET, HEAD | `contents:read` |
+| `github.com` | `/{owner}/{repo}/releases/download/...` | GET, HEAD | `contents:read` |
+| `codeload.github.com` | `/{owner}/{repo}/{tar.gz,zip,legacy.tar.gz,legacy.zip}/{ref}` | GET, HEAD | `contents:read` |
+
+If a scoped token sends any other request to these hosts, GHP denies it with
+403. This includes `info/refs` without a known `service`, other `.git/` paths,
+and web pages. The denial applies even to a token that has only a repository
+restriction, because GHP cannot prove that an unmapped path stays inside the
+allowlist. Open-scoped tokens and requests without a GHP token are not
+changed. On `codeload.github.com`, GHP always replaces a GHP token with the
+real credential, so a `ghx_` or `gha_` token never goes to GitHub.
+
+The scope check on `codeload.github.com` runs before the
+[codeload redirect](codeload.md). On `github.com`, the
+[release download controls](release-controls.md) run first. In `redirect`
+mode, an out-of-scope release download therefore still gets a redirect to the
+operator's mirror. GHP does not send a credential to GitHub for it.
+
 ## GraphQL Scope Enforcement
 
 ghp enforces token scopes on GraphQL requests for repository-restricted
