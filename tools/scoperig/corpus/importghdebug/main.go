@@ -49,16 +49,18 @@ func run(in, out, version, owner, repo string) error {
 	var results []result
 	for _, n := range names {
 		capture := strings.TrimSuffix(filepath.Base(n), ".txt")
+		command := corpus.CommandName(capture, owner, repo)
+		fileBase := strings.ReplaceAll(command, " ", "_")
 		ex, err := parseFile(n)
 		if err != nil {
 			return fmt.Errorf("%s: %w", n, err)
 		}
-		dst := filepath.Join(out, capture+".json")
+		dst := filepath.Join(out, fileBase+".json")
 		prev, err := loadPrev(dst)
 		if err != nil {
 			return fmt.Errorf("%s: %w", dst, err)
 		}
-		f, err := corpus.Build(version, strings.ReplaceAll(capture, "_", " "), owner, repo, ex, prev)
+		f, err := corpus.Build(version, command, owner, repo, ex, prev)
 		if err != nil {
 			return fmt.Errorf("%s: %w", n, err)
 		}
@@ -66,6 +68,7 @@ func run(in, out, version, owner, repo string) error {
 		if err != nil {
 			return err
 		}
+		// Defence in depth: corpus.Marshal already refuses token-shaped output.
 		if redact.Contains(b) {
 			return fmt.Errorf("%s: token-shaped string in output; refusing to write", n)
 		}

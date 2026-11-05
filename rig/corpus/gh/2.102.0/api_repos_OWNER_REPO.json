@@ -1,6 +1,6 @@
 {
   "gh_version": "2.102.0",
-  "command": "api repos cli cli",
+  "command": "api repos OWNER REPO",
   "rest": [
     "GET /repos/OWNER/REPO"
   ],

@@ -6,6 +6,7 @@ package corpus
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -61,6 +62,9 @@ var numberedParents = map[string]bool{"pulls": true, "issues": true, "releases":
 func Build(version, command, owner, repo string, ex []ghdebug.Exchange, prev *File) (File, error) {
 	f := File{GHVersion: version, Command: command, REST: make([]string, 0), GraphQL: make([]Entry, 0)}
 	ident := identPattern(owner, repo)
+	if ident != nil && ident.MatchString(command) {
+		return File{}, fmt.Errorf("corpus: owner or repo remains in command %q", command)
+	}
 	seenREST := map[string]bool{}
 	seenGQL := map[string]bool{}
 	for _, e := range ex {
@@ -94,6 +98,7 @@ func Build(version, command, owner, repo string, ex []ghdebug.Exchange, prev *Fi
 		if g.Variables == nil {
 			g.Variables = map[string]any{}
 		}
+		g.Variables = replaceNodeIDs(g.Variables).(map[string]any)
 		op := g.OperationName
 		if op == "" {
 			op = "(anonymous)"
@@ -102,6 +107,9 @@ func Build(version, command, owner, repo string, ex []ghdebug.Exchange, prev *Fi
 		key, err := json.Marshal(ent.Body)
 		if err != nil {
 			return File{}, err
+		}
+		if containsNodeID(key) {
+			return File{}, fmt.Errorf("corpus: GraphQL node ID remains in %s request body", op)
 		}
 		if seenGQL[string(key)] {
 			continue
@@ -114,20 +122,21 @@ func Build(version, command, owner, repo string, ex []ghdebug.Exchange, prev *Fi
 }
 
 func expectFor(op string, prev *File) map[string]Expectation {
+	out := make(map[string]Expectation, len(Profiles))
 	if prev != nil {
 		for _, p := range prev.GraphQL {
 			if p.Operation == op && p.Expect != nil {
-				out := make(map[string]Expectation, len(p.Expect))
 				for k, v := range p.Expect {
 					out[k] = v
 				}
-				return out
+				break
 			}
 		}
 	}
-	out := make(map[string]Expectation, len(Profiles))
 	for _, p := range Profiles {
-		out[p] = Expectation{Verdict: "allow"}
+		if _, ok := out[p]; !ok {
+			out[p] = Expectation{Verdict: "allow"}
+		}
 	}
 	return out
 }
@@ -184,4 +193,91 @@ func Marshal(f File) ([]byte, error) {
 		return nil, fmt.Errorf("corpus: token-shaped string in output for %q", f.Command)
 	}
 	return buf.Bytes(), nil
+}
+
+// NodeIDPlaceholder replaces GraphQL global node IDs, which encode the real
+// upstream object.
+const NodeIDPlaceholder = "NODE_ID"
+
+var (
+	nextNodeID   = regexp.MustCompile(`^[A-Z][A-Za-z]*_kw[A-Za-z0-9_-]+$`)
+	legacyNodeID = regexp.MustCompile(`^[A-Za-z0-9+/]{16,}={0,2}$`)
+	legacyPrefix = regexp.MustCompile(`^[0-9]+:`)
+	// nodeIDInText finds next-format node IDs anywhere in marshalled text.
+	nodeIDInText = regexp.MustCompile(`\b[A-Z][A-Za-z]*_kw[A-Za-z0-9_-]+`)
+	// legacyInText finds base64 runs in marshalled text for decoding checks.
+	legacyInText = regexp.MustCompile(`[A-Za-z0-9+/]{16,}={0,2}`)
+)
+
+func isNodeID(s string) bool {
+	if nextNodeID.MatchString(s) {
+		return true
+	}
+	if !legacyNodeID.MatchString(s) {
+		return false
+	}
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
+		if dec, err := enc.DecodeString(s); err == nil && legacyPrefix.Match(dec) {
+			return true
+		}
+	}
+	return false
+}
+
+// replaceNodeIDs walks v and replaces node-ID-shaped strings with NODE_ID.
+func replaceNodeIDs(v any) any {
+	switch t := v.(type) {
+	case string:
+		if isNodeID(t) {
+			return NodeIDPlaceholder
+		}
+		return t
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, x := range t {
+			out[k] = replaceNodeIDs(x)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, x := range t {
+			out[i] = replaceNodeIDs(x)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// containsNodeID reports whether b holds a node-ID-shaped string anywhere.
+func containsNodeID(b []byte) bool {
+	if nodeIDInText.Match(b) {
+		return true
+	}
+	for _, m := range legacyInText.FindAll(b, -1) {
+		if isNodeID(string(m)) {
+			return true
+		}
+	}
+	return false
+}
+
+// CommandName turns a capture name ("api_repos_cli_cli") into a command
+// ("api repos OWNER REPO"): the first segment equal to owner becomes OWNER,
+// then segments equal to repo become REPO (case-insensitive).
+func CommandName(capture, owner, repo string) string {
+	segs := strings.Split(capture, "_")
+	ownerDone := false
+	for i, s := range segs {
+		switch {
+		case !ownerDone && owner != "" && strings.EqualFold(s, owner):
+			segs[i] = "OWNER"
+			ownerDone = true
+		case repo != "" && strings.EqualFold(s, repo):
+			segs[i] = "REPO"
+		case owner != "" && strings.EqualFold(s, owner):
+			segs[i] = "OWNER"
+		}
+	}
+	return strings.Join(segs, " ")
 }

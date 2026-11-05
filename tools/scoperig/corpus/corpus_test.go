@@ -2,6 +2,7 @@ package corpus
 
 import (
 	"bytes"
+	"encoding/base64"
 	"os"
 	"testing"
 
@@ -110,5 +111,60 @@ func TestMarshal_Deterministic(t *testing.T) {
 	b, _ := Marshal(f)
 	if !bytes.Equal(a, b) || !bytes.HasSuffix(a, []byte("}\n")) {
 		t.Fatal("non-deterministic or missing trailing newline")
+	}
+}
+
+func TestBuild_ReplacesNodeIDs(t *testing.T) {
+	legacy := base64.StdEncoding.EncodeToString([]byte("011:PullRequest12345678"))
+	ex := []ghdebug.Exchange{{Method: "POST", Path: "/graphql", GraphQL: &ghdebug.GraphQLRequest{
+		Query: "query Q { a }", OperationName: "Q",
+		Variables: map[string]any{"id": "PR_kwDOAbCdEf4", "nested": map[string]any{"ids": []any{legacy, "plain"}}},
+	}}}
+	f, err := Build("2.102.0", "x", "cli", "cli", ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := f.GraphQL[0].Body.Variables
+	if v["id"] != "NODE_ID" {
+		t.Errorf("id = %v", v["id"])
+	}
+	ids := v["nested"].(map[string]any)["ids"].([]any)
+	if ids[0] != "NODE_ID" || ids[1] != "plain" {
+		t.Errorf("ids = %v", ids)
+	}
+	ex[0].GraphQL.Variables = nil
+	ex[0].GraphQL.Query = `query Q { node(id: "PR_kwDOAbCdEf4") { id } }`
+	if _, err := Build("2.102.0", "x", "cli", "cli", ex, nil); err == nil {
+		t.Fatal("want error for node ID left in query")
+	}
+}
+
+func TestBuild_RejectsIdentityInCommand(t *testing.T) {
+	if _, err := Build("2.102.0", "api repos cli cli", "cli", "cli", nil, nil); err == nil {
+		t.Fatal("want error")
+	}
+}
+
+func TestCommandName(t *testing.T) {
+	for in, want := range map[string]string{
+		"api_repos_cli_cli":  "api repos OWNER REPO",
+		"api_repos_Good_ghp": "api repos OWNER REPO",
+		"pr_list":            "pr list",
+	} {
+		owner, repo := "cli", "cli"
+		if in == "api_repos_Good_ghp" {
+			owner, repo = "good", "ghp"
+		}
+		if got := CommandName(in, owner, repo); got != want {
+			t.Errorf("CommandName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestExpectFor_FillsMissingProfiles(t *testing.T) {
+	prev := &File{GraphQL: []Entry{{Operation: "Q", Expect: map[string]Expectation{"perm-ro": {Verdict: "deny"}}}}}
+	e := expectFor("Q", prev)
+	if len(e) != 3 || e["open"].Verdict != "allow" || e["perm-ro"].Verdict != "deny" {
+		t.Errorf("got %+v", e)
 	}
 }
