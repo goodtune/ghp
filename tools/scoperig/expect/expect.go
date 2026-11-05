@@ -34,6 +34,8 @@ const (
 	MsgTokenResolutionFailed = "Token resolution failed"
 	MsgInvalidPrefix         = "invalid token prefix"
 	MsgLookupFailed          = "looking up token:"
+	MsgManagementAnonymous   = "Authentication with a GHP-issued token (ghx_ or gha_) is required"
+	MsgManagementNative      = "Native GitHub tokens are not accepted on the GHP management host"
 	DocsURLREST              = "https://docs.github.com/rest"
 	DocsURLGraphQL           = "https://docs.github.com/graphql"
 )
@@ -43,7 +45,7 @@ var denialPrefixes = []string{
 	MsgUnmappedFields, MsgSubscriptions, MsgMutationUnscoped, MsgRevoked,
 	MsgExpired, MsgBorderPolicy, MsgInvalidToken, MsgAnonymousGit,
 	MsgReleaseDownloads, MsgTokenResolutionFailed, MsgInvalidPrefix,
-	MsgLookupFailed,
+	MsgLookupFailed, MsgManagementAnonymous, MsgManagementNative,
 }
 
 // Observation is what an executor saw for one step.
