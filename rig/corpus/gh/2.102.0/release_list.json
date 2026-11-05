@@ -1,0 +1,51 @@
+{
+  "gh_version": "2.102.0",
+  "command": "release list",
+  "rest": [],
+  "graphql": [
+    {
+      "operation": "Release_fields",
+      "body": {
+        "query": "query Release_fields{Release: __type(name: \"Release\"){fields{name}}}",
+        "variables": {},
+        "operationName": "Release_fields"
+      },
+      "expect": {
+        "open": {
+          "verdict": "allow"
+        },
+        "perm-ro": {
+          "verdict": "allow"
+        },
+        "repo": {
+          "verdict": "allow"
+        }
+      }
+    },
+    {
+      "operation": "RepositoryReleaseList",
+      "body": {
+        "query": "query RepositoryReleaseList($direction:OrderDirection!$endCursor:String$name:String!$owner:String!$perPage:Int!){repository(owner: $owner, name: $name){releases(first: $perPage, orderBy: {field: CREATED_AT, direction: $direction}, after: $endCursor){nodes{name,tagName,isDraft,immutable,isLatest,isPrerelease,createdAt,publishedAt},pageInfo{hasNextPage,endCursor}}}}",
+        "variables": {
+          "direction": "DESC",
+          "endCursor": null,
+          "name": "REPO",
+          "owner": "OWNER",
+          "perPage": 30
+        },
+        "operationName": "RepositoryReleaseList"
+      },
+      "expect": {
+        "open": {
+          "verdict": "allow"
+        },
+        "perm-ro": {
+          "verdict": "allow"
+        },
+        "repo": {
+          "verdict": "allow"
+        }
+      }
+    }
+  ]
+}

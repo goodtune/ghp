@@ -1,0 +1,8 @@
+{
+  "gh_version": "2.102.0",
+  "command": "api user",
+  "rest": [
+    "GET /user"
+  ],
+  "graphql": []
+}

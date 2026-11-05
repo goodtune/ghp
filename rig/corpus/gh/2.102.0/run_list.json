@@ -1,0 +1,9 @@
+{
+  "gh_version": "2.102.0",
+  "command": "run list",
+  "rest": [
+    "GET /repos/OWNER/REPO/actions/runs",
+    "GET /repos/OWNER/REPO/actions/workflows"
+  ],
+  "graphql": []
+}

@@ -1,0 +1,35 @@
+{
+  "gh_version": "2.102.0",
+  "command": "label list",
+  "rest": [],
+  "graphql": [
+    {
+      "operation": "LabelList",
+      "body": {
+        "query": "fragment label on Label{color,description,name}\n  query LabelList($owner: String!, $repo: String!, $limit: Int!, $endCursor: String, $query: String, $orderBy: LabelOrder) {\n    repository(owner: $owner, name: $repo) {\n      labels(first: $limit, after: $endCursor, query: $query, orderBy: $orderBy) {\n        totalCount,\n        nodes {\n          ...label\n        }\n        pageInfo {\n          hasNextPage\n          endCursor\n        }\n      }\n    }\n  }",
+        "variables": {
+          "limit": 2,
+          "orderBy": {
+            "direction": "ASC",
+            "field": "CREATED_AT"
+          },
+          "owner": "OWNER",
+          "query": "",
+          "repo": "REPO"
+        },
+        "operationName": "LabelList"
+      },
+      "expect": {
+        "open": {
+          "verdict": "allow"
+        },
+        "perm-ro": {
+          "verdict": "allow"
+        },
+        "repo": {
+          "verdict": "allow"
+        }
+      }
+    }
+  ]
+}

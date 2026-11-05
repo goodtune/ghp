@@ -1,0 +1,25 @@
+{
+  "gh_version": "2.102.0",
+  "command": "api graphql viewer",
+  "rest": [],
+  "graphql": [
+    {
+      "operation": "(anonymous)",
+      "body": {
+        "query": "query { viewer { login } }",
+        "variables": {}
+      },
+      "expect": {
+        "open": {
+          "verdict": "allow"
+        },
+        "perm-ro": {
+          "verdict": "allow"
+        },
+        "repo": {
+          "verdict": "allow"
+        }
+      }
+    }
+  ]
+}
