@@ -15,7 +15,7 @@
   profile: open
   kind: gh
   repo: A
-  args: ["repo", "view"]
+  args: ["repo", "view", "{{.Host}}/{{.RepoA}}"]
   expect: {exit_code: 0, stdout_contains: ["{{.RepoA.Name}}"]}
 
 - id: GH-C51.repo-view.perm-ro
@@ -25,7 +25,7 @@
   profile: perm-ro
   kind: gh
   repo: A
-  args: ["repo", "view"]
+  args: ["repo", "view", "{{.Host}}/{{.RepoA}}"]
   expect: {exit_code: 0, stdout_contains: ["{{.RepoA.Name}}"]}
 
 - id: GH-C51.repo-view.repo-A
@@ -35,7 +35,7 @@
   profile: repo-A
   kind: gh
   repo: A
-  args: ["repo", "view"]
+  args: ["repo", "view", "{{.Host}}/{{.RepoA}}"]
   expect: {exit_code: 0, stdout_contains: ["{{.RepoA.Name}}"]}
   known_issue: https://github.com/goodtune/ghp/issues/297
   observed: {exit_code: 1, stderr_contains: ["must use literal string arguments"]}

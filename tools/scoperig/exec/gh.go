@@ -110,6 +110,15 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 		}
 	}
 
+	// gh pr status reads the current branch from git, and fails outside a
+	// checkout. Make the work dir an empty repo (no remotes; GH_REPO names
+	// the base repo) whose HEAD is the fixture branch.
+	if b := env.Vars.Fixture[s.Repo].Branch; repo != "" && b != "" {
+		if err := gitInit(ctx, filepath.Join(tmp, "work"), tmp, b); err != nil {
+			return nil, fmt.Errorf("scenario %s: %w", s.ID, err)
+		}
+	}
+
 	rctx, cancel := context.WithTimeout(ctx, GHTimeout)
 	defer cancel()
 	cmd := osexec.CommandContext(rctx, env.GHPath, args...)
@@ -239,4 +248,19 @@ func (w *capWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+// gitInit makes dir an empty git repository whose HEAD is refs/heads/branch.
+func gitInit(ctx context.Context, dir, home, branch string) error {
+	cmd := osexec.CommandContext(ctx, "git", "init", "-q", dir)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "GIT_CONFIG_NOSYSTEM=1"}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git init: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	cmd = osexec.CommandContext(ctx, "git", "-C", dir, "symbolic-ref", "HEAD", "refs/heads/"+branch)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "GIT_CONFIG_NOSYSTEM=1"}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git symbolic-ref: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

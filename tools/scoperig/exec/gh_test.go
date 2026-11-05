@@ -233,3 +233,21 @@ func TestGH_NotFound(t *testing.T) {
 		t.Fatal("want rig error")
 	}
 }
+
+// gh pr status needs a current branch: the work dir must be a git checkout
+// on the fixture branch (no remotes; GH_REPO names the base repo).
+func TestGH_WorkDirIsGitCheckoutOnFixtureBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	env, _, tok := newEnv(t, nil)
+	env.GHPath = buildFakeGH(t)
+	env.Vars.Fixture = map[string]scenario.FixtureVals{"A": {Branch: "scoperig-fixture"}}
+	obs, err := GH{}.Run(context.Background(), ghScenario("gitbranch"), tok, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(obs.Stdout, "BRANCH=scoperig-fixture\n") {
+		t.Errorf("stdout = %q", obs.Stdout)
+	}
+}

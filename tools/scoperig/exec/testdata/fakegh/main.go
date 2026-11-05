@@ -11,6 +11,7 @@
 //	spawn <file>  start a sleeping child, write its pid to file, then sleep
 //	nottook       the request has no "* Request took" line before gh's error
 //	between       gh prints a message between two requests
+//	gitbranch     print BRANCH=<git symbolic-ref --short HEAD> first
 //
 // Oracle mode: when a directory named "oracle" sits next to the binary, the
 // fake behaves like gh against github.com for scoperig oracle tests instead.
@@ -139,6 +140,9 @@ func main() {
 		}
 		_ = os.WriteFile(os.Args[2], []byte(fmt.Sprint(c.Process.Pid)), 0o600)
 		time.Sleep(time.Minute)
+	case "gitbranch":
+		out, _ := exec.Command("git", "symbolic-ref", "--short", "HEAD").Output()
+		fmt.Printf("BRANCH=%s\n", strings.TrimSpace(string(out)))
 	}
 	wd, _ := os.Getwd()
 	fmt.Printf("CWD=%s\n", wd)
