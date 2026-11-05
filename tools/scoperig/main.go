@@ -258,7 +258,7 @@ func connect(ctx context.Context, c *Config, deps runDeps) (*http.Client, *token
 	if _, err := Preflight(ctx, c, hc); err != nil {
 		return nil, nil, &exitError{code: 3, err: err}
 	}
-	pace := deps.Pace(max(c.TokenCreateRate, 1))
+	pace := deps.Pace(c.TokenCreateRate)
 	mgr := tokens.NewManager(c.ServerURL, c.UserToken, deps.RunID(), hc, pace)
 	if deps.OnManager != nil {
 		deps.OnManager(mgr)

@@ -114,6 +114,7 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 	if c.Instance.MaxDuration, err = optDuration("instance.max_duration", fc.Instance.MaxDuration); err != nil {
 		return nil, err
 	}
+	c.TokenCreateRate = defaultTokenCreateRate
 	if fc.Instance.TokenCreateRate != "" {
 		if c.TokenCreateRate, err = parseRate(fc.Instance.TokenCreateRate); err != nil {
 			return nil, fmt.Errorf("instance.token_create_rate: %w", err)
@@ -195,6 +196,10 @@ func (c *Config) GoString() string { return c.String() }
 
 // Format routes every verb (including %+v) through String.
 func (c *Config) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(c.String())) }
+
+// defaultTokenCreateRate is the token create rate (per minute) used when
+// instance.token_create_rate is omitted.
+const defaultTokenCreateRate = 20
 
 // parseRate parses "N/min" (also "N/m", "N/minute") into N per minute.
 func parseRate(s string) (int, error) {

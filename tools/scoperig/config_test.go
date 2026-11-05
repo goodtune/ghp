@@ -236,3 +236,17 @@ func TestRequireFixtureOwners(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfig_DefaultTokenCreateRate(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("fixtures:\n  repo_a: o/a\n  repo_b: o/b\n  repo_w: o/w\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(envMap(nil), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.TokenCreateRate != 20 {
+		t.Errorf("rate = %d, want default 20 when token_create_rate is omitted", c.TokenCreateRate)
+	}
+}

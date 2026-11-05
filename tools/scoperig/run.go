@@ -154,7 +154,7 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 
 	runID := deps.RunID()
 	started := deps.Now().UTC()
-	pace := deps.Pace(max(c.TokenCreateRate, 1))
+	pace := deps.Pace(c.TokenCreateRate)
 	mgr := tokens.NewManager(c.ServerURL, c.UserToken, runID, hc, pace)
 	if deps.OnManager != nil {
 		deps.OnManager(mgr)
