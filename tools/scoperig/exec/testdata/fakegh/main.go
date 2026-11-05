@@ -11,12 +11,21 @@
 //	spawn <file>  start a sleeping child, write its pid to file, then sleep
 //	nottook       the request has no "* Request took" line before gh's error
 //	between       gh prints a message between two requests
+//
+// Oracle mode: when a directory named "oracle" sits next to the binary, the
+// fake behaves like gh against github.com for scoperig oracle tests instead.
+// Every call appends one line describing its argv and environment to
+// oracle/calls.log. "--version" then prints "gh version 2.103.0"; any other
+// command copies oracle/<arg1>_<arg2>.txt (when it exists and GH_DEBUG=api)
+// to stderr as the capture. It exits 0. The line reports HOSTS=<mode>:same|diff by
+// comparing $GH_CONFIG_DIR/hosts.yml with oracle/hosts.expected.
 package main
 
 import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -61,7 +70,60 @@ GraphQL variables: {}
 * Request took 5.0ms
 `
 
+func oracleMode(dir string) {
+	cfg := os.Getenv("GH_CONFIG_DIR")
+	hosts := "absent"
+	if fi, err := os.Stat(filepath.Join(cfg, "hosts.yml")); err == nil {
+		got, _ := os.ReadFile(filepath.Join(cfg, "hosts.yml"))
+		want, _ := os.ReadFile(filepath.Join(dir, "hosts.expected"))
+		same := "diff"
+		if string(got) == string(want) {
+			same = "same"
+		}
+		hosts = fmt.Sprintf("%04o:%s", fi.Mode().Perm(), same)
+	}
+	cfgYML := "absent"
+	if _, err := os.Stat(filepath.Join(cfg, "config.yml")); err == nil {
+		cfgYML = "present"
+	}
+	get := func(k string) string {
+		if v, ok := os.LookupEnv(k); ok {
+			if k == "GH_TOKEN" || k == "GITHUB_TOKEN" {
+				return fmt.Sprintf("set(len=%d)", len(v))
+			}
+			return v
+		}
+		return "unset"
+	}
+	line := fmt.Sprintf("ARGS=%s\tGH_DEBUG=%s\tGH_REPO=%s\tGH_CONFIG_DIR=%s\tGH_HOST=%s\tGH_TOKEN=%s\tGITHUB_TOKEN=%s\tHOSTS=%s\tCONFIGYML=%s\n",
+		strings.Join(os.Args[1:], " "), get("GH_DEBUG"), get("GH_REPO"), cfg, get("GH_HOST"), get("GH_TOKEN"), get("GITHUB_TOKEN"), hosts, cfgYML)
+	fh, err := os.OpenFile(filepath.Join(dir, "calls.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	_, _ = fh.WriteString(line)
+	_ = fh.Close()
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println("gh version 2.103.0 (2026-11-01)")
+		fmt.Println("https://github.com/cli/cli/releases/tag/v2.103.0")
+		return
+	}
+	if len(os.Args) > 2 && os.Getenv("GH_DEBUG") == "api" {
+		if b, err := os.ReadFile(filepath.Join(dir, os.Args[1]+"_"+os.Args[2]+".txt")); err == nil {
+			_, _ = os.Stderr.Write(b)
+		}
+	}
+}
+
 func main() {
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Join(filepath.Dir(exe), "oracle")
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			oracleMode(dir)
+			return
+		}
+	}
 	mode := ""
 	if len(os.Args) > 1 {
 		mode = os.Args[1]

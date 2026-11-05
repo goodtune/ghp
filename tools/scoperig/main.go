@@ -195,7 +195,7 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 	ensure.Flags().BoolVar(&f.createFixtures, "create-fixtures", false, "create missing fixture repositories (needs repo_create)")
 	fx.AddCommand(ensure)
 
-	root.AddCommand(validate, run, sweep, fx)
+	root.AddCommand(validate, run, sweep, fx, newOracleCmd(stdout, stderr, getenv))
 	return root
 }
 
