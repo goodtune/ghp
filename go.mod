@@ -6,7 +6,7 @@ require (
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/goodtune/dotvault v0.37.0
+	github.com/goodtune/dotvault v0.39.0
 	github.com/google/gitprotocolio v0.0.0-20210704173409-b5a56823ae52
 	github.com/google/go-github/v93 v93.0.0
 	github.com/google/uuid v1.6.0
@@ -43,8 +43,8 @@ require (
 require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
-	github.com/GoogleCloudPlatform/confidential-space/server v0.0.0-20260522213940-e5c6d01a3007 // indirect
-	github.com/Microsoft/go-winio v0.6.2 // indirect
+	github.com/GoogleCloudPlatform/confidential-space/server v0.0.0-20260915221818-a6c0685fb9fc // indirect
+	github.com/Microsoft/go-winio v0.6.4 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.8.0-default-no-op // indirect
@@ -77,13 +77,13 @@ require (
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/certtostore v1.0.7 // indirect
 	github.com/google/deck v1.1.0 // indirect
-	github.com/google/go-configfs-tsm v0.3.3-0.20240919001351-b4b5b84fdcbc // indirect
-	github.com/google/go-eventlog v0.0.3-0.20260416001248-6807b85eecf0 // indirect
+	github.com/google/go-configfs-tsm v0.3.3 // indirect
+	github.com/google/go-eventlog v0.0.3-0.20261001001437-1991f15bc4b0 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/go-sev-guest v0.14.0 // indirect
 	github.com/google/go-tdx-guest v0.3.2-0.20250814004405-ffb0869e6f4d // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
-	github.com/google/go-tpm-tools v0.4.9 // indirect
+	github.com/google/go-tpm-tools v0.4.11 // indirect
 	github.com/google/logger v1.1.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
@@ -138,7 +138,7 @@ require (
 	github.com/ryanuber/go-glob v1.0.0 // indirect
 	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.6 // indirect
-	github.com/sirupsen/logrus v1.9.4 // indirect
+	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
@@ -148,8 +148,8 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0 // indirect
-	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.46.0 // indirect
-	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.46.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.47.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.47.0 // indirect
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect
