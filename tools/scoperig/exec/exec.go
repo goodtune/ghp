@@ -75,6 +75,8 @@ func For(kind string) (Executor, error) {
 		return graphqlExecutor{}, nil
 	case "token_api":
 		return tokenAPIExecutor{}, nil
+	case "gh":
+		return GH{}, nil
 	}
 	return nil, fmt.Errorf("exec: no executor for kind %q", kind)
 }
