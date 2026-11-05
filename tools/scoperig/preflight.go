@@ -115,6 +115,10 @@ func ProbeCapabilities(ctx context.Context, c *Config, hc *http.Client, open tok
 			strings.EqualFold(owner, v.Login)
 	}
 
+	for k, v := range borderCapabilities(c.BorderBlock) {
+		caps[k] = v
+	}
+
 	caps["github_vhost"] = probeVHost(ctx, c.Instance.Host, rootCAs(hc))
 
 	if c.InstallationID > 0 && c.ServerURL != "" {
@@ -123,6 +127,28 @@ func ProbeCapabilities(ctx context.Context, c *Config, hc *http.Client, open tok
 		}
 	}
 	return caps, nil
+}
+
+// borderPrefixes maps each border_block_* capability to its token prefix.
+var borderPrefixes = map[string]string{
+	"border_block_ghp":        "ghp_",
+	"border_block_gho":        "gho_",
+	"border_block_github_pat": "github_pat_",
+}
+
+// borderCapabilities derives the border_block_* capabilities from the
+// operator-declared instance.border_block list. Nothing is probed: a
+// capability is true iff its prefix is listed.
+func borderCapabilities(block []string) Capabilities {
+	listed := map[string]bool{}
+	for _, p := range block {
+		listed[strings.TrimSpace(p)] = true
+	}
+	caps := Capabilities{}
+	for c, p := range borderPrefixes {
+		caps[c] = listed[p]
+	}
+	return caps
 }
 
 // probeVHost dials host (port 443 unless given) with SNI github.com, verifying

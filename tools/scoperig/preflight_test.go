@@ -191,11 +191,29 @@ func TestProbeCapabilities(t *testing.T) {
 					t.Errorf("%s = %v, want %v", k, got[k], w)
 				}
 			}
-			if len(got) != 4 {
+			if len(got) != 7 {
 				t.Errorf("caps %v", got)
 			}
 		})
 	}
+	t.Run("border_block declared", func(t *testing.T) {
+		srv := probeServer(t, probeOpts{tokensAll: 200})
+		defer srv.Close()
+		host := strings.TrimPrefix(srv.URL, "https://")
+		c := &Config{ServerURL: srv.URL, UserToken: "ghpr_test0000", RepoW: "octo/w",
+			Instance: scenario.InstanceVals{Host: host, ManagementHost: host}, BorderBlock: []string{"ghp_", "github_pat_"}}
+		v := &scenario.Vars{}
+		got, err := ProbeCapabilities(context.Background(), c, srv.Client(), mintOpen(t, srv, v), v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]bool{"border_block_ghp": true, "border_block_gho": false, "border_block_github_pat": true}
+		for k, w := range want {
+			if b, ok := got[k]; !ok || b != w {
+				t.Errorf("%s = %v (present %v), want %v", k, b, ok, w)
+			}
+		}
+	})
 	t.Run("empty host", func(t *testing.T) {
 		_, err := ProbeCapabilities(context.Background(), &Config{}, http.DefaultClient, tokens.Handle{}, &scenario.Vars{})
 		if !errors.Is(err, ErrPreflight) || !strings.Contains(err.Error(), "instance.host not set") {

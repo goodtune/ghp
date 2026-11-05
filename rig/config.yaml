@@ -4,6 +4,11 @@ instance:
   default_duration: 24h
   max_duration: 168h
   token_create_rate: 20/min                  # api.go:125; the manager paces at 75% of this
+  # Token prefixes the instance's border policy blocks. Operator-declared:
+  # the rig does not probe it. Each listed prefix sets capability
+  # border_block_<prefix> (ghp, gho, github_pat); BORDER-C43 scenarios for an
+  # unlisted prefix report GAP. Edit this if the instance's policy differs.
+  border_block: [ghp_, gho_, github_pat_]
 fixtures:
   repo_a: goodtune/ghp-scoperig-a
   repo_b: goodtune/ghp-scoperig-b

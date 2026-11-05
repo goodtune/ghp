@@ -8,6 +8,9 @@
   profile: perm-ro
   kind: rest
   requires: [repo_w_push]
+  # No cleanup: GHP must deny this write before it reaches GitHub, so nothing
+  # is created. If GHP wrongly forwards it the scenario FAILs and any
+  # run-named object left on W is the residue to remove by hand.
   method: PUT
   path: /repos/{{.RepoW}}/contents/scoperig-{{.RunID}}-c11.txt
   body: {message: "scoperig {{.RunID}} C11", content: "c2NvcGVyaWcK"}
@@ -39,6 +42,9 @@
   profile: perm-ro
   kind: rest
   requires: [repo_w_push]
+  # No cleanup: GHP must deny this write before it reaches GitHub, so nothing
+  # is created. If GHP wrongly forwards it the scenario FAILs and any
+  # run-named object left on W is the residue to remove by hand.
   method: POST
   path: /repos/{{.RepoW}}/pulls
   body: {title: "scoperig {{.RunID}} C13 ro", head: "{{.Fixture.W.Branch}}", base: "scoperig-absent-{{.RunID}}"}
@@ -92,6 +98,9 @@
   profile: perm-ro
   kind: rest
   requires: [repo_w_push]
+  # No cleanup: GHP must deny this write before it reaches GitHub, so nothing
+  # is created. If GHP wrongly forwards it the scenario FAILs and any
+  # run-named object left on W is the residue to remove by hand.
   method: POST
   path: /repos/{{.RepoW}}/issues
   body: {title: "scoperig {{.RunID}} C14 ro", body: "automated; must be denied"}
@@ -143,5 +152,5 @@
   profile: perm-rw
   kind: rest
   method: GET
-  path: /repos/{{.RepoW}}/contents/README.md
+  path: /repos/{{.RepoW}}/contents/
   expect: {status: 200}

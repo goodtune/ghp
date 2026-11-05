@@ -21,6 +21,7 @@ func writeCfg(t *testing.T) string {
   default_duration: 24h
   max_duration: 168h
   token_create_rate: 20/min
+  border_block: [ghp_, gho_]
 fixtures:
   repo_a: o/a
   repo_b: o/b
@@ -48,6 +49,9 @@ func TestLoadConfig(t *testing.T) {
 		if c.Instance.Host != "ghp.example.test" || c.Instance.ManagementHost != "mgmt.example.test" ||
 			c.Instance.DefaultDuration != 24*time.Hour || c.Instance.MaxDuration != 168*time.Hour {
 			t.Fatalf("instance %+v", c.Instance)
+		}
+		if strings.Join(c.BorderBlock, ",") != "ghp_,gho_" {
+			t.Fatalf("border_block %v", c.BorderBlock)
 		}
 		if c.Root != "rig" || c.ConfigFile != cfg {
 			t.Fatalf("root %q cfg %q", c.Root, c.ConfigFile)

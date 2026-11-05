@@ -21,23 +21,28 @@ import (
 // the ghp CLI; they are only required for paths that talk to the instance
 // (see RequireServer), so validate-only runs work with no environment.
 type Config struct {
-	ServerURL, UserToken                          string // GHP_SERVER_URL, GHP_USER_TOKEN
-	RepoA, RepoB, RepoW                           string // env > rig/config.yaml fixtures
-	GHPath, Root, CAFile                          string // GHP_RIG_GH, GHP_RIG_SCENARIOS (default "rig"), GHP_RIG_CA_FILE
-	InstallationID                                int64  // GHP_RIG_INSTALLATION_ID
-	Instance                                      scenario.InstanceVals
-	TokenCreateRate                               int // per minute, from "20/min"
+	ServerURL, UserToken string // GHP_SERVER_URL, GHP_USER_TOKEN
+	RepoA, RepoB, RepoW  string // env > rig/config.yaml fixtures
+	GHPath, Root, CAFile string // GHP_RIG_GH, GHP_RIG_SCENARIOS (default "rig"), GHP_RIG_CA_FILE
+	InstallationID       int64  // GHP_RIG_INSTALLATION_ID
+	Instance             scenario.InstanceVals
+	TokenCreateRate      int // per minute, from "20/min"
+	// BorderBlock is the operator-declared list of token prefixes the
+	// instance's border policy blocks (instance.border_block). The rig does
+	// not probe it; ProbeCapabilities turns it into border_block_* capabilities.
+	BorderBlock                                   []string
 	ConfigFile, Out, Only                         string
 	SkipKnown, KeepGoing, Verbose, CreateFixtures bool
 }
 
 type fileConfig struct {
 	Instance struct {
-		Host            string `yaml:"host"`
-		ManagementHost  string `yaml:"management_host"`
-		DefaultDuration string `yaml:"default_duration"`
-		MaxDuration     string `yaml:"max_duration"`
-		TokenCreateRate string `yaml:"token_create_rate"`
+		Host            string   `yaml:"host"`
+		ManagementHost  string   `yaml:"management_host"`
+		DefaultDuration string   `yaml:"default_duration"`
+		MaxDuration     string   `yaml:"max_duration"`
+		TokenCreateRate string   `yaml:"token_create_rate"`
+		BorderBlock     []string `yaml:"border_block"`
 	} `yaml:"instance"`
 	Fixtures struct {
 		RepoA string `yaml:"repo_a"`
@@ -59,15 +64,16 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 		return nil, fmt.Errorf("parse config %s: %w", configFile, err)
 	}
 	c := &Config{
-		ServerURL:  strings.TrimRight(strings.TrimSpace(getenv("GHP_SERVER_URL")), "/"),
-		UserToken:  strings.TrimSpace(getenv("GHP_USER_TOKEN")),
-		RepoA:      firstNonEmpty(getenv("GHP_RIG_REPO_A"), fc.Fixtures.RepoA),
-		RepoB:      firstNonEmpty(getenv("GHP_RIG_REPO_B"), fc.Fixtures.RepoB),
-		RepoW:      firstNonEmpty(getenv("GHP_RIG_REPO_W"), fc.Fixtures.RepoW),
-		GHPath:     getenv("GHP_RIG_GH"),
-		Root:       firstNonEmpty(getenv("GHP_RIG_SCENARIOS"), "rig"),
-		CAFile:     getenv("GHP_RIG_CA_FILE"),
-		ConfigFile: configFile,
+		ServerURL:   strings.TrimRight(strings.TrimSpace(getenv("GHP_SERVER_URL")), "/"),
+		UserToken:   strings.TrimSpace(getenv("GHP_USER_TOKEN")),
+		RepoA:       firstNonEmpty(getenv("GHP_RIG_REPO_A"), fc.Fixtures.RepoA),
+		RepoB:       firstNonEmpty(getenv("GHP_RIG_REPO_B"), fc.Fixtures.RepoB),
+		RepoW:       firstNonEmpty(getenv("GHP_RIG_REPO_W"), fc.Fixtures.RepoW),
+		GHPath:      getenv("GHP_RIG_GH"),
+		Root:        firstNonEmpty(getenv("GHP_RIG_SCENARIOS"), "rig"),
+		CAFile:      getenv("GHP_RIG_CA_FILE"),
+		ConfigFile:  configFile,
+		BorderBlock: fc.Instance.BorderBlock,
 		Instance: scenario.InstanceVals{
 			Host:           fc.Instance.Host,
 			ManagementHost: firstNonEmpty(fc.Instance.ManagementHost, fc.Instance.Host),
