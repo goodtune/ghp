@@ -100,7 +100,7 @@ Instance settings live in one file, overridable by flags (`--config`, `--instanc
 ```yaml
 instance:
   host: ghp.example.com          # GHES-style /api/v3 and /api/graphql
-  management_host: ghp.example.com  # /api/tokens, /login
+                                 # management calls (/api/tokens) use GHP_SERVER_URL
   default_duration: 24h
   max_duration: 168h
   token_create_rate: 20/min                  # api.go:125; the manager paces at 75% of this

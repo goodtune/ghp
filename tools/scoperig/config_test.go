@@ -21,7 +21,6 @@ func writeCfg(t *testing.T) string {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	body := `instance:
   host: ghp.example.test
-  management_host: mgmt.example.test
   default_duration: 24h
   max_duration: 168h
   token_create_rate: 20/min
@@ -50,7 +49,7 @@ func TestLoadConfig(t *testing.T) {
 		if c.TokenCreateRate != 20 {
 			t.Fatalf("rate %d", c.TokenCreateRate)
 		}
-		if c.Instance.Host != "ghp.example.test" || c.Instance.ManagementHost != "mgmt.example.test" ||
+		if c.Instance.Host != "ghp.example.test" ||
 			c.Instance.DefaultDuration != 24*time.Hour || c.Instance.MaxDuration != 168*time.Hour {
 			t.Fatalf("instance %+v", c.Instance)
 		}
@@ -190,13 +189,14 @@ func TestLoadConfig_HostDerivation(t *testing.T) {
 	}
 	tests := []struct {
 		name, host, mgmt, server string
-		wantHost, wantMgmt       string
+		wantHost                 string
 	}{
-		{"file sets host", "file.test", "", "https://env.test", "file.test", "file.test"},
-		{"file sets both", "file.test", "m.test", "https://env.test", "file.test", "m.test"},
-		{"file empty, server set", "", "", "https://env.test:8443/", "env.test:8443", "env.test:8443"},
-		{"file mgmt only, server set", "", "m.test", "https://env.test", "env.test", "m.test"},
-		{"neither", "", "", "", "", ""},
+		{"file sets host", "file.test", "", "https://env.test", "file.test"},
+		{"file empty, server set", "", "", "https://env.test:8443/", "env.test:8443"},
+		// management_host was removed; an old file that still sets it loads
+		// and the key is ignored.
+		{"legacy management_host ignored", "", "m.test", "https://env.test", "env.test"},
+		{"neither", "", "", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -204,8 +204,8 @@ func TestLoadConfig_HostDerivation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if c.Instance.Host != tt.wantHost || c.Instance.ManagementHost != tt.wantMgmt {
-				t.Errorf("host=%q mgmt=%q, want %q %q", c.Instance.Host, c.Instance.ManagementHost, tt.wantHost, tt.wantMgmt)
+			if c.Instance.Host != tt.wantHost {
+				t.Errorf("host=%q, want %q", c.Instance.Host, tt.wantHost)
 			}
 			if tt.wantHost == "" {
 				_, err := ProbeCapabilities(t.Context(), c, nil, tokens.Handle{}, &scenario.Vars{})
@@ -248,5 +248,23 @@ func TestLoadConfig_DefaultTokenCreateRate(t *testing.T) {
 	}
 	if c.TokenCreateRate != 20 {
 		t.Errorf("rate = %d, want default 20 when token_create_rate is omitted", c.TokenCreateRate)
+	}
+}
+
+func TestLoadConfig_LegacyManagementHostIgnored(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	body := "instance:\n  host: h.test\n  management_host: m.test\nfixtures:\n  repo_a: o/a\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(envMap(map[string]string{"GHP_SERVER_URL": "https://env.test"}), p)
+	if err != nil {
+		t.Fatalf("config with management_host must still load: %v", err)
+	}
+	if c.Instance.Host != "h.test" {
+		t.Fatalf("host = %q", c.Instance.Host)
+	}
+	if strings.Contains(c.String(), "m.test") || strings.Contains(c.String(), "mgmt=") {
+		t.Fatalf("String() still reports a management host: %s", c.String())
 	}
 }

@@ -307,13 +307,12 @@ func writeTree(t *testing.T, host, scenarios string) (root, cfg string) {
 	must("scenarios/s.yaml", scenarios)
 	must("config.yaml", fmt.Sprintf(`instance:
   host: %s
-  management_host: %s
   token_create_rate: 20/min
 fixtures:
   repo_a: goodtune/ghp-scoperig-a
   repo_b: goodtune/ghp-scoperig-b
   repo_w: goodtune/ghp-scoperig-w
-`, host, host))
+`, host))
 	return root, filepath.Join(root, "config.yaml")
 }
 

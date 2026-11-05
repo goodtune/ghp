@@ -33,7 +33,7 @@ type RunEnv struct {
 	HTTP     *http.Client
 	APIBase  string // https://<host>/api/v3
 	GraphQL  string // https://<host>/api/graphql
-	Mgmt     string // https://<management_host>
+	Mgmt     string // GHP_SERVER_URL (token API, sessions)
 	Tokens   *tokens.Manager
 	Open     tokens.Handle // for cleanup
 	Profiles map[string]tokens.Handle

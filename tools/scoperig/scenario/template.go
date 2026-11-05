@@ -26,7 +26,7 @@ type FixtureVals struct {
 
 // InstanceVals describes the GHP instance under test.
 type InstanceVals struct {
-	Host, ManagementHost         string
+	Host                         string
 	DefaultDuration, MaxDuration time.Duration
 }
 

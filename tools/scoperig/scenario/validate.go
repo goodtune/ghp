@@ -41,7 +41,7 @@ func PlaceholderVars() *Vars {
 		RepoB:   RepoRef{Owner: "b-owner", Name: "b-repo", ID: 900000202, NodeID: "R_placeholderB"},
 		RepoW:   RepoRef{Owner: "w-owner", Name: "w-repo", ID: 900000303, NodeID: "R_placeholderW"},
 		Fixture: map[string]FixtureVals{"A": f, "B": f, "W": f},
-		Instance: InstanceVals{Host: "ghp.example", ManagementHost: "mgmt.ghp.example",
+		Instance: InstanceVals{Host: "ghp.example",
 			DefaultDuration: time.Hour, MaxDuration: 168 * time.Hour},
 		Step: map[string]map[string]string{},
 	}

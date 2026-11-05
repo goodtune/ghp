@@ -168,7 +168,7 @@ func TestProbeCapabilities(t *testing.T) {
 			defer srv.Close()
 			host := strings.TrimPrefix(srv.URL, "https://")
 			c := &Config{ServerURL: srv.URL, UserToken: "ghpr_test0000", RepoW: tt.repoW, InstallationID: tt.instID,
-				Instance: scenario.InstanceVals{Host: host, ManagementHost: host}}
+				Instance: scenario.InstanceVals{Host: host}}
 			v := &scenario.Vars{}
 			open := mintOpen(t, srv, v)
 			// github_vhost: the httptest cert is not valid for github.com, so the
@@ -201,7 +201,7 @@ func TestProbeCapabilities(t *testing.T) {
 		defer srv.Close()
 		host := strings.TrimPrefix(srv.URL, "https://")
 		c := &Config{ServerURL: srv.URL, UserToken: "ghpr_test0000", RepoW: "octo/w",
-			Instance: scenario.InstanceVals{Host: host, ManagementHost: host}, BorderBlock: []string{"ghp_", "github_pat_"}}
+			Instance: scenario.InstanceVals{Host: host}, BorderBlock: []string{"ghp_", "github_pat_"}}
 		v := &scenario.Vars{}
 		got, err := ProbeCapabilities(context.Background(), c, srv.Client(), mintOpen(t, srv, v), v)
 		if err != nil {

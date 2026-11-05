@@ -51,7 +51,7 @@ cp rig/config.example.yaml rig/config.yaml
 
 Select another file with the global `--config FILE` flag (default `rig/config.yaml`). If the default file does not exist, the rig loads `rig/config.example.yaml`, so `validate` works in a clean checkout. An explicit `--config` never falls back. `run` and `fixtures ensure` stop with exit 3 if a fixture repository owner is still the placeholder `OWNER` (the `GHP_RIG_REPO_A/B/W` variables also replace it).
 
-The file holds the instance hosts (`host`, `management_host`), token durations, the token-create rate limit (the token manager paces at 75% of it), and the default fixture repositories. When `host` is empty, the rig uses the host of `GHP_SERVER_URL`. When `management_host` is empty, the rig uses `host`.
+The file holds the proxy API host (`host`), token durations, the token-create rate limit (the token manager paces at 75% of it), and the default fixture repositories. When `host` is empty, the rig uses the host of `GHP_SERVER_URL`. Management calls (token create, revoke and sweep) always use `GHP_SERVER_URL`.
 
 `instance.border_block` lists the token prefixes that the instance's border policy blocks, for example `[ghp_, gho_, github_pat_]`. The rig does not probe this value. It must match the border policy of the instance. If a prefix is missing from the list, the BORDER-C43 scenarios for that prefix are GAP.
 

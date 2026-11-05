@@ -39,7 +39,6 @@ type Config struct {
 type fileConfig struct {
 	Instance struct {
 		Host            string   `yaml:"host"`
-		ManagementHost  string   `yaml:"management_host"`
 		DefaultDuration string   `yaml:"default_duration"`
 		MaxDuration     string   `yaml:"max_duration"`
 		TokenCreateRate string   `yaml:"token_create_rate"`
@@ -79,8 +78,7 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 		ConfigFile:  configFile,
 		BorderBlock: fc.Instance.BorderBlock,
 		Instance: scenario.InstanceVals{
-			Host:           strings.TrimSpace(fc.Instance.Host),
-			ManagementHost: firstNonEmpty(fc.Instance.ManagementHost, fc.Instance.Host),
+			Host: strings.TrimSpace(fc.Instance.Host),
 		},
 	}
 	if c.GHPath == "" {
@@ -93,12 +91,10 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			return nil, fmt.Errorf("GHP_SERVER_URL must be an http(s) URL")
 		}
-		// Hosts left empty in the file are derived from GHP_SERVER_URL.
+		// A host left empty in the file is derived from GHP_SERVER_URL.
+		// Management calls always use GHP_SERVER_URL itself.
 		if c.Instance.Host == "" {
 			c.Instance.Host = u.Host
-		}
-		if c.Instance.ManagementHost == "" {
-			c.Instance.ManagementHost = c.Instance.Host
 		}
 	}
 	if s := getenv("GHP_RIG_INSTALLATION_ID"); s != "" {
@@ -186,8 +182,8 @@ func (c *Config) String() string {
 	if c.UserToken != "" {
 		tok = "[REDACTED]"
 	}
-	return fmt.Sprintf("Config{server=%s token=%s host=%s mgmt=%s repos=%s,%s,%s root=%s gh=%s ca=%s installation=%d rate=%d/min}",
-		c.ServerURL, tok, c.Instance.Host, c.Instance.ManagementHost, c.RepoA, c.RepoB, c.RepoW,
+	return fmt.Sprintf("Config{server=%s token=%s host=%s repos=%s,%s,%s root=%s gh=%s ca=%s installation=%d rate=%d/min}",
+		c.ServerURL, tok, c.Instance.Host, c.RepoA, c.RepoB, c.RepoW,
 		c.Root, c.GHPath, c.CAFile, c.InstallationID, c.TokenCreateRate)
 }
 
