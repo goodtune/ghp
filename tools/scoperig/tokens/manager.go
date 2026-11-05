@@ -146,9 +146,9 @@ func (m *Manager) Create(ctx context.Context, p scenario.Profile, v *scenario.Va
 
 // CreateRaw posts body to /api/tokens as-is (for token_api scenarios),
 // except that session_id is always set to this run's SessionID (a caller
-// value is overwritten), so the start and end-of-run sweeps can find it. It shares the pacer and 429 retry with
-// Create, records any returned id for revocation, and strips "token" from
-// the returned response.
+// value is overwritten), so the start and end-of-run sweeps can find it.
+// It shares the pacer and 429 retry with Create, records any returned id
+// for revocation, and strips "token" from the returned response.
 func (m *Manager) CreateRaw(ctx context.Context, body map[string]any) (int, map[string]any, error) {
 	cp := make(map[string]any, len(body)+1)
 	for k, v := range body {

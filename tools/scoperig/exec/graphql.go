@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/goodtune/ghp/tools/scoperig/expect"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
@@ -38,7 +39,8 @@ func (graphqlExecutor) Run(ctx context.Context, s *scenario.Scenario, tok tokens
 		}
 		// postGraphQL always sends to env.GraphQL; refuse a step whose path
 		// says otherwise rather than send it somewhere it did not ask for.
-		if r.Path != "" && r.Path != "/graphql" {
+		// Trimmed exactly as the validator does.
+		if p := strings.TrimSpace(r.Path); p != "" && p != "/graphql" {
 			return nil, fmt.Errorf("graphql step %q: path %q not allowed (must be /graphql)", r.Name, r.Path)
 		}
 		b, err := prepareBody(r.Body, env)

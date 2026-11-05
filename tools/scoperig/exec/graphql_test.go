@@ -56,8 +56,9 @@ func TestGraphQL_StepRejectsNonGraphQLPath(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("sent %d requests, want 0", calls)
 	}
-	// Empty and /graphql paths are both accepted.
-	for _, p := range []string{"", "/graphql"} {
+	// Empty, whitespace-only and /graphql paths are accepted (the
+	// validator trims the same way).
+	for _, p := range []string{"", "  ", "/graphql", " /graphql "} {
 		s := &scenario.Scenario{ID: "x", Kind: "graphql", Steps: []scenario.Request{{Name: "s", Method: "POST", Path: p,
 			Body: map[string]any{"query": "{ viewer { login } }"}, Expect: &scenario.Expect{Status: 200}}}}
 		if _, err := (graphqlExecutor{}).Run(context.Background(), s, tok, env); err != nil {

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -546,6 +547,33 @@ func TestRun_SweepFailureExits2(t *testing.T) {
 	f.mu.Unlock()
 	if creates != 0 {
 		t.Errorf("created %d tokens after a failed sweep, want 0", creates)
+	}
+}
+
+func TestRun_SessionListFailsAfterCreateIsUnverified(t *testing.T) {
+	f := newFakeGHP(t)
+	root, cfg := writeTree(t, f.host(), `
+- id: REPO-C06.own-repo
+  claim: REPO-C06
+  profile: repo-A
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}/commits
+  expect: {status: 200}
+`)
+	// Tokens exist by the first scenario request; from then on every
+	// GET /api/tokens fails, so the end-of-run sweep cannot verify.
+	f.onScenario = func(string) {
+		f.mu.Lock()
+		f.failList = true
+		f.mu.Unlock()
+	}
+	res := runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg)
+	if res.code != 2 {
+		t.Fatalf("exit = %d, want 2\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+	}
+	if all := res.stdout + res.stderr; !regexp.MustCompile(`leftover token ids[^\n]*unverified`).MatchString(all) {
+		t.Errorf("leftover not marked unverified:\n%s", all)
 	}
 }
 

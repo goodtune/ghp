@@ -123,6 +123,10 @@ func repoRef(s string) scenario.RepoRef {
 // startup sweep. Tokens created by
 // the run are revoked exactly once, before runRig returns, even on panic or
 // cancellation.
+// endOfRunTimeout bounds each end-of-run sweep and verification call; it
+// matches the token manager's revoke timeout.
+const endOfRunTimeout = 60 * time.Second
+
 func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, err error) {
 	deps.defaults()
 	out := deps.Out
@@ -186,7 +190,11 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 		}
 		untracked := 0
 		sessionUnverified := false
-		swept, sweepFailed, sserr := mgr.SweepSession(rctx)
+		// Bound the backstop sweep and verification like RevokeAllErr, so
+		// a hung management API cannot stall the exit path.
+		sctx, scancel := context.WithTimeout(rctx, endOfRunTimeout)
+		defer scancel()
+		swept, sweepFailed, sserr := mgr.SweepSession(sctx)
 		if sserr != nil {
 			_, _ = fmt.Fprintf(out, "end-of-run session sweep: %s\n", redact.String(sserr.Error()))
 			sessionUnverified = true
@@ -201,7 +209,9 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 			leftover = without(leftover, swept)
 		}
 		leftover = unionSorted(leftover, sweepFailed)
-		if still, verr := mgr.VerifyNoneLeft(rctx); verr != nil || sessionUnverified {
+		vctx, vcancel := context.WithTimeout(rctx, endOfRunTimeout)
+		defer vcancel()
+		if still, verr := mgr.VerifyNoneLeft(vctx); verr != nil || sessionUnverified {
 			if verr != nil {
 				_, _ = fmt.Fprintf(out, "verify revocation: %s\n", redact.String(verr.Error()))
 			} else {

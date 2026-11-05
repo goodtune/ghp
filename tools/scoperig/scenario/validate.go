@@ -161,6 +161,22 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		add("kind %q must be one of rest, graphql, gh, token_api", s.Kind)
 	}
 
+	// The method/path/body/vhost shorthand is only read for kind rest;
+	// on any other kind it would be silently ignored.
+	if s.Kind != "rest" {
+		for _, f := range []struct {
+			name string
+			set  bool
+		}{{"method", s.Method != ""}, {"path", s.Path != ""}, {"body", s.Body != nil}, {"vhost", s.Vhost != ""}} {
+			if f.set {
+				add("%s is only valid for kind rest (shorthand)", f.name)
+			}
+		}
+	}
+	if s.Kind == "graphql" && strings.TrimSpace(s.Query) == "" && len(s.Steps) == 0 {
+		add("graphql scenario needs a query or steps")
+	}
+
 	// Rule 2: known_issue <=> observed.
 	if (s.KnownIssue != "") != (s.Observed != nil) {
 		add("known_issue and observed must be set together (known_issue=%q, observed set=%v)", s.KnownIssue, s.Observed != nil)
@@ -225,7 +241,10 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		// the GraphQL mutation check below. Cleanup is REST, not GraphQL.
 		graphqlStep := s.Kind == "graphql" && !cleanup
 		if graphqlStep {
-			if strings.TrimSpace(path) == "" {
+			// Trim exactly as the executor does, so both agree on
+			// whitespace-only and padded paths.
+			path = strings.TrimSpace(path)
+			if path == "" {
 				path = "/graphql"
 			}
 			if path != "/graphql" {
@@ -328,7 +347,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	if s.Vhost != "" {
 		switch {
 		case s.Kind != "rest":
-			add("vhost is only valid for kind rest")
+			// Reported with the other shorthand fields above.
 		case len(s.Steps) == 0:
 			add("vhost needs a request (method and path)")
 		case !s.shorthand:

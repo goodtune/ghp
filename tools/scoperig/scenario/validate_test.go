@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -703,5 +704,41 @@ func TestValidate_ObservedNeedsAssertion(t *testing.T) {
 		KnownIssue: "https://github.com/goodtune/ghp/issues/1", Observed: &Expect{}}
 	if errs := Validate(r4Tree(s), nil); !errsContain(errs, "observed must have at least one assertion") {
 		t.Fatalf("want observed error, got %v", errs)
+	}
+}
+
+func TestValidate_GraphQLWhitespacePath(t *testing.T) {
+	q := map[string]any{"query": "{ viewer { login } }"}
+	for _, p := range []string{"  ", " /graphql "} {
+		t.Run(fmt.Sprintf("%q", p), func(t *testing.T) {
+			s := &Scenario{ID: "P5", Claim: "C", Kind: "graphql", Profile: "open",
+				Steps: []Request{{Name: "s", Method: "POST", Path: p, Body: q, Expect: &Expect{Status: 200}}}}
+			if errs := Validate(r4Tree(s), nil); errsContain(errs, "must be /graphql") {
+				t.Fatalf("whitespace path %q rejected: %v", p, errs)
+			}
+		})
+	}
+}
+
+func TestValidate_RestShorthandOnNonRestKind(t *testing.T) {
+	cases := map[string]*Scenario{
+		"graphql method": {ID: "P6a", Claim: "C", Kind: "graphql", Profile: "open", Query: "{ viewer { login } }", Method: "POST", Expect: &Expect{Status: 200}},
+		"graphql path":   {ID: "P6b", Claim: "C", Kind: "graphql", Profile: "open", Query: "{ viewer { login } }", Path: "/graphql", Expect: &Expect{Status: 200}},
+		"gh body":        {ID: "P6c", Claim: "C", Kind: "gh", Profile: "open", Args: []string{"api", "/user"}, Body: map[string]any{"x": 1}, Expect: &Expect{StdoutContains: []string{"x"}}},
+		"token_api path": {ID: "P6d", Claim: "C", Kind: "token_api", Path: "/api/tokens", Request: &Request{Method: "GET", Path: "/api/tokens", Expect: &Expect{Status: 200}}},
+	}
+	for name, s := range cases {
+		t.Run(name, func(t *testing.T) {
+			if errs := Validate(r4Tree(s), nil); !errsContain(errs, "only valid for kind rest") {
+				t.Fatalf("want shorthand error, got %v", errs)
+			}
+		})
+	}
+}
+
+func TestValidate_GraphQLNeedsQueryOrSteps(t *testing.T) {
+	s := &Scenario{ID: "P7", Claim: "C", Kind: "graphql", Profile: "open", Expect: &Expect{Status: 200}}
+	if errs := Validate(r4Tree(s), nil); !errsContain(errs, "graphql scenario needs a query or steps") {
+		t.Fatalf("want query-or-steps error, got %v", errs)
 	}
 }
