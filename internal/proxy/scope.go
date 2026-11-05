@@ -153,6 +153,7 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/environments(/.*)?$`, "GET", "environments", "read"},
 		// Creating or updating an environment itself is administration.
 		{`^/repos/[^/]+/[^/]+/environments/[^/]+$`, "PUT", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/environments/[^/]+$`, "DELETE", "administration", "write"},
 		{`^/repos/[^/]+/[^/]+/environments/[^/]+(/.*)?$`, "PUT", "environments", "write"},
 		{`^/repos/[^/]+/[^/]+/environments/[^/]+(/.*)?$`, "POST", "environments", "write"},
 		{`^/repos/[^/]+/[^/]+/environments/[^/]+(/.*)?$`, "PATCH", "environments", "write"},
@@ -417,13 +418,13 @@ func decideREST(si tokenScopeInfo, method, path string) restDecision {
 }
 
 // hasUnsafePathSegment reports whether path contains a "." or ".." segment
-// or an empty segment ("//"), or a decoded "?", "#", "%" or control byte. Such paths could address a different resource
+// or an empty segment ("//"), or a decoded "?", "#", "%", "\\" or control byte. Such paths could address a different resource
 // after normalisation than the one the scope checks saw, so they are
 // rejected before any scope evaluation. A single trailing slash is allowed.
 func hasUnsafePathSegment(path string) bool {
 	for i := 0; i < len(path); i++ {
 		c := path[i]
-		if c == '?' || c == '#' || c == '%' || c < 0x20 || c == 0x7f {
+		if c == '?' || c == '#' || c == '%' || c == '\\' || c < 0x20 || c == 0x7f {
 			return true
 		}
 	}

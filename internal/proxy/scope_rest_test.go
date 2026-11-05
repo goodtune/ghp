@@ -75,6 +75,9 @@ func TestServeHTTP_GapA7_DotSegmentsRejected(t *testing.T) {
 			if ct.lastReq != nil {
 				t.Errorf("request was forwarded upstream")
 			}
+			if !strings.Contains(rr.Body.String(), "unsafe segment or character") {
+				t.Errorf("unexpected body: %s", rr.Body.String())
+			}
 		})
 	}
 	t.Run("open token", func(t *testing.T) {
@@ -234,6 +237,7 @@ func TestHasDotSegment(t *testing.T) {
 		{"/repos/o/r%41", true},
 		{"/repos/o/r\x00", true},
 		{"/repos/o/r\x7f", true},
+		{"/repos/o/r\\..\\b", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {

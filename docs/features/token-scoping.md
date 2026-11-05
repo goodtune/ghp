@@ -60,12 +60,17 @@ because ghp cannot tie it to the allowlist. This includes
 `/repositories/{id}`, `/search/*`, `/user/repos`, `/orgs/*`, `/users/*`,
 `/gists` and package endpoints.
 
-Request paths that contain `.` or `..` segments, empty segments (`//`), or
-(after URL decoding) a `?`, `#`, `%` or control character are rejected with
-`403 Forbidden` for all `ghx_` and `gha_` tokens before any scope check.
-ghp builds the upstream URL from the escaped request path, so other encoded
-characters (for example `%2B` in a ref name) reach GitHub unchanged. This stops a path such as `/repos/A/x/../../B/y/contents` from
-passing the check as `A/x`.
+ghp rejects some request paths with `403 Forbidden` before any scope check.
+This applies to all `ghx_` and `gha_` tokens.
+A path is rejected if it contains a `.` or `..` segment or an empty segment (`//`).
+A path is also rejected if, after URL decoding, it contains `?`, `#`, `%`, `\`
+or a control character.
+This stops a path such as `/repos/A/x/../../B/y/contents` from passing the
+check as `A/x`.
+
+ghp builds the upstream URL from the escaped request path.
+Other encoded characters (for example `%2B` in a ref name) reach GitHub
+unchanged.
 
 ## Permission Restrictions
 
@@ -111,7 +116,7 @@ Rules that differ from the general area of the path:
 |---|---|
 | `actions/permissions/*`, `actions/runners/*` | `administration:read` (GET) / `administration:write` |
 | `actions/variables/*` | `variables:read` (GET) / `variables:write` |
-| `PUT environments/{name}` (create or update the environment) | `administration:write` |
+| `PUT`/`DELETE environments/{name}` (create, update or delete the environment) | `administration:write` |
 | `DELETE git/refs/*`, `PATCH`/`DELETE releases/*`, `POST merges`, `POST dispatches` | `contents:write` |
 | `readme`, `tags`, `git/ref/*`, `git/matching-refs/*` | `contents:read` |
 | `keys`, `rulesets` | `administration:read` / `administration:write` |

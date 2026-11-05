@@ -232,7 +232,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Info("proxy_unsafe_path_denied", "method", r.Method, "path", r.URL.EscapedPath(), "token_type", resolveTokenType)
 		metrics.ObserveDecision(metrics.StageScopeEnforcement, resolveTokenType, 0)
 		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
-		writeError(w, http.StatusForbidden, "Request path contains dot or empty segments")
+		writeError(w, http.StatusForbidden, "Request path contains an unsafe segment or character")
 		return
 	}
 
