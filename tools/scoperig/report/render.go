@@ -42,16 +42,16 @@ func (r *Report) WriteTable(w io.Writer) error {
 
 	tw := tabwriter.NewWriter(ew, 0, 0, 2, ' ', 0)
 	if len(changed) > 0 {
-		fmt.Fprintf(tw, "CLAIM\tSCENARIO\tSTATUS\tDETAIL (%d listed above)\n", len(changed))
+		_, _ = fmt.Fprintf(tw, "CLAIM\tSCENARIO\tSTATUS\tDETAIL (%d listed above)\n", len(changed))
 	} else {
-		fmt.Fprintln(tw, "CLAIM\tSCENARIO\tSTATUS\tDETAIL")
+		_, _ = fmt.Fprintln(tw, "CLAIM\tSCENARIO\tSTATUS\tDETAIL")
 	}
 	for _, c := range r.Claims {
 		for _, s := range c.Scenarios {
 			if s.Status == StatusKnownChanged {
 				continue
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", clean(c.ID), clean(s.ID), s.Status, clean(s.Detail))
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", clean(c.ID), clean(s.ID), s.Status, clean(s.Detail))
 		}
 	}
 	if err := tw.Flush(); err != nil {
@@ -98,7 +98,7 @@ func (e *errWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func (e *errWriter) printf(f string, a ...any) { fmt.Fprintf(e, f, a...) }
+func (e *errWriter) printf(f string, a ...any) { _, _ = fmt.Fprintf(e, f, a...) }
 
 type jsonObservation struct {
 	Status              int    `json:"status"`

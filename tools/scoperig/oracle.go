@@ -135,7 +135,7 @@ func runOracle(ctx context.Context, o oracleOpts) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("oracle: temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 	if err := os.Chmod(tmp, 0o700); err != nil {
 		return "", fmt.Errorf("oracle: temp dir: %w", err)
 	}
@@ -161,7 +161,7 @@ func runOracle(ctx context.Context, o oracleOpts) (string, error) {
 	} else if _, ok := parseSemver(version); !ok {
 		return "", fmt.Errorf("oracle: --gh-version %q is not MAJOR.MINOR.PATCH", version)
 	}
-	fmt.Fprintf(logw, "oracle: gh %s against github.com/%s\n", version, o.Repo)
+	_, _ = fmt.Fprintf(logw, "oracle: gh %s against github.com/%s\n", version, o.Repo)
 
 	// Capture serially: GH_DEBUG output from parallel runs would be useless
 	// for diffing and gh itself interleaves concurrent requests.
@@ -179,7 +179,7 @@ func runOracle(ctx context.Context, o oracleOpts) (string, error) {
 			return "", fmt.Errorf("oracle: %s: %w", c.Name, err)
 		}
 		if exit != 0 {
-			fmt.Fprintf(logw, "oracle: warning: gh %s exited %d (captured requests are still used)\n", strings.Join(c.Args[:2], " "), exit)
+			_, _ = fmt.Fprintf(logw, "oracle: warning: gh %s exited %d (captured requests are still used)\n", strings.Join(c.Args[:2], " "), exit)
 		}
 	}
 
@@ -370,7 +370,7 @@ func parseCapture(name string) ([]ghdebug.Exchange, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return ghdebug.Parse(f)
 }
 
@@ -514,7 +514,7 @@ func newOracleCmd(stdout, stderr io.Writer, getenv func(string) string) *cobra.C
 			if err != nil {
 				return &exitError{code: 3, err: err}
 			}
-			fmt.Fprint(stdout, redact.String(diff))
+			_, _ = fmt.Fprint(stdout, redact.String(diff))
 			return nil
 		},
 	}

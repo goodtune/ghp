@@ -171,10 +171,10 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 		rctx := context.WithoutCancel(ctx)
 		leftover, rerr := mgr.RevokeAllErr(rctx)
 		if rerr != nil {
-			fmt.Fprintf(out, "revoke: %s\n", redact.String(rerr.Error()))
+			_, _ = fmt.Fprintf(out, "revoke: %s\n", redact.String(rerr.Error()))
 		}
 		if still, verr := mgr.VerifyNoneLeft(rctx); verr != nil {
-			fmt.Fprintf(out, "verify revocation: %s\n", redact.String(verr.Error()))
+			_, _ = fmt.Fprintf(out, "verify revocation: %s\n", redact.String(verr.Error()))
 			if len(leftover) == 0 && mgr.Created() > 0 {
 				// Fail closed: unverified is not revoked.
 				leftover = append(leftover, "unverified")
@@ -183,7 +183,7 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 			leftover = unionSorted(leftover, still)
 		}
 		if len(leftover) > 0 {
-			fmt.Fprintf(out, "leftover token ids (revoke them or let the next sweep): %s\n", strings.Join(leftover, " "))
+			_, _ = fmt.Fprintf(out, "leftover token ids (revoke them or let the next sweep): %s\n", strings.Join(leftover, " "))
 			// A live token outranks a could-not-start error.
 			var ee *exitError
 			if errors.As(err, &ee) && ee.code == 3 {
@@ -204,9 +204,9 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 
 	// 3. Sweep.
 	if swept, err := mgr.Sweep(ctx); err != nil {
-		fmt.Fprintf(out, "sweep: %s\n", redact.String(err.Error()))
+		_, _ = fmt.Fprintf(out, "sweep: %s\n", redact.String(err.Error()))
 	} else if len(swept) > 0 {
-		fmt.Fprintf(out, "sweep: revoked %d leftover token(s): %s\n", len(swept), strings.Join(swept, " "))
+		_, _ = fmt.Fprintf(out, "sweep: revoked %d leftover token(s): %s\n", len(swept), strings.Join(swept, " "))
 	}
 
 	vars := &scenario.Vars{
@@ -440,7 +440,7 @@ func (a *handleAPI) Do(ctx context.Context, method, p string, body any) (int, []
 	if err != nil {
 		return 0, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	return resp.StatusCode, b, err
 }

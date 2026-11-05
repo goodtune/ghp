@@ -43,7 +43,7 @@ func secondSignal(ctx context.Context, out io.Writer) func(*tokens.Manager) {
 		go func() {
 			<-ctx.Done()
 			m.RevokeOnSignal(func(left []string) {
-				fmt.Fprintf(out, "interrupted again; leftover token ids: %s\n", strings.Join(left, " "))
+				_, _ = fmt.Fprintf(out, "interrupted again; leftover token ids: %s\n", strings.Join(left, " "))
 				osExit(2)
 			}, os.Interrupt, syscall.SIGTERM)
 		}()
@@ -57,11 +57,11 @@ func exitCode(err error, stderr io.Writer) int {
 	var ee *exitError
 	if errors.As(err, &ee) {
 		if ee.err != nil && ee.code != 0 {
-			fmt.Fprintln(stderr, "scoperig:", redact.String(ee.err.Error()))
+			_, _ = fmt.Fprintln(stderr, "scoperig:", redact.String(ee.err.Error()))
 		}
 		return ee.code
 	}
-	fmt.Fprintln(stderr, "scoperig:", redact.String(err.Error()))
+	_, _ = fmt.Fprintln(stderr, "scoperig:", redact.String(err.Error()))
 	return 3 // preflight, cobra usage and config errors: could not start
 }
 
@@ -112,9 +112,9 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 			}
 			_, errs := loadTree(c.Root)
 			for _, e := range errs {
-				fmt.Fprintln(stdout, redact.String(e.Error()))
+				_, _ = fmt.Fprintln(stdout, redact.String(e.Error()))
 			}
-			fmt.Fprintf(stdout, "%d errors\n", len(errs))
+			_, _ = fmt.Fprintf(stdout, "%d errors\n", len(errs))
 			if len(errs) > 0 {
 				return &exitError{code: 3, err: fmt.Errorf("validation failed with %d errors", len(errs))}
 			}
@@ -139,7 +139,7 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 			}
 			if c.Out != "" {
 				if err := writeJSON(c.Out, rep); err != nil {
-					fmt.Fprintln(stderr, "scoperig:", err)
+					_, _ = fmt.Fprintln(stderr, "scoperig:", err)
 					return &exitError{code: 2, err: err}
 				}
 			}
@@ -168,7 +168,7 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 			}
 			defer mgr.RevokeAll(context.WithoutCancel(cmd.Context()))
 			ids, err := mgr.Sweep(cmd.Context())
-			fmt.Fprintf(stdout, "swept %d token(s): %s\n", len(ids), strings.Join(ids, " "))
+			_, _ = fmt.Fprintf(stdout, "swept %d token(s): %s\n", len(ids), strings.Join(ids, " "))
 			if err != nil {
 				return &exitError{code: 2, err: err}
 			}
@@ -201,7 +201,7 @@ func writeJSON(name string, rep *report.Report) error {
 		return err
 	}
 	if err := rep.WriteJSON(fh); err != nil {
-		fh.Close()
+		_ = fh.Close()
 		return err
 	}
 	return fh.Close()
@@ -242,7 +242,7 @@ func ensureFixtures(ctx context.Context, c *Config, deps runDeps, stdout io.Writ
 	}
 	defer func() {
 		if left := mgr.RevokeAll(context.WithoutCancel(ctx)); len(left) > 0 {
-			fmt.Fprintf(stdout, "leftover token ids: %s\n", strings.Join(left, " "))
+			_, _ = fmt.Fprintf(stdout, "leftover token ids: %s\n", strings.Join(left, " "))
 			if err == nil {
 				err = &exitError{code: 2, err: errors.New("token revocation failed")}
 			}
@@ -263,23 +263,23 @@ func ensureFixtures(ctx context.Context, c *Config, deps runDeps, stdout io.Writ
 	for _, repo := range []string{c.RepoA, c.RepoB, c.RepoW} {
 		plan, err := fixtures.Ensure(ctx, api, repo, vars.Login, c.CreateFixtures, caps["repo_create"])
 		if plan.Create {
-			fmt.Fprintf(stdout, "%s: create repository\n", repo)
+			_, _ = fmt.Fprintf(stdout, "%s: create repository\n", repo)
 		}
 		for _, s := range plan.Seed {
-			fmt.Fprintf(stdout, "%s: %s\n", repo, s)
+			_, _ = fmt.Fprintf(stdout, "%s: %s\n", repo, s)
 		}
 		if err != nil {
-			fmt.Fprintf(stdout, "%s: %s\n", repo, redact.String(err.Error()))
+			_, _ = fmt.Fprintf(stdout, "%s: %s\n", repo, redact.String(err.Error()))
 			failed = true
 			continue
 		}
 		ref, fv, err := fixtures.Discover(ctx, api, repo)
 		if err != nil {
-			fmt.Fprintf(stdout, "%s: %s\n", repo, redact.String(err.Error()))
+			_, _ = fmt.Fprintf(stdout, "%s: %s\n", repo, redact.String(err.Error()))
 			failed = true
 			continue
 		}
-		fmt.Fprintf(stdout, "%s: id=%d issue=#%d pr=#%d release=%d branch=%s label=%s\n",
+		_, _ = fmt.Fprintf(stdout, "%s: id=%d issue=#%d pr=#%d release=%d branch=%s label=%s\n",
 			ref, ref.ID, fv.IssueNumber, fv.PRNumber, fv.ReleaseID, fv.Branch, fv.Label)
 	}
 	if failed {

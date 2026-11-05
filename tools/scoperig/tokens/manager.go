@@ -230,9 +230,9 @@ func (m *Manager) Revoke(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("revoke %s: %w", id, err)
 	}
-	switch {
-	case status == http.StatusOK:
-	case status == http.StatusBadRequest:
+	switch status {
+	case http.StatusOK:
+	case http.StatusBadRequest:
 		revoked, gerr := m.isRevoked(ctx, id)
 		if gerr != nil {
 			return fmt.Errorf("revoke %s: status %d: %s; confirm: %w", id, status, message(resp), gerr)
@@ -464,7 +464,7 @@ func (m *Manager) raw(ctx context.Context, method, path string, body []byte) ([]
 		// url.Error contains only method and URL; no credentials.
 		return nil, 0, fmt.Errorf("%s %s: %s", method, path, redact.String(err.Error()))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("%s %s: read body: %w", method, path, err)

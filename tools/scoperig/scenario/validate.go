@@ -17,10 +17,6 @@ var (
 	knownIssueRE = regexp.MustCompile(`^https://github\.com/goodtune/ghp/issues/\d+$`)
 )
 
-// gapA1ProbeID is the one scenario allowed to send a forwarded write with a
-// read-only token. Its path must still target RepoW.
-const gapA1ProbeID = "GAP-A1.delete-ref-contents-ro"
-
 // gapA7ProbeID is the one scenario allowed to send dot segments in its
 // path, and only on a GET: it probes that "/repos/A/../../B" cannot escape
 // the repository allowlist.
@@ -300,7 +296,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	}
 	// Normalise copies the rest shorthand Expect into Steps[0]; Steps are
 	// the source of truth, so do not report the same problem twice.
-	if !(len(s.Steps) > 0 && s.Steps[0].Expect == s.Expect) {
+	if len(s.Steps) == 0 || s.Steps[0].Expect != s.Expect {
 		checkExpect("expect", s.Expect, v, add)
 	}
 	checkExpect("observed", s.Observed, v, add)
@@ -359,7 +355,7 @@ func normalisePath(p string, allowDots bool) (string, error) {
 	}
 	c := path.Clean(u)
 	if !allowDots && strings.Contains(c, "..") {
-		return "", fmt.Errorf("path %q contains ..", p)
+		return "", fmt.Errorf("path %q contains a dot-dot segment", p)
 	}
 	return c, nil
 }

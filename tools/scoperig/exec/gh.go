@@ -103,7 +103,7 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 	if err != nil {
 		return nil, fmt.Errorf("gh temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 	for _, d := range []string{"cfg", "cache", "work"} {
 		if err := os.Mkdir(filepath.Join(tmp, d), 0o700); err != nil {
 			return nil, fmt.Errorf("gh temp dir: %w", err)
@@ -149,7 +149,7 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 		obs.Status = d.Status
 	}
 	if env.Verbose != nil {
-		fmt.Fprintf(env.Verbose, "gh %s -> exit %d, status %d\n%s\n", redact.String(strings.Join(args, " ")), exit, obs.Status, obs.Stderr)
+		_, _ = fmt.Fprintf(env.Verbose, "gh %s -> exit %d, status %d\n%s\n", redact.String(strings.Join(args, " ")), exit, obs.Status, obs.Stderr)
 	}
 	return obs, nil
 }

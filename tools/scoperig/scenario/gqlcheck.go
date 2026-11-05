@@ -23,8 +23,7 @@ var mutationWriteAllowlist = map[string]bool{
 }
 
 var (
-	mutationWordRE = regexp.MustCompile(`^\s*mutation\b`)
-	repoIDKeyRE    = regexp.MustCompile(`(?i)^repositoryids?$`)
+	repoIDKeyRE = regexp.MustCompile(`(?i)^repositoryids?$`)
 )
 
 // gqlFacts is what checkGraphQL learns from a parsed document.
@@ -116,16 +115,6 @@ func parseGraphQL(q string) (*gqlFacts, error) {
 		walkSel(fr.SelectionSet)
 	}
 	return f, nil
-}
-
-// graphQLRepoPairs returns the owner/name pairs from a parsed query, for use by
-// callers that only need repository references.
-func graphQLRepoPairs(q string) ([][2]string, error) {
-	f, err := parseGraphQL(q)
-	if err != nil {
-		return nil, err
-	}
-	return f.pairs, nil
 }
 
 // forbiddenIdents returns the identifiers of A and B that must never appear

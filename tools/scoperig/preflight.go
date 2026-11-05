@@ -168,7 +168,7 @@ func probeVHost(ctx context.Context, host string, pool *x509.CertPool) bool {
 	if err != nil {
 		return false
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	tr := &http.Transport{DialTLSContext: func(context.Context, string, string) (net.Conn, error) { return conn, nil }}
 	defer tr.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://github.com/", nil)
@@ -179,7 +179,7 @@ func probeVHost(ctx context.Context, host string, pool *x509.CertPool) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return true
 }
 
@@ -215,7 +215,7 @@ func get(ctx context.Context, hc *http.Client, u string, auth func(*http.Request
 	if err != nil {
 		return 0, nil, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return 0, nil, nil, err

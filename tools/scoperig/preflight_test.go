@@ -26,7 +26,7 @@ func TestPreflight(t *testing.T) {
 				}
 				w.WriteHeader(rootStatus)
 			case "/login":
-				fmt.Fprint(w, `<footer>ghp version v1.2.3-rc1</footer>`)
+				_, _ = fmt.Fprint(w, `<footer>ghp version v1.2.3-rc1</footer>`)
 			case "/api/tokens":
 				if tokStatus == http.StatusFound {
 					http.Redirect(w, r, "/login", http.StatusFound)
@@ -37,7 +37,7 @@ func TestPreflight(t *testing.T) {
 					return
 				}
 				w.WriteHeader(tokStatus)
-				fmt.Fprint(w, `[]`)
+				_, _ = fmt.Fprint(w, `[]`)
 			}
 		}))
 	}
@@ -110,22 +110,22 @@ func probeServer(t *testing.T, o probeOpts) *httptest.Server {
 				w.WriteHeader(o.userCode)
 				return
 			}
-			fmt.Fprint(w, `{"login":"octo"}`)
+			_, _ = fmt.Fprint(w, `{"login":"octo"}`)
 		case "/api/v3/repos/octo/w":
 			if o.repoCode != 0 {
 				w.WriteHeader(o.repoCode)
 				return
 			}
-			fmt.Fprintf(w, `{"permissions":{"push":%v}}`, o.push)
+			_, _ = fmt.Fprintf(w, `{"permissions":{"push":%v}}`, o.push)
 		case "/api/v3/":
 			if o.scopes != "" {
 				w.Header().Set("X-OAuth-Scopes", o.scopes)
 			}
-			fmt.Fprint(w, `{}`)
+			_, _ = fmt.Fprint(w, `{}`)
 		case "/api/tokens":
 			if r.Method == http.MethodPost {
 				w.WriteHeader(201)
-				fmt.Fprint(w, `{"id":"t1","token":"ghx_test0000"}`)
+				_, _ = fmt.Fprint(w, `{"id":"t1","token":"ghx_test0000"}`)
 				return
 			}
 			if r.URL.Query().Get("all") == "true" && auth == "Bearer ghpr_test0000" {

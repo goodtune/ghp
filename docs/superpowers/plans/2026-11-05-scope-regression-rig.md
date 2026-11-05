@@ -1180,7 +1180,7 @@ Expected: all PASS, gofmt prints nothing, `validate` reports `0 errors`. If `gol
 - Create: `.claude/skills/scope-rig-run/SKILL.md`
 - Create: `.claude/skills/scope-rig-extend/SKILL.md`
 
-Follow superpowers:writing-skills (`/Users/gary/.claude/plugins/cache/claude-plugins-official/superpowers/7.0.0/skills/writing-skills/SKILL.md`): frontmatter with only `name` and `description`; description in third person, starts "Use when", lists triggers only and does not summarise the workflow; sections Overview, When to Use, Quick Reference (commands table), Implementation (numbered steps), Common Mistakes. Keep each under ~400 words. Write in the same plain style as spec §9.
+Follow the `superpowers:writing-skills` skill: frontmatter with only `name` and `description`; description in third person, starts "Use when", lists triggers only and does not summarise the workflow; sections Overview, When to Use, Quick Reference (commands table), Implementation (numbered steps), Common Mistakes. Keep each under ~400 words. Write in the same plain style as spec §9.
 
 Frontmatter (exact):
 

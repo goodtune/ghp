@@ -91,7 +91,7 @@ func parseFile(name string) ([]ghdebug.Exchange, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return ghdebug.Parse(f)
 }
 

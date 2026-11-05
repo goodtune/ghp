@@ -83,7 +83,7 @@ func TestHeader(t *testing.T) {
 		t.Error("input header was mutated")
 	}
 	raw := Header(http.Header{"authorization": {"token ghx_test00000000"}})
-	if raw["authorization"][0] != "[REDACTED]" {
+	if raw["authorization"][0] != "[REDACTED]" { //nolint:staticcheck // deliberately non-canonical key
 		t.Errorf("non-canonical key not masked: %v", raw)
 	}
 	if Header(nil) == nil {

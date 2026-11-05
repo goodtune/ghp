@@ -112,42 +112,6 @@ func (g ghArgs) all(names ...string) []string {
 	return out
 }
 
-// ghLooseValueFlags is only used by the permissive parser for read-only
-// subcommands, where a mis-parse cannot cause a write.
-var ghLooseValueFlags = map[string]bool{
-	"-R": true, "--repo": true, "-q": true, "--jq": true, "-t": true, "--template": true,
-	"--json": true, "-L": true, "--limit": true, "-s": true, "--state": true, "-l": true,
-	"--label": true, "-a": true, "--assignee": true, "-A": true, "--author": true,
-	"-B": true, "--base": true, "--hostname": true, "-S": true, "--search": true,
-}
-
-func parseGHLoose(args []string) ghArgs {
-	g := ghArgs{flags: map[string][]string{}}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--":
-			g.positionals = append(g.positionals, args[i+1:]...)
-			return g
-		case strings.HasPrefix(a, "--") && strings.Contains(a, "="):
-			k, val, _ := strings.Cut(a, "=")
-			g.flags[k] = append(g.flags[k], val)
-		case strings.HasPrefix(a, "-") && a != "-":
-			if ghLooseValueFlags[a] && i+1 < len(args) {
-				g.flags[a] = append(g.flags[a], args[i+1])
-				i++
-			} else if len(a) > 2 && !strings.HasPrefix(a, "--") && ghLooseValueFlags[a[:2]] {
-				g.flags[a[:2]] = append(g.flags[a[:2]], strings.TrimPrefix(a[2:], "="))
-			} else {
-				g.flags[a] = append(g.flags[a], "")
-			}
-		default:
-			g.positionals = append(g.positionals, a)
-		}
-	}
-	return g
-}
-
 // parseGHStrict parses args against table and returns an error for any
 // unknown flag, bundled short flags, or a value flag with no value.
 // Flag values are stored under the long name.

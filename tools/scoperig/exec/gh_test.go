@@ -131,7 +131,7 @@ func TestGH_Env(t *testing.T) {
 	rtmp, _ := filepath.EvalSymlinks(tmp)
 	for _, name := range []string{"cwd", "GH_CONFIG_DIR", "XDG_CACHE_HOME", "HOME", "GIT_CEILING_DIRECTORIES"} {
 		p := got[name]
-		if p == "" || !(strings.HasPrefix(p, tmp) || strings.HasPrefix(p, rtmp)) {
+		if p == "" || (!strings.HasPrefix(p, tmp) && !strings.HasPrefix(p, rtmp)) {
 			t.Errorf("%s = %q, want under %q", name, p, tmp)
 		}
 	}

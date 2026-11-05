@@ -181,7 +181,7 @@ func send(ctx context.Context, env *RunEnv, build func(ctx context.Context) (*ht
 		}
 		body, rerr := io.ReadAll(io.LimitReader(resp.Body, MaxBody))
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		cancel()
 		if rerr != nil {
 			return nil, fmt.Errorf("%s %s: read body: %s", req.Method, req.URL.RequestURI(), redact.String(rerr.Error()))
@@ -197,7 +197,7 @@ func verbose(env *RunEnv, method, uri string, obs *expect.Observation) {
 	if env.Verbose == nil {
 		return
 	}
-	fmt.Fprintf(env.Verbose, "%s %s -> %d\n%s\n", method, redact.String(uri), obs.Status, obs.Body)
+	_, _ = fmt.Fprintf(env.Verbose, "%s %s -> %d\n%s\n", method, redact.String(uri), obs.Status, obs.Body)
 }
 
 // jsonBytes JSON-encodes body; a nil body gives nil bytes.

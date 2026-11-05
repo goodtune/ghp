@@ -38,7 +38,7 @@ func TestREST_StepsCaptureAndCleanup(t *testing.T) {
 		switch {
 		case r.Method == http.MethodPost:
 			w.WriteHeader(201)
-			io.WriteString(w, `{"number":7}`)
+			_, _ = io.WriteString(w, `{"number":7}`)
 		case strings.HasSuffix(r.RequestURI, "/fail"):
 			w.WriteHeader(500)
 		default:
@@ -90,7 +90,7 @@ func TestREST_HeaderOverridesAuthorization(t *testing.T) {
 func TestREST_ObservationRedacted(t *testing.T) {
 	env, _, tok := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Echo", r.Header.Get("Authorization"))
-		io.WriteString(w, `{"auth":"`+r.Header.Get("Authorization")+`"}`)
+		_, _ = io.WriteString(w, `{"auth":"`+r.Header.Get("Authorization")+`"}`)
 	}))
 	s := &scenario.Scenario{ID: "x", Kind: "rest", Path: "/user"}
 	obs, err := (restExecutor{}).Run(context.Background(), s, tok, env)
@@ -104,7 +104,7 @@ func TestREST_ObservationRedacted(t *testing.T) {
 
 func TestREST_BodyCapped(t *testing.T) {
 	env, _, tok := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, strings.Repeat("a", 2*MaxBody))
+		_, _ = io.WriteString(w, strings.Repeat("a", 2*MaxBody))
 	}))
 	obs, err := (restExecutor{}).Run(context.Background(), &scenario.Scenario{ID: "x", Kind: "rest", Path: "/"}, tok, env)
 	if err != nil {

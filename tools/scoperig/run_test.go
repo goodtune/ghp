@@ -90,7 +90,7 @@ func (f *fakeGHP) serve(w http.ResponseWriter, r *http.Request) {
 	case p == "/":
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	case p == "/login":
-		fmt.Fprint(w, "<html>ghp version 0.23.0</html>")
+		_, _ = fmt.Fprint(w, "<html>ghp version 0.23.0</html>")
 	case strings.HasPrefix(p, "/api/tokens"):
 		if r.Header.Get("Authorization") != "Bearer "+fakeSession {
 			writeJSONResp(w, 401, map[string]string{"message": "unauthorized"})
@@ -169,11 +169,11 @@ func (f *fakeGHP) serveTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeGHP) serveAPI(w http.ResponseWriter, r *http.Request, p string) {
-	switch {
-	case p == "/user":
+	switch p {
+	case "/user":
 		writeJSONResp(w, 200, map[string]any{"login": "goodtune"})
 		return
-	case p == "/" || p == "":
+	case "/", "":
 		w.Header().Set("X-OAuth-Scopes", "repo, read:org")
 		writeJSONResp(w, 200, map[string]any{})
 		return
