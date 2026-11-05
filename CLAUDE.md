@@ -272,14 +272,14 @@ When working on `internal/github/registry.go`:
 
 For each field walked:
 
-1. **Mutation root field** (mutation operation, `atRoot==true`): looked up in `mutationScopeRequirements`. Hit → record the scope. Miss → flagged as unknown (denied).
+1. **Mutation root field** (mutation operation, `atRoot==true`): `__typename` needs no scope. Otherwise looked up in `mutationScopeRequirements`. Hit → record the scope. Miss → flagged as unknown (denied). A mutation with no mapped field (e.g. only `__typename`) is still denied by the verdict's mutation checks.
 2. **Otherwise** the field is checked against the tables in this order:
    1. `alwaysAllowedFields` — pass with no scope requirement.
    2. `fieldScopeRequirements` — record the scope.
    3. **Scalar leaf** (no selection set): permitted at non-root; denied at root (no parent scope to gate it).
    4. **Object-typed field** (has a selection set) that fell through all of the above: flagged as unknown (denied).
 3. **Cross-repo check** runs in parallel — `crossRepoAnywhereFields` always; `crossRepoRootOnlyFields` only when `atRoot==true`.
-4. **Repository pinning** — `repository(owner, name)` with both arguments as **literal strings** records the repo. With non-literal args (variable, missing) it sets `hasUnpinnedRepositoryLookup`, which fails the request for repo-scoped tokens. A bare `repository` with **no arguments** (e.g. `Issue.repository`) is a nested type accessor, not a lookup, and is ignored.
+4. **Repository pinning** — `repository(owner, name)` records the repo when each argument is either a **literal string** or a **variable `$v` declared as `String`/`String!` (not a list) whose member in the request's `variables` object is a JSON string**. Anything else sets `hasUnpinnedRepositoryLookup`, which fails the request for repo-scoped tokens: a missing argument; a variable that is undeclared, has another type, is absent from `variables`, or is `null`/number/boolean/array/object. Operation default values are never used. No variable resolves when the body has duplicate top-level keys (case-insensitive), the `variables` object has duplicate keys, or the document has more than one operation (`resolveVariables`). The body analysed is the body forwarded, byte for byte. A bare `repository` with **no arguments** (e.g. `Issue.repository`) is a nested type accessor, not a lookup, and is ignored.
 
 The lookup is **by field name only** — the analyzer doesn't load GitHub's SDL. Where the same name on different parent types could mean different things, err toward the stricter scope.
 
@@ -295,19 +295,19 @@ The 403 response names the fields the proxy could not classify (capped at `maxRe
    - `TestAnalyzeGraphQLRequest_MutationRequiresWriteScope` — analyzer-level scope assertion for a mutation.
    - `TestServeHTTP_GraphQL_PermissionScoped_*` — handler-level allow/deny.
    - `TestServeHTTP_GraphQL_RepoScoped_*` — handler-level repo enforcement (use these for cross-repo additions).
-5. Do **not** widen the analyzer's defaults (e.g. don't allow scalar leaves at root, don't exempt `__*` fields, don't drop the `hasUnpinnedRepositoryLookup` check). The deny-by-default posture is the security model — the maps are the lever.
+5. Do **not** widen the analyzer's defaults (e.g. don't allow scalar leaves at root, don't exempt `__*` fields beyond `__typename` at a mutation root, don't drop the `hasUnpinnedRepositoryLookup` check). The deny-by-default posture is the security model — the maps are the lever.
 
 ### Things to never silently do
 
 - **Never** add a write-capable field to `alwaysAllowedFields`. That table is metadata-only.
 - **Never** add a mutation to `fieldScopeRequirements` (it's checked only for non-mutation paths). Mutations belong in `mutationScopeRequirements`.
 - **Never** skip the cross-repo classification just because a field also has a scope mapping. A field can require a scope **and** be cross-repo (e.g. `search` requires no specific scope but is cross-repo).
-- **Never** loosen `repositoryArgs` to accept variables. Variable-driven repo lookups can't be allowlist-checked; that's the whole point of `hasUnpinnedRepositoryLookup`.
+- **Never** loosen `stringArg`/`resolveVariables` beyond the rule in step 4 (for example: using default values, coercing non-string values, resolving variables when keys are duplicated or the document has several operations, or analysing a re-encoded body). A repo lookup the proxy cannot resolve exactly as GitHub will can't be allowlist-checked; that's the whole point of `hasUnpinnedRepositoryLookup`.
 
 ### When the user-facing docs need updating
 
 `docs/features/token-scoping.md` has a known-limitations section. Update it when:
-- A trade-off changes (currently: scalar leaves under always-allowed parents are not deny-by-default, repo-scoped GraphQL mutations are not supported).
+- A trade-off changes (currently: scalar leaves under always-allowed parents are not deny-by-default, variable pinning trusts the forwarded `variables` object, repo-scoped GraphQL mutations are not supported).
 - A new class of field is added that operators may run into (e.g. a new cross-repo field).
 
 ## CI
