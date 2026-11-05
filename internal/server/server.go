@@ -505,7 +505,12 @@ func (s *Server) Run(ctx context.Context) error {
 	// they go direct unless a control rule opts them in via include_non_github.
 	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger, proxy.NewForwardProxyNonGitHubControlTransport(forwardProxyRouter))
 
-	codeloadHandler := proxy.NewCodeloadHandler(s.cfg, s.logger, forwardProxyTransport)
+	// Scope enforcement wraps the whole codeload handler (redirect and
+	// passthrough) so client tokens are resolved before any forward and
+	// scoped tokens are checked before a mirror redirect (goodtune/ghp#292).
+	codeloadHandler := proxy.NewScopedCodeloadHandler(
+		proxy.NewCodeloadHandler(s.cfg, s.logger, forwardProxyTransport),
+		tokenSvc, proxyTokenResolver, usernameResolver, s.logger)
 
 	copilotPassthrough := proxy.NewCopilotPassthroughHandler(
 		"https://copilot-proxy.githubusercontent.com", s.cfg.GitHub.EnterpriseSlug, s.logger, forwardProxyTransport)

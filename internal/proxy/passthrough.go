@@ -74,11 +74,13 @@ type ScopeEnforcer interface {
 	Resolve(ctx context.Context, clientToken string) (*database.ProxyToken, error)
 }
 
-// NewScopedPassthroughHandler wraps a passthrough reverse proxy with git smart
-// HTTP scope enforcement. For requests carrying a client token (ghx_/gha_) that
-// match a git smart HTTP path, the token's repository and permission scopes are
-// verified before the request is forwarded. Non-git paths and non-client tokens
-// pass through unchanged.
+// NewScopedPassthroughHandler wraps a passthrough reverse proxy with github.com
+// scope enforcement. For requests carrying a scoped client token (ghx_/gha_),
+// the path is mapped by GitHubWebScope (git smart HTTP, archives, release
+// downloads) and the token's repository and permission scopes are verified
+// before the request is forwarded; unmapped paths are denied with 403
+// (goodtune/ghp#292). Open-scoped client tokens are resolved and forwarded.
+// Requests without a client token pass through unchanged.
 //
 // When cfg is non-nil, the token type border policy (cfg.Block) is enforced:
 // requests bearing a raw GitHub token whose type prefix is blocked are rejected
@@ -99,6 +101,27 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 	if len(cfg) > 0 {
 		blockCfg = cfg[0]
 	}
+	return newScopedWebHandler(backend.GitHub, GitHubWebScope, inner, enforcer, resolver, ur, enterprise, logger, blockCfg)
+}
+
+// NewScopedCodeloadHandler wraps the codeload.github.com handler with the
+// same client-token resolution and scope enforcement as the github.com
+// virtual host (goodtune/ghp#292). A client token is always resolved and
+// replaced with the real credential before the forward, so a ghx_/gha_
+// string never reaches codeload. For scoped tokens, archive downloads need
+// the repository in the allowlist and contents:read; any other path is
+// denied. The enterprise and border policies are not applied here.
+func NewScopedCodeloadHandler(inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, logger *slog.Logger) http.Handler {
+	return newScopedWebHandler(backend.Codeload, CodeloadScope, inner, enforcer, resolver, ur, nil, logger, nil)
+}
+
+// webScopeMapper maps a request to the repository, permission and level it
+// needs. An empty permission means the request is not mapped.
+type webScopeMapper func(method, path, query string) (repo, permission, level string)
+
+// newScopedWebHandler implements NewScopedPassthroughHandler and
+// NewScopedCodeloadHandler. vhost is the backend name used for metrics.
+func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handler, enforcer ScopeEnforcer, resolver TokenResolver, ur *UsernameResolver, enterprise *EnterprisePolicy, logger *slog.Logger, blockCfg *config.Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		decisionStart := time.Now()
 		extractStart := time.Now()
@@ -185,35 +208,13 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 				}
 			}
 			// Emit proxy-level metrics for passthrough traffic (token type may be "unknown").
-			metrics.ObservePassthroughRequest(backend.GitHub, r.Method, rec.status, time.Since(decisionStart), "git", passthroughTokenType(raw), GetUsername(r))
+			metrics.ObservePassthroughRequest(vhost, r.Method, rec.status, time.Since(decisionStart), "git", passthroughTokenType(raw), GetUsername(r))
 			return
 		}
 
-		repo, permission, level := GitSmartHTTPScope(r.Method, r.URL.Path, r.URL.RawQuery)
-		if permission == "" {
-			// Not a git smart HTTP path — resolve the GitHub token here rather
-			// than relying on inner's Director, so that token resolution time is
-			// charged to StageGitHubTokenResolution (pre-forward overhead) rather
-			// than incorrectly to StageUpstreamRoundtrip.
-			ghTokenStart := time.Now()
-			realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
-			metrics.ObserveDecision(metrics.StageGitHubTokenResolution, extractTokenType, time.Since(ghTokenStart))
-			if err != nil {
-				if logger != nil {
-					logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
-				}
-				metrics.ObserveDecision(metrics.StageTotal, extractTokenType, time.Since(decisionStart))
-				writeError(w, http.StatusUnauthorized, "Token resolution failed")
-				return
-			}
-			r.Header.Set("Authorization", rewriteAuth(realToken))
-			applyEnterprise(realToken)
-			metrics.ObserveDecision(metrics.StageTotal, extractTokenType, time.Since(decisionStart))
-			upstreamStart := time.Now()
-			inner.ServeHTTP(w, r)
-			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, extractTokenType, time.Since(upstreamStart))
-			return
-		}
+		// Map the request to a repository and permission. An unmapped
+		// request is denied below for scoped tokens (goodtune/ghp#292).
+		repo, permission, level := mapScope(r.Method, r.URL.Path, r.URL.RawQuery)
 
 		start := time.Now()
 
@@ -265,7 +266,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		// Wrap response writer to capture status code for metrics.
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		defer func() {
-			metrics.ObserveProxyRequest(backend.GitHub, pt, r.Method, rec.status, time.Since(start), "git", username)
+			metrics.ObserveProxyRequest(vhost, pt, r.Method, rec.status, time.Since(start), "git", username)
 		}()
 
 		// Parse the token's scope restrictions once; fail-closed on corrupt JSON.
@@ -315,7 +316,18 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		// Enforce repository scope only when the token has repo restrictions.
 		// A token with repos=null carries no repo restriction (applies to any repo).
 		scopeEnforceStart := time.Now()
+		if permission == "" {
+			// Deny by default: GHP cannot prove an unmapped path stays inside
+			// the token's repository allowlist or permission set.
+			metrics.PassthroughScopeDeniedTotal.WithLabelValues(vhost, "unmapped").Inc()
+			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+			writeError(rec, http.StatusForbidden,
+				fmt.Sprintf("Token is scoped; %s %s on %s is not mapped to a repository permission", r.Method, r.URL.Path, vhost))
+			return
+		}
 		if len(si.Repos) > 0 && !si.repoAllowed(repo) {
+			metrics.PassthroughScopeDeniedTotal.WithLabelValues(vhost, "repo").Inc()
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusForbidden,
@@ -326,6 +338,7 @@ func NewScopedPassthroughHandler(inner http.Handler, enforcer ScopeEnforcer, res
 		// Enforce permission scope only when the token has scope restrictions.
 		// A token with scopes=null carries no permission restriction (any endpoint allowed).
 		if len(si.Scopes) > 0 && !si.Scopes.HasPermission(permission, level) {
+			metrics.PassthroughScopeDeniedTotal.WithLabelValues(vhost, "permission").Inc()
 			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusForbidden,
