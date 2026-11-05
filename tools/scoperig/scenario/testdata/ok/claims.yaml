@@ -1,0 +1,10 @@
+- id: REPO-C05
+  doc: docs/features/token-scoping.md#repository-restrictions
+  claim: A token scoped to A cannot access B.
+  iteration: 1
+  testable: periodic
+- id: PERM-C14
+  doc: docs/features/token-scoping.md#permission-scopes
+  claim: issues:write allows creating issues.
+  iteration: 1
+  testable: periodic

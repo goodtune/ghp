@@ -1,0 +1,29 @@
+- id: REPO-C05.other-repo-pulls
+  claim: REPO-C05
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: A token scoped to A cannot list pulls on B.
+  profile: repo-A
+  kind: rest
+  known_issue: ""
+  observed: {}
+  requires: []
+  cleanup: []
+  method: GET
+  path: /repos/{{.RepoB}}/pulls
+  expect:
+    status: 403
+    body_contains: ["Token is not scoped to"]
+    ghp_denial: true
+- id: PERM-C14.issues-write-allows-create
+  claim: PERM-C14
+  profile: repo-A
+  kind: rest
+  steps:
+    - name: create
+      method: POST
+      path: /repos/{{.RepoW}}/issues
+      body: {title: "scoperig {{.RunID}} C14"}
+      expect: {status: 201}
+      capture: {number: "$.number"}
+  cleanup:
+    - {method: PATCH, path: "/repos/{{.RepoW}}/issues/{{.Step.create.number}}", body: {state: closed}}

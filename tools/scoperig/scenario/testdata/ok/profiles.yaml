@@ -1,0 +1,5 @@
+- name: repo-A
+  type: proxy
+  repositories: ["{{.RepoA}}"]
+  scopes: "contents:read,metadata:read"
+  duration: 2h
