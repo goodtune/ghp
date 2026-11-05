@@ -333,3 +333,30 @@ func TestEnsure_RefusesNonRigRepo(t *testing.T) {
 		})
 	}
 }
+
+type staticAPI struct {
+	status int
+	body   string
+}
+
+func (s staticAPI) Do(context.Context, string, string, any) (int, []byte, error) {
+	return s.status, []byte(s.body), nil
+}
+
+func TestErrorIncludesRedactedBody(t *testing.T) {
+	body := `{"message":"Bad credentials","token":"ghx_test0000abcdef"}` + strings.Repeat("x", 2000)
+	_, _, err := Discover(context.Background(), staticAPI{401, body}, "goodtune/ghp-scoperig-a")
+	if err == nil {
+		t.Fatal("want error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "status 401") || !strings.Contains(msg, "Bad credentials") {
+		t.Errorf("err = %q", msg)
+	}
+	if strings.Contains(msg, "ghx_test0000") {
+		t.Errorf("token leaked: %q", msg)
+	}
+	if len(msg) > 700 {
+		t.Errorf("body not truncated: %d bytes", len(msg))
+	}
+}

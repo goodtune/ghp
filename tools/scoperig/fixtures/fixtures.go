@@ -12,8 +12,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
+	"github.com/goodtune/ghp/tools/scoperig/redact"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
 )
 
@@ -93,14 +95,12 @@ type Plan struct {
 
 var allSeeds = []string{
 	"create label " + Label,
-	"create issue " + strconvQ(IssueTitle),
+	"create issue " + strconv.Quote(IssueTitle),
 	"create branch " + Branch,
 	"commit " + FixtureFile + " to " + Branch,
-	"open PR " + strconvQ(PRTitle),
+	"open PR " + strconv.Quote(PRTitle),
 	"create release " + ReleaseTag,
 }
-
-func strconvQ(s string) string { return fmt.Sprintf("%q", s) }
 
 func splitRepo(repo string) (owner, name string, err error) {
 	owner, name, ok := strings.Cut(repo, "/")
@@ -125,7 +125,7 @@ func getJSON(ctx context.Context, api API, path string, out any) (bool, error) {
 		return false, nil
 	}
 	if st != http.StatusOK {
-		return false, fmt.Errorf("GET %s: status %d", path, st)
+		return false, statusErr(http.MethodGet, path, st, b)
 	}
 	if out != nil {
 		if err := json.Unmarshal(b, out); err != nil {
@@ -141,7 +141,7 @@ func send(ctx context.Context, api API, method, path string, body, out any) erro
 		return err
 	}
 	if st < 200 || st > 299 {
-		return fmt.Errorf("%s %s: status %d", method, path, st)
+		return statusErr(method, path, st, b)
 	}
 	if out != nil {
 		if err := json.Unmarshal(b, out); err != nil {
@@ -245,8 +245,25 @@ func Discover(ctx context.Context, api API, repo string) (scenario.RepoRef, scen
 	return ref, v, nil
 }
 
+// maxErrBody bounds how much of a response body is quoted in an error.
+const maxErrBody = 512
+
+// statusErr builds an error for an unexpected status, quoting up to
+// maxErrBody bytes of the redacted response body to help diagnosis.
+func statusErr(method, path string, st int, body []byte) error {
+	if len(body) > maxErrBody {
+		body = body[:maxErrBody]
+	}
+	msg := strings.TrimSpace(redact.String(string(body)))
+	if msg == "" {
+		return fmt.Errorf("%s %s: status %d", method, path, st)
+	}
+	return fmt.Errorf("%s %s: status %d: %s", method, path, st, msg)
+}
+
 // checkSafe enforces the safety guard: the repo name must contain
-// "scoperig" and its owner must be the probed login.
+// "scoperig" (matched case-insensitively) and its owner must equal the
+// probed login (also case-insensitive, as GitHub logins are).
 func checkSafe(repo, login string) error {
 	owner, name, err := splitRepo(repo)
 	if err != nil {
