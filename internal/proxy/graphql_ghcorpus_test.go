@@ -97,6 +97,10 @@ func loadGHCorpus(t *testing.T) []ghCorpusLoaded {
 // now yields the desired verdict, so the corpus must drop known_issue and
 // current. "changed": a known issue yields neither. "fail": an entry without
 // a known issue does not yield its verdict.
+//
+// Repo-profile entries that are both unmapped and variable-driven are tagged
+// #298 (deny:unmapped fires first); once #298 lands they are expected to flip
+// to deny:unpinned and need re-tagging with #297.
 func classifyCorpus(got, verdict, current string, known bool) string {
 	if !known {
 		if got == verdict {
@@ -159,6 +163,9 @@ func TestGHCorpus_Structure(t *testing.T) {
 					}
 					if (x.Current == "") != (x.KnownIssue == "") {
 						t.Errorf("entry %d (%s) %s: current and known_issue must be set together", i, e.Operation, p.name)
+					}
+					if x.KnownIssue != "" && x.Current == x.Verdict {
+						t.Errorf("entry %d (%s) %s: current must differ from verdict when known_issue is set", i, e.Operation, p.name)
 					}
 					if x.Current != "" && !ghCorpusVerdicts[x.Current] {
 						t.Errorf("entry %d (%s) %s: current %q not in vocabulary", i, e.Operation, p.name, x.Current)
