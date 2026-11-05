@@ -28,7 +28,7 @@ What iteration 1 does not cover:
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `GHP_SERVER_URL` | yes | none | Instance base URL, for example `https://ghp.touchtechnology.network` |
+| `GHP_SERVER_URL` | yes | none | Instance base URL, for example `https://ghp.example.com` |
 | `GHP_USER_TOKEN` | yes | none | `ghpr_` session token for `/api/tokens` |
 | `GHP_RIG_REPO_A` | no | `fixtures.repo_a` in `rig/config.yaml` | Read fixture A |
 | `GHP_RIG_REPO_B` | no | `fixtures.repo_b` | Read fixture B (the "other" repository) |
@@ -42,7 +42,16 @@ What iteration 1 does not cover:
 
 ### `rig/config.yaml`
 
-Select another file with the global `--config FILE` flag (default `rig/config.yaml`). The file holds the instance hosts (`host`, `management_host`), token durations, the token-create rate limit (the token manager paces at 75% of it), and the default fixture repositories.
+The repository holds `rig/config.example.yaml`. `rig/config.yaml` is operator-local and git-ignored. Before the first live run, copy the example and set the fixture repositories:
+
+```bash
+cp rig/config.example.yaml rig/config.yaml
+# edit rig/config.yaml: replace OWNER in fixtures.repo_a, repo_b and repo_w
+```
+
+Select another file with the global `--config FILE` flag (default `rig/config.yaml`). If the default file does not exist, the rig loads `rig/config.example.yaml`, so `validate` works in a clean checkout. An explicit `--config` never falls back. `run` and `fixtures ensure` stop with exit 3 if a fixture repository owner is still the placeholder `OWNER` (the `GHP_RIG_REPO_A/B/W` variables also replace it).
+
+The file holds the instance hosts (`host`, `management_host`), token durations, the token-create rate limit (the token manager paces at 75% of it), and the default fixture repositories. When `host` is empty, the rig uses the host of `GHP_SERVER_URL`. When `management_host` is empty, the rig uses `host`.
 
 `instance.border_block` lists the token prefixes that the instance's border policy blocks, for example `[ghp_, gho_, github_pat_]`. The rig does not probe this value. It must match the border policy of the instance. If a prefix is missing from the list, the BORDER-C43 scenarios for that prefix are GAP.
 
@@ -94,7 +103,7 @@ Validation rejects, among other things, any non-GET request whose path does not 
 Live run:
 
 ```bash
-export GHP_SERVER_URL=https://ghp.touchtechnology.network
+export GHP_SERVER_URL=https://ghp.example.com
 export GHP_USER_TOKEN=...   # from 'ghp auth login'; never paste it into issues or logs
 make scoperig
 ./scoperig run --out /tmp/ghp-rig/reports/run.json

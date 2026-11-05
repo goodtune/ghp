@@ -81,12 +81,12 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 	}
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	root.PersistentFlags().StringVar(&f.config, "config", "rig/config.yaml", "rig config file")
+	root.PersistentFlags().StringVar(&f.config, "config", defaultConfigFile, "rig config file (falls back to "+exampleConfigFile+" when the default is missing)")
 	root.PersistentFlags().BoolVar(&f.verbose, "verbose", false, "print redacted exchanges")
 
 	// load resolves flags over env over the config file.
 	load := func() (*Config, error) {
-		c, err := LoadConfig(getenv, f.config)
+		c, err := LoadConfig(getenv, resolveConfigFile(f.config))
 		if err != nil {
 			return nil, &exitError{code: 3, err: err}
 		}
@@ -128,6 +128,9 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := load()
 			if err != nil {
+				return err
+			}
+			if err := requireOwners(c); err != nil {
 				return err
 			}
 			rep, err := runRig(cmd.Context(), c, withOut(deps))
@@ -185,6 +188,9 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 			if err != nil {
 				return err
 			}
+			if err := requireOwners(c); err != nil {
+				return err
+			}
 			return ensureFixtures(cmd.Context(), c, deps, stdout)
 		},
 	}
@@ -193,6 +199,31 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 
 	root.AddCommand(validate, run, sweep, fx, newOracleCmd(stdout, stderr, getenv))
 	return root
+}
+
+const (
+	defaultConfigFile = "rig/config.yaml"
+	exampleConfigFile = "rig/config.example.yaml"
+)
+
+// resolveConfigFile uses the committed example when the default
+// operator-local config does not exist. An explicit --config never falls back.
+func resolveConfigFile(name string) string {
+	if name != defaultConfigFile {
+		return name
+	}
+	if _, err := os.Stat(name); errors.Is(err, os.ErrNotExist) {
+		return exampleConfigFile
+	}
+	return name
+}
+
+// requireOwners maps a placeholder fixture owner to exit 3.
+func requireOwners(c *Config) error {
+	if err := c.RequireFixtureOwners(); err != nil {
+		return &exitError{code: 3, err: err}
+	}
+	return nil
 }
 
 func writeJSON(name string, rep *report.Report) error {

@@ -79,7 +79,7 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 		ConfigFile:  configFile,
 		BorderBlock: fc.Instance.BorderBlock,
 		Instance: scenario.InstanceVals{
-			Host:           fc.Instance.Host,
+			Host:           strings.TrimSpace(fc.Instance.Host),
 			ManagementHost: firstNonEmpty(fc.Instance.ManagementHost, fc.Instance.Host),
 		},
 	}
@@ -92,6 +92,13 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 		u, err := url.Parse(c.ServerURL)
 		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			return nil, fmt.Errorf("GHP_SERVER_URL must be an http(s) URL")
+		}
+		// Hosts left empty in the file are derived from GHP_SERVER_URL.
+		if c.Instance.Host == "" {
+			c.Instance.Host = u.Host
+		}
+		if c.Instance.ManagementHost == "" {
+			c.Instance.ManagementHost = c.Instance.Host
 		}
 	}
 	if s := getenv("GHP_RIG_INSTALLATION_ID"); s != "" {
@@ -126,6 +133,20 @@ func (c *Config) RequireServer() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("%s not set (same variables as the ghp CLI)", strings.Join(missing, " and "))
+	}
+	return nil
+}
+
+// placeholderOwner is the fixture owner in rig/config.example.yaml.
+const placeholderOwner = "OWNER"
+
+// RequireFixtureOwners rejects fixture repositories still owned by the
+// example config's placeholder owner.
+func (c *Config) RequireFixtureOwners() error {
+	for _, kv := range [][2]string{{"repo_a", c.RepoA}, {"repo_b", c.RepoB}, {"repo_w", c.RepoW}} {
+		if owner, _, _ := strings.Cut(kv[1], "/"); owner == placeholderOwner {
+			return fmt.Errorf("fixtures.%s owner is the placeholder %s: copy rig/config.example.yaml to rig/config.yaml and set the fixture owner (or set GHP_RIG_REPO_A/B/W)", kv[0], placeholderOwner)
+		}
 	}
 	return nil
 }

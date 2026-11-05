@@ -36,7 +36,7 @@ description: Use when running the GHP scope regression rig, reading its report, 
 
 ## Implementation
 
-1. Export `GHP_SERVER_URL` and `GHP_USER_TOKEN` (from the `ghp` CLI config). Optional: `GHP_RIG_REPO_A/B/W` override `rig/config.yaml`. Never echo them.
+1. If `rig/config.yaml` does not exist, `cp rig/config.example.yaml rig/config.yaml` and replace `OWNER` in the fixtures. Export `GHP_SERVER_URL` and `GHP_USER_TOKEN` (from the `ghp` CLI config). Optional: `GHP_RIG_REPO_A/B/W` override `rig/config.yaml`. Never echo them.
 2. Validate, ensure fixtures, run with `--out` under `/tmp/ghp-rig/reports/`. `--skip-known` skips known scenarios.
 3. Read the report: KNOWN-CHANGED rows are at the top; then per-claim results; the confidence line is `PASS/(base-KNOWN)`.
 4. FAIL: reproduce with `--only '<id>'`. Search issues. If none, write the body and run `gh issue create -R goodtune/ghp --label bug [--label security] --title "scoping: <claim id> <claim> fails" --body-file <file>`. Add `--label security` when the result lets the token do more than its scope allows. Then set `known_issue: <issue URL>` and an `observed:` block (today's behaviour, same shape as `expect:`) on the scenario; re-run `--only` and confirm KNOWN.

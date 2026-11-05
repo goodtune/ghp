@@ -1,6 +1,8 @@
+# Copy to rig/config.yaml (git-ignored) and replace OWNER with the fixture
+# repositories' owner: cp rig/config.example.yaml rig/config.yaml
 instance:
-  host: ghp.touchtechnology.network          # GHES-style /api/v3 and /api/graphql
-  management_host: ghp.touchtechnology.network  # /api/tokens, /login
+  host: ""             # derived from GHP_SERVER_URL when empty
+  management_host: ""  # derived from GHP_SERVER_URL when empty
   default_duration: 24h
   max_duration: 168h
   token_create_rate: 20/min                  # api.go:125; the manager paces at 75% of this
@@ -13,6 +15,6 @@ instance:
   # are declared and BORDER-C43 reports GAP.
   border_block: []
 fixtures:
-  repo_a: goodtune/ghp-scoperig-a
-  repo_b: goodtune/ghp-scoperig-b
-  repo_w: goodtune/ghp-scoperig-w
+  repo_a: OWNER/ghp-scoperig-a
+  repo_b: OWNER/ghp-scoperig-b
+  repo_w: OWNER/ghp-scoperig-w

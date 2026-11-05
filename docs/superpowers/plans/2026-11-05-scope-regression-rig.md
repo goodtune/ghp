@@ -1233,7 +1233,7 @@ Page sections (match the code; check every flag against `scoperig --help`):
 5. Running: `make scoperig-validate`; the live invocation:
 
 ```bash
-export GHP_SERVER_URL=https://ghp.touchtechnology.network
+export GHP_SERVER_URL=https://ghp.example.com
 export GHP_USER_TOKEN=...   # from 'ghp auth login'; never paste it into issues or logs
 make scoperig
 ./scoperig run --out /tmp/ghp-rig/reports/run.json
@@ -1259,7 +1259,7 @@ Also add one line to `docs/features/token-scoping.md` known-limitations: "The sc
 
 **Side effect warning.** This task runs `fixtures ensure --create-fixtures`. It is the one opt-in side effect: it may create three **private** repositories on the operator's GitHub account (`goodtune/ghp-scoperig-a`, `-b`, `-w`) and seed them with a label, issue, branch, PR and release. It also creates and revokes rig tokens on the live instance and writes closed issues/PRs to W. Get explicit confirmation from the human before Step 2.
 
-Requires: `GHP_SERVER_URL`, `GHP_USER_TOKEN` (admin session; obtain from the `ghp` CLI config via `ghp auth login`; never echo it), `gh` 2.102.0 on `PATH`, network access to `https://ghp.touchtechnology.network`.
+Requires: `GHP_SERVER_URL`, `GHP_USER_TOKEN` (admin session; obtain from the `ghp` CLI config via `ghp auth login`; never echo it), `gh` 2.102.0 on `PATH`, network access to `https://ghp.example.com`.
 
 **Files:**
 - Modify: `rig/scenarios/*.yaml` (add `known_issue` + `observed:` from triage)

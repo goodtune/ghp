@@ -1,6 +1,6 @@
 # Scope regression rig (`scoperig`): design
 
-Date: 2026-11-05. Status: design, iteration 1. Target: GHP v0.23.0 at `https://ghp.touchtechnology.network` (repo at 63f1a39).
+Date: 2026-11-05. Status: design, iteration 1. Target: GHP v0.23.0 at `https://ghp.example.com` (repo at 63f1a39).
 
 Inputs: `/tmp/ghp-rig/recon/consensus.md` (cited below as **CONS §A/B**), `/tmp/ghp-rig/recon/codebase-report.md` (claims **C1–C54**, section 4), `/tmp/ghp-rig/recon/env-report.md`, and the `gh` 2.102.0 captures in `/tmp/gh-queries/`.
 
@@ -99,8 +99,8 @@ Instance settings live in one file, overridable by flags (`--config`, `--instanc
 
 ```yaml
 instance:
-  host: ghp.touchtechnology.network          # GHES-style /api/v3 and /api/graphql
-  management_host: ghp.touchtechnology.network  # /api/tokens, /login
+  host: ghp.example.com          # GHES-style /api/v3 and /api/graphql
+  management_host: ghp.example.com  # /api/tokens, /login
   default_duration: 24h
   max_duration: 168h
   token_create_rate: 20/min                  # api.go:125; the manager paces at 75% of this
@@ -264,7 +264,7 @@ Determinism rules: sequential execution, sorted order, per-scenario fresh `gh` c
 Stdout:
 
 ```
-scoperig run 20261105T0412Z-7f3a  instance=ghp.touchtechnology.network (0.23.0)  scenarios=96
+scoperig run 20261105T0412Z-7f3a  instance=ghp.example.com (0.23.0)  scenarios=96
 
 CLAIM       SCENARIO                                   STATUS  DETAIL
 REPO-C05    REPO-C05.other-repo-pulls                  PASS    403 Token is not scoped to goodtune/ghp-scoperig-b
@@ -312,7 +312,7 @@ JSON (`--out report.json`): `{run_id, started_at, instance, ghp_version, gh_vers
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `GHP_SERVER_URL` | yes | none | Instance base URL, for example `https://ghp.touchtechnology.network` |
+| `GHP_SERVER_URL` | yes | none | Instance base URL, for example `https://ghp.example.com` |
 | `GHP_USER_TOKEN` | yes | none | `ghpr_` session token for `/api/tokens` |
 | `GHP_RIG_REPO_A` | no | `goodtune/ghp-scoperig-a` | Read fixture A |
 | `GHP_RIG_REPO_B` | no | `goodtune/ghp-scoperig-b` | Read fixture B (the "other" repo) |

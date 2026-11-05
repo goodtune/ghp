@@ -665,7 +665,7 @@ func TestValidate_NoEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := map[string]string{"GHP_RIG_SCENARIOS": root}
-	res := runCLI(t, env, runDeps{}, "validate", "--config", filepath.Join(root, "config.yaml"))
+	res := runCLI(t, env, runDeps{}, "validate", "--config", filepath.Join(root, "config.example.yaml"))
 	if res.code != 0 {
 		t.Fatalf("exit = %d\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
 	}
@@ -686,5 +686,49 @@ func TestValidate_ReportsErrors(t *testing.T) {
 	res := runCLI(t, map[string]string{"GHP_RIG_SCENARIOS": root}, runDeps{}, "validate", "--config", cfg)
 	if res.code != 3 || !strings.Contains(res.stdout, "1 errors") {
 		t.Fatalf("exit = %d stdout=%q, want 3 and '1 errors'", res.code, res.stdout)
+	}
+}
+
+func TestDefaultConfig_FallsBackToExample(t *testing.T) {
+	src, err := os.ReadFile("../../rig/config.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.Abs("../../rig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "rig"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rig", "config.example.yaml"), src, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	res := runCLI(t, map[string]string{"GHP_RIG_SCENARIOS": root}, runDeps{}, "validate")
+	if res.code != 0 || !strings.Contains(res.stdout, "0 errors") {
+		t.Fatalf("exit = %d\nstdout:\n%s\nstderr:\n%s", res.code, res.stdout, res.stderr)
+	}
+	// An explicit missing --config does not fall back.
+	res = runCLI(t, map[string]string{"GHP_RIG_SCENARIOS": root}, runDeps{}, "validate", "--config", "other.yaml")
+	if res.code != 3 {
+		t.Fatalf("explicit missing config: exit = %d", res.code)
+	}
+}
+
+func TestPlaceholderFixtureOwner_Exit3(t *testing.T) {
+	root, err := filepath.Abs("../../rig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"GHP_RIG_SCENARIOS": root, "GHP_SERVER_URL": "https://s.invalid", "GHP_USER_TOKEN": "ghpr_test0000"}
+	for _, args := range [][]string{{"run"}, {"fixtures", "ensure"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			res := runCLI(t, env, runDeps{}, append(args, "--config", filepath.Join(root, "config.example.yaml"))...)
+			if res.code != 3 || !strings.Contains(res.stderr, "OWNER") {
+				t.Fatalf("exit = %d stderr = %q", res.code, res.stderr)
+			}
+		})
 	}
 }
