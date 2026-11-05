@@ -54,11 +54,34 @@ func TestClassify_Known(t *testing.T) {
 	for _, tt := range []struct {
 		status int
 		want   Status
-	}{{200, StatusKnown}, {404, StatusKnownFixed}, {403, StatusKnownFixed}, {401, StatusKnownChanged}, {502, StatusKnownChanged}} {
+	}{{200, StatusKnown}, {404, StatusKnownFixed}, {403, StatusKnownFixed}, {401, StatusKnownChanged}, {502, StatusError}} {
 		t.Run(string(tt.want), func(t *testing.T) {
 			got, _ := Classify(s, &expect.Observation{Status: tt.status}, nil)
 			if got != tt.want {
 				t.Errorf("status %d: got %s, want %s", tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassify_KnownEdges(t *testing.T) {
+	tests := []struct {
+		name   string
+		s      *scenario.Scenario
+		status int
+		want   Status
+	}{
+		{"overlap prefers fixed", &scenario.Scenario{ID: "X.a", KnownIssue: "u", Observed: &scenario.Expect{StatusIn: []int{403, 404}}, Expect: &scenario.Expect{Status: 404}}, 404, StatusKnownFixed},
+		{"observed matches unnamed 5xx", &scenario.Scenario{ID: "X.a", KnownIssue: "u", Observed: &scenario.Expect{BodyNotContains: []string{"zzz"}}, Expect: &scenario.Expect{Status: 200}}, 503, StatusError},
+		{"observed names 5xx", &scenario.Scenario{ID: "X.a", KnownIssue: "u", Observed: &scenario.Expect{Status: 502}, Expect: &scenario.Expect{Status: 200}}, 502, StatusKnown},
+		{"fixed with unnamed 5xx", &scenario.Scenario{ID: "X.a", KnownIssue: "u", Observed: &scenario.Expect{Status: 200}, Expect: &scenario.Expect{BodyNotContains: []string{"zzz"}}}, 500, StatusError},
+		{"fixed names 5xx", &scenario.Scenario{ID: "X.a", KnownIssue: "u", Observed: &scenario.Expect{Status: 200}, Expect: &scenario.Expect{Status: 500}}, 500, StatusKnownFixed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, d := Classify(tt.s, &expect.Observation{Status: tt.status}, nil)
+			if got != tt.want {
+				t.Errorf("got %s (%q), want %s", got, d, tt.want)
 			}
 		})
 	}

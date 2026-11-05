@@ -274,7 +274,7 @@ GAP-A1      GAP-A1.delete-ref-contents-ro              KNOWN   https://github.co
 GQL-C33     GQL-C33.unknown-object-field               FAIL    want 403, got 200
 LIFE-C40    LIFE-C40.revoked-rejected                  ERROR   revoke call failed: 500
 
-changed (1): GAP-A7.dotdot-path  KNOWN-CHANGED  observed 200, desired 403/404, got 502
+changed (1): GAP-A7.dotdot-path  KNOWN-CHANGED  observed 200, desired 403/404, got 401
 claims: 25 PASS, 1 FAIL, 1 KNOWN, 23 GAP   manual: C45 C54   untestable: C42 C53
 confidence: 25/(50-1) = 51.0%   (PASS / (base - KNOWN))
 coverage gaps (14): C2 C3 C4 C8 C9 C17 C18 C19 C22 C23 C30 C34 C35 C36 ...

@@ -41,7 +41,11 @@ func (r *Report) WriteTable(w io.Writer) error {
 	}
 
 	tw := tabwriter.NewWriter(ew, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "CLAIM\tSCENARIO\tSTATUS\tDETAIL")
+	if len(changed) > 0 {
+		fmt.Fprintf(tw, "CLAIM\tSCENARIO\tSTATUS\tDETAIL (%d listed above)\n", len(changed))
+	} else {
+		fmt.Fprintln(tw, "CLAIM\tSCENARIO\tSTATUS\tDETAIL")
+	}
 	for _, c := range r.Claims {
 		for _, s := range c.Scenarios {
 			if s.Status == StatusKnownChanged {
@@ -55,8 +59,8 @@ func (r *Report) WriteTable(w io.Writer) error {
 	}
 
 	sm := r.Summary
-	ew.printf("\nclaims: %d PASS, %d FAIL, %d KNOWN, %d GAP (%d with ERROR)   manual: %s   untestable: %s\n",
-		sm.Pass, sm.Fail, sm.Known, sm.Gap, sm.Error, list(sm.Manual), list(sm.Untestable))
+	ew.printf("\nclaims: %d PASS, %d FAIL, %d KNOWN, %d GAP (of which %d ERROR)   manual: %s   untestable: %s\n",
+		sm.Pass, sm.Fail, sm.Error, sm.Known, sm.Gap, list(sm.Manual), list(sm.Untestable))
 	ew.printf("confidence: %s   (PASS / (base - KNOWN))\n", sm.ConfidenceText())
 	ew.printf("coverage gaps (%d): %s\n", len(sm.Gaps), list(sm.Gaps))
 	ew.printf("tokens: %d created, %d revoked, %d leftover", r.Tokens.Created, r.Tokens.Revoked, len(r.Tokens.LeftoverIDs))

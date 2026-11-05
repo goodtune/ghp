@@ -17,10 +17,10 @@ import (
 //   - Known: observed holds -> KNOWN; else expect holds -> KNOWN-FIXED;
 //     else KNOWN-CHANGED.
 //
-// A 5xx observation is ERROR unless the matching expectation names that
-// status. The one exception is KNOWN-CHANGED: a known scenario that matches
-// neither block stays KNOWN-CHANGED (spec §3.6 example, "got 502"), which
-// already exits non-zero and flags the change for review.
+// Expect is checked before observed, so KNOWN-FIXED wins when both match.
+// A 5xx observation is always ERROR (infrastructure, exit 2) unless the
+// matching expectation names that status, including when a known scenario
+// matches neither block.
 func Classify(s *scenario.Scenario, o *expect.Observation, rigErr error) (Status, string) {
 	if rigErr != nil {
 		return StatusError, oneLine(rigErr.Error())
@@ -32,17 +32,20 @@ func Classify(s *scenario.Scenario, o *expect.Observation, rigErr error) (Status
 	if s.KnownIssue != "" {
 		obsErrs := expect.Match(s.Observed, o)
 		switch {
-		case len(obsErrs) == 0:
-			if e := upstreamError(s.Observed, o, nil); e != "" {
-				return StatusError, e
-			}
-			return StatusKnown, oneLine(s.KnownIssue)
 		case len(expErrs) == 0:
 			if e := upstreamError(s.Expect, o, nil); e != "" {
 				return StatusError, e
 			}
 			return StatusKnownFixed, "remove known_issue and observed: from " + oneLine(s.ID)
+		case len(obsErrs) == 0:
+			if e := upstreamError(s.Observed, o, nil); e != "" {
+				return StatusError, e
+			}
+			return StatusKnown, oneLine(s.KnownIssue)
 		default:
+			if e := upstreamError(nil, o, expErrs); e != "" {
+				return StatusError, e
+			}
 			return StatusKnownChanged, oneLine("observed " + joinErrs(obsErrs) + "; expect " + joinErrs(expErrs))
 		}
 	}
