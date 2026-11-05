@@ -229,6 +229,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// could resolve to a different resource upstream than the one the scope
 	// checks see (for example /repos/A/x/../../B/y/contents).
 	if hasUnsafePathSegment(apiPath) {
+		h.logger.Info("proxy_unsafe_path_denied", "method", r.Method, "path", r.URL.EscapedPath(), "token_type", resolveTokenType)
 		metrics.ObserveDecision(metrics.StageScopeEnforcement, resolveTokenType, 0)
 		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
 		writeError(w, http.StatusForbidden, "Request path contains dot or empty segments")
@@ -705,10 +706,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 		apiType = "graphql"
 	}
 
-	targetURL := githubAPIBase + path
-	if r.URL.RawQuery != "" {
-		targetURL += "?" + r.URL.RawQuery
-	}
+	targetURL := upstreamURL(r, path)
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
@@ -801,10 +799,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 // round-trip plus response streaming. start is the request arrival time and
 // tokenType the decision-pipeline label ("proxy", "agent", or "").
 func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader string, start time.Time, tokenType string, overrideHeaders ...map[string]string) int {
-	targetURL := githubAPIBase + path
-	if r.URL.RawQuery != "" {
-		targetURL += "?" + r.URL.RawQuery
-	}
+	targetURL := upstreamURL(r, path)
 
 	// Use the GraphQL-flavoured error envelope (with the GraphQL docs
 	// URL) for /graphql failures so proxy-generated 5xx responses don't
@@ -1008,4 +1003,19 @@ func writeErrorWithDocs(w http.ResponseWriter, status int, message, docsURL stri
 		"message":           message,
 		"documentation_url": docsURL,
 	})
+}
+
+// upstreamURL builds the GitHub URL for path structurally. The inbound
+// escaped form is kept when it decodes to path, so encoded characters (for
+// example %2B in a ref name) reach GitHub unchanged and a decoded "?" or "#"
+// can never become a delimiter.
+func upstreamURL(r *http.Request, path string) string {
+	u := url.URL{Scheme: "https", Host: strings.TrimPrefix(githubAPIBase, "https://"), Path: path, RawQuery: r.URL.RawQuery}
+	escaped := strings.TrimPrefix(r.URL.EscapedPath(), "/api/v3")
+	if escaped != path {
+		if dec, err := url.PathUnescape(escaped); err == nil && dec == path {
+			u.RawPath = escaped
+		}
+	}
+	return u.String()
 }

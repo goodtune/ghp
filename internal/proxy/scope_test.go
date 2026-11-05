@@ -50,7 +50,7 @@ func TestEndpointScope(t *testing.T) {
 		// runners, run deletion) are scoped under actions:write.
 		{"DELETE", "/repos/org/repo/actions/artifacts/789", "actions", "write"},
 		{"DELETE", "/repos/org/repo/actions/caches/12", "actions", "write"},
-		{"POST", "/repos/org/repo/actions/runners/registration-token", "actions", "write"},
+		{"POST", "/repos/org/repo/actions/runners/registration-token", "administration", "write"},
 		{"DELETE", "/repos/org/repo/actions/runs/123", "actions", "write"},
 
 		// Deployments
@@ -62,7 +62,7 @@ func TestEndpointScope(t *testing.T) {
 		// Environments
 		{"GET", "/repos/org/repo/environments", "environments", "read"},
 		{"GET", "/repos/org/repo/environments/prod", "environments", "read"},
-		{"PUT", "/repos/org/repo/environments/prod", "environments", "write"},
+		{"PUT", "/repos/org/repo/environments/prod", "administration", "write"},
 		{"DELETE", "/repos/org/repo/environments/prod", "environments", "write"},
 		{"POST", "/repos/org/repo/environments/prod/deployment-branch-policies", "environments", "write"},
 		{"DELETE", "/repos/org/repo/environments/prod/deployment-branch-policies/1", "environments", "write"},

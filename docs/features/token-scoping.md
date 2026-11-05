@@ -60,9 +60,11 @@ because ghp cannot tie it to the allowlist. This includes
 `/repositories/{id}`, `/search/*`, `/user/repos`, `/orgs/*`, `/users/*`,
 `/gists` and package endpoints.
 
-Request paths that contain `.` or `..` segments, or empty segments (`//`),
-are rejected with `403 Forbidden` for all `ghx_` and `gha_` tokens before any
-scope check. This stops a path such as `/repos/A/x/../../B/y/contents` from
+Request paths that contain `.` or `..` segments, empty segments (`//`), or
+(after URL decoding) a `?`, `#`, `%` or control character are rejected with
+`403 Forbidden` for all `ghx_` and `gha_` tokens before any scope check.
+ghp builds the upstream URL from the escaped request path, so other encoded
+characters (for example `%2B` in a ref name) reach GitHub unchanged. This stops a path such as `/repos/A/x/../../B/y/contents` from
 passing the check as `A/x`.
 
 ## Permission Restrictions
@@ -102,6 +104,21 @@ Known limitations:
   denied for every scoped token. Search spans repositories and has no single
   permission.
 - `HEAD` is evaluated as `GET`.
+
+Rules that differ from the general area of the path:
+
+| Endpoint | Permission |
+|---|---|
+| `actions/permissions/*`, `actions/runners/*` | `administration:read` (GET) / `administration:write` |
+| `actions/variables/*` | `variables:read` (GET) / `variables:write` |
+| `PUT environments/{name}` (create or update the environment) | `administration:write` |
+| `DELETE git/refs/*`, `PATCH`/`DELETE releases/*`, `POST merges`, `POST dispatches` | `contents:write` |
+| `readme`, `tags`, `git/ref/*`, `git/matching-refs/*` | `contents:read` |
+| `keys`, `rulesets` | `administration:read` / `administration:write` |
+| `POST forks` | `administration:write` |
+| repository `labels`, `milestones`, `issues/comments/*` | `issues:read` / `issues:write` |
+| `pulls/comments/*`, `PUT pulls/{n}/update-branch` | `pull_requests:read` / `pull_requests:write` |
+| `PATCH check-runs/{id}`, `check-suites` writes | `checks:write` |
 
 ## Open-Scoped Tokens
 

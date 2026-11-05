@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	dto "github.com/prometheus/client_model/go"
+
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/metrics"
 )
 
 // Live-run repro GAP-A1 (#290): DELETE git/refs with contents:read must be
@@ -226,6 +229,11 @@ func TestHasDotSegment(t *testing.T) {
 		{"/repos/o/r/..", true},
 		{"/repos//r", true},
 		{"/repos/o/r/contents/", false},
+		{"/repos/o/r?/issues", true},
+		{"/repos/o/r#/issues", true},
+		{"/repos/o/r%41", true},
+		{"/repos/o/r\x00", true},
+		{"/repos/o/r\x7f", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -292,5 +300,146 @@ func TestRESTGHCorpus(t *testing.T) {
 	}
 	if seen == 0 {
 		t.Fatal("corpus has no rest entries")
+	}
+}
+
+// Encoded "?" or "#" in the path must never be forwarded: once decoded and
+// re-parsed it would become a delimiter and change the target endpoint.
+func TestServeHTTP_EncodedDelimitersRejected(t *testing.T) {
+	type mk func(t *testing.T) (*Handler, string, *captureTransport)
+	handlers := map[string]mk{
+		"perm-only": func(t *testing.T) (*Handler, string, *captureTransport) {
+			h, tok := newScopeOnlyHandler(t, map[string]string{"issues": "write"})
+			ct := &captureTransport{}
+			h.client.Transport = ct
+			return h, tok, ct
+		},
+		"repo-restricted": func(t *testing.T) (*Handler, string, *captureTransport) {
+			return newScopedHandlerWithTransport(t, "owner/x?", nil)
+		},
+	}
+	for name, newH := range handlers {
+		for _, enc := range []string{"%3F", "%23", "%3f"} {
+			t.Run(name+"/"+enc, func(t *testing.T) {
+				h, tok, ct := newH(t)
+				req := httptest.NewRequest("PATCH", "http://api.github.com/repos/owner/x"+enc+"/issues/1", strings.NewReader(`{}`))
+				req.Header.Set("Authorization", "Bearer "+tok)
+				rr := httptest.NewRecorder()
+				h.ServeHTTP(rr, req)
+				if rr.Code != http.StatusForbidden {
+					t.Fatalf("expected 403, got %d; body: %s", rr.Code, rr.Body.String())
+				}
+				if ct.lastReq != nil {
+					t.Errorf("request was forwarded upstream as %s", ct.lastReq.URL)
+				}
+			})
+		}
+	}
+}
+
+func TestServeHTTP_EncodedCharForwardedEscaped(t *testing.T) {
+	h, tok, ct := newScopedHandlerWithTransport(t, "owner/w", map[string]string{"contents": "read"})
+	req := httptest.NewRequest("GET", "http://api.github.com/repos/owner/w/git/refs/heads/a%2Bb?per_page=1", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+	if ct.lastReq == nil {
+		t.Fatal("request was not forwarded")
+	}
+	if got := ct.lastReq.URL.EscapedPath(); got != "/repos/owner/w/git/refs/heads/a%2Bb" {
+		t.Errorf("upstream escaped path = %q", got)
+	}
+	if ct.lastReq.URL.RawQuery != "per_page=1" {
+		t.Errorf("upstream query = %q", ct.lastReq.URL.RawQuery)
+	}
+}
+
+func TestUpstreamURL(t *testing.T) {
+	tests := []struct{ target, path, want string }{
+		{"/repos/o/r/pulls?state=open", "/repos/o/r/pulls", "https://api.github.com/repos/o/r/pulls?state=open"},
+		{"/api/v3/repos/o/r/git/refs/heads/a%2Bb", "/repos/o/r/git/refs/heads/a+b", "https://api.github.com/repos/o/r/git/refs/heads/a%2Bb"},
+		{"/repos/o/r%3F/issues", "/repos/o/r?/issues", "https://api.github.com/repos/o/r%3F/issues"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.target, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "http://api.github.com"+tt.target, nil)
+			if got := upstreamURL(r, tt.path); got != tt.want {
+				t.Errorf("upstreamURL = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServeHTTP_UnmappedDeniedMetric(t *testing.T) {
+	read := func(method string) float64 {
+		m := &dto.Metric{}
+		if err := metrics.ScopeUnmappedDeniedTotal.WithLabelValues("proxy", method).Write(m); err != nil {
+			t.Fatal(err)
+		}
+		return m.GetCounter().GetValue()
+	}
+	t.Run("unmapped increments", func(t *testing.T) {
+		h, tok := newScopeOnlyHandler(t, map[string]string{"contents": "write"})
+		before := read("PUT")
+		req := httptest.NewRequest("PUT", "http://api.github.com/repos/o/r/subscription", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", rr.Code)
+		}
+		if read("PUT")-before != 1 {
+			t.Errorf("counter did not increment by 1")
+		}
+	})
+	t.Run("repo allowlist denial does not increment", func(t *testing.T) {
+		h, tok := newRepoOnlyHandler(t, "owner/a")
+		before := read("GET")
+		req := httptest.NewRequest("GET", "http://api.github.com/repos/owner/b/traffic/views", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", rr.Code)
+		}
+		if read("GET") != before {
+			t.Errorf("counter incremented on a repo allowlist denial")
+		}
+	})
+}
+
+func TestDecideREST_ActionsAdminRules(t *testing.T) {
+	actionsRW := tokenScopeInfo{Scopes: database.Scopes{"actions": "write"}}
+	adminRW := tokenScopeInfo{Scopes: database.Scopes{"administration": "write"}}
+	envRW := tokenScopeInfo{Scopes: database.Scopes{"environments": "write"}}
+	varsRW := tokenScopeInfo{Scopes: database.Scopes{"variables": "write"}}
+	tests := []struct {
+		name    string
+		si      tokenScopeInfo
+		method  string
+		path    string
+		allowed bool
+	}{
+		{"permissions put actions", actionsRW, "PUT", "/repos/o/r/actions/permissions", false},
+		{"permissions put admin", adminRW, "PUT", "/repos/o/r/actions/permissions/workflow", true},
+		{"runners register actions", actionsRW, "POST", "/repos/o/r/actions/runners/registration-token", false},
+		{"runners delete admin", adminRW, "DELETE", "/repos/o/r/actions/runners/1", true},
+		{"runners read admin", adminRW, "GET", "/repos/o/r/actions/runners", true},
+		{"variables actions", actionsRW, "POST", "/repos/o/r/actions/variables", false},
+		{"variables vars", varsRW, "PATCH", "/repos/o/r/actions/variables/X", true},
+		{"env create environments", envRW, "PUT", "/repos/o/r/environments/prod", false},
+		{"env create admin", adminRW, "PUT", "/repos/o/r/environments/prod", true},
+		{"env subpath environments", envRW, "PUT", "/repos/o/r/environments/prod/deployment-branch-policies/1", true},
+		{"runs still actions", actionsRW, "POST", "/repos/o/r/actions/runs/1/rerun", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if d := decideREST(tt.si, tt.method, tt.path); d.allowed != tt.allowed {
+				t.Errorf("allowed = %v, want %v (%s)", d.allowed, tt.allowed, d.message)
+			}
+		})
 	}
 }

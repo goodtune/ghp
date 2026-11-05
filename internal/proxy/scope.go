@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/goodtune/ghp/internal/metrics"
 )
 
 // endpointRule maps a URL pattern + method to a permission category and level.
@@ -123,6 +125,13 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/actions/workflows/[^/]+/(enable|disable)$`, "", "workflows", "write"},
 		{`^/repos/[^/]+/[^/]+/actions/workflows/[^/]+/dispatches$`, "POST", "workflows", "write"},
 
+		// Actions settings, self-hosted runners and variables — before the
+		// actions catch-all. These change repository administration.
+		{`^/repos/[^/]+/[^/]+/actions/(permissions|runners)(/.*)?$`, "GET", "administration", "read"},
+		{`^/repos/[^/]+/[^/]+/actions/(permissions|runners)(/.*)?$`, "", "administration", "write"},
+		{`^/repos/[^/]+/[^/]+/actions/variables(/.*)?$`, "GET", "variables", "read"},
+		{`^/repos/[^/]+/[^/]+/actions/variables(/.*)?$`, "", "variables", "write"},
+
 		// Actions (workflow runs, artifacts, caches, runners — after specific paths above).
 		// The catch-alls cover all remaining methods so non-GET endpoints
 		// (artifact deletes, cache deletes, runner registration, run deletion,
@@ -142,6 +151,8 @@ func init() {
 		// Environments. Write rules cover subpaths like
 		// /environments/{name}/deployment-branch-policies and /reviewers.
 		{`^/repos/[^/]+/[^/]+/environments(/.*)?$`, "GET", "environments", "read"},
+		// Creating or updating an environment itself is administration.
+		{`^/repos/[^/]+/[^/]+/environments/[^/]+$`, "PUT", "administration", "write"},
 		{`^/repos/[^/]+/[^/]+/environments/[^/]+(/.*)?$`, "PUT", "environments", "write"},
 		{`^/repos/[^/]+/[^/]+/environments/[^/]+(/.*)?$`, "POST", "environments", "write"},
 		{`^/repos/[^/]+/[^/]+/environments/[^/]+(/.*)?$`, "PATCH", "environments", "write"},
@@ -386,7 +397,7 @@ func decideREST(si tokenScopeInfo, method, path string) restDecision {
 	if len(si.Repos) > 0 {
 		if repo == "" {
 			return restDecision{message: fmt.Sprintf(
-				"Token is restricted to specific repositories; %s %s does not target a repository", method, path)}
+				"Token is restricted to specific repositories; %s %s does not target a repository", metrics.NormalizeMethod(method), path)}
 		}
 		if !si.repoAllowed(repo) {
 			return restDecision{repo: repo, message: fmt.Sprintf("Token is not scoped to %s", repo)}
@@ -396,7 +407,7 @@ func decideREST(si tokenScopeInfo, method, path string) restDecision {
 	permission, level := EndpointScope(method, path)
 	if permission == "" {
 		return restDecision{repo: repo, unmapped: true, message: fmt.Sprintf(
-			"Endpoint %s %s is not permitted for scoped tokens (no scope rule matches)", method, path)}
+			"Endpoint %s %s is not permitted for scoped tokens (no scope rule matches)", metrics.NormalizeMethod(method), path)}
 	}
 	if permission != "metadata" && len(si.Scopes) > 0 && !si.Scopes.HasPermission(permission, level) {
 		return restDecision{repo: repo, message: fmt.Sprintf(
@@ -406,10 +417,16 @@ func decideREST(si tokenScopeInfo, method, path string) restDecision {
 }
 
 // hasUnsafePathSegment reports whether path contains a "." or ".." segment
-// or an empty segment ("//"). Such paths could address a different resource
+// or an empty segment ("//"), or a decoded "?", "#", "%" or control byte. Such paths could address a different resource
 // after normalisation than the one the scope checks saw, so they are
 // rejected before any scope evaluation. A single trailing slash is allowed.
 func hasUnsafePathSegment(path string) bool {
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		if c == '?' || c == '#' || c == '%' || c < 0x20 || c == 0x7f {
+			return true
+		}
+	}
 	segs := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	for i, seg := range segs {
 		switch seg {
