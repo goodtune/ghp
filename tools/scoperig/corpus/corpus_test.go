@@ -118,7 +118,7 @@ func TestBuild_ReplacesNodeIDs(t *testing.T) {
 	legacy := base64.StdEncoding.EncodeToString([]byte("011:PullRequest12345678"))
 	ex := []ghdebug.Exchange{{Method: "POST", Path: "/graphql", GraphQL: &ghdebug.GraphQLRequest{
 		Query: "query Q { a }", OperationName: "Q",
-		Variables: map[string]any{"id": "PR_kwDOAbCdEf4", "nested": map[string]any{"ids": []any{legacy, "plain"}}},
+		Variables: map[string]any{"id": "PR_kwDOAbCdEf4", "repoId": "R_kgDOAbCdEf", "nested": map[string]any{"ids": []any{legacy, "plain"}}},
 	}}}
 	f, err := Build("2.102.0", "x", "cli", "cli", ex, nil)
 	if err != nil {
@@ -127,6 +127,9 @@ func TestBuild_ReplacesNodeIDs(t *testing.T) {
 	v := f.GraphQL[0].Body.Variables
 	if v["id"] != "NODE_ID" {
 		t.Errorf("id = %v", v["id"])
+	}
+	if v["repoId"] != "NODE_ID" {
+		t.Errorf("repoId = %v", v["repoId"])
 	}
 	ids := v["nested"].(map[string]any)["ids"].([]any)
 	if ids[0] != "NODE_ID" || ids[1] != "plain" {
@@ -166,5 +169,11 @@ func TestExpectFor_FillsMissingProfiles(t *testing.T) {
 	e := expectFor("Q", prev)
 	if len(e) != 3 || e["open"].Verdict != "allow" || e["perm-ro"].Verdict != "deny" {
 		t.Errorf("got %+v", e)
+	}
+}
+
+func TestContainsNodeID_KG(t *testing.T) {
+	if !containsNodeID([]byte(`{"q":"node(id: \"R_kgDOAbCdEf\")"}`)) {
+		t.Fatal("R_kg node ID not detected")
 	}
 }

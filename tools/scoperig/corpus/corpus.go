@@ -200,11 +200,11 @@ func Marshal(f File) ([]byte, error) {
 const NodeIDPlaceholder = "NODE_ID"
 
 var (
-	nextNodeID   = regexp.MustCompile(`^[A-Z][A-Za-z]*_kw[A-Za-z0-9_-]+$`)
+	nextNodeID   = regexp.MustCompile(`^[A-Z][A-Za-z]*_k[a-z][A-Za-z0-9_-]+$`)
 	legacyNodeID = regexp.MustCompile(`^[A-Za-z0-9+/]{16,}={0,2}$`)
 	legacyPrefix = regexp.MustCompile(`^[0-9]+:`)
 	// nodeIDInText finds next-format node IDs anywhere in marshalled text.
-	nodeIDInText = regexp.MustCompile(`\b[A-Z][A-Za-z]*_kw[A-Za-z0-9_-]+`)
+	nodeIDInText = regexp.MustCompile(`\b[A-Z][A-Za-z]*_k[a-z][A-Za-z0-9_-]+`)
 	// legacyInText finds base64 runs in marshalled text for decoding checks.
 	legacyInText = regexp.MustCompile(`[A-Za-z0-9+/]{16,}={0,2}`)
 )
