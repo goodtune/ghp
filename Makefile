@@ -1,4 +1,4 @@
-.PHONY: build test vet lint check clean run migrate man
+.PHONY: build test vet lint check clean run migrate man scoperig scoperig-validate
 
 # Build configuration
 BINARY  := ghp
@@ -39,3 +39,11 @@ migrate: build
 ## man: generate man pages
 man: build
 	./$(BINARY) doc --output doc/man1
+
+## scoperig: build the scope regression rig (operator tool, not shipped)
+scoperig:
+	CGO_ENABLED=0 go build -o scoperig ./tools/scoperig
+
+## scoperig-validate: offline validation of rig/ scenarios
+scoperig-validate:
+	env -u GHP_SERVER_URL -u GHP_USER_TOKEN go run ./tools/scoperig validate

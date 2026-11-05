@@ -22,6 +22,9 @@ jobs:
       - name: Run tests
         run: go test ./...
 
+      - name: Validate scope regression rig scenarios
+        run: make scoperig-validate
+
       - name: Build binary
         run: CGO_ENABLED=0 go build -o ghp ./cmd/ghp
 

@@ -64,3 +64,8 @@ test-results/
 # .idea/
 # .vscode/
 .envrc
+
+# Scope regression rig: reports and built binary
+rig/reports/
+/scoperig
+/tools/scoperig/scoperig
