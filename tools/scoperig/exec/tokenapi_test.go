@@ -111,3 +111,12 @@ func TestTokenAPI_Poll(t *testing.T) {
 		})
 	}
 }
+
+func TestTokenAPI_PollNeedsExpect(t *testing.T) {
+	env, _, tok := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	s := &scenario.Scenario{ID: "x", Kind: "token_api", Poll: &scenario.Poll{Interval: "1ms", Timeout: "5ms"},
+		Request: &scenario.Request{Name: "probe", Path: "/api/v3/user"}}
+	if _, err := (tokenAPIExecutor{}).Run(context.Background(), s, tok, env); err == nil {
+		t.Fatal("want error for poll without expect")
+	}
+}

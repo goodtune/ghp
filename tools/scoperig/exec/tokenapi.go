@@ -65,6 +65,9 @@ func (tokenAPIExecutor) Run(ctx context.Context, s *scenario.Scenario, tok token
 // poll repeats do every interval until want matches or timeout passes, and
 // returns the last observation.
 func poll(ctx context.Context, p *scenario.Poll, want *scenario.Expect, do func() (*expect.Observation, error)) (*expect.Observation, error) {
+	if want == nil {
+		return nil, fmt.Errorf("poll needs an expect on the polled request or the scenario")
+	}
 	interval, err := time.ParseDuration(p.Interval)
 	if err != nil {
 		return nil, fmt.Errorf("poll interval: %w", err)
