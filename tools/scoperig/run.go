@@ -177,9 +177,37 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 		if rerr != nil {
 			_, _ = fmt.Fprintf(out, "revoke: %s\n", redact.String(rerr.Error()))
 		}
-		if still, verr := mgr.VerifyNoneLeft(rctx); verr != nil {
-			_, _ = fmt.Fprintf(out, "verify revocation: %s\n", redact.String(verr.Error()))
-			if len(leftover) == 0 && mgr.Created() > 0 {
+		// Backstop: revoke anything the server holds under this run's exact
+		// session id that the manager never recorded (a create whose
+		// response was lost). Tracked tokens revoked above are skipped.
+		tracked := map[string]bool{}
+		for _, id := range leftover {
+			tracked[id] = true
+		}
+		untracked := 0
+		sessionUnverified := false
+		swept, sweepFailed, sserr := mgr.SweepSession(rctx)
+		if sserr != nil {
+			_, _ = fmt.Fprintf(out, "end-of-run session sweep: %s\n", redact.String(sserr.Error()))
+			sessionUnverified = true
+		}
+		for _, id := range append(append([]string{}, swept...), sweepFailed...) {
+			if !tracked[id] {
+				untracked++
+			}
+		}
+		if len(swept) > 0 {
+			_, _ = fmt.Fprintf(out, "end-of-run session sweep: revoked %d token(s): %s\n", len(swept), strings.Join(swept, " "))
+			leftover = without(leftover, swept)
+		}
+		leftover = unionSorted(leftover, sweepFailed)
+		if still, verr := mgr.VerifyNoneLeft(rctx); verr != nil || sessionUnverified {
+			if verr != nil {
+				_, _ = fmt.Fprintf(out, "verify revocation: %s\n", redact.String(verr.Error()))
+			} else {
+				leftover = unionSorted(leftover, still)
+			}
+			if len(leftover) == 0 && (sessionUnverified || mgr.Created() > 0) {
 				// Fail closed: unverified is not revoked.
 				leftover = append(leftover, "unverified")
 			}
@@ -195,8 +223,9 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 			}
 		}
 		if rep != nil {
-			rep.Tokens.Created = mgr.Created()
-			rep.Tokens.Revoked = max(mgr.Created()-len(leftover), 0)
+			created := mgr.Created() + untracked
+			rep.Tokens.Created = created
+			rep.Tokens.Revoked = max(created-len(leftover), 0)
 			rep.Tokens.LeftoverIDs = append([]string{}, leftover...)
 			rep.Claims = report.RollUp(tree, results)
 			rep.Summary = report.Summarise(tree, rep.Claims)
@@ -428,6 +457,21 @@ func profilesUsed(ss []*scenario.Scenario) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// without returns a minus every element of b.
+func without(a, b []string) []string {
+	drop := map[string]bool{}
+	for _, x := range b {
+		drop[x] = true
+	}
+	out := make([]string, 0, len(a))
+	for _, x := range a {
+		if !drop[x] {
+			out = append(out, x)
+		}
+	}
 	return out
 }
 

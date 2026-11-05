@@ -38,6 +38,7 @@ type fakeGHP struct {
 	apiWrites  int // non-GET requests to /api/v3
 	creates    int
 	failRevoke bool
+	dropCreate int  // commit the next N created tokens, then drop the connection
 	failList   bool // fail GET /api/tokens after the preflight call
 	listCalls  int
 	pushW      bool
@@ -142,6 +143,14 @@ func (f *fakeGHP) serveTokens(w http.ResponseWriter, r *http.Request) {
 		t.SessionID, _ = body["session_id"].(string)
 		f.tokens[t.ID] = t
 		f.order = append(f.order, t.ID)
+		if f.dropCreate > 0 {
+			// The token is committed but the client never sees the id.
+			f.dropCreate--
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				_ = conn.Close()
+			}
+			return
+		}
 		writeJSONResp(w, 201, map[string]any{"id": t.ID, "token": t.Value})
 	case r.Method == http.MethodDelete:
 		t, ok := f.tokens[id]
@@ -872,6 +881,59 @@ func TestRun_UnsafeRepoWExits3(t *testing.T) {
 			}
 			if left := f.liveRunTokens(); len(left) != 0 {
 				t.Errorf("tokens left live: %v", left)
+			}
+		})
+	}
+}
+
+// A create whose response is lost leaves a live token the manager never
+// recorded; the end-of-run session sweep must revoke it and count it.
+func TestRun_EndSweepRevokesUntrackedToken(t *testing.T) {
+	for _, failRevoke := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failRevoke=%v", failRevoke), func(t *testing.T) {
+			f := newFakeGHP(t)
+			f.dropCreate = 1
+			f.failRevoke = failRevoke
+			root, cfg := writeTree(t, f.host(), `
+- id: REPO-C06.own-repo
+  claim: REPO-C06
+  profile: repo-A
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}/commits
+  expect: {status: 200}
+`)
+			out := filepath.Join(t.TempDir(), "report.json")
+			res := runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--out", out)
+			raw, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatalf("%v\nstdout:\n%s\nstderr:\n%s", err, res.stdout, res.stderr)
+			}
+			var doc struct {
+				Tokens struct {
+					Created  int      `json:"created"`
+					Revoked  int      `json:"revoked"`
+					Leftover []string `json:"leftover_ids"`
+				} `json:"tokens"`
+			}
+			_ = json.Unmarshal(raw, &doc)
+			if !failRevoke {
+				if left := f.liveRunTokens(); len(left) != 0 {
+					t.Fatalf("tokens left live: %v\nstdout:\n%s", left, res.stdout)
+				}
+				if doc.Tokens.Created != 1 || doc.Tokens.Revoked != 1 || len(doc.Tokens.Leftover) != 0 {
+					t.Errorf("tokens = %+v, want 1 created, 1 revoked", doc.Tokens)
+				}
+				if !strings.Contains(res.stdout+res.stderr, "tok-1") {
+					t.Errorf("untracked id not reported:\n%s", res.stdout)
+				}
+				return
+			}
+			if res.code != 2 {
+				t.Errorf("exit = %d, want 2", res.code)
+			}
+			if len(doc.Tokens.Leftover) != 1 || doc.Tokens.Leftover[0] != "tok-1" {
+				t.Errorf("leftover = %v, want [tok-1]", doc.Tokens.Leftover)
 			}
 		})
 	}

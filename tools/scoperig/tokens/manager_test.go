@@ -426,3 +426,20 @@ func TestManager_RevokeAllSurvivesCancelMidLoop(t *testing.T) {
 		t.Fatalf("deletes = %v", f.deletes)
 	}
 }
+
+func TestManager_SweepSessionMatchesExactSessionOnly(t *testing.T) {
+	f := newFake()
+	m, _ := setup(t, f, 0)
+	f.toks = []*fakeTok{
+		{ID: "mine", SessionID: m.SessionID()},
+		{ID: "other-run", SessionID: m.SessionID() + "x"},
+		{ID: "old", SessionID: "scoperig-old"},
+	}
+	got, failed, err := m.SweepSession(context.Background())
+	if err != nil || len(failed) != 0 || len(got) != 1 || got[0] != "mine" {
+		t.Fatalf("revoked=%v failed=%v err=%v", got, failed, err)
+	}
+	if f.deletes["other-run"] != 0 || f.deletes["old"] != 0 {
+		t.Fatalf("deletes=%v", f.deletes)
+	}
+}

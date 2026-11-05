@@ -378,23 +378,47 @@ func (m *Manager) listPath(ctx context.Context, path string) ([]listedToken, int
 // revoked. It does not distinguish runs, so it also revokes the tokens of a
 // rig run in progress: concurrent runs against one instance are unsupported.
 func (m *Manager) Sweep(ctx context.Context) ([]string, error) {
+	revoked, _, err := m.sweep(ctx, func(sid string) bool { return strings.HasPrefix(sid, SessionPrefix) })
+	return revoked, err
+}
+
+// SweepSession revokes every unrevoked token whose session_id is exactly
+// this run's SessionID. It finds tokens the manager never recorded (the
+// server created the token but the create response was lost), so it is the
+// end-of-run backstop after RevokeAll. It relies on the token list showing
+// session_id, which GHP's does. It returns the ids it revoked and the ids
+// it could not revoke; err is non-nil only when the list itself failed, in
+// which case nothing is known (the caller must treat it as unverified).
+func (m *Manager) SweepSession(ctx context.Context) (revoked, failed []string, err error) {
+	sid := m.SessionID()
+	revoked, failed, err = m.sweep(ctx, func(s string) bool { return s == sid })
+	if len(failed) > 0 {
+		err = nil // per-token failures are reported through failed
+	}
+	return revoked, failed, err
+}
+
+// sweep lists all tokens and revokes each unrevoked one whose session_id
+// matches. It returns the revoked ids, the ids whose revoke failed, and the
+// list error or the joined revoke errors.
+func (m *Manager) sweep(ctx context.Context, match func(sessionID string) bool) (revoked, failed []string, err error) {
 	toks, err := m.list(ctx, true)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var revoked []string
 	var errs []error
 	for _, t := range toks {
-		if t.RevokedAt != nil || !strings.HasPrefix(t.SessionID, SessionPrefix) {
+		if t.RevokedAt != nil || !match(t.SessionID) {
 			continue
 		}
 		if err := m.Revoke(ctx, t.ID); err != nil {
 			errs = append(errs, err)
+			failed = append(failed, t.ID)
 			continue
 		}
 		revoked = append(revoked, t.ID)
 	}
-	return revoked, errors.Join(errs...)
+	return revoked, failed, errors.Join(errs...)
 }
 
 // VerifyNoneLeft lists tokens and returns ids created by this manager that
