@@ -10,7 +10,8 @@ import (
 // RepoRef identifies a GitHub repository.
 type RepoRef struct {
 	Owner, Name string
-	ID          int64
+	ID          int64  // GitHub database ID
+	NodeID      string // GraphQL global node ID, e.g. for repositoryId
 }
 
 // String returns "owner/name".

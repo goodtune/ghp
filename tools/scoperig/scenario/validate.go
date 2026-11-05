@@ -2,6 +2,8 @@ package scenario
 
 import (
 	"fmt"
+	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -12,8 +14,6 @@ var (
 	validKinds        = map[string]bool{"rest": true, "graphql": true, "gh": true, "token_api": true}
 	validCapabilities = map[string]bool{"repo_w_push": true, "repo_create": true, "github_vhost": true, "agent_installation": true}
 	knownIssueRE      = regexp.MustCompile(`^https://github\.com/goodtune/ghp/issues/\d+$`)
-	mutationRE        = regexp.MustCompile(`\bmutation\b`)
-	gqlRepoLiteralRE  = regexp.MustCompile(`owner\s*:\s*"([^"]*)"\s*,?\s*name\s*:\s*"([^"]*)"`)
 )
 
 // gapA1ProbeID is the one scenario allowed to send a forwarded write with a
@@ -23,15 +23,18 @@ const gapA1ProbeID = "GAP-A1.delete-ref-contents-ro"
 // maxProfileDuration bounds every profile so leaked tokens expire quickly.
 const maxProfileDuration = 2 * time.Hour
 
-// PlaceholderVars returns Vars with fixed fake values for static validation.
+// PlaceholderVars returns Vars filled with fixed fake values. Validate uses
+// it when called with nil Vars, so static validation never needs live
+// fixtures. The IDs and node IDs are deliberately distinctive so that a
+// literal copy of A's or B's identifier in a query is detectable.
 func PlaceholderVars() *Vars {
 	f := FixtureVals{IssueNumber: 1, PRNumber: 2, ReleaseID: 3, Branch: "branch", Label: "label",
 		PRTitle: "pr", IssueTitle: "issue", ReleaseTag: "v0"}
 	return &Vars{
 		RunID: "run", Host: "ghp.example", Login: "login",
-		RepoA:   RepoRef{Owner: "a-owner", Name: "a-repo", ID: 1},
-		RepoB:   RepoRef{Owner: "b-owner", Name: "b-repo", ID: 2},
-		RepoW:   RepoRef{Owner: "w-owner", Name: "w-repo", ID: 3},
+		RepoA:   RepoRef{Owner: "a-owner", Name: "a-repo", ID: 900000101, NodeID: "R_placeholderA"},
+		RepoB:   RepoRef{Owner: "b-owner", Name: "b-repo", ID: 900000202, NodeID: "R_placeholderB"},
+		RepoW:   RepoRef{Owner: "w-owner", Name: "w-repo", ID: 900000303, NodeID: "R_placeholderW"},
 		Fixture: map[string]FixtureVals{"A": f, "B": f, "W": f},
 		Instance: InstanceVals{Host: "ghp.example", ManagementHost: "mgmt.ghp.example",
 			DefaultDuration: time.Hour, MaxDuration: 168 * time.Hour},
@@ -163,7 +166,6 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	}
 
 	// Rules 5 and 6: write targets and template expansion.
-	wPrefix := "/repos/" + v.RepoW.String() + "/"
 	exp := func(where, in string) (string, bool) {
 		out, err := Expand(in, v)
 		if err != nil {
@@ -177,24 +179,55 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		if _, err := ExpandAny(r.Headers, v); err != nil {
 			add("%s headers: %v", where, err)
 		}
-		if _, err := ExpandAny(r.Body, v); err != nil {
+		body, err := ExpandAny(r.Body, v)
+		if err != nil {
 			add("%s body: %v", where, err)
 		}
 		checkExpect(where+" expect", r.Expect, v, add)
 		if !ok {
 			return
 		}
-		method := strings.ToUpper(r.Method)
+		method := strings.ToUpper(strings.TrimSpace(r.Method))
+		if method == "" {
+			if r.Body != nil {
+				add("%s: method is required when a body is set", where)
+				return
+			}
+			method = "GET" // explicit default for body-less requests
+		}
+		clean, perr := normalisePath(path)
+		if perr != nil {
+			add("%s: %v", where, perr)
+			return
+		}
 		if s.Kind == "token_api" {
-			if !strings.HasPrefix(path, "/api/tokens") {
-				add("%s: token_api path %q must start with /api/tokens", where, path)
+			// token_api scenarios (steps, request and cleanup alike) only
+			// talk to the management API; they must never reach /repos/.
+			if clean != "/api/tokens" && !strings.HasPrefix(clean, "/api/tokens/") {
+				add("%s: token_api path %q must be /api/tokens or start with /api/tokens/ or /api/tokens?", where, path)
+			}
+			return
+		}
+		if s.Kind == "graphql" && clean == "/graphql" {
+			// GraphQL steps are checked by the mutation rule, not the REST
+			// write rule.
+			if m, ok := body.(map[string]any); ok {
+				q, _ := m["query"].(string)
+				vars, _ := m["variables"].(map[string]any)
+				var rawVars map[string]any
+				if rm, ok := r.Body.(map[string]any); ok {
+					rawVars, _ = rm["variables"].(map[string]any)
+				}
+				checkGraphQL(where, s.ID, q, vars, rawVars, prof, v, add)
+			} else if method != "GET" && method != "HEAD" {
+				add("%s: graphql step body must be a map with a query", where)
 			}
 			return
 		}
 		if method == "GET" || method == "HEAD" {
 			return
 		}
-		if !strings.HasPrefix(path, wPrefix) {
+		if !strings.HasPrefix(clean, "/repos/"+v.RepoW.String()+"/") {
 			add("%s: %s %q must target /repos/{{.RepoW}}/ (write target rule)", where, method, path)
 		}
 	}
@@ -215,33 +248,59 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		checkExpect("expect", s.Expect, v, add)
 	}
 	checkExpect("observed", s.Observed, v, add)
-	if _, err := ExpandAny(s.Args, v); err != nil {
-		add("args: %v", err)
+
+	args := make([]string, 0, len(s.Args))
+	argsOK := true
+	for i, a := range s.Args {
+		e, ok := exp(fmt.Sprintf("args[%d]", i), a)
+		argsOK = argsOK && ok
+		args = append(args, e)
 	}
-	if _, err := ExpandAny(map[string]any(s.Variables), v); err != nil {
-		add("variables: %v", err)
+	if s.Kind == "gh" && argsOK {
+		checkGH(args, s.Repo, v, add)
 	}
 
-	if q, ok := exp("query", s.Query); ok && s.Kind == "graphql" && mutationRE.MatchString(q) {
-		if prof != nil {
-			reps := prof.Repositories
-			okRepos := len(reps) == 0
-			if len(reps) == 1 {
-				if r, err := Expand(reps[0], v); err == nil && r == v.RepoW.String() {
-					okRepos = true
-				}
-			}
-			if !okRepos {
-				add("graphql mutation needs a profile with no repositories or exactly [{{.RepoW}}]; profile %q has %v", prof.Name, reps)
-			}
-		}
-		for _, m := range gqlRepoLiteralRE.FindAllStringSubmatch(q, -1) {
-			if m[1]+"/"+m[2] != v.RepoW.String() {
-				add("graphql mutation references %s/%s; only {{.RepoW}} is allowed", m[1], m[2])
-			}
-		}
+	vars, err := ExpandAny(map[string]any(s.Variables), v)
+	if err != nil {
+		add("variables: %v", err)
+	}
+	if q, ok := exp("query", s.Query); ok && s.Kind == "graphql" && s.Query != "" && err == nil {
+		vm, _ := vars.(map[string]any)
+		checkGraphQL("query", s.ID, q, vm, s.Variables, prof, v, add)
 	}
 	return msgs
+}
+
+// normalisePath unescapes and cleans the path part of p and rejects any
+// traversal attempt so that the prefix check cannot be bypassed.
+func normalisePath(p string) (string, error) {
+	raw := p
+	if i := strings.IndexByte(raw, '?'); i >= 0 {
+		raw = raw[:i]
+	}
+	if strings.Contains(strings.ToLower(raw), "%2e") {
+		return "", fmt.Errorf("path %q contains an encoded dot", p)
+	}
+	u, err := url.PathUnescape(raw)
+	if err != nil {
+		return "", fmt.Errorf("path %q: %v", p, err)
+	}
+	if strings.Contains(strings.ToLower(u), "%2e") {
+		return "", fmt.Errorf("path %q contains an encoded dot", p)
+	}
+	for _, seg := range strings.Split(u, "/") {
+		if seg == ".." || seg == "." {
+			return "", fmt.Errorf("path %q contains a dot segment", p)
+		}
+	}
+	if !strings.HasPrefix(u, "/") {
+		return "", fmt.Errorf("path %q must be absolute", p)
+	}
+	c := path.Clean(u)
+	if strings.Contains(c, "..") {
+		return "", fmt.Errorf("path %q contains ..", p)
+	}
+	return c, nil
 }
 
 func checkExpect(where string, e *Expect, v *Vars, add func(string, ...any)) {
