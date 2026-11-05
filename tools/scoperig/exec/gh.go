@@ -22,6 +22,11 @@ import (
 const GHTimeout = 60 * time.Second
 
 // maxGHStderr caps the raw stderr kept for parsing the GH_DEBUG=api log.
+// gh's debug log holds every request and response body, so it is much larger
+// than the stored Stderr (MaxBody). Output beyond 8 MiB is discarded: later
+// exchanges are then missing from Observation.Exchanges, and a denial that
+// only appears past the cap is not seen. Scenarios are single commands, so
+// this is far above what a run produces.
 const maxGHStderr = 8 << 20
 
 // GH runs `gh` scenarios. Each run gets a fresh config dir, cache dir and
@@ -51,6 +56,9 @@ func ghEnv(host, repo string, tok tokens.Handle, tmp string) []string {
 		"GH_PROMPT_DISABLED=1",
 		"NO_COLOR=1",
 		"GH_NO_UPDATE_NOTIFIER=1",
+		"GH_PAGER=cat",
+		"PAGER=cat",
+		"GIT_CEILING_DIRECTORIES=" + tmp,
 	}
 	if repo != "" {
 		env = append(env, "GH_REPO="+host+"/"+repo)
@@ -107,6 +115,7 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 	cmd := osexec.CommandContext(rctx, env.GHPath, args...)
 	cmd.Dir = filepath.Join(tmp, "work")
 	cmd.Env = ghEnv(host, repo, tok, tmp)
+	setProcessGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	stdout := &capWriter{max: MaxBody}
 	stderr := &capWriter{max: maxGHStderr}
@@ -145,26 +154,67 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 	return obs, nil
 }
 
-// stripDebug removes the GH_DEBUG=api log (from the first "* Request at "
-// line to the last "* Request took " line) and keeps gh's own messages.
+// stripDebug removes the GH_DEBUG=api log line by line and keeps every
+// other line, so gh's own messages survive wherever they appear (before,
+// between or after requests, and after a request with no "* Request took"
+// line). A debug line is a "* ", "> " or "< " line, or a line inside an
+// exchange's request headers, request body, "GraphQL query:" block or
+// response body. Each block ends at its blank line (gh prints one after
+// headers and after each body; pretty-printed JSON has none), so a message
+// that follows a response body without a "took" line is kept.
 func stripDebug(s string) string {
-	lines := strings.SplitAfter(s, "\n")
-	first, last := -1, -1
-	for i, l := range lines {
-		if strings.HasPrefix(l, "* Request at ") && first < 0 {
-			first = i
+	const (
+		out      = iota // not inside an exchange block
+		reqHdr          // after "> " lines
+		reqBody         // request body (or waiting for it)
+		gql             // inside "GraphQL query:" up to "GraphQL variables:"
+		respHdr         // after "< " lines
+		respBody        // response body (or waiting for it)
+	)
+	state := out
+	inBody := false
+	var keep strings.Builder
+	for _, l := range strings.SplitAfter(s, "\n") {
+		line := strings.TrimRight(l, "\r\n")
+		switch {
+		case state == gql:
+			if strings.HasPrefix(line, "GraphQL variables:") {
+				state, inBody = reqBody, true
+			}
+			continue
+		case strings.HasPrefix(line, "* "):
+			if strings.HasPrefix(line, "* Request at ") || strings.HasPrefix(line, "* Request took ") {
+				state, inBody = out, false
+			}
+			continue
+		case strings.HasPrefix(line, "> "):
+			state = reqHdr
+			continue
+		case strings.HasPrefix(line, "< "):
+			state = respHdr
+			continue
+		case line == "":
+			switch {
+			case state == reqHdr:
+				state, inBody = reqBody, false
+			case state == respHdr:
+				state, inBody = respBody, false
+			case (state == reqBody || state == respBody) && inBody:
+				state, inBody = out, false
+			case state == out:
+				keep.WriteString(l)
+			}
+			continue
+		case state == reqBody && !inBody && line == "GraphQL query:":
+			state = gql
+			continue
+		case state == reqBody || state == respBody:
+			inBody = true
+			continue
 		}
-		if strings.HasPrefix(l, "* Request took ") {
-			last = i
-		}
+		keep.WriteString(l)
 	}
-	if first < 0 {
-		return s
-	}
-	if last < first {
-		return strings.Join(lines[:first], "")
-	}
-	return strings.Join(lines[:first], "") + strings.Join(lines[last+1:], "")
+	return keep.String()
 }
 
 func capString(s string, n int) string {
