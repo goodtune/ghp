@@ -22,7 +22,7 @@ Scenarios (`rig/scenarios/*.yaml`) test claims (`rig/claims.yaml`) with token pr
 | Build | `CGO_ENABLED=0 go build -o /tmp/scoperig ./tools/scoperig` |
 | Validate | `/tmp/scoperig validate` |
 | Try one | `/tmp/scoperig run --only '<scenario id>'` |
-| Capture gh | `/tmp/scoperig oracle --gh-version auto` (see `scoperig oracle --help`) |
+| Capture gh | `/tmp/scoperig oracle --gh-version auto` (flags: `--out` default `rig/corpus/gh`, `--oracle-repo` default `cli/cli`, `--pr` / `--issue` default 1, `--gh` default `$GHP_RIG_GH` then PATH) |
 | Import captures | `go run ./tools/scoperig/corpus/importghdebug -in <dir> -out rig/corpus/gh/<ver> -gh-version <ver> -owner cli -repo cli` |
 | Corpus test | `go test ./internal/proxy -run GHCorpus -count=1` |
 
