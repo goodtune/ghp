@@ -153,6 +153,7 @@ fields" message can use the named field as a hint for extending
   mutation inputs identify their target by opaque global node ID
   (`repositoryId`), which the proxy cannot statically map to a
   repository. Use the REST API or a permission-only token instead.
+- The scope regression rig tracks open scoping gaps; see Development → [Scope Regression Rig](../development/scope-regression-rig.md).
 
 ## Expiration and Revocation
 

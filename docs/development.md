@@ -169,6 +169,10 @@ Save the `session_token` from the response, then create a scoped proxy token:
       -H 'Content-Type: application/json' \
       -d '{"repository": "owner/repo", "scopes": "contents:read,pulls:write", "duration": "1h"}'
 
+## Scope Regression Rig
+
+The scope regression rig (`tools/scoperig/`) checks token scoping against a live instance. See [Scope Regression Rig](development/scope-regression-rig.md).
+
 ## Project Layout
 
 ```

@@ -514,11 +514,11 @@ Predicted results (CONS §A9):
 
 Base: C1–C54 = 54, minus `never` (C42, C53) and `manual` (C45, C54) = **50**.
 
-Iteration-1 estimate with the section 3.6 formula: 27 claims get scenarios. Of these, GH-C51 is predicted KNOWN (its scoped gh cells fail per CONS §A9) and the other 26 are predicted PASS. The remaining 23 claims are GAP. Confidence = 26 / (50 − 1) = 26 / 49 ≈ **53%**. If any predicted PASS turns out FAIL, each costs about 2 points.
+Iteration-1 estimate with the section 3.6 formula: 28 claims get scenarios. Of these, GH-C51 is predicted KNOWN (its scoped gh cells fail per CONS §A9) and the other 27 are predicted PASS. The remaining 22 claims are GAP. Confidence = 27 / (50 − 1) = 27 / 49 ≈ **55%**. If any predicted PASS turns out FAIL, each costs about 2 points.
 
 | Iteration | Adds | Claims newly covered | Target confidence |
 |---|---|---|---|
-| 1 (this doc) | Runner, token lifecycle, REST/GraphQL/gh/token_api kinds, fixtures, report, corpus test, skills | C5–C7, C10–C16, C20, C21, C24–C29, C31–C33, C37, C38, C40, C43, C44, C51, C52 (27) + GAP A1, A2, A3, A6, A7 | ~53% (26/49) |
+| 1 (this doc) | Runner, token lifecycle, REST/GraphQL/gh/token_api kinds, fixtures, report, corpus test, skills | C5–C7, C10–C16, C20, C21, C24–C29, C31–C33, C37, C38, C40, C43, C44, C51, C52 (27) + GAP A1, A2, A3, A6, A7 | ~55% (27/49) |
 | 2 | `git` kind (ls-remote, fetch, push --dry-run via `GIT_ASKPASS`, with and without `.git`); `gha_` agent profiles and minting; remaining GraphQL claims; C1 header/body scan on every response | C1, C2, C3, C4, C8, C9, C17, C18, C19, C22, C23, C30, C34, C35, C36, C47, C48, C49 | ~70% |
 | 3 | Long-wait kind for expiry (C41, `1m` token); C39 (needs config knowledge, read from a `requires: allow_no_expiry` capability); anonymous git (C46); enterprise exceptions with an upstream echo or off-enterprise repo (C50); scheduled runs | C39, C41, C46, C50 | ~80% |
 | 4 | Operator hooks: SIGUSR1 reload check (C45) and audit-log assertion (C54) via an optional SSH or log-endpoint capability; oracle "matches direct GitHub" comparisons for open tokens; corpus extended to write commands (`pr create`, `issue create`, `pr comment`) captured against W | C45, C54, deeper C20/C51 | 90%+ (with fixed KNOWN items no longer excluded) |
