@@ -105,8 +105,12 @@ func tokenAPIRequest(ctx context.Context, r *scenario.Request, tok tokens.Handle
 		return nil, err
 	}
 	method := methodOf(r.Method)
+	// Dispatch on the path without its query, so a query string cannot
+	// divert creation or revocation away from the Manager. The query stays
+	// on the request that verbatimRequest sends.
+	bare, _, _ := strings.Cut(path, "?")
 	switch {
-	case method == http.MethodPost && path == "/api/tokens":
+	case method == http.MethodPost && bare == "/api/tokens":
 		var body map[string]any
 		if r.Body != nil {
 			b, err := prepareBody(r.Body, env)
@@ -124,9 +128,9 @@ func tokenAPIRequest(ctx context.Context, r *scenario.Request, tok tokens.Handle
 			return nil, fmt.Errorf("POST /api/tokens: %s", redact.String(err.Error()))
 		}
 		return jsonObservation(env, method, path, status, resp)
-	case method == http.MethodDelete && strings.HasPrefix(path, "/api/tokens/"):
-		id := strings.TrimPrefix(path, "/api/tokens/")
-		if id == "" || strings.ContainsAny(id, "/?") {
+	case method == http.MethodDelete && strings.HasPrefix(bare, "/api/tokens/"):
+		id := strings.TrimPrefix(bare, "/api/tokens/")
+		if id == "" || strings.Contains(id, "/") {
 			return nil, fmt.Errorf("DELETE %s: bad token id", path)
 		}
 		if err := env.Tokens.Revoke(ctx, id); err != nil {
@@ -134,7 +138,7 @@ func tokenAPIRequest(ctx context.Context, r *scenario.Request, tok tokens.Handle
 		}
 		// Synthetic observation: Revoke succeeded, so report 200 with no headers.
 		return jsonObservation(env, method, path, http.StatusOK, map[string]any{"id": id})
-	case strings.HasPrefix(path, "/api/v3/"):
+	case strings.HasPrefix(bare, "/api/v3/"):
 		return verbatimRequest(ctx, env.APIBase, strings.TrimPrefix(path, "/api/v3"), r, tok.Authorize, env)
 	default:
 		return verbatimRequest(ctx, env.Mgmt, path, r, sessionAuth(env.Session), env)

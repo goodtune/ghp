@@ -234,7 +234,11 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 				return
 			}
 			if clean != "/api/tokens" && !strings.HasPrefix(clean, "/api/tokens/") {
-				add("%s: token_api path %q must be /api/tokens or start with /api/tokens/ or /api/tokens? (or be a GET under /api/v3/)", where, path)
+				add("%s: token_api path %q must be /api/tokens or start with /api/tokens/ (or be a GET under /api/v3/)", where, path)
+				return
+			}
+			if strings.Contains(path, "?") {
+				add("%s: token_api path %q must not have a query string", where, path)
 				return
 			}
 			if method == "DELETE" && (clean == "/api/tokens" || strings.TrimPrefix(clean, "/api/tokens/") == "") {

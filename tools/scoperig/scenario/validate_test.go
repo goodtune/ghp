@@ -306,11 +306,11 @@ func TestValidate_EmptyMethod(t *testing.T) {
 }
 
 func TestValidate_TokenAPIPathExact(t *testing.T) {
-	for _, p := range []string{"/api/tokens", "/api/tokens/abc", "/api/tokens?x=1"} {
+	for _, p := range []string{"/api/tokens", "/api/tokens/abc"} {
 		requireNoErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
 			Request: &Request{Method: "POST", Path: p}}), nil))
 	}
-	for _, p := range []string{"/api/tokensfoo", "/api/tokens/../x"} {
+	for _, p := range []string{"/api/tokensfoo", "/api/tokens/../x", "/api/tokens?x=1", "/api/tokens/abc?x=1"} {
 		requireErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
 			Request: &Request{Method: "POST", Path: p}}), nil), "T")
 	}

@@ -120,3 +120,24 @@ func TestTokenAPI_PollNeedsExpect(t *testing.T) {
 		t.Fatal("want error for poll without expect")
 	}
 }
+
+// A query string must not divert token creation or revocation away from the
+// Manager, which tracks every token for RevokeAll and VerifyNoneLeft.
+func TestTokenAPI_QueryStillUsesManager(t *testing.T) {
+	env, fm, tok := newEnv(t, nil)
+	s := &scenario.Scenario{ID: "x", Kind: "token_api", Request: &scenario.Request{Method: "POST", Path: "/api/tokens?type=proxy",
+		Body: map[string]any{"duration": "1h"}}}
+	if _, err := (tokenAPIExecutor{}).Run(context.Background(), s, tok, env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Tokens.Created() != 2 {
+		t.Fatalf("created = %d, want 2 (POST with query must go through CreateRaw)", env.Tokens.Created())
+	}
+	s = &scenario.Scenario{ID: "x", Kind: "token_api", Request: &scenario.Request{Method: "DELETE", Path: "/api/tokens/" + tok.ID() + "?x=1"}}
+	if _, err := (tokenAPIExecutor{}).Run(context.Background(), s, tok, env); err != nil {
+		t.Fatal(err)
+	}
+	if len(fm.deletes) != 1 || fm.deletes[0] != tok.ID() {
+		t.Errorf("deletes = %v, want [%s] (DELETE with query must go through Revoke)", fm.deletes, tok.ID())
+	}
+}
