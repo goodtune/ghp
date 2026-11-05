@@ -167,6 +167,7 @@ func runOracle(ctx context.Context, o oracleOpts) (string, error) {
 	// Capture serially: GH_DEBUG output from parallel runs would be useless
 	// for diffing and gh itself interleaves concurrent requests.
 	matrix := oracleMatrix(oracleTarget{Owner: owner, Name: name, PR: o.PR, Issue: o.Issue})
+	exits := make(map[string]int, len(matrix))
 	for _, c := range matrix {
 		raw, err := os.OpenFile(filepath.Join(tmp, "raw", c.Name+".txt"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
@@ -179,6 +180,7 @@ func runOracle(ctx context.Context, o oracleOpts) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("oracle: %s: %w", c.Name, err)
 		}
+		exits[c.Name] = exit
 		if exit != 0 {
 			_, _ = fmt.Fprintf(logw, "oracle: warning: gh %s exited %d (captured requests are still used)\n", strings.Join(c.Args[:2], " "), exit)
 		}
@@ -196,6 +198,7 @@ func runOracle(ctx context.Context, o oracleOpts) (string, error) {
 		prev *corpus.File // previous version, for the diff
 	}
 	var results []result
+	var skipped []string
 	for _, c := range matrix {
 		command := corpus.CommandName(c.Name, owner, name)
 		base := strings.ReplaceAll(command, " ", "_") + ".json"
@@ -216,6 +219,16 @@ func runOracle(ctx context.Context, o oracleOpts) (string, error) {
 			return "", err
 		} else if same != nil {
 			keep = same
+		}
+		if len(ex) == 0 {
+			// An empty capture (gh failed, or made no request) must never
+			// erase coverage: refuse the whole run when an entry exists,
+			// otherwise skip this command and report it.
+			if keep != nil {
+				return "", fmt.Errorf("oracle: %s: captured nothing (gh exit %d); refusing to overwrite the existing %s entry", c.Name, exits[c.Name], keep.GHVersion)
+			}
+			skipped = append(skipped, fmt.Sprintf("%s: captured nothing (gh exit %d); not written\n", command, exits[c.Name]))
+			continue
 		}
 		f, err := corpus.Build(version, command, owner, name, ex, keep)
 		if err != nil {
@@ -240,6 +253,9 @@ func runOracle(ctx context.Context, o oracleOpts) (string, error) {
 		fmt.Fprintf(&diff, "no previous version under %s; every operation is new\n", o.OutRoot)
 	} else {
 		fmt.Fprintf(&diff, "changes from %s to %s:\n", prevVer, version)
+	}
+	for _, l := range skipped {
+		diff.WriteString(l)
 	}
 	for _, r := range results {
 		if err := os.WriteFile(r.path, r.data, 0o644); err != nil {

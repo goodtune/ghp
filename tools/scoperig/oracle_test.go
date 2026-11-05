@@ -70,6 +70,11 @@ func newOracleFixture(t *testing.T) *oracleFixture {
 	mustWrite(t, filepath.Join(f.out, "2.102.0", "pr_list.json"), b)
 	// An older version that must not be chosen as prev.
 	mustWrite(t, filepath.Join(f.out, "2.9.0", "pr_list.json"), []byte(`{"gh_version":"2.9.0","command":"pr list","rest":[],"graphql":[]}`))
+	// Every other command captures the original query so that no command
+	// yields an empty capture (which the oracle refuses or skips).
+	for _, c := range oracleMatrix(oracleTarget{Owner: "cli", Name: "cli", PR: 1, Issue: 1}) {
+		mustWrite(t, filepath.Join(f.captures, c.Args[0]+"_"+c.Args[1]+".txt"), orig)
+	}
 	// The new gh asks for one more field.
 	mustWrite(t, filepath.Join(f.captures, "pr_list.txt"), bytes.Replace(orig, []byte("{number,title}"), []byte("{number,title,newOracleField}"), 1))
 
@@ -302,5 +307,61 @@ func TestOracleCmd_Registered(t *testing.T) {
 		if c.Flags().Lookup(fl) == nil {
 			t.Errorf("missing flag --%s", fl)
 		}
+	}
+}
+
+// TestOracle_EmptyCaptureRefusesOverwrite: a command that captures nothing
+// must not erase an existing corpus entry (previous or same version).
+func TestOracle_EmptyCaptureRefusesOverwrite(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		sameVers bool
+	}{{"previous version", false}, {"same version", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOracleFixture(t)
+			var seeded []byte
+			if tc.sameVers {
+				seeded = []byte(`{"gh_version":"2.103.0","command":"pr list","rest":[],"graphql":[{"operation":"X"}]}`)
+				mustWrite(t, filepath.Join(f.out, "2.103.0", "pr_list.json"), seeded)
+			}
+			if err := os.Remove(filepath.Join(f.captures, "pr_list.txt")); err != nil {
+				t.Fatal(err)
+			}
+			_, err := runOracle(context.Background(), f.opts)
+			if err == nil || !strings.Contains(err.Error(), "pr_list") || !strings.Contains(err.Error(), "captured nothing") {
+				t.Fatalf("err = %v, want captured-nothing refusal for pr_list", err)
+			}
+			if tc.sameVers {
+				ents, _ := os.ReadDir(filepath.Join(f.out, "2.103.0"))
+				if len(ents) != 1 {
+					t.Errorf("2.103.0 has %d files, want only the seeded one", len(ents))
+				}
+				if b, _ := os.ReadFile(filepath.Join(f.out, "2.103.0", "pr_list.json")); !bytes.Equal(b, seeded) {
+					t.Errorf("existing entry changed:\n%s", b)
+				}
+			} else if _, err := os.Stat(filepath.Join(f.out, "2.103.0")); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("output dir written despite refusal (err=%v)", err)
+			}
+			assertTempsGone(t, f.temps)
+		})
+	}
+}
+
+// TestOracle_EmptyCaptureNoPriorSkipped: with no prior entry, an empty
+// capture is not written and is reported.
+func TestOracle_EmptyCaptureNoPriorSkipped(t *testing.T) {
+	f := newOracleFixture(t)
+	if err := os.Remove(filepath.Join(f.captures, "issue_list.txt")); err != nil {
+		t.Fatal(err)
+	}
+	diff, err := runOracle(context.Background(), f.opts)
+	if err != nil {
+		t.Fatalf("runOracle: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.out, "2.103.0", "issue_list.json")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("empty issue_list.json written (err=%v)", err)
+	}
+	if !strings.Contains(diff, "issue list") || !strings.Contains(diff, "captured nothing") {
+		t.Errorf("diff does not report the skipped command:\n%s", diff)
 	}
 }
