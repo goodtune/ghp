@@ -88,3 +88,22 @@ func TestLoad_DuplicateID(t *testing.T) {
 		t.Fatalf("want duplicate error, got %v", err)
 	}
 }
+
+func TestDecodeFile_RejectsSecondDocument(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.yaml")
+	if err := os.WriteFile(p, []byte("- {id: A}\n---\n- {id: B}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out []map[string]any
+	err := decodeFile(p, &out)
+	if err == nil || !strings.Contains(err.Error(), "document") {
+		t.Fatalf("err = %v, want a second-document error", err)
+	}
+	// A single document still decodes.
+	if err := os.WriteFile(p, []byte("- {id: A}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := decodeFile(p, &out); err != nil || len(out) != 1 {
+		t.Fatalf("single document: out=%v err=%v", out, err)
+	}
+}

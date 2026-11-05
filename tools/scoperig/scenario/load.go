@@ -93,6 +93,14 @@ func decodeFile(path string, out any) error {
 		}
 		return fmt.Errorf("%s: %w", path, err)
 	}
+	// A second document would be silently dropped; reject it.
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		return fmt.Errorf("%s: more than one YAML document", path)
+	}
 	return nil
 }
 
