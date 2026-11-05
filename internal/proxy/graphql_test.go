@@ -49,10 +49,12 @@ func TestAnalyzeGraphQLRequest_RepositoryArgsExtracted(t *testing.T) {
 	}
 }
 
-func TestAnalyzeGraphQLRequest_RepositoryArgsAreLiteralOnly(t *testing.T) {
-	// owner is a variable reference rather than a literal string. The
-	// analyzer must not trust the variable name as the repository identity.
-	body := []byte(`{"query":"query Q($owner: String!) { repository(owner: $owner, name: \"ghp\") { id } }","variables":{"owner":"goodtune"}}`)
+func TestAnalyzeGraphQLRequest_RepositoryArgsUnresolvedVariableIsUnpinned(t *testing.T) {
+	// owner is a variable reference with no value in `variables`. The
+	// analyzer must not trust the variable name (or a default value) as
+	// the repository identity. TestAnalyzeGraphQLRequest_VariablePinning
+	// covers the full rule.
+	body := []byte(`{"query":"query Q($owner: String! = \"goodtune\") { repository(owner: $owner, name: \"ghp\") { id } }","variables":{"other":"goodtune"}}`)
 	got, err := analyzeGraphQLRequest(body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -99,9 +101,10 @@ func TestAnalyzeGraphQLRequest_NestedRepositoryFieldDoesNotFlagUnpinned(t *testi
 func TestServeHTTP_GraphQL_RepoScoped_RejectsMixedLiteralAndVariableRepoLookups(t *testing.T) {
 	// A repo-scoped query that mixes one literal allowlisted lookup
 	// with a variable-driven `repository(...)` selection must be
-	// rejected: the proxy cannot validate the second lookup against
-	// the allowlist, so an attacker could otherwise pin one allowed
-	// repo and ride a variable-driven lookup past enforcement.
+	// rejected: every lookup, including the variable-driven one (which
+	// resolves to someone/else), is checked against the allowlist, so an
+	// attacker cannot pin one allowed repo and ride a second lookup past
+	// enforcement.
 	h, ghpToken := newRepoOnlyHandler(t, "goodtune/ghp")
 
 	q := "query Q($o: String!, $n: String!) { allowed: repository(owner: \"goodtune\", name: \"ghp\") { name } sneaky: repository(owner: $o, name: $n) { name } }"
@@ -116,8 +119,8 @@ func TestServeHTTP_GraphQL_RepoScoped_RejectsMixedLiteralAndVariableRepoLookups(
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for mixed literal+variable repo lookup, got %d; body: %s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "literal string arguments") {
-		t.Errorf("expected error to call out non-literal repository args, got: %s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), "not scoped to someone/else") {
+		t.Errorf("expected error to name the variable-driven repo, got: %s", rr.Body.String())
 	}
 }
 

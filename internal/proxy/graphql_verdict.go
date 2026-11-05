@@ -102,19 +102,20 @@ func graphQLVerdict(body []byte, si tokenScopeInfo) graphQLDecision {
 			return graphQLDeny(d, reasonMutationRepo,
 				"Token is repository-restricted; GraphQL mutations are not supported for repository-scoped tokens (mutations identify their target by global node ID, which the proxy cannot statically map to a repository)")
 		}
-		// A `repository(owner, name)` selection whose arguments are not
-		// literal strings cannot be validated against the allowlist, even
-		// if other literal allowlisted lookups are present.
+		// A `repository(owner, name)` selection whose arguments do not
+		// resolve to strings (see gqlAnalyzer.stringArg) cannot be
+		// validated against the allowlist, even if other allowlisted
+		// lookups are present.
 		if analysis.hasUnpinnedRepositoryLookup {
 			return graphQLDeny(d, reasonUnpinned,
-				"Token is repository-restricted; every repository(owner, name) selection must use literal string arguments (variable-driven lookups cannot be allowlist-checked)")
+				"Token is repository-restricted; every repository(owner, name) selection must use literal string arguments or String variables with string values in the request's variables object (other lookups cannot be allowlist-checked)")
 		}
-		// Repository-restricted queries must include at least one literal
+		// Repository-restricted queries must include at least one pinned
 		// repository(owner, name) reference, and every referenced
 		// repository must be in the allowlist.
 		if len(analysis.referencedRepos) == 0 {
 			return graphQLDeny(d, reasonNoRepoRef,
-				"Token is repository-restricted; GraphQL request must reference repository(owner, name) with literal arguments")
+				"Token is repository-restricted; GraphQL request must reference repository(owner, name) with literal arguments or String variables")
 		}
 		for _, repo := range analysis.referencedRepos {
 			if !si.repoAllowed(repo) {
