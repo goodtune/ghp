@@ -44,6 +44,22 @@ What iteration 1 does not cover:
 
 Select another file with the global `--config FILE` flag (default `rig/config.yaml`). The file holds the instance hosts (`host`, `management_host`), token durations, the token-create rate limit (the token manager paces at 75% of it), and the default fixture repositories.
 
+`instance.border_block` lists the token prefixes that the instance's border policy blocks, for example `[ghp_, gho_, github_pat_]`. The rig does not probe this value. It must match the border policy of the instance. If a prefix is missing from the list, the BORDER-C43 scenarios for that prefix are GAP.
+
+### Capabilities
+
+The preflight step sets these capabilities. A scenario that needs a capability that is false is GAP.
+
+| Capability | True when |
+|---|---|
+| `repo_w_push` | The user can push to fixture repository W. |
+| `repo_create` | The credential has the `repo` or `public_repo` OAuth scope and W's owner is the probed login. |
+| `github_vhost` | The instance answers a TLS request with SNI `github.com`. |
+| `agent_installation` | `GHP_RIG_INSTALLATION_ID` is set and the session can list all tokens. |
+| `border_block_ghp` | `ghp_` is in `instance.border_block`. |
+| `border_block_gho` | `gho_` is in `instance.border_block`. |
+| `border_block_github_pat` | `github_pat_` is in `instance.border_block`. |
+
 ### Global flags
 
 - `--config FILE` — rig config file.
@@ -125,7 +141,7 @@ A claim is FAIL if any scenario is FAIL, ERROR or KNOWN-CHANGED; else KNOWN if a
 - **confidence = PASS / (base − KNOWN)**.
 - The coverage-gap list names every base claim with no runnable scenario.
 
-Iteration 1 covers 28 claims. The prediction is 27 PASS and 22 GAP, so confidence is 27 / 49, about 55%. Planned iterations:
+Iteration 1 covers 28 claims. The prediction is 27 PASS and 22 GAP, so confidence is 27 / 49 (1 KNOWN), about 55%. Planned iterations:
 
 | Iteration | Adds | Target |
 |---|---|---|
@@ -171,7 +187,22 @@ The corpus test runs offline in `make test`. It checks the GraphQL analyzer agai
 go test ./internal/proxy -run GHCorpus
 ```
 
-The spec describes a `scoperig oracle` command that captures queries from a new `gh` release. It is not implemented yet. Until then, capture with `GH_DEBUG=api` by hand and convert the captures with:
+To refresh the corpus after a `gh` upgrade, run `scoperig oracle`. It runs read-only `gh` commands against a public github.com repository with your own `gh` login, captures the requests, and writes them to `<out>/<version>/`. It prints a diff of the changes.
+
+```bash
+scoperig oracle --gh-version auto
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--out` | `rig/corpus/gh` | Corpus root. |
+| `--gh-version` | `auto` | Corpus version directory. `auto` reads `gh --version`. |
+| `--oracle-repo` | `cli/cli` | Public repository (`owner/name`) for the read-only commands. |
+| `--pr` | `1` | Pull request number in `--oracle-repo` for `pr view`, `pr checks` and `pr diff`. |
+| `--issue` | `1` | Issue number in `--oracle-repo` for `issue view`. |
+| `--gh` | `$GHP_RIG_GH`, then `gh` on `PATH` | The `gh` binary. |
+
+As a fallback, capture with `GH_DEBUG=api` by hand and convert the captures with:
 
 ```bash
 go run ./tools/scoperig/corpus/importghdebug -in <captures dir> -out rig/corpus/gh/<version> \
