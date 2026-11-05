@@ -477,3 +477,54 @@ func TestValidate_Vhost(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_GapA7ExceptionHardening(t *testing.T) {
+	a7 := func(kind, method, path string) *Scenario {
+		return &Scenario{ID: "GAP-A7.dotdot-path", Claim: "C1", Profile: "p", Kind: kind, Method: method, Path: path}
+	}
+	// The rest GET probe is still accepted.
+	requireNoErr(t, Validate(withScenarios(a7("rest", "GET", "/repos/{{.RepoA}}/../../{{.RepoB}}/contents/README.md")), nil))
+	// The exception is rest-only: the same ID with kind graphql is rejected.
+	g := &Scenario{ID: "GAP-A7.dotdot-path", Claim: "C1", Profile: "p", Kind: "graphql",
+		Steps: []Request{{Method: "GET", Path: "/repos/{{.RepoA}}/../../{{.RepoB}}/contents/README.md"}}}
+	requireErr(t, Validate(withScenarios(g), nil), "GAP-A7", "dot segment")
+	// Only the dot-segment rejection is skipped; later checks still run.
+	requireErr(t, Validate(withScenarios(a7("rest", "GET", "/repos/{{.RepoA}}/%2e%2e/{{.RepoB}}/x")), nil), "GAP-A7", "encoded dot")
+	requireErr(t, Validate(withScenarios(a7("rest", "GET", "repos/{{.RepoA}}/../x")), nil), "GAP-A7", "absolute")
+	requireErr(t, Validate(withScenarios(a7("rest", "POST", "/repos/{{.RepoA}}/x")), nil), "GAP-A7", "write target")
+}
+
+func TestValidate_VhostWithSteps(t *testing.T) {
+	s := &Scenario{ID: "V6", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "github.com",
+		Requires: []string{"github_vhost"}, Steps: []Request{{Method: "GET", Path: "/x"}}}
+	requireErr(t, Validate(withScenarios(s), nil), "V6", "top-level vhost", "steps")
+	// No request at all, kind rest: the message must not claim the kind is wrong.
+	n := &Scenario{ID: "V7", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "github.com",
+		Requires: []string{"github_vhost"}}
+	errs := Validate(withScenarios(n), nil)
+	requireErr(t, errs, "V7", "vhost needs a request")
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "only valid for kind rest") {
+			t.Fatalf("misleading message: %v", e)
+		}
+	}
+}
+
+func TestValidate_BorderBlockCapabilities(t *testing.T) {
+	for _, c := range []string{"border_block_ghp", "border_block_gho", "border_block_github_pat"} {
+		s := &Scenario{ID: "B1", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user", Requires: []string{c}}
+		requireNoErr(t, Validate(withScenarios(s), nil))
+	}
+	s := &Scenario{ID: "B2", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user", Requires: []string{"bogus"}}
+	requireErr(t, Validate(withScenarios(s), nil), "B2", "border_block_github_pat")
+}
+
+func TestValidate_ExitCodeAndExitCodeIn(t *testing.T) {
+	zero := 0
+	s := &Scenario{ID: "E1", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user",
+		Expect: &Expect{Status: 200, ExitCode: &zero, ExitCodeIn: []int{0, 1}}}
+	requireErr(t, Validate(withScenarios(s), nil), "E1", "exit_code and exit_code_in")
+	o := &Scenario{ID: "E2", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user",
+		Expect: &Expect{Status: 200, ExitCodeIn: []int{0, 1}}}
+	requireNoErr(t, Validate(withScenarios(o), nil))
+}

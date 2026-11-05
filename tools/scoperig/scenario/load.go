@@ -111,4 +111,5 @@ func (s *Scenario) Normalise() {
 		Body:    s.Body,
 		Expect:  s.Expect,
 	}}
+	s.shorthand = true
 }

@@ -352,7 +352,7 @@ func checkGHAPI(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, ad
 		}
 	}
 	ep := strings.SplitN(endpoint, "?", 2)[0]
-	clean, err := normalisePath("/" + ep)
+	clean, err := normalisePath("/"+ep, false)
 	if err != nil {
 		add("gh: api endpoint: %v", err)
 		return

@@ -65,7 +65,7 @@
 - id: GH-C51.pr-list.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr list with the repo-A token. Note: gh sends unmapped object fields; after #298 the variable-driven repository lookup (#297) still blocks repository-scoped tokens."
+  description: "gh pr list with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
   profile: repo-A
   kind: gh
   repo: A
@@ -99,7 +99,7 @@
 - id: GH-C51.pr-view.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr view with the repo-A token. Note: gh sends unmapped object fields; after #298 the variable-driven repository lookup (#297) still blocks repository-scoped tokens."
+  description: "gh pr view with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
   profile: repo-A
   kind: gh
   repo: A
@@ -150,7 +150,8 @@
   kind: gh
   repo: A
   args: ["pr", "checks", "{{.Fixture.A.PRNumber}}"]
-  expect: {exit_code_in: [0, 1], stderr_contains: ["no checks reported"]}
+  # The fixture PR has no checks, so gh pr checks exits 1.
+  expect: {exit_code: 1, stderr_contains: ["no checks reported"]}
 
 - id: GH-C51.pr-checks.perm-ro
   claim: GH-C51
@@ -160,7 +161,8 @@
   kind: gh
   repo: A
   args: ["pr", "checks", "{{.Fixture.A.PRNumber}}"]
-  expect: {exit_code_in: [0, 1], stderr_contains: ["no checks reported"]}
+  # The fixture PR has no checks, so gh pr checks exits 1.
+  expect: {exit_code: 1, stderr_contains: ["no checks reported"]}
   known_issue: https://github.com/goodtune/ghp/issues/298
   observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
@@ -201,7 +203,7 @@
 - id: GH-C51.issue-list.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh issue list with the repo-A token. Note: gh sends unmapped object fields; after #298 the variable-driven repository lookup (#297) still blocks repository-scoped tokens."
+  description: "gh issue list with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
   profile: repo-A
   kind: gh
   repo: A
@@ -235,7 +237,7 @@
 - id: GH-C51.issue-view.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh issue view with the repo-A token. Note: gh sends unmapped object fields; after #298 the variable-driven repository lookup (#297) still blocks repository-scoped tokens."
+  description: "gh issue view with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
   profile: repo-A
   kind: gh
   repo: A
@@ -269,7 +271,7 @@
 - id: GH-C51.release-list.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh release list with the repo-A token. Note: gh sends unmapped object fields; after #298 the variable-driven repository lookup (#297) still blocks repository-scoped tokens."
+  description: "gh release list with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
   profile: repo-A
   kind: gh
   repo: A
@@ -303,7 +305,7 @@
 - id: GH-C51.label-list.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh label list with the repo-A token. Note: gh sends unmapped object fields; after #298 the variable-driven repository lookup (#297) still blocks repository-scoped tokens."
+  description: "gh label list with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
   profile: repo-A
   kind: gh
   repo: A

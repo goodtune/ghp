@@ -134,7 +134,7 @@ func checkScenarioCoverage(t *testing.T, tree *Tree) {
 		for _, r := range append(append([]Request{}, s.Steps...), s.Cleanup...) {
 			if m := strings.ToUpper(strings.TrimSpace(r.Method)); m != "" && m != "GET" && m != "HEAD" {
 				write = true
-				if r.Expect != nil && r.Expect.Status >= 200 && r.Expect.Status < 300 {
+				if r.Expect != nil && expectsSuccess(r.Expect) {
 					succeeds = true
 				}
 			}
@@ -300,8 +300,9 @@ func TestRigTreeTask20(t *testing.T) {
 		}
 		// repo-A is denied by design (root node(id:) is cross-repository).
 		if strings.Contains(s.ID, ".pr-checks.") && s.Profile != "repo-A" {
-			if s.Expect == nil || len(s.Expect.ExitCodeIn) == 0 {
-				t.Errorf("%s: want exit_code_in", s.ID)
+			// The fixture PR has no checks, so gh pr checks exits 1.
+			if s.Expect == nil || s.Expect.ExitCode == nil || *s.Expect.ExitCode != 1 {
+				t.Errorf("%s: want exit_code: 1", s.ID)
 			}
 		}
 	}
@@ -310,5 +311,36 @@ func TestRigTreeTask20(t *testing.T) {
 	}
 	for id := range want {
 		t.Errorf("missing scenario %s", id)
+	}
+}
+
+// expectsSuccess reports whether e accepts a 2xx status, either as status
+// or as any entry of status_in.
+func expectsSuccess(e *Expect) bool {
+	if e.Status >= 200 && e.Status < 300 {
+		return true
+	}
+	for _, c := range e.StatusIn {
+		if c >= 200 && c < 300 {
+			return true
+		}
+	}
+	return false
+}
+
+func TestExpectsSuccess(t *testing.T) {
+	cases := []struct {
+		e    Expect
+		want bool
+	}{
+		{Expect{Status: 201}, true},
+		{Expect{Status: 403}, false},
+		{Expect{StatusIn: []int{403, 404}}, false},
+		{Expect{StatusIn: []int{403, 204}}, true},
+	}
+	for _, tc := range cases {
+		if got := expectsSuccess(&tc.e); got != tc.want {
+			t.Errorf("expectsSuccess(%+v) = %v, want %v", tc.e, got, tc.want)
+		}
 	}
 }

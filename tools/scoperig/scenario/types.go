@@ -76,6 +76,9 @@ type Scenario struct {
 	Request   *Request          `yaml:"request"` // token_api
 	Poll      *Poll             `yaml:"poll"`    // LIFE-C40
 	File      string            `yaml:"-"`       // source file for error messages
+	// shorthand is set by Normalise when Steps was built from the rest
+	// shorthand fields (method, path, vhost, ...).
+	shorthand bool
 }
 
 // Poll configures repeated requests until the expectation matches.

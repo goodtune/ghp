@@ -12,8 +12,9 @@ import (
 
 var (
 	validKinds        = map[string]bool{"rest": true, "graphql": true, "gh": true, "token_api": true}
-	validCapabilities = map[string]bool{"repo_w_push": true, "repo_create": true, "github_vhost": true, "agent_installation": true}
-	knownIssueRE      = regexp.MustCompile(`^https://github\.com/goodtune/ghp/issues/\d+$`)
+	validCapabilities = map[string]bool{"repo_w_push": true, "repo_create": true, "github_vhost": true, "agent_installation": true,
+		"border_block_ghp": true, "border_block_gho": true, "border_block_github_pat": true}
+	knownIssueRE = regexp.MustCompile(`^https://github\.com/goodtune/ghp/issues/\d+$`)
 )
 
 // gapA1ProbeID is the one scenario allowed to send a forwarded write with a
@@ -175,7 +176,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	// Rule 3: capabilities.
 	for _, r := range s.Requires {
 		if !validCapabilities[r] {
-			add("requires %q is not one of repo_w_push, repo_create, github_vhost, agent_installation", r)
+			add("requires %q is not one of repo_w_push, repo_create, github_vhost, agent_installation, border_block_ghp, border_block_gho, border_block_github_pat", r)
 		}
 	}
 
@@ -221,10 +222,10 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 				add("%s: vhost requests need requires: [github_vhost]", where)
 			}
 		}
-		if s.ID == gapA7ProbeID && method == "GET" {
-			return // the traversal probe: a read, sent verbatim by design
-		}
-		clean, perr := normalisePath(path)
+		// The traversal probe (a rest GET, sent verbatim by design) skips
+		// only the dot-segment rejection; every later check still runs.
+		allowDots := s.ID == gapA7ProbeID && s.Kind == "rest" && method == "GET"
+		clean, perr := normalisePath(path, allowDots)
 		if perr != nil {
 			add("%s: %v", where, perr)
 			return
@@ -282,8 +283,15 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	for i := range s.Cleanup {
 		checkReq(fmt.Sprintf("cleanup[%d]", i), -1, &s.Cleanup[i])
 	}
-	if s.Vhost != "" && len(s.Steps) == 0 {
-		add("vhost is only valid for kind rest")
+	if s.Vhost != "" {
+		switch {
+		case s.Kind != "rest":
+			add("vhost is only valid for kind rest")
+		case len(s.Steps) == 0:
+			add("vhost needs a request (method and path)")
+		case !s.shorthand:
+			add("top-level vhost is not allowed with steps; set vhost on each step")
+		}
 	}
 	if s.Request != nil {
 		checkReq("request", -1, s.Request)
@@ -323,7 +331,10 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 // traversal attempt so that the prefix check cannot be bypassed. It fails
 // closed: any "." or ".." segment, or an encoded dot, is an error even when
 // it would resolve back inside W, because no legitimate scenario needs one.
-func normalisePath(p string) (string, error) {
+//
+// If allowDots is true, "." and ".." segments are not rejected (the GAP-A7
+// probe); the encoded-dot and absolute-path checks still apply.
+func normalisePath(p string, allowDots bool) (string, error) {
 	raw := p
 	if i := strings.IndexByte(raw, '?'); i >= 0 {
 		raw = raw[:i]
@@ -339,7 +350,7 @@ func normalisePath(p string) (string, error) {
 		return "", fmt.Errorf("path %q contains an encoded dot", p)
 	}
 	for _, seg := range strings.Split(u, "/") {
-		if seg == ".." || seg == "." {
+		if !allowDots && (seg == ".." || seg == ".") {
 			return "", fmt.Errorf("path %q contains a dot segment", p)
 		}
 	}
@@ -347,7 +358,7 @@ func normalisePath(p string) (string, error) {
 		return "", fmt.Errorf("path %q must be absolute", p)
 	}
 	c := path.Clean(u)
-	if strings.Contains(c, "..") {
+	if !allowDots && strings.Contains(c, "..") {
 		return "", fmt.Errorf("path %q contains ..", p)
 	}
 	return c, nil
@@ -356,6 +367,9 @@ func normalisePath(p string) (string, error) {
 func checkExpect(where string, e *Expect, v *Vars, add func(string, ...any)) {
 	if e == nil {
 		return
+	}
+	if e.ExitCode != nil && len(e.ExitCodeIn) > 0 {
+		add("%s: exit_code and exit_code_in are mutually exclusive", where)
 	}
 	for _, x := range []any{e.BodyContains, e.BodyNotContains, e.Header, e.JSON, e.StdoutContains, e.StderrContains} {
 		if _, err := ExpandAny(x, v); err != nil {
