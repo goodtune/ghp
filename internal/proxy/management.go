@@ -6,6 +6,7 @@ import (
 
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/metrics"
+	"github.com/goodtune/ghp/internal/token"
 )
 
 const (
@@ -29,6 +30,13 @@ func RequireGHPToken(next http.Handler, cfg *config.Config) http.Handler {
 		start := time.Now()
 		clientToken, rawCredential, _ := extractClientToken(r)
 		if clientToken != "" {
+			// Time the pass decision too; the downstream handler records
+			// its own total, so only this stage is observed here.
+			tokenType := ""
+			if tt, ok := token.TokenTypeFromPrefix(clientToken); ok {
+				tokenType = string(tt)
+			}
+			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, tokenType, time.Since(start))
 			next.ServeHTTP(w, r)
 			return
 		}

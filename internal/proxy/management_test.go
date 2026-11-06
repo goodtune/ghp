@@ -91,3 +91,57 @@ func TestRequireGHPToken(t *testing.T) {
 		}
 	}
 }
+
+// decisionStageSampleCount returns the observation count of a decision stage
+// histogram for the given token type label.
+func decisionStageSampleCount(t *testing.T, stage, tokenType string) uint64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "ghp_proxy_decision_duration_seconds" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				labels[lp.GetName()] = lp.GetValue()
+			}
+			if labels["stage"] == stage && labels["token_type"] == tokenType {
+				return m.GetHistogram().GetSampleCount()
+			}
+		}
+	}
+	return 0
+}
+
+// TestRequireGHPToken_PassObservesBorderStage checks that the pass path is
+// timed under border_policy_check with the token type from the prefix, and
+// that total is left to the downstream handler.
+func TestRequireGHPToken_PassObservesBorderStage(t *testing.T) {
+	tests := []struct {
+		auth      string
+		tokenType string
+	}{
+		{auth: "Bearer ghx_abc123", tokenType: "proxy"},
+		{auth: "token gha_abc123", tokenType: "agent"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.tokenType, func(t *testing.T) {
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+			borderBefore := decisionStageSampleCount(t, metrics.StageBorderPolicyCheck, tc.tokenType)
+			totalBefore := decisionStageSampleCount(t, metrics.StageTotal, tc.tokenType)
+			req := httptest.NewRequest(http.MethodGet, "/api/v3/user", nil)
+			req.Header.Set("Authorization", tc.auth)
+			RequireGHPToken(next, &config.Config{}).ServeHTTP(httptest.NewRecorder(), req)
+			if got := decisionStageSampleCount(t, metrics.StageBorderPolicyCheck, tc.tokenType) - borderBefore; got != 1 {
+				t.Errorf("border_policy_check observations = %d, want 1", got)
+			}
+			if got := decisionStageSampleCount(t, metrics.StageTotal, tc.tokenType) - totalBefore; got != 0 {
+				t.Errorf("total observations = %d, want 0", got)
+			}
+		})
+	}
+}
