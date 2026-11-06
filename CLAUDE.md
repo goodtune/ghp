@@ -123,6 +123,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_github_ratelimit_remaining` / `ghp_github_ratelimit_limit` — GitHub rate limit gauges
 - `ghp_github_token_refresh_total` — OAuth token refresh attempts
 - `ghp_auth_rate_limit_total` — rate limiter rejections
+- `ghp_scope_unmapped_denied_total` — scoped-token REST requests denied because no scope rule matched (`token_type`, `method`)
 - `ghp_enterprise_exception_total` — enterprise restriction exception matches by outcome (`header_omitted`, `identity_substituted`, `team_denied`, `unauthenticated_denied`, `identity_error`)
 - `ghp_releases_redirect_head_check_total` — HEAD check outcomes (`found`, `not_found`, `error`) for release redirect targets
 - `ghp_forward_proxy_select_total` — forward proxy routing decisions by matched `ruleset` and `layer` (`header`, `token`, `app`, `net`, `system`, `control`, `ambient`, `direct`)

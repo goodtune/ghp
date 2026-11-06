@@ -52,6 +52,26 @@ If no repository is specified, the token is not restricted to any particular
 repository — it can access any repository the underlying credential has access
 to.
 
+A repo-restricted token can only reach REST paths of the form
+`/repos/{owner}/{repo}/...` for an allowed repository, plus a short list of
+identity and service endpoints: `GET /`, `/user`, `/rate_limit`, `/meta`,
+`/octocat` and `/zen`. Every other path is rejected with `403 Forbidden`,
+because ghp cannot tie it to the allowlist. This includes
+`/repositories/{id}`, `/search/*`, `/user/repos`, `/orgs/*`, `/users/*`,
+`/gists` and package endpoints.
+
+ghp rejects some request paths with `403 Forbidden` before any scope check.
+This applies to all `ghx_` and `gha_` tokens.
+A path is rejected if it contains a `.` or `..` segment or an empty segment (`//`).
+A path is also rejected if, after URL decoding, it contains `?`, `#`, `%`, `\`
+or a control character.
+This stops a path such as `/repos/A/x/../../B/y/contents` from passing the
+check as `A/x`.
+
+ghp builds the upstream URL from the escaped request path.
+Other encoded characters (for example `%2B` in a ref name) reach GitHub
+unchanged.
+
 ## Permission Restrictions
 
 Tokens can specify which operations are permitted using permission scopes.
@@ -69,6 +89,41 @@ These follow the GitHub API permission model:
 
 If no scopes are specified, the token carries the full permissions of the
 underlying credential without additional filtering.
+
+### Deny by default
+
+For any scoped token (a repository restriction, a permission restriction, or
+both), REST requests are deny-by-default. ghp keeps a curated table that maps
+each known REST method and path to a permission and level. A request that
+matches no entry in the table, and is not on the identity allowlist above, is
+rejected with `403 Forbidden`. The message names the method and path, for
+example `Endpoint POST /user/repos is not permitted for scoped tokens`. The
+counter `ghp_scope_unmapped_denied_total` records these denials.
+
+Known limitations:
+
+- The table is curated, so some legitimate GitHub endpoints are denied for
+  scoped tokens until an entry is added. Use an open-scoped token, or ask the
+  operator to add the endpoint.
+- `GET /search/issues` (used by `gh search prs` and `gh search issues`) is
+  denied for every scoped token. Search spans repositories and has no single
+  permission.
+- `HEAD` is evaluated as `GET`.
+
+Rules that differ from the general area of the path:
+
+| Endpoint | Permission |
+|---|---|
+| `actions/permissions/*`, `actions/runners/*` | `administration:read` (GET) / `administration:write` |
+| `actions/variables/*` | `variables:read` (GET) / `variables:write` |
+| `PUT`/`DELETE environments/{name}` (create, update or delete the environment) | `administration:write` |
+| `DELETE git/refs/*`, `PATCH`/`DELETE releases/*`, `POST merges`, `POST dispatches` | `contents:write` |
+| `readme`, `tags`, `git/ref/*`, `git/matching-refs/*` | `contents:read` |
+| `keys`, `rulesets` | `administration:read` / `administration:write` |
+| `POST forks` | `administration:write` |
+| repository `labels`, `milestones`, `issues/comments/*` | `issues:read` / `issues:write` |
+| `pulls/comments/*`, `PUT pulls/{n}/update-branch` | `pull_requests:read` / `pull_requests:write` |
+| `PATCH check-runs/{id}`, `check-suites` writes | `checks:write` |
 
 ## Open-Scoped Tokens
 

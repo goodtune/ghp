@@ -225,6 +225,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resolveTokenType = string(tt)
 	}
 
+	// Reject dot segments and empty segments before any lookup. Such a path
+	// could resolve to a different resource upstream than the one the scope
+	// checks see (for example /repos/A/x/../../B/y/contents).
+	unsafeCheckStart := time.Now()
+	if hasUnsafePathSegment(apiPath) {
+		metrics.ObserveDecision(metrics.StageScopeEnforcement, resolveTokenType, time.Since(unsafeCheckStart))
+		h.logger.Info("proxy_unsafe_path_denied", "method", r.Method, "path", r.URL.EscapedPath(), "token_type", resolveTokenType)
+		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
+		writeError(w, http.StatusForbidden, "Request path contains an unsafe segment or character")
+		return
+	}
+
 	// Resolve the client token.
 	resolveStart := time.Now()
 	pt, err := h.tokenService.Resolve(r.Context(), clientToken)
@@ -305,34 +317,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract repository from path (if this is a /repos/ path).
-	repo := ExtractRepoFromPath(apiPath)
-
-	// Enforce repository scope only when the token has repo restrictions.
-	// A token with repos=null carries no repo restriction (applies to any repo).
+	// Scoped tokens are deny-by-default on the API host: the request must
+	// be on the non-repository allowlist, or target an allowed repository
+	// and match a scope rule whose permission the token holds.
 	scopeEnforceStart := time.Now()
-	if repo != "" && len(si.Repos) > 0 && !si.repoAllowed(repo) {
+	decision := decideREST(si, r.Method, apiPath)
+	repo := decision.repo
+	if !decision.allowed {
+		if decision.unmapped {
+			metrics.ScopeUnmappedDeniedTotal.WithLabelValues(tokenType, metrics.NormalizeMethod(r.Method)).Inc()
+		}
 		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-		writeError(w, http.StatusForbidden,
-			fmt.Sprintf("Token is not scoped to %s", repo))
+		writeError(w, http.StatusForbidden, decision.message)
 		h.logRequest(pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
-	}
-
-	// Enforce permission scope only when the token has scope restrictions.
-	// Unrecognized endpoints are forwarded — GitHub's token handles access.
-	// A token with scopes=null carries no permission restriction (any endpoint allowed).
-	permission, level := EndpointScope(r.Method, apiPath)
-	if permission != "" && permission != "metadata" && len(si.Scopes) > 0 {
-		if !si.Scopes.HasPermission(permission, level) {
-			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
-			writeError(w, http.StatusForbidden,
-				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
-			h.logRequest(pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
-			return
-		}
 	}
 	metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 
@@ -708,10 +707,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 		apiType = "graphql"
 	}
 
-	targetURL := githubAPIBase + path
-	if r.URL.RawQuery != "" {
-		targetURL += "?" + r.URL.RawQuery
-	}
+	targetURL := upstreamURL(r, path)
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
@@ -804,10 +800,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 // round-trip plus response streaming. start is the request arrival time and
 // tokenType the decision-pipeline label ("proxy", "agent", or "").
 func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader string, start time.Time, tokenType string, overrideHeaders ...map[string]string) int {
-	targetURL := githubAPIBase + path
-	if r.URL.RawQuery != "" {
-		targetURL += "?" + r.URL.RawQuery
-	}
+	targetURL := upstreamURL(r, path)
 
 	// Use the GraphQL-flavoured error envelope (with the GraphQL docs
 	// URL) for /graphql failures so proxy-generated 5xx responses don't
@@ -1011,4 +1004,19 @@ func writeErrorWithDocs(w http.ResponseWriter, status int, message, docsURL stri
 		"message":           message,
 		"documentation_url": docsURL,
 	})
+}
+
+// upstreamURL builds the GitHub URL for path structurally. The inbound
+// escaped form is kept when it decodes to path, so encoded characters (for
+// example %2B in a ref name) reach GitHub unchanged and a decoded "?" or "#"
+// can never become a delimiter.
+func upstreamURL(r *http.Request, path string) string {
+	u := url.URL{Scheme: "https", Host: strings.TrimPrefix(githubAPIBase, "https://"), Path: path, RawQuery: r.URL.RawQuery}
+	escaped := strings.TrimPrefix(r.URL.EscapedPath(), "/api/v3")
+	if escaped != path {
+		if dec, err := url.PathUnescape(escaped); err == nil && dec == path {
+			u.RawPath = escaped
+		}
+	}
+	return u.String()
 }

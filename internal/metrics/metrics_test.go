@@ -713,3 +713,26 @@ func TestWebhookGauges(t *testing.T) {
 		t.Errorf("WebhookSubscribersActive{sse} = %f, want 1", v)
 	}
 }
+
+func TestScopeUnmappedDeniedTotal(t *testing.T) {
+	tests := []struct {
+		tokenType string
+		method    string
+		label     string
+	}{
+		{"proxy", "DELETE", "DELETE"},
+		{"agent", "GET", "GET"},
+		{"proxy", "BREW", "OTHER"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tokenType+"/"+tt.method, func(t *testing.T) {
+			labels := prometheus.Labels{"token_type": tt.tokenType, "method": tt.label}
+			before := getCounterValue(t, ScopeUnmappedDeniedTotal, labels)
+			ScopeUnmappedDeniedTotal.WithLabelValues(tt.tokenType, NormalizeMethod(tt.method)).Inc()
+			after := getCounterValue(t, ScopeUnmappedDeniedTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
+	}
+}
