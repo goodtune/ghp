@@ -1,8 +1,11 @@
 package token
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/goodtune/ghp/internal/permissions"
 )
 
 func TestGenerateToken(t *testing.T) {
@@ -102,6 +105,15 @@ func TestParseScopeString(t *testing.T) {
 			input:   "contents:execute",
 			wantErr: true,
 		},
+		// #293: permission names must be canonical.
+		{input: "pulls:write", wantErr: true},
+		{input: "foo:read", wantErr: true},
+		{input: "contents:admin", wantErr: true},
+		{input: "contents:read,pulls:write", wantErr: true},
+		{
+			input: "actions:read,checks:read,statuses:write,workflows:write",
+			want:  map[string]string{"actions": "read", "checks": "read", "statuses": "write", "workflows": "write"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -121,5 +133,31 @@ func TestParseScopeString(t *testing.T) {
 				t.Errorf("ParseScopeString(%q)[%q] = %q, want %q", tt.input, k, scopes[k], v)
 			}
 		}
+	}
+}
+
+func TestParseScopeString_AcceptsCanonicalSet(t *testing.T) {
+	for _, name := range permissions.Names() {
+		for _, level := range []string{"read", "write"} {
+			got, err := ParseScopeString(name + ":" + level)
+			if err != nil {
+				t.Errorf("%s:%s rejected: %v", name, level, err)
+				continue
+			}
+			if got[name] != level {
+				t.Errorf("%s:%s parsed as %v", name, level, got)
+			}
+		}
+	}
+}
+
+func TestParseScopeString_UnknownNameListsValid(t *testing.T) {
+	_, err := ParseScopeString("pulls:write")
+	var ve *permissions.ValidationError
+	if !errors.As(err, &ve) || ve.Reason != permissions.ReasonUnknownPermission {
+		t.Fatalf("expected unknown_permission ValidationError, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "pull_requests") {
+		t.Errorf("message should list valid names: %v", err)
 	}
 }

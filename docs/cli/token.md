@@ -6,7 +6,7 @@ Create, list, and revoke proxy tokens.
 
 ### ghp token create
 
-    ghp token create --scope contents:read,pulls:write [flags]
+    ghp token create --scope contents:read,pull_requests:write [flags]
 
 Create a new scoped token for an agent. There are two token types:
 
@@ -14,7 +14,7 @@ Create a new scoped token for an agent. There are two token types:
 
     ghp token create \
       --repo goodtune/myproject \
-      --scope contents:read,pulls:write,issues:write \
+      --scope contents:read,pull_requests:write,issues:write \
       --duration 48h \
       --session "claude-code-feature-123"
 
@@ -25,7 +25,7 @@ Create a new scoped token for an agent. There are two token types:
     ghp token create \
       --app mybot \
       --installation myorg \
-      --scope contents:read,pulls:write \
+      --scope contents:read,pull_requests:write \
       --session "ci-agent-run-42"
 
     # By numeric ID (advanced):
@@ -33,7 +33,7 @@ Create a new scoped token for an agent. There are two token types:
       --type agent \
       --installation-id 12345678 \
       --repos owner/repo1,owner/repo2 \
-      --scope contents:read,pulls:write
+      --scope contents:read,pull_requests:write
 
     # Open-scoped, no expiry (requires server allow_no_expiry):
     ghp token create \
@@ -54,7 +54,7 @@ can be omitted and the installation will be resolved against the default app.
 | `--repos` | No | | Comma-separated repositories |
 | `--installation` | No | | Installation account login (e.g., org name) — resolves to installation ID via the server. Alternative to `--installation-id` |
 | `--installation-id` | No | | GitHub App installation ID (numeric). Alternative to `--installation` |
-| `--scope` | No | | Comma-separated permissions (e.g. `contents:read,pulls:write`). Omit for open-scoped |
+| `--scope` | No | | Comma-separated permissions (e.g. `contents:read,pull_requests:write`). Omit for open-scoped |
 | `--duration` | No | `24h` | Token lifetime (e.g. `48h`, `168h`; max: server-configured, default max 7 days). Use `never` to create a token with no expiry (requires `tokens.allow_no_expiry` in server config) |
 | `--session` | No | | Session identifier for audit tracking |
 

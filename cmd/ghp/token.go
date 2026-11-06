@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/goodtune/ghp/internal/token"
 	"github.com/spf13/cobra"
 )
 
@@ -43,6 +44,9 @@ func newTokenCmd() *cobra.Command {
 			duration, _ := cmd.Flags().GetString("duration")
 			sessionID, _ := cmd.Flags().GetString("session")
 
+			if err := validateScopeFlag(scope); err != nil {
+				return err
+			}
 			if appName != "" && appID != "" {
 				return fmt.Errorf("--app and --app-id are mutually exclusive")
 			}
@@ -440,4 +444,17 @@ func resolveInstallationByLogin(cfg *cliConfig, appID, login string) (int64, err
 		return 0, fmt.Errorf("installation %q not found: app has no installations", login)
 	}
 	return 0, fmt.Errorf("installation %q not found; available installations: %s", login, strings.Join(logins, ", "))
+}
+
+// validateScopeFlag checks --scope locally with the same rules the server
+// applies (canonical permission names, read/write levels), so a typo such
+// as "pulls:write" fails before any request is sent. Empty means open-scoped.
+func validateScopeFlag(scope string) error {
+	if strings.TrimSpace(scope) == "" {
+		return nil
+	}
+	if _, err := token.ParseScopeString(scope); err != nil {
+		return fmt.Errorf("--scope: %w", err)
+	}
+	return nil
 }

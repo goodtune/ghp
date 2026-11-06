@@ -69,6 +69,15 @@ var (
 		Help: "Total number of tokens revoked.",
 	}, []string{"user"})
 
+	// TokenScopeRejectedTotal counts token scope entries rejected at creation
+	// or scope update because the permission name is not canonical or the
+	// level is not read/write. The permission name itself is not a label
+	// (unbounded user input).
+	TokenScopeRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_token_scope_rejected_total",
+		Help: "Total number of token scope entries rejected by reason (unknown_permission, invalid_level).",
+	}, []string{"reason"})
+
 	// TokenCleanupDeletedTotal counts proxy tokens hard-deleted by the
 	// periodic expired-token cleanup goroutine.
 	TokenCleanupDeletedTotal = promauto.NewCounter(prometheus.CounterOpts{

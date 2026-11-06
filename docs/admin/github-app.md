@@ -81,7 +81,7 @@ Admins can then create agent tokens via the CLI:
       --type agent \
       --installation-id 12345678 \
       --repos owner/repo1,owner/repo2 \
-      --scope contents:read,pulls:write
+      --scope contents:read,pull_requests:write
 
 
 ## Enterprise Restriction

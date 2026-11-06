@@ -25,6 +25,7 @@ import (
 	ghpgithub "github.com/goodtune/ghp/internal/github"
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/netutil"
+	"github.com/goodtune/ghp/internal/permissions"
 	"github.com/goodtune/ghp/internal/proxy"
 	"github.com/goodtune/ghp/internal/token"
 )
@@ -242,6 +243,7 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		var err error
 		scopes, err = token.ParseScopeString(req.Scopes)
 		if err != nil {
+			observeScopeRejection(err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 			return
 		}
@@ -475,6 +477,15 @@ type updateTokenScopesRequest struct {
 	Scopes       *map[string]string `json:"scopes"`
 }
 
+// observeScopeRejection records a rejected scope entry in
+// ghp_token_scope_rejected_total when err is a permissions.ValidationError.
+func observeScopeRejection(err error) {
+	var ve *permissions.ValidationError
+	if errors.As(err, &ve) {
+		metrics.TokenScopeRejectedTotal.WithLabelValues(ve.Reason).Inc()
+	}
+}
+
 func (a *API) handleUpdateTokenScopes(w http.ResponseWriter, r *http.Request) {
 	session := auth.SessionFromContext(r.Context())
 	id := r.PathValue("id")
@@ -529,8 +540,9 @@ func (a *API) handleUpdateTokenScopes(w http.ResponseWriter, r *http.Request) {
 	newScopes := pt.Scopes
 	if req.Scopes != nil {
 		for perm, level := range *req.Scopes {
-			if level != "read" && level != "write" {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid scope level for " + perm + ": must be read or write"})
+			if err := permissions.Validate(perm, level); err != nil {
+				observeScopeRejection(err)
+				writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 				return
 			}
 		}

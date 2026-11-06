@@ -87,7 +87,7 @@
   testable: periodic
 - id: PERM-C18
   doc: docs/cli/token.md#ghp-token-create
-  claim: "pulls:write is shown as a valid scope."
+  claim: "pull_requests:write is shown as a valid scope."
   iteration: 2
   testable: periodic
 - id: PERM-C19
@@ -291,7 +291,7 @@
   iteration: 2
   testable: periodic
 - id: GAP-A5
-  doc: docs/cli/token.md#ghp-token-create
+  doc: docs/features/token-scoping.md#valid-permission-names
   claim: "Scope permission names are validated at creation (pulls vs pull_requests)."
   iteration: 2
   testable: periodic

@@ -32,7 +32,7 @@ You just need a token.
 
 ```bash
 ghp auth login
-ghp token create --repo owner/repo --scope contents:read,pulls:write
+ghp token create --repo owner/repo --scope contents:read,pull_requests:write
 ```
 
 ### Give the token to your agent

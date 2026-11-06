@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/permissions"
 )
 
 const (
@@ -401,6 +402,9 @@ func generateToken(tt TokenType) (string, error) {
 }
 
 // ParseScopeString parses a comma-separated scope string like "contents:read,pull_requests:write".
+// Each permission must be a canonical name from internal/permissions and each
+// level must be read or write; otherwise a *permissions.ValidationError is
+// returned unwrapped.
 func ParseScopeString(s string) (map[string]string, error) {
 	scopes := make(map[string]string)
 	parts := strings.Split(s, ",")
@@ -415,8 +419,8 @@ func ParseScopeString(s string) (map[string]string, error) {
 		}
 		permission := strings.TrimSpace(kv[0])
 		level := strings.TrimSpace(kv[1])
-		if level != "read" && level != "write" {
-			return nil, fmt.Errorf("invalid scope level %q (must be read or write)", level)
+		if err := permissions.Validate(permission, level); err != nil {
+			return nil, err
 		}
 		scopes[permission] = level
 	}

@@ -85,7 +85,9 @@ Vault it is shared by all instances and idempotent.
 
 Tokens can be scoped to specific repositories and permission levels, ensuring
 agents only access what they need. Open-scoped tokens (no restrictions) are
-also supported when full access is appropriate.
+also supported when full access is appropriate. Permission names are checked
+against one canonical list when a token is created; an unknown name (for
+example `pulls` instead of `pull_requests`) is rejected with HTTP 400.
 
 See [Token Scoping](features/token-scoping.md) for details.
 
