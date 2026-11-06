@@ -58,6 +58,7 @@ var known = map[string]struct{}{
 	"security_events":              {},
 	"single_file":                  {},
 	"statuses":                     {},
+	"variables":                    {},
 	"vulnerability_alerts":         {},
 	"workflows":                    {},
 	// Organization permissions.

@@ -142,7 +142,7 @@ GitHub App permission name, so agent tokens should not rely on it.
 `pages`, `projects`, `pull_requests`, `repository_custom_properties`,
 `repository_hooks`, `repository_projects`, `secret_scanning_alerts`,
 `secrets`, `security_events`, `single_file`, `statuses`, `team_discussions`,
-`vulnerability_alerts`, `workflows`.
+`variables`, `vulnerability_alerts`, `workflows`.
 
 The level must be `read` or `write`. GHP does not accept aliases. For example,
 `pulls:write` is rejected: the GitHub permission is `pull_requests`.
