@@ -292,3 +292,65 @@ func deniedCount(t *testing.T, vhost, reason string) float64 {
 	}
 	return m.GetCounter().GetValue()
 }
+
+func scopeStageSampleCount(t *testing.T, tokenType string) uint64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "ghp_proxy_decision_duration_seconds" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				labels[lp.GetName()] = lp.GetValue()
+			}
+			if labels["stage"] == metrics.StageScopeEnforcement && labels["token_type"] == tokenType {
+				return m.GetHistogram().GetSampleCount()
+			}
+		}
+	}
+	return 0
+}
+
+// TestScopedWebHandler_MappingTimed checks that path mapping and the
+// canonical-path check are timed under scope_enforcement: one sample for
+// the mapping, plus one for the allowlist/permission window on scoped tokens.
+func TestScopedWebHandler_MappingTimed(t *testing.T) {
+	tests := []struct {
+		name   string
+		repo   string
+		host   string
+		path   string
+		codeld bool
+		want   uint64
+	}{
+		{"github scoped archive", "acme/a", "github.com", "/acme/a/archive/HEAD.tar.gz", false, 2},
+		{"github open-scoped", "", "github.com", "/acme/a/pulls", false, 1},
+		{"codeload scoped", "acme/a", "codeload.github.com", "/acme/a/zip/main", true, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newWebScopeFixture(t)
+			tok := f.token(t, tt.repo, nil)
+			h := f.githubHandler()
+			if tt.codeld {
+				h = f.codeloadHandler()
+			}
+			before := scopeStageSampleCount(t, "proxy")
+			req := httptest.NewRequest("GET", "http://"+tt.host+tt.path, nil)
+			req.Header.Set("Authorization", "Bearer "+tok)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d; body: %s", rr.Code, rr.Body.String())
+			}
+			if got := scopeStageSampleCount(t, "proxy") - before; got != tt.want {
+				t.Fatalf("scope_enforcement samples = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}

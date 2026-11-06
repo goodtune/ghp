@@ -215,12 +215,16 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 
 		// Map the request to a repository and permission. An unmapped
 		// request is denied below for scoped tokens (goodtune/ghp#292).
+		// Timed as its own scope_enforcement sample so the later
+		// allowlist/permission window (and its deny samples) is unchanged.
+		mapStart := time.Now()
 		repo, permission, level := mapScope(r.Method, r.URL.Path, r.URL.RawQuery)
 		if !isCanonicalWebPath(r) {
 			// Dot segments, empty segments and encoded dots/slashes can make
 			// the mapped repository differ from what upstream serves.
 			permission, level = "", ""
 		}
+		metrics.ObserveDecision(metrics.StageScopeEnforcement, extractTokenType, time.Since(mapStart))
 
 		start := time.Now()
 
