@@ -749,3 +749,21 @@ func TestTokenScopeRejectedTotal(t *testing.T) {
 		})
 	}
 }
+
+func TestPassthroughScopeDeniedTotal(t *testing.T) {
+	tests := []struct{ vhost, reason string }{
+		{"github.com", "unmapped"},
+		{"github.com", "repo"},
+		{"codeload.github.com", "permission"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.vhost+"/"+tt.reason, func(t *testing.T) {
+			labels := prometheus.Labels{"vhost": tt.vhost, "reason": tt.reason}
+			before := getCounterValue(t, PassthroughScopeDeniedTotal, labels)
+			PassthroughScopeDeniedTotal.With(labels).Inc()
+			if got := getCounterValue(t, PassthroughScopeDeniedTotal, labels) - before; got != 1 {
+				t.Fatalf("counter delta = %v, want 1", got)
+			}
+		})
+	}
+}

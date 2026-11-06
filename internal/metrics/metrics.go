@@ -132,6 +132,17 @@ var (
 		Help: "Total codeload.github.com archive requests handled, by owner, repo, archive format, and result.",
 	}, []string{"owner", "repo", "archive", "result"})
 
+	// PassthroughScopeDeniedTotal counts scoped client-token requests that
+	// the github.com and codeload.github.com virtual hosts deny before the
+	// upstream forward (goodtune/ghp#292). vhost is the backend name; reason
+	// is "unmapped" (path not mapped to a repository and permission),
+	// "repo" (repository not in the allowlist), or "permission" (scope does
+	// not grant the mapped permission).
+	PassthroughScopeDeniedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_passthrough_scope_denied_total",
+		Help: "Total scoped client-token requests denied on the github.com and codeload.github.com virtual hosts, by vhost and reason.",
+	}, []string{"vhost", "reason"})
+
 	// BlockAnonymousGitEnabled reflects whether the anonymous git blocking
 	// feature is currently active (1) or inactive (0). Set at server startup
 	// and on config reload (SIGUSR1); not updated per-request.

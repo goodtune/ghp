@@ -298,8 +298,11 @@ func TestScopedPassthrough_GitFetch_Allowed(t *testing.T) {
 	}
 }
 
-func TestScopedPassthrough_NonGitPath_PassesThrough(t *testing.T) {
-	// A request to a non-git path should pass through without scope enforcement.
+func TestScopedPassthrough_NonGitPath_DeniedForScopedToken(t *testing.T) {
+	// goodtune/ghp#292: this test used to assert that a non-git path passes
+	// through without scope enforcement. A scoped token must not reach an
+	// unmapped github.com path: GHP cannot prove the path stays inside the
+	// allowlist, so it denies by default.
 	handler, ghpToken := newScopedPassthrough(t, "goodtune/ghp", map[string]string{
 		"contents": "read",
 	})
@@ -310,9 +313,8 @@ func TestScopedPassthrough_NonGitPath_PassesThrough(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	// Should pass through (inner handler returns 200).
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200 for non-git path, got %d", rr.Code)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for unmapped non-git path, got %d", rr.Code)
 	}
 }
 

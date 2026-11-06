@@ -40,8 +40,8 @@ ghp serves several distinct roles depending on which hostname the request arrive
 | Hostname | Role |
 |----------|------|
 | `api.github.com` | **API proxy** — validates tokens, enforces scopes, injects credentials, logs every request |
-| `github.com` | **Git passthrough** — transparent proxy for `git clone`, `git push`, etc. with token interception |
-| `codeload.github.com` | **Codeload redirect/passthrough** — optionally redirects repo archive downloads to a caching mirror (see [Codeload Redirect](features/codeload.md)); transparent passthrough otherwise |
+| `github.com` | **Git passthrough** — proxy for `git clone`, `git push`, archive and release downloads with token interception; scoped tokens are checked and unmapped paths are denied (see [Token Scoping](features/token-scoping.md#githubcom-and-codeloadgithubcom)) |
+| `codeload.github.com` | **Codeload redirect/passthrough** — optionally redirects repo archive downloads to a caching mirror (see [Codeload Redirect](features/codeload.md)); passthrough otherwise. Client tokens are resolved and scoped tokens are checked before the redirect or forward |
 | `*.githubcopilot.com` | **Copilot passthrough** — forwards Copilot traffic transparently; all requests are logged |
 | Your management host | **Dashboard** — web UI, GitHub OAuth login (web), CLI device-authorization endpoints, token management API |
 
