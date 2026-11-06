@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/goodtune/ghp/internal/database"
@@ -445,5 +446,34 @@ func TestDecideREST_ActionsAdminRules(t *testing.T) {
 				t.Errorf("allowed = %v, want %v (%s)", d.allowed, tt.allowed, d.message)
 			}
 		})
+	}
+}
+
+// The unsafe-path denial must record a real scope_enforcement duration.
+func TestServeHTTP_UnsafePathRecordsScopeEnforcement(t *testing.T) {
+	read := func() (uint64, float64) {
+		m := &dto.Metric{}
+		obs := metrics.ProxyDecisionDuration.WithLabelValues(metrics.StageScopeEnforcement, "proxy")
+		if err := obs.(prometheus.Metric).Write(m); err != nil {
+			t.Fatal(err)
+		}
+		return m.GetHistogram().GetSampleCount(), m.GetHistogram().GetSampleSum()
+	}
+	h, tok, _ := newScopedHandlerWithTransport(t, "owner/a", nil)
+	beforeCount, beforeSum := read()
+	req := httptest.NewRequest("GET", "http://api.github.com/", nil)
+	req.URL.Path = "/repos/owner/a/../../owner/b/contents"
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rr.Code)
+	}
+	afterCount, afterSum := read()
+	if afterCount-beforeCount != 1 {
+		t.Fatalf("expected one scope_enforcement sample, got %d", afterCount-beforeCount)
+	}
+	if afterSum <= beforeSum {
+		t.Errorf("expected a non-zero scope_enforcement duration, sum delta %g", afterSum-beforeSum)
 	}
 }

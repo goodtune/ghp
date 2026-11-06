@@ -228,9 +228,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Reject dot segments and empty segments before any lookup. Such a path
 	// could resolve to a different resource upstream than the one the scope
 	// checks see (for example /repos/A/x/../../B/y/contents).
+	unsafeCheckStart := time.Now()
 	if hasUnsafePathSegment(apiPath) {
+		metrics.ObserveDecision(metrics.StageScopeEnforcement, resolveTokenType, time.Since(unsafeCheckStart))
 		h.logger.Info("proxy_unsafe_path_denied", "method", r.Method, "path", r.URL.EscapedPath(), "token_type", resolveTokenType)
-		metrics.ObserveDecision(metrics.StageScopeEnforcement, resolveTokenType, 0)
 		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
 		writeError(w, http.StatusForbidden, "Request path contains an unsafe segment or character")
 		return
