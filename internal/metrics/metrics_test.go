@@ -767,3 +767,17 @@ func TestPassthroughScopeDeniedTotal(t *testing.T) {
 		})
 	}
 }
+
+func TestManagementHostRejectedTotal(t *testing.T) {
+	for _, reason := range []string{"anonymous", "native_token"} {
+		t.Run(reason, func(t *testing.T) {
+			labels := prometheus.Labels{"reason": reason}
+			before := getCounterValue(t, ManagementHostRejectedTotal, labels)
+			ManagementHostRejectedTotal.WithLabelValues(reason).Inc()
+			after := getCounterValue(t, ManagementHostRejectedTotal, labels)
+			if after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
+	}
+}

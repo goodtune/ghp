@@ -6,7 +6,7 @@
 # agent_installation capability and has not run yet.
 #
 # Consensus issue links, for triage: A1 goodtune/ghp#290, A2 #291,
-# A3 #292, A6 #294, A7 #295.
+# A3 #292, A6 #294, A7 #295, A8 #296.
 
 # GAP-A1: DELETE git/refs needs contents:write (#290). Before the fix it was
 # forwarded unchecked (GitHub answered 422 for the absent ref). The ref never
@@ -92,3 +92,40 @@
     status: 403
     ghp_denial: true
     body_not_contains: ['"path": "README.md"', '"path":"README.md"']
+
+# GAP-A8: the management host's GHES-style paths (/api/v3/, /api/graphql)
+# accept only ghx_/gha_ tokens. An empty Authorization header overrides the
+# profile token, so the request reaches GHP with no credential. The native
+# token is fake (built from the run ID, as in BORDER-C43); it is 403 whether
+# or not the border policy blocks gho_, so the message is not asserted.
+- id: GAP-A8.anonymous-rest
+  claim: GAP-A8
+  doc: docs/how-it-works.md#security-model
+  description: An anonymous REST request to the management host is 401, not forwarded to GitHub.
+  profile: open
+  kind: rest
+  method: GET
+  path: /user
+  headers: {Authorization: ""}
+  expect: {status: 401, body_contains: ["Authentication with a GHP-issued token (ghx_ or gha_) is required"], ghp_denial: true}
+
+- id: GAP-A8.anonymous-graphql
+  claim: GAP-A8
+  doc: docs/how-it-works.md#security-model
+  description: An anonymous GraphQL request to the management host is 401, not forwarded to GitHub.
+  profile: open
+  kind: graphql
+  query: "{ viewer { login } }"
+  headers: {Authorization: ""}
+  expect: {status: 401, body_contains: ["Authentication with a GHP-issued token (ghx_ or gha_) is required"], ghp_denial: true}
+
+- id: GAP-A8.native-token-rest
+  claim: GAP-A8
+  doc: docs/how-it-works.md#security-model
+  description: A native gho_ token on the management host is 403 regardless of the border policy.
+  profile: open
+  kind: rest
+  method: GET
+  path: /user
+  headers: {Authorization: "token gho_{{printf \"%.36s\" (print .RunID \"scoperigfakescoperigfakescoperigfake\")}}"}
+  expect: {status: 403, ghp_denial: true}

@@ -126,6 +126,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_auth_rate_limit_total` — rate limiter rejections
 - `ghp_scope_unmapped_denied_total` — scoped-token REST requests denied because no scope rule matched (`token_type`, `method`)
 - `ghp_enterprise_exception_total` — enterprise restriction exception matches by outcome (`header_omitted`, `identity_substituted`, `team_denied`, `unauthenticated_denied`, `identity_error`)
+- `ghp_management_host_rejected_total` — management host `/api/v3/` and `/api/graphql` requests rejected for lack of a GHP-issued token (`reason`: `anonymous` (401), `native_token` (403))
 - `ghp_releases_redirect_head_check_total` — HEAD check outcomes (`found`, `not_found`, `error`) for release redirect targets
 - `ghp_forward_proxy_select_total` — forward proxy routing decisions by matched `ruleset` and `layer` (`header`, `token`, `app`, `net`, `system`, `control`, `ambient`, `direct`)
 - `ghp_forward_proxy_client_specified_total` — requests routed through a client-specified proxy via `X-GitHub-Proxy-Forward-*` headers (`scheme`, `token_type` labels; gated by `forward_proxy.allow_request_header`)
