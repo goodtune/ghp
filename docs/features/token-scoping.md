@@ -178,7 +178,8 @@ query. For those scoped-token requests the body is parsed (using
   `Mutation.<field>` and field-name → scope mappings (e.g.
   `Mutation.createIssue` → `issues:write`, `pullRequests` → `pull_requests:read`).
 - **Referenced repositories**, extracted from `repository(owner, name)`
-  arguments where both arguments are string literals.
+  arguments where each argument is a string literal or a `String` variable
+  with a string value (see below).
 - **Cross-repository fields** (e.g. `search`, `node`, `viewer.repositories`)
   that can return data from outside any explicit `repository(...)` selection.
 
@@ -186,8 +187,8 @@ The proxy uses the analysis to apply a deny-by-default policy:
 
 - **Open-scoped tokens** bypass GraphQL static analysis entirely; the
   underlying credential's permissions remain the only enforcement layer.
-- **Repository-restricted tokens** must reference at least one
-  `repository(owner, name)` with literal arguments, and every referenced
+- **Repository-restricted tokens** must reference at least one pinned
+  `repository(owner, name)`, and every referenced
   repository must appear in the token's allowlist. Cross-repository fields
   are rejected outright: ghp cannot statically prove their results stay
   inside the allowlist. GraphQL mutations are also rejected for
@@ -209,14 +210,37 @@ The proxy uses the analysis to apply a deny-by-default policy:
   scoped token. Scalar leaves are permitted without a per-field mapping
   because their parent field's scope already gates them.
 
-Variable-driven repository lookups (`repository(owner: $owner, ...)`) cannot
-be statically validated against a token's repository allowlist. For
-repository-restricted tokens, the proxy rejects any request that contains
-even one such variable-driven `repository(...)` selection, even if other
-literal allowlisted lookups are present in the same query — otherwise an
-attacker could mix one literal allowlisted lookup with an unbounded
-variable-driven lookup that bypasses the allowlist. Tokens with no
+A `repository(owner, name)` lookup is *pinned* to a repository when each
+of `owner` and `name` is one of these:
+
+- a literal string, for example `repository(owner: "octo", name: "app")`;
+- a variable `$v` that the operation declares with the type `String` or
+  `String!` (not a list), and whose value in the request's `variables`
+  object is a JSON string. This is the form that the GitHub CLI (`gh`)
+  sends.
+
+A variable does not pin the lookup when its value is `null`, a number, a
+boolean, an array or an object, or when the key is not in `variables`.
+The default value in the operation (`$v: String = "app"`) is never used.
+No variable pins a lookup when the `variables` object has duplicate keys,
+or when the document has more than one operation: in these cases the
+proxy and GitHub could read different values. The proxy forwards the
+same bytes that it analyses.
+
+For scoped tokens the request body must be a JSON object whose top-level
+keys are each `query`, `operationName`, `variables` or
+`extensions` exactly, after JSON string decoding (case-sensitive, no Unicode folding), with no duplicates. Any other
+key, including `Query` or a look-alike such as `variableſ`, gives a 400.
+
+For repository-restricted tokens, the proxy rejects any request that
+contains even one unpinned `repository(...)` selection, even if other
+allowlisted lookups are present in the same query. Every pinned
+repository, literal or variable, must be in the allowlist. Tokens with no
 repository restriction (permission-only or open-scoped) are unaffected.
+
+At a mutation root, `__typename` needs no scope. All other mutation root
+fields still need a mapped write scope, and a mutation that selects only
+`__typename` is still rejected for scoped tokens.
 For requests that go through GraphQL static analysis the request body is
 capped at 1 MiB to bound memory usage. Open-scoped tokens bypass static
 analysis, so this cap does not apply to them.
@@ -236,6 +260,13 @@ fields" message can use the named field as a hint for extending
   credential's permissions and by GitHub's own access checks; operators
   who need stricter enforcement should map the affected scalar in
   `fieldScopeRequirements` or use REST scoping for the affected flow.
+- **Variable pinning trusts the `variables` object of the forwarded
+  body.** A lookup with variables is checked against the values that the
+  request sends, which are the values that GitHub uses. A client that
+  sends duplicate keys in `variables`, more than one operation, or a non-string value
+  gets a 403 for a repository-restricted token. gh queries that have
+  object fields with no analyzer table entry are still rejected as
+  unmapped (tracked separately).
 - **Repository-restricted GraphQL mutations are not supported.** GitHub
   mutation inputs identify their target by opaque global node ID
   (`repositoryId`), which the proxy cannot statically map to a

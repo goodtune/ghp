@@ -122,21 +122,45 @@
         variables: {rid: "{{.Step.repo.rid}}"}
       expect: {status: 403, body_contains: ["GraphQL mutations are not supported"], ghp_denial: true}
 
-- id: GQL-C28.variable-only
+- id: GQL-C28.variable-allowed
   claim: GQL-C28
   doc: docs/features/token-scoping.md#graphql-scope-enforcement
-  description: A variable-driven repository lookup is rejected for a repository-scoped token.
+  description: String variables with string values pin the repository; a token scoped to A can look up A.
   profile: repo-A
   kind: graphql
   query: |
     query($o: String!, $n: String!) { repository(owner: $o, name: $n) { name } }
   variables: {o: "{{.RepoA.Owner}}", n: "{{.RepoA.Name}}"}
+  expect:
+    status: 200
+    body_not_contains: ['"errors"']
+    json: {"$.data.repository.name": "{{.RepoA.Name}}"}
+
+- id: GQL-C28.variable-other-repo
+  claim: GQL-C28
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A token scoped to A cannot look up B through variables.
+  profile: repo-A
+  kind: graphql
+  query: |
+    query($o: String!, $n: String!) { repository(owner: $o, name: $n) { name } }
+  variables: {o: "{{.RepoB.Owner}}", n: "{{.RepoB.Name}}"}
+  expect: {status: 403, body_contains: ["Token is not scoped to"], ghp_denial: true}
+
+- id: GQL-C28.variable-absent
+  claim: GQL-C28
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A variable with no value in the variables object does not pin the repository, even with a default value.
+  profile: repo-A
+  kind: graphql
+  query: |
+    query($o: String! = "{{.RepoA.Owner}}", $n: String! = "{{.RepoA.Name}}") { repository(owner: $o, name: $n) { name } }
   expect: {status: 403, body_contains: ["literal string arguments"], ghp_denial: true}
 
 - id: GQL-C28.mixed-literal-and-variable
   claim: GQL-C28
   doc: docs/features/token-scoping.md#graphql-scope-enforcement
-  description: A variable-driven lookup is rejected even alongside an allowed literal lookup.
+  description: A variable-driven lookup of B is rejected even alongside an allowed literal lookup of A.
   profile: repo-A
   kind: graphql
   query: |
@@ -144,10 +168,10 @@
       a: repository(owner:"{{.RepoA.Owner}}", name:"{{.RepoA.Name}}"){ name }
       b: repository(owner:$o, name:$n){ name }
     }
-  variables: {o: "{{.RepoA.Owner}}", n: "{{.RepoA.Name}}"}
+  variables: {o: "{{.RepoB.Owner}}", n: "{{.RepoB.Name}}"}
   expect:
     status: 403
-    body_contains: ["literal string arguments"]
+    body_contains: ["Token is not scoped to"]
     ghp_denial: true
 
 - id: GQL-C29.pullrequests-needs-scope

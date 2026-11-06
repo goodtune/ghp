@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -12,15 +14,68 @@ import (
 )
 
 // graphQLRequestBody is the JSON envelope GitHub's GraphQL endpoint expects.
-// Variables are kept as json.RawMessage rather than `map[string]any`: the
-// analyser does not look inside them (variable values cannot statically
-// pin a repository, so the analyser already treats variable-driven
-// `repository(...)` arguments as unpinned), and decoding them eagerly
-// would allocate the entire object on every analysed request.
+// It is decoded by parseGraphQLEnvelope, never by encoding/json struct-field
+// matching (which folds case and Unicode, so `Query` or `variableſ` would be
+// read as `query` or `variables` while GitHub ignores them). Variables are
+// kept as json.RawMessage: the analyser only reads the members that a
+// `repository(owner:, name:)` lookup references (see resolveVariables).
 type graphQLRequestBody struct {
-	Query         string          `json:"query"`
-	OperationName string          `json:"operationName,omitempty"`
-	Variables     json.RawMessage `json:"variables,omitempty"`
+	Query         string
+	OperationName string
+	Variables     json.RawMessage
+}
+
+// graphQLEnvelopeKeys are the only top-level members a request body may have.
+var graphQLEnvelopeKeys = map[string]bool{
+	"query": true, "operationName": true, "variables": true, "extensions": true,
+}
+
+// parseGraphQLEnvelope decodes the request envelope strictly: the body must
+// be a JSON object whose keys are each exactly one of graphQLEnvelopeKeys,
+// with no duplicates. Anything else is an error (400), because the proxy and
+// GitHub could otherwise read different queries or variables from the same
+// bytes. `query` and `operationName` must be strings (or null); `variables`
+// is kept raw.
+func parseGraphQLEnvelope(body []byte) (graphQLRequestBody, error) {
+	var req graphQLRequestBody
+	members, ok := objectMembers(body)
+	if !ok {
+		return req, fmt.Errorf("graphql: invalid request envelope: body must be a JSON object")
+	}
+	seen := map[string]bool{}
+	for _, m := range members {
+		if !graphQLEnvelopeKeys[m.key] {
+			return req, fmt.Errorf("graphql: invalid request envelope: unexpected top-level key %q (allowed: query, operationName, variables, extensions)", m.key)
+		}
+		if seen[m.key] {
+			return req, fmt.Errorf("graphql: invalid request envelope: duplicate top-level key %q", m.key)
+		}
+		seen[m.key] = true
+		switch m.key {
+		case "query":
+			if err := decodeOptionalString(m.value, &req.Query); err != nil {
+				return req, fmt.Errorf("graphql: invalid request envelope: query must be a string")
+			}
+		case "operationName":
+			if err := decodeOptionalString(m.value, &req.OperationName); err != nil {
+				return req, fmt.Errorf("graphql: invalid request envelope: operationName must be a string")
+			}
+		case "variables":
+			req.Variables = m.value
+		}
+	}
+	return req, nil
+}
+
+func decodeOptionalString(raw json.RawMessage, dst *string) error {
+	raw = bytes.TrimSpace(raw)
+	if string(raw) == "null" {
+		return nil
+	}
+	if len(raw) == 0 || raw[0] != '"' {
+		return fmt.Errorf("not a string")
+	}
+	return json.Unmarshal(raw, dst)
 }
 
 // graphQLAnalysis is the result of statically analysing a GraphQL request
@@ -51,12 +106,12 @@ type graphQLAnalysis struct {
 	// (deny-by-default). Open-scoped tokens ignore it.
 	unknownFields []string
 	// hasUnpinnedRepositoryLookup is true when a `repository(...)`
-	// selection used non-literal arguments (e.g. supplied via a GraphQL
-	// variable) and could not be statically pinned to an owner/name.
+	// selection has arguments that do not resolve to strings (see
+	// gqlAnalyzer.stringArg) and so cannot be pinned to an owner/name.
 	// Repository-restricted tokens must reject such requests even if the
 	// query also references at least one literal allowlisted repo —
 	// otherwise an attacker could mix one literal allowlisted lookup
-	// with an unbounded variable-driven lookup that bypasses the
+	// with an unresolvable lookup that bypasses the
 	// allowlist.
 	hasUnpinnedRepositoryLookup bool
 }
@@ -400,9 +455,9 @@ var mutationScopeRequirements = map[string]scopeRequirement{
 // An empty or unparseable body returns an error so the caller can fail
 // closed. A request that contains no operations is treated the same way.
 func analyzeGraphQLRequest(body []byte) (graphQLAnalysis, error) {
-	var req graphQLRequestBody
-	if err := json.Unmarshal(body, &req); err != nil {
-		return graphQLAnalysis{}, fmt.Errorf("graphql: invalid JSON body: %w", err)
+	req, err := parseGraphQLEnvelope(body)
+	if err != nil {
+		return graphQLAnalysis{}, err
 	}
 	if strings.TrimSpace(req.Query) == "" {
 		return graphQLAnalysis{}, fmt.Errorf("graphql: empty query")
@@ -431,6 +486,8 @@ func analyzeGraphQLRequest(body []byte) (graphQLAnalysis, error) {
 	}
 
 	a := &gqlAnalyzer{
+		varDefs:       op.VariableDefinitions,
+		vars:          resolveVariables(req.Variables, len(doc.Operations)),
 		fragments:     fragments,
 		fragmentStack: map[string]bool{},
 		seenScopes:    map[scopeRequirement]struct{}{},
@@ -511,6 +568,11 @@ func selectOperation(doc *ast.QueryDocument, operationName string) (*ast.Operati
 }
 
 type gqlAnalyzer struct {
+	// varDefs are the selected operation's variable definitions and vars
+	// the request's variables, or nil when they must not be trusted (see
+	// resolveVariables). Both are used only to pin repository lookups.
+	varDefs   ast.VariableDefinitionList
+	vars      map[string]json.RawMessage
 	fragments map[string]*ast.FragmentDefinition
 	// fragmentStack holds the fragment names currently being walked, so
 	// recursive fragment spreads (which the GraphQL spec disallows) cannot
@@ -583,14 +645,15 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int
 	// as a lookup (i.e. has arguments). Nested `Repository` accessors with
 	// no arguments — `PullRequest.repository`, `Issue.repository`, etc. —
 	// are not lookups and must not be flagged as "unpinned". When a lookup
-	// is present but its arguments are not statically analysable as literal
-	// strings (e.g. supplied via a variable, or single-arg forms like
+	// is present but its arguments do not resolve to strings (a literal, or
+	// a String variable with a JSON string value; see stringArg), or for
+	// single-arg forms like
 	// `Organization.repository(name:)` whose owner is implied by the parent
 	// type), record it as "unpinned" so repo-restricted tokens fail closed:
 	// otherwise an attacker could mix one literal allowlisted lookup with a
 	// variable-driven lookup and bypass the allowlist.
 	if name == "repository" && len(f.Arguments) > 0 {
-		if owner, repo := repositoryArgs(f); owner != "" && repo != "" {
+		if owner, repo := a.repositoryArgs(f); owner != "" && repo != "" {
 			a.seenRepos[owner+"/"+repo] = struct{}{}
 		} else {
 			a.result.hasUnpinnedRepositoryLookup = true
@@ -611,7 +674,13 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int
 
 	// Mutation root fields require a write-level scope.
 	if inMutation && atRoot {
-		if req, ok := mutationScopeRequirements[name]; ok {
+		if name == "__typename" {
+			// #299: `__typename` at a mutation root returns the type
+			// name "Mutation" and changes nothing, so it needs no scope.
+			// A mutation that selects only `__typename` still has no
+			// write scope and is denied by the mutation checks in
+			// graphQLVerdict.
+		} else if req, ok := mutationScopeRequirements[name]; ok {
 			a.seenScopes[req] = struct{}{}
 		} else {
 			a.seenUnknown[name] = struct{}{}
@@ -668,28 +737,132 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int
 }
 
 // repositoryArgs extracts the (owner, name) arguments from a
-// `repository(owner: "X", name: "Y")` field selection. It returns empty
-// strings if either argument is missing or non-literal (for example
-// supplied via a GraphQL variable). In that case the helper does not
-// have a statically pinned repository to record; policy enforcement
-// then treats the lookup as having no pinned repository, which causes
-// the `len(referencedRepos) == 0` check in the caller to reject the
-// request for repository-restricted tokens. Cross-repo tracking is not
+// `repository(owner:, name:)` field selection. It returns empty strings if
+// either argument is missing or does not resolve to a string (see
+// stringArg). The caller then records the lookup as unpinned, which fails
+// closed for repository-restricted tokens. Cross-repo tracking is not
 // populated from this helper.
-func repositoryArgs(f *ast.Field) (string, string) {
+func (a *gqlAnalyzer) repositoryArgs(f *ast.Field) (string, string) {
 	var owner, repo string
 	for _, arg := range f.Arguments {
-		if arg.Value == nil || arg.Value.Kind != ast.StringValue {
-			continue
-		}
 		switch arg.Name {
 		case "owner":
-			owner = arg.Value.Raw
+			owner, _ = a.stringArg(arg.Value)
 		case "name":
-			repo = arg.Value.Raw
+			repo, _ = a.stringArg(arg.Value)
 		}
 	}
 	return owner, repo
+}
+
+// stringArg resolves an argument value to a string. It accepts exactly:
+//
+//   - a literal GraphQL string; or
+//   - a variable `$v` that the selected operation declares with the named
+//     type `String` (nullable or non-null, not a list), whose member in the
+//     request's `variables` object is a JSON string.
+//
+// Operation default values are never used: a variable that is absent from
+// `variables` does not resolve. A null, number, boolean, array or object
+// value does not resolve. When the variables are not trusted (a.vars is nil,
+// see resolveVariables) no variable resolves.
+func (a *gqlAnalyzer) stringArg(v *ast.Value) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	switch v.Kind {
+	case ast.StringValue:
+		return v.Raw, true
+	case ast.Variable:
+		if a.vars == nil {
+			return "", false
+		}
+		def := a.varDefs.ForName(v.Raw)
+		if def == nil || def.Type == nil || def.Type.Elem != nil || def.Type.NamedType != "String" {
+			return "", false
+		}
+		raw, ok := a.vars[v.Raw]
+		if !ok {
+			return "", false
+		}
+		raw = bytes.TrimSpace(raw)
+		if len(raw) == 0 || raw[0] != '"' {
+			return "", false
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return "", false
+		}
+		return s, true
+	}
+	return "", false
+}
+
+// resolveVariables returns the request's variables for repository pinning,
+// or nil when they must not be trusted: the document has more than one
+// operation, or `variables` is absent, not a JSON object, or has duplicate
+// keys (so the proxy and GitHub cannot read different values for the same
+// name). The envelope itself was already checked by parseGraphQLEnvelope,
+// and the body that is analysed is the body handleGraphQL forwards, byte
+// for byte.
+func resolveVariables(variables json.RawMessage, operations int) map[string]json.RawMessage {
+	if operations != 1 {
+		return nil
+	}
+	members, ok := objectMembers(variables)
+	if !ok {
+		return nil
+	}
+	vars := make(map[string]json.RawMessage, len(members))
+	for _, m := range members {
+		if _, dup := vars[m.key]; dup {
+			return nil
+		}
+		vars[m.key] = m.value
+	}
+	return vars
+}
+
+type jsonMember struct {
+	key   string
+	value json.RawMessage
+}
+
+// objectMembers returns the members of a JSON object in document order,
+// duplicates included, with keys exactly as decoded (no case folding). It
+// reports false when raw is not a single JSON object.
+func objectMembers(raw []byte) ([]jsonMember, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, false
+	}
+	var members []jsonMember
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, false
+		}
+		k, ok := tok.(string)
+		if !ok {
+			return nil, false
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, false
+		}
+		members = append(members, jsonMember{key: k, value: v})
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false
+	}
+	return members, true
 }
 
 // satisfiedBy reports whether the given proxy-token scopes grant every

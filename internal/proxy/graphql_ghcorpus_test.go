@@ -98,9 +98,9 @@ func loadGHCorpus(t *testing.T) []ghCorpusLoaded {
 // current. "changed": a known issue yields neither. "fail": an entry without
 // a known issue does not yield its verdict.
 //
-// Repo-profile entries that are both unmapped and variable-driven are tagged
-// #298 (deny:unmapped fires first); once #298 lands they are expected to flip
-// to deny:unpinned and need re-tagging with #297.
+// Repo-profile entries tagged #298 use String variables for owner/name; since
+// #297 those pin the repository, so once #298 lands they are expected to reach
+// their verdict.
 func classifyCorpus(got, verdict, current string, known bool) string {
 	if !known {
 		if got == verdict {
