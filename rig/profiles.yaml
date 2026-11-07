@@ -14,6 +14,10 @@
   type: proxy
   scopes: "issues:read"
   duration: 2h
+- name: perm-metadata-ro
+  type: proxy
+  scopes: "metadata:read"
+  duration: 2h
 - name: repo-A
   type: proxy
   repositories: ["{{.RepoA}}"]

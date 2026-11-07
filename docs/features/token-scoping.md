@@ -266,6 +266,41 @@ allowlisted lookups are present in the same query. Every pinned
 repository, literal or variable, must be in the allowlist. Tokens with no
 repository restriction (permission-only or open-scoped) are unaffected.
 
+### Root object lookups
+
+The root fields `node(id:)`, `nodes(ids:)`, `resource(url:)` and
+`search(...)` fetch objects of any type by global ID, URL or search query.
+The field name does not tell ghp which type the client reads, so for
+permission-restricted tokens ghp gates these lookups on the type condition
+of each fragment beneath them:
+
+| Type condition | Required scope |
+|---|---|
+| `Issue` | `issues:read` |
+| `PullRequest` | `pull_requests:read` |
+| `Discussion` | `discussions:read` |
+| `Commit`, `Release` | `contents:read` |
+| `CheckRun`, `CheckSuite` | `checks:read` |
+| `StatusContext` | `statuses:read` |
+| `Repository`, `User`, `Organization`, `Bot`, `Team` | `metadata:read` |
+
+Inline fragments (`... on Issue { body }`) and named fragments
+(`...F` with `fragment F on Issue`) are both checked. A fragment with no
+type condition (`... @include(if: $x) { ... }`) is transparent: the
+fragments inside it are checked. For `search`, the fragments under `nodes`
+and `edges { node }` are checked, and scalar fields such as `issueCount`
+can be selected beside them.
+
+ghp rejects the request as unmapped when a lookup has no fragment (for
+example `{ node(id: "...") { id } }`, or a `search` that selects only
+counts), when a fragment names a type that is not in the table (including
+interfaces such as `Node`), or when a field other than `id` or
+`__typename` is selected outside a fragment. The fields inside a fragment
+are then checked as usual. The same field names in nested positions, for
+example `Connection.nodes`, are pagination helpers and are not affected.
+These four lookups are still cross-repository fields, so
+repository-restricted tokens cannot use them.
+
 At a mutation root, `__typename` needs no scope. All other mutation root
 fields still need a mapped write scope, and a mutation that selects only
 `__typename` is still rejected for scoped tokens.
@@ -275,7 +310,8 @@ analysis, so this cap does not apply to them.
 
 Operators reading 403 responses with a "GraphQL request references unmapped
 fields" message can use the named field as a hint for extending
-`fieldScopeRequirements` or `mutationScopeRequirements` in
+`fieldScopeRequirements`, `mutationScopeRequirements` or
+`typeConditionScopeRequirements` in
 `internal/proxy/graphql.go` to cover legitimate use cases.
 
 ### Known limitations

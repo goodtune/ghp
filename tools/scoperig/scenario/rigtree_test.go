@@ -21,7 +21,7 @@ func TestRigTree(t *testing.T) {
 	for i := 1; i <= 54; i++ {
 		want[fmt.Sprintf("C%d", i)] = true
 	}
-	for i := 1; i <= 9; i++ {
+	for i := 1; i <= 10; i++ {
 		want[fmt.Sprintf("GAP-A%d", i)] = true
 	}
 	got := make(map[string]string) // normalised key -> claim id
@@ -49,8 +49,8 @@ func TestRigTree(t *testing.T) {
 		t.Errorf("claim set mismatch: missing %v, extra %v", missing, extra)
 	}
 
-	if n := len(tree.Profiles); n != 11 {
-		t.Errorf("profiles: got %d, want 11", n)
+	if n := len(tree.Profiles); n != 12 {
+		t.Errorf("profiles: got %d, want 12", n)
 	}
 
 	testable := map[string]string{"C42": "never", "C53": "never", "C45": "manual", "C54": "manual"}

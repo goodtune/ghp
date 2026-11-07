@@ -129,3 +129,19 @@
   path: /user
   headers: {Authorization: "token gho_{{printf \"%.36s\" (print .RunID \"scoperigfakescoperigfakescoperigfake\")}}"}
   expect: {status: 403, ghp_denial: true}
+
+# GAP-A10: root nodes(ids:) with an inline fragment used to pass for any
+# permission-scoped token, because `nodes` is always allowed as a
+# Connection helper (#324). GHP now requires the scope of each fragment
+# type condition, so a metadata:read token is denied issues:read. The
+# denial is static (before any lookup), so the ID is the repository node ID:
+# a metadata:read token cannot read an issue node ID to use instead.
+- id: GAP-A10.nodes-fragment-bypass
+  claim: GAP-A10
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: Root nodes(ids:) with an Issue fragment needs issues:read; a metadata:read token is denied by GHP.
+  profile: perm-metadata-ro
+  kind: graphql
+  query: |
+    { nodes(ids: ["{{.RepoA.NodeID}}"]) { ... on Issue { title body } } }
+  expect: {status: 403, body_contains: ["Token does not grant required GraphQL scopes", "issues:read"], ghp_denial: true}
