@@ -249,6 +249,32 @@ func TestValidate_GHWrites(t *testing.T) {
 	}
 }
 
+// Positional fixture arguments (issue/PR numbers from discovered fixtures)
+// carry no "/" and are not repository references; slash-bearing
+// positionals are, and must resolve to W for writes.
+func TestValidate_GHPositionalFixtureArgs(t *testing.T) {
+	for _, tc := range []struct {
+		s  *Scenario
+		ok bool
+	}{
+		{ghScenario("PF1", "W", "pr", "comment", "{{.Fixture.W.PRNumber}}", "--body", "x"), true},
+		{ghScenario("PF2", "", "issue", "close", "{{.Fixture.W.IssueNumber}}", "-R", "{{.RepoW}}"), true},
+		{ghScenario("PF3", "A", "issue", "view", "{{.Fixture.A.IssueNumber}}"), true},
+		{ghScenario("PF4", "", "issue", "close", "{{.Fixture.A.IssueNumber}}", "-R", "{{.RepoA}}"), false},
+		{ghScenario("PF5", "W", "repo", "delete", "{{.RepoA}}", "--yes"), false},
+		{ghScenario("PF6", "W", "pr", "comment", "https://{{.Host}}/{{.RepoA}}/pull/{{.Fixture.A.PRNumber}}", "--body", "x"), false},
+	} {
+		t.Run(tc.s.ID, func(t *testing.T) {
+			errs := Validate(withScenarios(tc.s), nil)
+			if tc.ok {
+				requireNoErr(t, errs)
+			} else {
+				requireErr(t, errs, tc.s.ID, "gh:")
+			}
+		})
+	}
+}
+
 func TestValidate_GraphQLMutationTargets(t *testing.T) {
 	mutVar := `mutation($id: ID!) { createIssue(input:{repositoryId:$id, title:"x"}) { issue { number } } }`
 	cases := []struct {

@@ -117,16 +117,16 @@ func repoRef(s string) scenario.RepoRef {
 	return scenario.RepoRef{Owner: o, Name: n}
 }
 
+// endOfRunTimeout bounds each end-of-run sweep and verification call; it
+// matches the token manager's revoke timeout.
+const endOfRunTimeout = 60 * time.Second
+
 // runRig executes spec §3.5 steps 1-9 (writing is the caller's job). The
 // returned error is an *exitError (code 3) for validation, config and
 // preflight failures (no report is returned), and code 2 for a failed
 // startup sweep. Tokens created by
 // the run are revoked exactly once, before runRig returns, even on panic or
 // cancellation.
-// endOfRunTimeout bounds each end-of-run sweep and verification call; it
-// matches the token manager's revoke timeout.
-const endOfRunTimeout = 60 * time.Second
-
 func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, err error) {
 	deps.defaults()
 	out := deps.Out

@@ -458,3 +458,22 @@ func TestManager_CreateRawOverwritesSessionID(t *testing.T) {
 		t.Fatal("CreateRaw must not modify the caller's body")
 	}
 }
+
+func TestPace(t *testing.T) {
+	for _, tc := range []struct {
+		rate int
+		want time.Duration
+	}{
+		{20, 4 * time.Second},
+		{60, time.Minute / 45},
+		// Non-positive rates clamp to 1/min; the default rate is config's.
+		{0, 80 * time.Second},
+		{-5, 80 * time.Second},
+	} {
+		t.Run(fmt.Sprint(tc.rate), func(t *testing.T) {
+			if got := Pace(tc.rate); got != tc.want {
+				t.Errorf("Pace(%d) = %v, want %v", tc.rate, got, tc.want)
+			}
+		})
+	}
+}

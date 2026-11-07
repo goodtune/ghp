@@ -5,24 +5,52 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/goodtune/ghp/tools/scoperig/corpus"
 	"github.com/goodtune/ghp/tools/scoperig/ghdebug"
 )
 
+var (
+	oracleFakeGHOnce sync.Once
+	oracleFakeGHBin  []byte
+	oracleFakeGHErr  error
+)
+
+// buildOracleFakeGH builds the fake gh once per test binary and copies it
+// into a fresh per-test directory (the fixture keeps its captures next to
+// the binary).
 func buildOracleFakeGH(t *testing.T) string {
 	t.Helper()
+	oracleFakeGHOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "scoperig-fakegh-")
+		if err != nil {
+			oracleFakeGHErr = err
+			return
+		}
+		defer func() { _ = os.RemoveAll(dir) }()
+		built := filepath.Join(dir, "gh")
+		cmd := osexec.Command("go", "build", "-o", built, "./exec/testdata/fakegh")
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			oracleFakeGHErr = fmt.Errorf("build fakegh: %v\n%s", err, out)
+			return
+		}
+		oracleFakeGHBin, oracleFakeGHErr = os.ReadFile(built)
+	})
+	if oracleFakeGHErr != nil {
+		t.Fatal(oracleFakeGHErr)
+	}
 	bin := filepath.Join(t.TempDir(), "gh")
-	cmd := osexec.Command("go", "build", "-o", bin, "./exec/testdata/fakegh")
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build fakegh: %v\n%s", err, out)
+	if err := os.WriteFile(bin, oracleFakeGHBin, 0o755); err != nil {
+		t.Fatal(err)
 	}
 	return bin
 }
@@ -213,32 +241,41 @@ func assertTempsGone(t *testing.T, temps []string) {
 	}
 }
 
+// TestOracle_RefusesUnsafeOutput injects a token and a surviving identity
+// into every capture in the oracle matrix, one at a time, and requires the
+// oracle to refuse each without writing output.
 func TestOracle_RefusesUnsafeOutput(t *testing.T) {
 	cases := map[string]string{
 		"token":    `{"limit":30,"owner":"cli","repo":"cli","q":"ghx_test0000fakevalue"}`,
 		"identity": `{"limit":30,"owner":"cli","repo":"cli","q":"is:pr cli"}`,
 	}
-	for name, vars := range cases {
-		t.Run(name, func(t *testing.T) {
-			f := newOracleFixture(t)
-			b, err := os.ReadFile(filepath.Join(f.captures, "pr_list.txt"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			b = bytes.Replace(b, []byte(`{"limit":30,"owner":"cli","repo":"cli","endCursor":"Y3Vyc29yOjE="}`), []byte(vars), 1)
-			mustWrite(t, filepath.Join(f.captures, "pr_list.txt"), b)
-			_, err = runOracle(context.Background(), f.opts)
-			if err == nil {
-				t.Fatal("want refusal")
-			}
-			if strings.Contains(err.Error(), "ghx_test0000fakevalue") {
-				t.Errorf("error leaks token: %v", err)
-			}
-			if _, err := os.Stat(filepath.Join(f.out, "2.103.0")); !errors.Is(err, fs.ErrNotExist) {
-				t.Errorf("output dir written despite refusal (err=%v)", err)
-			}
-			assertTempsGone(t, f.temps)
-		})
+	for _, c := range oracleMatrix(oracleTarget{Owner: "cli", Name: "cli", PR: 1, Issue: 1}) {
+		capture := c.Args[0] + "_" + c.Args[1] + ".txt"
+		for name, vars := range cases {
+			t.Run(c.Name+"/"+name, func(t *testing.T) {
+				f := newOracleFixture(t)
+				b, err := os.ReadFile(filepath.Join(f.captures, capture))
+				if err != nil {
+					t.Fatal(err)
+				}
+				injected := bytes.Replace(b, []byte(`{"limit":30,"owner":"cli","repo":"cli","endCursor":"Y3Vyc29yOjE="}`), []byte(vars), 1)
+				if bytes.Equal(injected, b) {
+					t.Fatalf("%s: injection point not found", capture)
+				}
+				mustWrite(t, filepath.Join(f.captures, capture), injected)
+				_, err = runOracle(context.Background(), f.opts)
+				if err == nil {
+					t.Fatal("want refusal")
+				}
+				if strings.Contains(err.Error(), "ghx_test0000fakevalue") {
+					t.Errorf("error leaks token: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(f.out, "2.103.0")); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("output dir written despite refusal (err=%v)", err)
+				}
+				assertTempsGone(t, f.temps)
+			})
+		}
 	}
 }
 
