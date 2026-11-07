@@ -38,6 +38,11 @@ such as `pulls` only shows up after a 400.
 8. **Server rejection.** A 400 still renders the server message in the same
    error element.
 
+9. **Attribute escaping.** The admin page's `esc()` helper did not escape
+   quotes, so the JSON in the Edit button's `data-token-scopes` and
+   `data-token-repos` attributes was cut off at the first `"` and the edit row
+   opened empty. `esc()` now escapes `"` and `'` as well.
+
 ## Tests
 
 - Go: `handleAdmin` renders the canonical list (`internal/web/handler_test.go`).
