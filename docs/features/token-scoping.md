@@ -208,7 +208,8 @@ Token creation (`POST /api/tokens`, `ghp token create`) and scope updates
 (`PATCH /api/tokens/{id}`) return HTTP 400 for an unknown name or level. The
 error message lists the valid names. Each rejection increments
 `ghp_token_scope_rejected_total` (label `reason`: `unknown_permission` or
-`invalid_level`).
+`invalid_level`). The admin token edit form applies the same rules before it
+sends a scope update, and offers only canonical names.
 
 Tokens created before this check may still hold an unknown name. GHP does not
 migrate them. They resolve as before, but the unknown entry never satisfies a
