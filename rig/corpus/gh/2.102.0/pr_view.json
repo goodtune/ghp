@@ -19,14 +19,10 @@
           "verdict": "allow"
         },
         "perm-ro": {
-          "verdict": "allow",
-          "known_issue": "https://github.com/goodtune/ghp/issues/298",
-          "current": "deny:unmapped"
+          "verdict": "deny:missing_scope"
         },
         "repo": {
-          "verdict": "allow",
-          "known_issue": "https://github.com/goodtune/ghp/issues/298",
-          "current": "deny:unmapped"
+          "verdict": "allow"
         }
       }
     },
@@ -47,14 +43,10 @@
           "verdict": "allow"
         },
         "perm-ro": {
-          "verdict": "allow",
-          "known_issue": "https://github.com/goodtune/ghp/issues/298",
-          "current": "deny:unmapped"
+          "verdict": "deny:missing_scope"
         },
         "repo": {
-          "verdict": "allow",
-          "known_issue": "https://github.com/goodtune/ghp/issues/298",
-          "current": "deny:unmapped"
+          "verdict": "allow"
         }
       }
     }
