@@ -781,3 +781,49 @@ func TestManagementHostRejectedTotal(t *testing.T) {
 		})
 	}
 }
+
+// TestProxyDecisionDuration_LowBuckets checks that the decision histogram
+// exposes sub-50µs buckets so cheap stages can show regressions (#322), and
+// that a 20µs sample lands in the 25µs bucket but not the 10µs bucket.
+func TestProxyDecisionDuration_LowBuckets(t *testing.T) {
+	const tokenType = "bucket-test"
+	ObserveDecision(StageScopeEnforcement, tokenType, 20*time.Microsecond)
+
+	h, err := ProxyDecisionDuration.GetMetricWithLabelValues(StageScopeEnforcement, tokenType)
+	if err != nil {
+		t.Fatalf("GetMetricWithLabelValues: %v", err)
+	}
+	var m io_prometheus_client.Metric
+	if err := h.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	got := map[float64]uint64{}
+	for _, b := range m.GetHistogram().GetBucket() {
+		got[b.GetUpperBound()] = b.GetCumulativeCount()
+	}
+
+	tests := []struct {
+		name  string
+		bound float64
+		want  uint64
+	}{
+		{"10us", 0.00001, 0},
+		{"25us", 0.000025, 1},
+		{"50us", 0.00005, 1},
+		{"250us", 0.00025, 1},
+		{"2.5ms", 0.0025, 1},
+		{"7.5ms", 0.0075, 1},
+		{"10s", 10.0, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c, ok := got[tc.bound]
+			if !ok {
+				t.Fatalf("bucket %v missing", tc.bound)
+			}
+			if c != tc.want {
+				t.Errorf("bucket %v cumulative count = %d, want %d", tc.bound, c, tc.want)
+			}
+		})
+	}
+}

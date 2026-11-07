@@ -394,12 +394,10 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 
 	// Open-scoped tokens skip GraphQL static analysis entirely and forward
 	// to GitHub unchanged. The underlying credential's own permissions act
-	// as the only enforcement layer. Emit zero-duration GraphQL-analysis
-	// and scope-enforcement decisions so the per-request stage timeline
-	// is uniform across paths.
+	// as the only enforcement layer. No graphql_analysis or
+	// scope_enforcement sample is recorded: neither stage runs here, and a
+	// hard-coded zero would skew the histograms low (#322).
 	if si.isOpenScoped() {
-		metrics.ObserveDecision(metrics.StageGraphQLAnalysis, tokenType, 0)
-		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, 0)
 		h.forwardGraphQL(w, r, pt, &si, rewriteAuth, start, nil)
 		return
 	}

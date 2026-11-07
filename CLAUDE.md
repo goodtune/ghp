@@ -104,13 +104,19 @@ The proxy decision pipeline is broken into individually timed stages so that the
 | `forward_proxy_selection` | Selecting the upstream forward proxy for the outbound request (ruleset lookup: token → app → net → system layers for proxied traffic; control → system for control-plane calls, labeled `token_type="unknown"`) |
 | `upstream_roundtrip` | Proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer) |
 | `redirect_head_check` | HEAD request to the release redirect target to verify asset availability before issuing a 302 (releases handler only) |
+| `graphql_analysis` | Parsing a `/graphql` request body and statically computing its scope and repository requirements (GraphQL handler, scoped tokens only; open-scoped tokens skip analysis and record no sample) |
+| `cache_lookup` | Git cache middleware database lookup of the per-repository cache record, deciding whether a git request is served from the local mirror (labeled `token_type="unknown"`; runs before token resolution) |
 
 Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tokens, or `unknown` for pre-resolution stages).
+
+Stage names are shared across vhosts: the passthrough (`github.com`, `codeload.github.com`) handlers and the API-host handlers emit the same `stage` values, so the histogram cannot separate them. A `vhost` label is a tracked follow-up; until then, use `ghp_proxy_request_*` (`backend` label) to split traffic by host.
+
+Never record a hard-coded zero duration. If a stage does not run on a code path, skip the sample; otherwise time it with `time.Since`.
 
 ### Guidelines for new metrics
 
 - **Instrument every decision point.** If code determines whether a request should proceed, be blocked, or be modified, that decision must be timed.
-- **Use fine-grained histogram buckets** for internal decision stages (50µs–1s range); extend to multi-second buckets (2.5s–10s) for `upstream_roundtrip` which can exceed 1s on slow networks or under GitHub load. Use default Prometheus buckets for end-to-end request durations.
+- **Use fine-grained histogram buckets** for internal decision stages (10µs–1s range); extend to multi-second buckets (2.5s–10s) for `upstream_roundtrip` which can exceed 1s on slow networks or under GitHub load. Use default Prometheus buckets for end-to-end request durations.
 - **Label cardinality matters.** Avoid unbounded label values (e.g. don't use full paths as labels). Use the existing `ObserveDecision()` and `ObserveProxyRequest()` helpers.
 - **Test every metric.** New metrics must have a corresponding test in `internal/metrics/metrics_test.go` that verifies the metric increments correctly.
 
