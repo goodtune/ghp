@@ -461,13 +461,21 @@ var crossRepoAnywhereFields = map[string]struct{}{
 // `<subtree>.<field>`, so repository-restricted tokens are denied. Scope and
 // unmapped classification still run, so permission-only tokens see no
 // change.
+//
+// closedByPullRequestsReferences can name pull requests in other
+// repositories and is treated the same way. timelineItems children that
+// point at other repositories (CrossReferencedEvent.source,
+// ConnectedEvent.subject, MarkedAsDuplicateEvent.canonical) are denied
+// today only because `source`, `subject` and `canonical` are unmapped; if
+// they are ever mapped they must be added here as metadata-only.
 var metadataOnlySubtreeFields = map[string]struct{}{
-	"blockedBy":           {},
-	"blocking":            {},
-	"headRepository":      {},
-	"headRepositoryOwner": {},
-	"parent":              {},
-	"subIssues":           {},
+	"blockedBy":                      {},
+	"blocking":                       {},
+	"closedByPullRequestsReferences": {},
+	"headRepository":                 {},
+	"headRepositoryOwner":            {},
+	"parent":                         {},
+	"subIssues":                      {},
 }
 
 // metadataSubtreeLeaves are scalar leaves permitted beneath a

@@ -333,7 +333,7 @@ so permission-only tokens are not affected.
 
 - **Metadata-only subtrees.** `headRepository`, `headRepositoryOwner`,
   `parent` (`Repository.parent` and `Issue.parent`), `subIssues`,
-  `blockedBy` and `blocking` can point to a fork, an owner or an issue in
+  `blockedBy`, `blocking` and `closedByPullRequestsReferences` can point to a fork, an owner or an issue in
   another repository. Beneath these fields a query can select only
   metadata: the always-allowed fields (for example `id`, `name`,
   `nameWithOwner`, `url`, `owner { login }`, `repository { nameWithOwner }`)
@@ -468,7 +468,7 @@ so `gh release list` works.
   gets a 403 for a repository-restricted token.
 - **Metadata-only subtrees disclose some data from other repositories.**
   Under `headRepository`, `headRepositoryOwner`, `parent`, `subIssues`,
-  `blockedBy` and `blocking` a repository-restricted token can read
+  `blockedBy`, `blocking` and `closedByPullRequestsReferences` a repository-restricted token can read
   metadata about a fork, owner or linked issue outside its allowlist: the
   name and owner of the repository, and the `number`, `title` and `state`
   of a linked issue. This keeps `gh pr view` and `gh issue view` working.
@@ -477,6 +477,11 @@ so `gh release list` works.
   selects `viewerPermission` under `Repository.parent` (as
   `gh pr create` does) is denied; repository-restricted tokens cannot send
   the `createPullRequest` mutation in any case.
+- **Some `timelineItems` children are denied only because they are
+  unmapped.** `CrossReferencedEvent.source`, `ConnectedEvent.subject` and
+  `MarkedAsDuplicateEvent.canonical` can point to another repository. They
+  are denied today because `source`, `subject` and `canonical` are not in
+  any table. If they are mapped, they must also be metadata-only subtrees.
 - **Cross-repository rules match field names and the immediate parent.**
   ghp does not load GitHub's schema. `issues`, `pullRequests`,
   `issueComments` and `commitComments` are allowed only directly under a
