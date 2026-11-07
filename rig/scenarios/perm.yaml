@@ -154,3 +154,29 @@
   method: GET
   path: /repos/{{.RepoW}}/contents/
   expect: {status: 200}
+
+# Reactions (#315): issue reactions follow the issues permission.
+- id: PERM-C14.issue-reactions-read-allowed
+  claim: PERM-C14
+  doc: docs/features/token-scoping.md#deny-by-default
+  description: issues:read allows listing the reactions on an issue.
+  profile: perm-issues-ro
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}/issues/{{.Fixture.A.IssueNumber}}/reactions
+  expect: {status: 200}
+
+- id: PERM-C14.issue-reactions-write-denied
+  claim: PERM-C14
+  doc: docs/features/token-scoping.md#deny-by-default
+  description: issues:read blocks adding a reaction to an issue on W; GHP denies before GitHub.
+  profile: perm-issues-ro
+  kind: rest
+  requires: [repo_w_push]
+  # No cleanup: GHP must deny this write before it reaches GitHub, so no
+  # reaction is created. If GHP wrongly forwards it the scenario FAILs and
+  # the reaction left on the W fixture issue is the residue to remove by hand.
+  method: POST
+  path: /repos/{{.RepoW}}/issues/{{.Fixture.W.IssueNumber}}/reactions
+  body: {content: "eyes"}
+  expect: {status: 403, body_contains: ["Token does not have permission", "issues:write"], ghp_denial: true}
