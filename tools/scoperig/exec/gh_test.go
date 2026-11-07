@@ -256,3 +256,61 @@ func TestStripDebug(t *testing.T) {
 		})
 	}
 }
+
+func instantBackoff(t *testing.T) {
+	t.Helper()
+	old := transportBackoff
+	transportBackoff = func(int) time.Duration { return 0 }
+	t.Cleanup(func() { transportBackoff = old })
+}
+
+// A transport reset on a read-only gh run is retried; it recovers within
+// TransportRetries, or ends as a rig error (ERROR), never as an
+// observation that could be classified FAIL or KNOWN-CHANGED.
+func TestGH_TransportErrorRetry(t *testing.T) {
+	instantBackoff(t)
+	counter := func(t *testing.T) string { return filepath.Join(t.TempDir(), "calls") }
+	calls := func(t *testing.T, f string) string {
+		b, _ := os.ReadFile(f)
+		return string(b)
+	}
+	t.Run("recovers on retry", func(t *testing.T) {
+		f := counter(t)
+		obs, _, err := runFakeGH(t, context.Background(), ghScenario("reset", f, fmt.Sprint(TransportRetries)))
+		if err != nil {
+			t.Fatalf("err = %v, want recovery", err)
+		}
+		if *obs.GHExit != 0 || !strings.Contains(obs.Stdout, "ok after") {
+			t.Errorf("exit=%d stdout=%q", *obs.GHExit, obs.Stdout)
+		}
+		if got := calls(t, f); got != fmt.Sprint(TransportRetries+1) {
+			t.Errorf("gh ran %s times, want %d", got, TransportRetries+1)
+		}
+	})
+	t.Run("persistent reset is a rig error", func(t *testing.T) {
+		f := counter(t)
+		_, _, err := runFakeGH(t, context.Background(), ghScenario("reset", f, "99"))
+		if err == nil || !strings.Contains(err.Error(), "transport error after 3 attempts") {
+			t.Fatalf("err = %v", err)
+		}
+		if got := calls(t, f); got != "3" {
+			t.Errorf("gh ran %s times, want 3", got)
+		}
+	})
+	t.Run("write is not retried", func(t *testing.T) {
+		f := counter(t)
+		_, _, err := runFakeGH(t, context.Background(), ghScenario("resetwrite", f, "1"))
+		if err == nil || !strings.Contains(err.Error(), "not retried") {
+			t.Fatalf("err = %v", err)
+		}
+		if got := calls(t, f); got != "1" {
+			t.Errorf("gh ran %s times, want 1", got)
+		}
+	})
+	t.Run("product denial is not a transport error", func(t *testing.T) {
+		obs, _, err := runFakeGH(t, context.Background(), ghScenario("pr", "list"))
+		if err != nil || obs.Status != 403 {
+			t.Fatalf("obs=%v err=%v", obs, err)
+		}
+	})
+}

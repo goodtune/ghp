@@ -150,17 +150,25 @@ func typed(x any, env *RunEnv) (any, error) {
 	return x, nil
 }
 
-// send performs the request built by build, retrying once on a transport
-// error only, and only when retrying cannot duplicate a write (see
-// retryable). Product responses are never retried. The response body is
-// capped at MaxBody and redacted.
+// send performs the request built by build. A transport error (no HTTP
+// response: connection reset, HTTP/2 GOAWAY, EOF, including through a
+// forward proxy) is retried up to TransportRetries times with backoff, but
+// only when re-sending cannot duplicate a write (see retryable). A
+// transport error left after that is returned as a rig error, so the
+// scenario is ERROR, never FAIL or KNOWN-CHANGED. Product responses are
+// never retried. The response body is capped at MaxBody and redacted.
 func send(ctx context.Context, env *RunEnv, build func(ctx context.Context) (*http.Request, error)) (*expect.Observation, error) {
 	client := env.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: RequestTimeout}
 	}
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
+	attempts := 0
+	for attempt := 0; attempt <= TransportRetries; attempt++ {
+		if attempt > 0 && !sleepCtx(ctx, transportBackoff(attempt)) {
+			break
+		}
+		attempts++
 		rctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 		req, err := build(rctx)
 		if err != nil {
@@ -175,8 +183,11 @@ func send(ctx context.Context, env *RunEnv, build func(ctx context.Context) (*ht
 			if ctx.Err() != nil {
 				break
 			}
-			if !retryable(req.Method, err) {
-				return nil, fmt.Errorf("%w (not retried: the write may have been applied)", lastErr)
+			if !retryable(ctx, req.Method, err) {
+				if IsTransportError(err) {
+					return nil, fmt.Errorf("transport error: %w (not retried: the write may have been applied)", lastErr)
+				}
+				return nil, lastErr
 			}
 			continue
 		}
@@ -185,12 +196,21 @@ func send(ctx context.Context, env *RunEnv, build func(ctx context.Context) (*ht
 		_ = resp.Body.Close()
 		cancel()
 		if rerr != nil {
-			return nil, fmt.Errorf("%s %s: read body: %s", req.Method, req.URL.RequestURI(), redact.String(rerr.Error()))
+			lastErr = fmt.Errorf("%s %s: read body: %s", req.Method, req.URL.RequestURI(), redact.String(rerr.Error()))
+			// The status arrived, so the request reached the server: only
+			// an idempotent request may be re-sent.
+			if ctx.Err() == nil && IsTransportError(rerr) && isIdempotent(ctx, req.Method) {
+				continue
+			}
+			return nil, lastErr
 		}
 		obs := &expect.Observation{Status: resp.StatusCode, Header: redact.Header(resp.Header), Body: redact.Bytes(body),
 			RequestedAt: started, RespondedAt: time.Now()}
 		verbose(env, req.Method, req.URL.RequestURI(), obs)
 		return obs, nil
+	}
+	if lastErr != nil && attempts > 1 {
+		return nil, fmt.Errorf("transport error after %d attempts: %w", attempts, lastErr)
 	}
 	return nil, lastErr
 }
@@ -294,16 +314,17 @@ func RunCleanup(ctx context.Context, s *scenario.Scenario, env *RunEnv) (residue
 	return residue
 }
 
-// retryable reports whether a failed request may be re-sent: idempotent
-// methods always, others only when the error proves nothing was sent.
-func retryable(method string, err error) bool {
-	switch method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		return true
-	}
+// retryable reports whether a request that failed with err may be re-sent:
+// only for a transport error, and only when the request is idempotent (a
+// safe method, or marked with withIdempotent) or the error proves nothing
+// was sent (the dial failed).
+func retryable(ctx context.Context, method string, err error) bool {
 	var op *net.OpError
 	if errors.As(err, &op) && op.Op == "dial" {
 		return true
 	}
-	return errors.Is(err, syscall.ECONNREFUSED)
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	return IsTransportError(err) && isIdempotent(ctx, method)
 }

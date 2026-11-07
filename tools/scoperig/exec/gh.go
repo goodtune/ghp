@@ -99,6 +99,40 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 		args[i] = e
 	}
 
+	// A transport error (no HTTP response for some request) is retried with
+	// a fresh gh run when every logged request is idempotent; one left
+	// after TransportRetries is a rig error (ERROR), never FAIL or
+	// KNOWN-CHANGED, because gh's output then describes the connection,
+	// not the product.
+	for attempt := 0; ; attempt++ {
+		obs, err := runGHOnce(ctx, s, args, host, repo, tok, env)
+		if err != nil {
+			return nil, err
+		}
+		line := ""
+		if *obs.GHExit != 0 {
+			line = ghTransportFailure(obs.Stderr)
+		}
+		if line == "" {
+			return obs, nil
+		}
+		if !ghExchangesIdempotent(obs.Exchanges) {
+			return nil, fmt.Errorf("scenario %s: gh transport error during a write (not retried: the write may have been applied): %s", s.ID, line)
+		}
+		if attempt >= TransportRetries {
+			return nil, fmt.Errorf("scenario %s: gh transport error after %d attempts: %s", s.ID, attempt+1, line)
+		}
+		if env.Verbose != nil {
+			_, _ = fmt.Fprintf(env.Verbose, "gh transport error, retrying (%d/%d): %s\n", attempt+1, TransportRetries, line)
+		}
+		if !sleepCtx(ctx, transportBackoff(attempt+1)) {
+			return nil, fmt.Errorf("scenario %s: gh transport error: %s (%w)", s.ID, line, ctx.Err())
+		}
+	}
+}
+
+// runGHOnce runs gh once in a fresh temporary home and work directory.
+func runGHOnce(ctx context.Context, s *scenario.Scenario, args []string, host, repo string, tok tokens.Handle, env *RunEnv) (*expect.Observation, error) {
 	tmp, err := os.MkdirTemp("", "scoperig-gh-")
 	if err != nil {
 		return nil, fmt.Errorf("gh temp dir: %w", err)

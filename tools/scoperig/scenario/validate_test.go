@@ -814,3 +814,20 @@ func TestValidate_ExpiresWithin(t *testing.T) {
 		})
 	}
 }
+
+func TestGraphQLReadOnly(t *testing.T) {
+	for q, want := range map[string]bool{
+		"query { viewer { login } }":                     true,
+		"{ viewer { login } }":                           true,
+		"query A { a } query B { b }":                    true,
+		"mutation { addStar(input:{}) { x } }":           false,
+		"query A { a } mutation B { b(input:{}) { x } }": false,
+		"subscription { s }":                             false,
+		"not graphql {":                                  false,
+		"":                                               false,
+	} {
+		if got := GraphQLReadOnly(q); got != want {
+			t.Errorf("GraphQLReadOnly(%q) = %v, want %v", q, got, want)
+		}
+	}
+}

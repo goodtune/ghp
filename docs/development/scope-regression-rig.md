@@ -159,6 +159,8 @@ The report header records the run id, the instance, the GHP version from preflig
 
 Templates in `expect:` and `observed:` (for example `json: {"$.login": "{{.Login}}"}`) are expanded with the live values before the scenario sends its first request, and again after it with the step captures. A template that cannot expand makes the scenario ERROR with "not run"; no request is sent. Step and `token_api` poll expectations are expanded the same way before they are matched.
 
+A transport error (no HTTP response: connection reset, HTTP/2 GOAWAY, EOF, including through a forward proxy) is retried up to 2 times with backoff (0.5 s, then 1 s), but only when re-sending cannot duplicate a write: GET and HEAD requests, read-only GraphQL documents (queries only), a failed dial, and `gh` runs whose logged requests are all of those kinds. A transport error that remains, or one during a write, makes the scenario ERROR, never FAIL or KNOWN-CHANGED, because no product response was observed.
+
 A 5xx response that the scenario does not name in `expect` is always ERROR, never FAIL. This includes a 500 that GHP itself produces.
 
 A claim is FAIL if any scenario is FAIL, ERROR or KNOWN-CHANGED; else KNOWN if any is KNOWN or KNOWN-FIXED; else PASS if all runnable scenarios pass; else GAP (no runnable scenarios, including unmet `requires`).

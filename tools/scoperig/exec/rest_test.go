@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
@@ -115,10 +117,13 @@ func TestREST_BodyCapped(t *testing.T) {
 	}
 }
 
-// failOnce fails the first round trip with a transport error.
+// failOnce fails the first `fail` round trips (default 1) with err (default
+// a connection reset), then forwards to the real transport.
 type failOnce struct {
-	mu sync.Mutex
-	n  int
+	mu   sync.Mutex
+	n    int
+	fail int
+	err  error
 }
 
 func (f *failOnce) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -126,8 +131,15 @@ func (f *failOnce) RoundTrip(r *http.Request) (*http.Response, error) {
 	f.n++
 	n := f.n
 	f.mu.Unlock()
-	if n == 1 {
-		return nil, errors.New("boom")
+	limit := f.fail
+	if limit == 0 {
+		limit = 1
+	}
+	if n <= limit {
+		if f.err != nil {
+			return nil, f.err
+		}
+		return nil, &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
 	}
 	return http.DefaultTransport.RoundTrip(r)
 }
@@ -157,6 +169,70 @@ func TestREST_WriteNotRetriedAfterAmbiguousError(t *testing.T) {
 	}
 	if calls.Load() > 1 {
 		t.Errorf("server saw %d calls", calls.Load())
+	}
+}
+
+func TestSend_TransportRetries(t *testing.T) {
+	instantBackoff(t)
+	gql := func(q string) *scenario.Scenario {
+		return &scenario.Scenario{ID: "x", Kind: "graphql", Query: q}
+	}
+	for _, tc := range []struct {
+		name      string
+		ex        Executor
+		s         *scenario.Scenario
+		fail      int
+		err       error
+		wantErr   string // "" means success
+		wantTries int
+	}{
+		{"GET recovers after two resets", restExecutor{}, &scenario.Scenario{ID: "x", Kind: "rest", Path: "/"}, 2, nil, "", 3},
+		{"GET persistent reset is a rig error", restExecutor{}, &scenario.Scenario{ID: "x", Kind: "rest", Path: "/"}, 9, nil, "transport error after 3 attempts", 3},
+		{"GOAWAY is a transport error", restExecutor{}, &scenario.Scenario{ID: "x", Kind: "rest", Path: "/"}, 1,
+			errors.New("http2: server sent GOAWAY and closed the connection; LastStreamID=1"), "", 2},
+		{"EOF through a proxy", restExecutor{}, &scenario.Scenario{ID: "x", Kind: "rest", Path: "/"}, 1, io.EOF, "", 2},
+		{"non-transport error is not retried", restExecutor{}, &scenario.Scenario{ID: "x", Kind: "rest", Path: "/"}, 1,
+			errors.New("x509: certificate signed by unknown authority"), "x509", 1},
+		{"GraphQL query POST is retried", graphqlExecutor{}, gql("query { viewer { login } }"), 2, nil, "", 3},
+		{"GraphQL mutation POST is not retried", graphqlExecutor{}, gql(`mutation { addStar(input: {starrableId: "x"}) { clientMutationId } }`), 1, nil, "may have been applied", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, tok := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+			ft := &failOnce{fail: tc.fail, err: tc.err}
+			env.HTTP = &http.Client{Transport: ft}
+			env.GraphQL = env.APIBase + "/graphql"
+			obs, err := tc.ex.Run(context.Background(), tc.s, tok, env)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("err = %v", err)
+			case tc.wantErr == "" && obs.Status != 200:
+				t.Fatalf("status = %d", obs.Status)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+			if ft.n != tc.wantTries {
+				t.Errorf("attempts = %d, want %d", ft.n, tc.wantTries)
+			}
+		})
+	}
+}
+
+func TestIsTransportError(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{&net.OpError{Op: "read", Err: syscall.ECONNRESET}, true},
+		{io.ErrUnexpectedEOF, true},
+		{errors.New(`Post "https://h/api/graphql": http2: server sent GOAWAY and closed the connection`), true},
+		{errors.New(`proxyconnect tcp: dial tcp 127.0.0.1:1: connect: connection refused`), true},
+		{context.DeadlineExceeded, false},
+		{errors.New("x509: certificate signed by unknown authority"), false},
+		{nil, false},
+	} {
+		if got := IsTransportError(tc.err); got != tc.want {
+			t.Errorf("IsTransportError(%v) = %v, want %v", tc.err, got, tc.want)
+		}
 	}
 }
 
