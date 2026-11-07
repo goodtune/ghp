@@ -21,7 +21,7 @@
           "verdict": "allow"
         },
         "repo": {
-          "verdict": "allow"
+          "verdict": "deny:cross_repo"
         }
       }
     },

@@ -94,7 +94,7 @@
 - id: GH-C51.pr-view.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr view with the repo-A token. Note: headRepository and the issue-graph fields are not yet cross-repository classified (docs known limitations), so this passes."
+  description: "gh pr view with the repo-A token. headRepository and headRepositoryOwner are metadata-only subtrees (#339); gh selects only metadata under them, so this passes."
   profile: repo-A
   kind: gh
   repo: A
@@ -124,7 +124,7 @@
 - id: GH-C51.pr-status.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr status with the repo-A token. Note: root search is cross-repository, so a repository-restricted token is denied."
+  description: "gh pr status with the repo-A token. The introspection probe is allowed (#342); root search is cross-repository, so a repository-restricted token is denied."
   profile: repo-A
   kind: gh
   repo: A
@@ -156,7 +156,7 @@
 - id: GH-C51.pr-checks.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr checks with the repo-A token. Note: the status-check query uses root node(id:), which is cross-repository, so a repository-restricted token is denied."
+  description: "gh pr checks with the repo-A token. The PullRequest_fields2 introspection probe is allowed (#342); the status-check query uses root node(id:), which is cross-repository, so a repository-restricted token is denied."
   profile: repo-A
   kind: gh
   repo: A
@@ -216,7 +216,7 @@
 - id: GH-C51.issue-view.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh issue view with the repo-A token. Note: parent, subIssues, blockedBy and blocking are not yet cross-repository classified (docs known limitations), so this passes."
+  description: "gh issue view with the repo-A token. parent, subIssues, blockedBy and blocking are metadata-only subtrees (#339); gh selects only id, number, title, url, state and repository.nameWithOwner under them, so this passes."
   profile: repo-A
   kind: gh
   repo: A
@@ -246,12 +246,12 @@
 - id: GH-C51.release-list.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh release list with the repo-A token. The Release_fields introspection probe has no repository(owner, name) selection, so GHP correctly denies it for a repository-restricted token (no_repo_ref)."
+  description: "gh release list with the repo-A token. The Release_fields introspection probe needs no repository(owner, name) selection (#342), and the release list query pins A."
   profile: repo-A
   kind: gh
   repo: A
   args: ["release", "list"]
-  expect: {exit_code: 1, stderr_contains: ["must reference repository(owner, name)"]}
+  expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.ReleaseTag}}"]}
 
 - id: GH-C51.label-list.open
   claim: GH-C51

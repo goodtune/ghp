@@ -37,11 +37,12 @@
     body_not_contains: ['"errors"']
     json: {"$.data.a.name": "{{.RepoA.Name}}", "$.data.b.name": "{{.RepoB.Name}}"}
 
-# GQL-C26: the cross-repository fields below are also absent from the
-# analyzer's allow and scope tables, and the unmapped-field check runs before
-# the cross-repository check, so today's verdict is deny:unmapped (ruling from
-# the Task 1 review). The claim (rejected for repository-scoped tokens) holds
-# either way; the expectations pin today's message.
+# GQL-C26: root search/node selecting only counts or id have no fragment type
+# to gate on, and the unmapped-field check runs before the cross-repository
+# check, so their verdict is deny:unmapped (ruling from the Task 1 review).
+# viewer.repositories is mapped since #341, so it reaches the cross-repository
+# check (#343). The claim (rejected for repository-scoped tokens) holds either
+# way; the expectations pin today's message.
 - id: GQL-C26.search-root
   claim: GQL-C26
   doc: docs/features/token-scoping.md#graphql-scope-enforcement
@@ -79,7 +80,7 @@
       repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { name }
       viewer { repositories(first: 1) { totalCount } }
     }
-  expect: {status: 403, body_contains: ["GraphQL request references unmapped fields", "repositories"], ghp_denial: true}
+  expect: {status: 403, body_contains: ["uses cross-repository fields", "repositories"], ghp_denial: true}
 
 - id: GQL-C26.aliased-search
   claim: GQL-C26
@@ -93,6 +94,93 @@
       innocuous: search(query: "scoperig", type: REPOSITORY, first: 1) { repositoryCount }
     }
   expect: {status: 403, body_contains: ["GraphQL request references unmapped fields", "search"], ghp_denial: true}
+
+# GQL-C26, metadata-only subtrees (#339) and parent-aware connections (#340).
+# Every deny names the cross-repository field as <parent>.<field>.
+- id: GQL-C26.head-repository-issues
+  claim: GQL-C26
+  doc: docs/features/token-scoping.md#cross-repository-subtrees
+  description: headRepository is a metadata-only subtree; issues beneath it are rejected for a repository-scoped token.
+  profile: repo-A
+  kind: graphql
+  query: |
+    {
+      repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") {
+        pullRequests(first: 1) { nodes { headRepository { issues(first: 1) { nodes { body } } } } }
+      }
+    }
+  expect: {status: 403, body_contains: ["uses cross-repository fields", "headRepository.issues"], ghp_denial: true}
+
+- id: GQL-C26.head-repository-metadata
+  claim: GQL-C26
+  doc: docs/features/token-scoping.md#cross-repository-subtrees
+  description: Control - metadata under headRepository is allowed for a repository-scoped token.
+  profile: repo-A
+  kind: graphql
+  query: |
+    {
+      repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") {
+        name
+        pullRequests(first: 1) { nodes { headRepository { nameWithOwner } } }
+      }
+    }
+  expect:
+    status: 200
+    body_not_contains: ['"errors"']
+    json: {"$.data.repository.name": "{{.RepoA.Name}}"}
+
+- id: GQL-C26.repository-parent-issues
+  claim: GQL-C26
+  doc: docs/features/token-scoping.md#cross-repository-subtrees
+  description: Repository.parent is a metadata-only subtree; issues beneath it are rejected for a repository-scoped token.
+  profile: repo-A
+  kind: graphql
+  query: |
+    {
+      repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") {
+        parent { issues(first: 1) { nodes { body } } }
+      }
+    }
+  expect: {status: 403, body_contains: ["uses cross-repository fields", "parent.issues"], ghp_denial: true}
+
+- id: GQL-C26.viewer-issues
+  claim: GQL-C26
+  doc: docs/features/token-scoping.md#cross-repository-subtrees
+  description: viewer.issues beside a pinned repository is rejected for a repository-scoped token (it spans every repository).
+  profile: repo-A
+  kind: graphql
+  query: |
+    {
+      repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { name }
+      viewer { issues(first: 1) { nodes { body } } }
+    }
+  expect: {status: 403, body_contains: ["uses cross-repository fields", "viewer.issues"], ghp_denial: true}
+
+- id: GQL-C26.author-user-pull-requests
+  claim: GQL-C26
+  doc: docs/features/token-scoping.md#cross-repository-subtrees
+  description: author { ... on User { pullRequests } } is rejected for a repository-scoped token (User.pullRequests spans every repository).
+  profile: repo-A
+  kind: graphql
+  query: |
+    {
+      repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") {
+        issues(first: 1) { nodes { author { ... on User { pullRequests(first: 1) { nodes { body } } } } } }
+      }
+    }
+  expect: {status: 403, body_contains: ["uses cross-repository fields", "author.pullRequests"], ghp_denial: true}
+
+- id: GQL-C24.introspection-only
+  claim: GQL-C24
+  doc: docs/features/token-scoping.md#introspection-only-queries
+  description: Control - an introspection-only query (gh's PullRequest_fields2 probe) needs no repository(owner, name) for a repository-scoped token (#342).
+  profile: repo-A
+  kind: graphql
+  query: |
+    query PullRequest_fields2 { WorkflowRun: __type(name: "WorkflowRun") { fields(includeDeprecated: true) { name } } }
+  expect:
+    status: 200
+    body_not_contains: ['"errors"']
 
 # GQL-C27: the mutation is denied before it reaches GitHub. It still targets
 # only W (repositoryId captured from a query that pins W) and requires

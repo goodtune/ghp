@@ -323,6 +323,48 @@ allowlisted lookups are present in the same query. Every pinned
 repository, literal or variable, must be in the allowlist. Tokens with no
 repository restriction (permission-only or open-scoped) are unaffected.
 
+### Cross-repository subtrees
+
+Some fields return an object that can belong to a repository outside the
+allowlist, even when the query starts at a pinned `repository(owner, name)`.
+For repository-restricted tokens ghp applies two rules to them. Each rule
+only adds a cross-repository denial; the scope requirements stay the same,
+so permission-only tokens are not affected.
+
+- **Metadata-only subtrees.** `headRepository`, `headRepositoryOwner`,
+  `parent` (`Repository.parent` and `Issue.parent`), `subIssues`,
+  `blockedBy`, `blocking` and `closedByPullRequestsReferences` can point to a fork, an owner or an issue in
+  another repository. Beneath these fields a query can select only
+  metadata: the always-allowed fields (for example `id`, `name`,
+  `nameWithOwner`, `url`, `owner { login }`, `repository { nameWithOwner }`)
+  and the scalar leaves `number`, `title` and `state`. Any other field, for
+  example `headRepository { issues { ... } }`, `parent { body }` or
+  `headRepository { object(expression: ...) { ... } }`, is a
+  cross-repository field and the request gets a 403 that names it (for
+  example `headRepository.issues`). `gh pr view` and `gh issue view` select
+  only metadata here, so they keep working.
+- **User-level connections.** `issues`, `pullRequests`, `issueComments`
+  and `commitComments` are cross-repository unless their immediate parent
+  is a pinned `repository(owner, name)` lookup. Under `viewer`, `user`,
+  `organization`, `author`, `assignees`, `owner`, a bare
+  `Issue.repository`, a root lookup or a metadata-only subtree they return
+  data from every repository the credential can see, so the request gets a
+  403 that names the parent and the field (for example `viewer.issues` or
+  `author.issues`). Fragments do not change the parent: inside
+  `author { ... on User { issues { ... } } }` the parent of `issues` is
+  `author`.
+
+### Introspection-only queries
+
+A query whose root selections are only `__type`, `__schema` or
+`__typename` reads no repository data. A repository-restricted token does
+not need a `repository(owner, name)` selection for such a query. gh sends
+these probes before some commands (for example
+`query PullRequest_fields2 { WorkflowRun: __type(name: "WorkflowRun") { fields(includeDeprecated: true) { name } } }`).
+All other checks still apply: a field under `__type` or `__schema` that is
+not in the allowlist is denied as unmapped, and a query that adds any other
+root field (for example `viewer`) still needs a pinned repository.
+
 ### Root object lookups
 
 The root fields `node(id:)`, `nodes(ids:)`, `resource(url:)` and
@@ -395,11 +437,12 @@ query corpus in `rig/corpus/gh/` check this table.
 | `gh release list` | `contents:read` |
 | `gh search prs` | denied: `GET /search/issues` is denied for every scoped token |
 
-With a repository-restricted token, `gh repo list`, `gh pr status` and
-`gh pr checks` are denied because they use cross-repository fields.
-`gh release list` and `gh search prs` are denied because their
-introspection probes (`Release_fields`, `SearchType_enumValues`) have no
-`repository(owner, name)` selection.
+With a repository-restricted token, `gh repo list`, `gh pr status`,
+`gh pr checks` and `gh search prs` are denied because they use
+cross-repository fields. Their introspection probes (for example
+`Release_fields`, `SearchType_enumValues`, `PullRequest_fields2`) are
+allowed (see [Introspection-only queries](#introspection-only-queries)),
+so `gh release list` works.
 
 ### Known limitations
 
@@ -423,15 +466,28 @@ introspection probes (`Release_fields`, `SearchType_enumValues`) have no
   request sends, which are the values that GitHub uses. A client that
   sends duplicate keys in `variables`, more than one operation, or a non-string value
   gets a 403 for a repository-restricted token.
-- **Some issue and pull request fields can point outside the allowlist.**
-  `Issue.parent`, `subIssues`, `blockedBy`, `blocking`,
-  `Repository.parent`, `headRepository` and `headRepositoryOwner` can
-  return an issue, fork or owner from another repository. They need the
-  scope of their parent (`issues:read` or `pull_requests:read`) but are
-  not yet in the cross-repository tables, so a repository-restricted
-  token can read the metadata that `gh` selects under them (names,
-  numbers, titles, state). Restricting the selections under these fields
-  is planned.
+- **Metadata-only subtrees disclose some data from other repositories.**
+  Under `headRepository`, `headRepositoryOwner`, `parent`, `subIssues`,
+  `blockedBy`, `blocking` and `closedByPullRequestsReferences` a repository-restricted token can read
+  metadata about a fork, owner or linked issue outside its allowlist: the
+  name and owner of the repository, and the `number`, `title` and `state`
+  of a linked issue. This keeps `gh pr view` and `gh issue view` working.
+  Everything else under these fields is denied (see
+  [Cross-repository subtrees](#cross-repository-subtrees)). A query that
+  selects `viewerPermission` under `Repository.parent` (as
+  `gh pr create` does) is denied; repository-restricted tokens cannot send
+  the `createPullRequest` mutation in any case.
+- **Some `timelineItems` children are denied only because they are
+  unmapped.** `CrossReferencedEvent.source`, `ConnectedEvent.subject` and
+  `MarkedAsDuplicateEvent.canonical` can point to another repository. They
+  are denied today because `source`, `subject` and `canonical` are not in
+  any table. If they are mapped, they must also be metadata-only subtrees.
+- **Cross-repository rules match field names and the immediate parent.**
+  ghp does not load GitHub's schema. `issues`, `pullRequests`,
+  `issueComments` and `commitComments` are allowed only directly under a
+  pinned `repository(owner, name)`; any other parent is treated as
+  cross-repository, even where the real type would stay inside the
+  repository.
 - **`contexts` needs only `checks:read`.** A table entry holds one scope.
   `StatusCheckRollup.contexts` returns check runs and commit statuses, and
   is mapped to `checks:read`. A `... on StatusContext` fragment inside it
