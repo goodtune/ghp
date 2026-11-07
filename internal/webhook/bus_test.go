@@ -3,6 +3,7 @@ package webhook
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -423,4 +424,104 @@ func seqs(envs []*Envelope) []uint64 {
 		out = append(out, e.Sequence)
 	}
 	return out
+}
+
+// A durable subscriber that goes away while its pull is outstanding must not
+// leave that pull registered on the server: a delivery published after the
+// disconnect would land in the dead pull and wait AckWait (10 s) before
+// redelivery to the reconnecting subscriber (#336).
+func TestBus_DurableDisconnectDoesNotStrandNextDelivery(t *testing.T) {
+	b := newTestBus(t)
+	ctx := context.Background()
+	subj := Subject(b.SubjectPrefix(), SubjectParts{Event: "star"})
+
+	sub, err := b.Subscribe(ctx, SubscribeOptions{Durable: "stale-pull"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mirror the SSE handler: a long per-call deadline (the heartbeat), then
+	// the client disconnects while the pull is waiting.
+	hctx, hcancel := context.WithTimeout(ctx, 15*time.Second)
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := sub.Next(hctx)
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond) // let the pull reach the server
+	hcancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Next after cancel: err = %v, want context.Canceled", err)
+	}
+	sub.Close()
+
+	seq := publishTest(t, b, subj, "after-disconnect", "star")
+
+	sub2, err := b.Subscribe(ctx, SubscribeOptions{Durable: "stale-pull"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub2.Close()
+	// Well under AckWait: the delivery must not be stranded.
+	nctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	e, _, err := sub2.Next(nctx)
+	if err != nil {
+		t.Fatalf("resumed Next: %v (delivery stranded in the disconnected pull)", err)
+	}
+	if e.Sequence != seq {
+		t.Errorf("resumed seq = %d, want %d", e.Sequence, seq)
+	}
+}
+
+// A durable Next cancelled while its pull is in flight must not strand a
+// message the server has already handed out: before #336 the fetch was
+// bound to the caller's context, so a message arriving as the context was
+// cancelled was dropped client-side and stayed pending for AckWait (10 s).
+// The race is timing-dependent, so cancel at a spread of offsets around
+// the publish and require every delivery to reach the next Next promptly.
+func TestBus_DurableCancelledNextDoesNotStrandDelivery(t *testing.T) {
+	b := newTestBus(t)
+	ctx := context.Background()
+	subj := Subject(b.SubjectPrefix(), SubjectParts{Event: "star"})
+	sub, err := b.Subscribe(ctx, SubscribeOptions{Durable: "cancel-race"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+
+	for i := 0; i < 40; i++ {
+		offset := time.Duration(i%8) * 250 * time.Microsecond
+		cctx, cancel := context.WithCancel(ctx)
+		got := make(chan *Envelope, 1)
+		go func() {
+			e, m, err := sub.Next(cctx)
+			if err == nil {
+				_ = sub.Ack(m)
+				got <- e
+				return
+			}
+			got <- nil
+		}()
+		seq := publishTest(t, b, subj, fmt.Sprintf("race-%d", i), "star")
+		time.Sleep(offset)
+		cancel()
+		if e := <-got; e != nil {
+			if e.Sequence != seq {
+				t.Fatalf("iteration %d: seq = %d, want %d", i, e.Sequence, seq)
+			}
+			continue
+		}
+		nctx, ncancel := context.WithTimeout(ctx, 3*time.Second)
+		e, m, err := sub.Next(nctx)
+		ncancel()
+		if err != nil {
+			t.Fatalf("iteration %d: delivery %d stranded after cancelled Next: %v", i, seq, err)
+		}
+		if e.Sequence != seq {
+			t.Fatalf("iteration %d: seq = %d, want %d", i, e.Sequence, seq)
+		}
+		if err := sub.Ack(m); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

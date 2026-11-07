@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -120,14 +121,9 @@ func (s *PostgresStore) SyncAdminRoles(ctx context.Context, adminUsernames []str
 		return err
 	}
 
-	// Promote the configured admins.
-	for _, username := range adminUsernames {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE users SET role = 'admin', updated_at = $1 WHERE LOWER(github_username) = LOWER($2)`,
-			now, username,
-		); err != nil {
-			return err
-		}
+	// Promote the configured admins (ASCII case folding, #334).
+	if err := promoteAdminsTx(ctx, tx, adminUsernames, now, func(n int) string { return "$" + strconv.Itoa(n) }, postgresASCIILower); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -1014,3 +1010,11 @@ var (
 	_ Store             = (*PostgresStore)(nil)
 	_ MigrationExecutor = (*PostgresStore)(nil)
 )
+
+// postgresASCIILower is the ASCII-only fold for promoteAdminsTx (#334).
+// COLLATE "C" makes LOWER() change ASCII letters only, independent of the
+// column or database collation (a Turkish collation lowercases I to dotless
+// ı). The CAST gives a bind parameter a type so COLLATE applies to it.
+func postgresASCIILower(expr string) string {
+	return `LOWER(CAST(` + expr + ` AS TEXT) COLLATE "C")`
+}
