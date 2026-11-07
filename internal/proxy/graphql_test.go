@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"github.com/goodtune/ghp/internal/metrics"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -692,6 +693,35 @@ func TestServeHTTP_GraphQL_OpenScoped_BypassesAnalysis(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200 for open-scoped token, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestServeHTTP_GraphQL_OpenScoped_NoZeroDurationSamples checks that the
+// open-scoped bypass does not record hard-coded zero-duration
+// graphql_analysis or scope_enforcement samples (#322). No analysis or
+// enforcement runs on this path, so no sample is recorded.
+func TestServeHTTP_GraphQL_OpenScoped_NoZeroDurationSamples(t *testing.T) {
+	h, ghpToken := newOpenScopedHandler(t)
+
+	stages := []string{metrics.StageGraphQLAnalysis, metrics.StageScopeEnforcement}
+	before := map[string]uint64{}
+	for _, s := range stages {
+		before[s] = decisionStageSampleCount(t, s, "proxy")
+	}
+
+	req := httptest.NewRequest("POST", "http://api.github.com/graphql", strings.NewReader(`{"query":"{ viewer { login } }"}`))
+	req.Header.Set("Authorization", "Bearer "+ghpToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+	for _, s := range stages {
+		if got := decisionStageSampleCount(t, s, "proxy"); got != before[s] {
+			t.Errorf("stage %s: sample count changed %d -> %d; open-scoped path must not record a sample", s, before[s], got)
+		}
 	}
 }
 

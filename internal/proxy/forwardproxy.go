@@ -451,6 +451,7 @@ func (c *compiledRuleset) pickByWeight(point int) *url.URL {
 // request carries no route info (e.g. internal OAuth refresh calls).
 func (fr *ForwardProxyRouter) ProxyFunc() func(*http.Request) (*url.URL, error) {
 	return func(req *http.Request) (*url.URL, error) {
+		start := time.Now()
 		info := ForwardProxyInfoFromContext(req.Context())
 		if info == nil {
 			return fr.ambient(req)
@@ -467,14 +468,14 @@ func (fr *ForwardProxyRouter) ProxyFunc() func(*http.Request) (*url.URL, error) 
 		// host:port targets (SSRF/port-scan). Unauthenticated requests fall
 		// through to normal ruleset selection.
 		if info.ClientProxy != nil && info.TokenID != "" {
-			metrics.ObserveDecision(metrics.StageForwardProxySelection, info.TokenType, 0)
+			metrics.ObserveDecision(metrics.StageForwardProxySelection, info.TokenType, time.Since(start))
 			metrics.ForwardProxySelectTotal.WithLabelValues("", ForwardProxyLayerHeader).Inc()
 			metrics.ForwardProxyClientSpecifiedTotal.WithLabelValues(info.ClientProxy.Scheme, info.TokenType).Inc()
 			return info.ClientProxy, nil
 		}
-		start := time.Now()
+		selectStart := time.Now()
 		u, ruleset, layer := fr.Select(info.ClientIP, info.TokenID, info.AppID)
-		metrics.ObserveDecision(metrics.StageForwardProxySelection, info.TokenType, time.Since(start))
+		metrics.ObserveDecision(metrics.StageForwardProxySelection, info.TokenType, time.Since(selectStart))
 		metrics.ForwardProxySelectTotal.WithLabelValues(ruleset, layer).Inc()
 		if u == nil {
 			return fr.ambient(req)
