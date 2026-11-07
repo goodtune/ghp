@@ -124,12 +124,12 @@
 - id: GH-C51.pr-status.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr status with the repo-A token. The introspection probe is allowed (#342); root search is cross-repository, so a repository-restricted token is denied."
+  description: "gh pr status with the repo-A token is denied. The introspection probe is allowed (#342), but later queries (viewer with no repository reference, root search) are not repository-pinned. The matcher is the shared prefix of the repository-restricted denials, so it does not pin which rule fires first (#354)."
   profile: repo-A
   kind: gh
   repo: A
   args: ["pr", "status"]
-  expect: {exit_code: 1, stderr_contains: ["uses cross-repository fields"]}
+  expect: {exit_code: 1, stderr_contains: ["Token is repository-restricted"]}
 
 - id: GH-C51.pr-checks.open
   claim: GH-C51
