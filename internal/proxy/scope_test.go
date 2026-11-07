@@ -34,12 +34,31 @@ func TestEndpointScope(t *testing.T) {
 		{"PUT", "/repos/org/repo/actions/secrets/MY_SECRET", "secrets", "write"},
 		{"DELETE", "/repos/org/repo/actions/secrets/MY_SECRET", "secrets", "write"},
 
-		// Workflows — must not fall through to the actions catch-all.
-		{"GET", "/repos/org/repo/actions/workflows", "workflows", "read"},
-		{"GET", "/repos/org/repo/actions/workflows/ci.yml", "workflows", "read"},
-		{"POST", "/repos/org/repo/actions/workflows/ci.yml/dispatches", "workflows", "write"},
-		{"PUT", "/repos/org/repo/actions/workflows/ci.yml/enable", "workflows", "write"},
-		{"PUT", "/repos/org/repo/actions/workflows/ci.yml/disable", "workflows", "write"},
+		// Workflows — GitHub gates these on the Actions permission (#316).
+		{"GET", "/repos/org/repo/actions/workflows", "actions", "read"},
+		{"GET", "/repos/org/repo/actions/workflows/ci.yml", "actions", "read"},
+		{"GET", "/repos/org/repo/actions/workflows/ci.yml/runs", "actions", "read"},
+		{"POST", "/repos/org/repo/actions/workflows/ci.yml/dispatches", "actions", "write"},
+		{"PUT", "/repos/org/repo/actions/workflows/ci.yml/enable", "actions", "write"},
+		{"PUT", "/repos/org/repo/actions/workflows/ci.yml/disable", "actions", "write"},
+
+		// Reactions (#315).
+		{"GET", "/repos/org/repo/issues/42/reactions", "issues", "read"},
+		{"POST", "/repos/org/repo/issues/42/reactions", "issues", "write"},
+		{"DELETE", "/repos/org/repo/issues/42/reactions/7", "issues", "write"},
+		{"GET", "/repos/org/repo/issues/comments/9/reactions", "issues", "read"},
+		{"POST", "/repos/org/repo/issues/comments/9/reactions", "issues", "write"},
+		{"DELETE", "/repos/org/repo/issues/comments/9/reactions/7", "issues", "write"},
+		{"GET", "/repos/org/repo/pulls/comments/9/reactions", "pull_requests", "read"},
+		{"POST", "/repos/org/repo/pulls/comments/9/reactions", "pull_requests", "write"},
+		{"DELETE", "/repos/org/repo/pulls/comments/9/reactions/7", "pull_requests", "write"},
+		{"GET", "/repos/org/repo/comments/9/reactions", "contents", "read"},
+		{"POST", "/repos/org/repo/comments/9/reactions", "contents", "write"},
+		{"DELETE", "/repos/org/repo/comments/9/reactions/7", "contents", "write"},
+		// Methods GitHub does not offer on reactions stay unmapped.
+		{"PATCH", "/repos/org/repo/issues/42/reactions", "", ""},
+		{"POST", "/repos/org/repo/issues/42/reactions/7", "", ""},
+		{"PUT", "/repos/org/repo/comments/9/reactions", "", ""},
 
 		// Actions (runs/jobs — after specific paths)
 		{"GET", "/repos/org/repo/actions/runs", "actions", "read"},
