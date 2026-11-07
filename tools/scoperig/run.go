@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	osexec "os/exec"
 	"path"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -53,6 +56,12 @@ type runDeps struct {
 	// OnManager, if set, is called once the token manager exists (the CLI
 	// uses it to wire the second-signal handler).
 	OnManager func(*tokens.Manager)
+	// GHVersion reads the gh version for the report ("" when unknown).
+	// Default: `gh --version` via ghPath.
+	GHVersion func(ctx context.Context, ghPath string) string
+	// RigCommit is the VCS revision the rig binary was built from ("" when
+	// unknown). Default: the binary's build info.
+	RigCommit func() string
 }
 
 func (d *runDeps) defaults() {
@@ -72,6 +81,57 @@ func (d *runDeps) defaults() {
 	if d.Out == nil {
 		d.Out = io.Discard
 	}
+	if d.GHVersion == nil {
+		d.GHVersion = ghVersion
+	}
+	if d.RigCommit == nil {
+		d.RigCommit = rigCommit
+	}
+}
+
+// ghVersion runs `gh --version` with a short timeout and returns the
+// MAJOR.MINOR.PATCH version, or "" if gh is missing or unreadable.
+func ghVersion(ctx context.Context, ghPath string) string {
+	if ghPath == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := osexec.CommandContext(ctx, ghPath, "--version")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GH_NO_UPDATE_NOTIFIER=1"}
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	v, err := parseGHVersion(string(out))
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// rigCommit returns the vcs.revision from the binary's build info (with a
+// "-dirty" suffix for a modified tree), or "" when it was not stamped (for
+// example under go run).
+func rigCommit() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	var rev string
+	dirty := false
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if rev != "" && dirty {
+		rev += "-dirty"
+	}
+	return rev
 }
 
 func newRunID(t time.Time) string {
@@ -170,6 +230,7 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	rep = &report.Report{
 		RunID: runID, StartedAt: started.Format(time.RFC3339),
 		Instance: c.Instance.Host, GHPVersion: version,
+		GHVersion: deps.GHVersion(ctx, c.GHPath), RigCommit: deps.RigCommit(),
 	}
 	var results []report.ScenarioResult
 
@@ -226,12 +287,8 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 		}
 		if len(leftover) > 0 {
 			_, _ = fmt.Fprintf(out, "leftover token ids (revoke them or let the next sweep): %s\n", strings.Join(leftover, " "))
-			// A live token outranks a could-not-start error.
-			var ee *exitError
-			if errors.As(err, &ee) && ee.code == 3 {
-				err = &exitError{code: 2, err: fmt.Errorf("%w; token revocation failed", ee.err)}
-			}
 		}
+		err = escalateOnLeftover(err, leftover)
 		if rep != nil {
 			created := mgr.Created() + untracked
 			rep.Tokens.Created = created
@@ -366,6 +423,21 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	return rep, nil
 }
 
+// escalateOnLeftover turns a could-not-start error (exit 3) into exit 2 when
+// tokens were left live: a live token outranks a could-not-start error.
+// Other errors, and a nil error, pass through unchanged (a nil error with
+// leftovers is reported through the report's LeftoverIDs and ExitCode).
+func escalateOnLeftover(err error, leftover []string) error {
+	if len(leftover) == 0 {
+		return err
+	}
+	var ee *exitError
+	if errors.As(err, &ee) && ee.code == 3 {
+		return &exitError{code: 2, err: fmt.Errorf("%w; token revocation failed", ee.err)}
+	}
+	return err
+}
+
 func errResult(s *scenario.Scenario, msg string) report.ScenarioResult {
 	msg = redact.String(msg)
 	return report.ScenarioResult{ID: s.ID, Claim: s.Claim, KnownIssue: s.KnownIssue,
@@ -408,7 +480,7 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 	// the run, so step captures are available, and classify against a copy.
 	sc := *s
 	var xerr error
-	if sc.Expect, xerr = scenario.ExpandExpect(s.Expect, env.Vars); xerr == nil {
+	if sc.Expect, xerr = scenario.ExpandExpect(s.VerdictExpect(), env.Vars); xerr == nil {
 		sc.Observed, xerr = scenario.ExpandExpect(s.Observed, env.Vars)
 	}
 	if xerr != nil {

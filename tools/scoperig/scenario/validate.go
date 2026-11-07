@@ -359,11 +359,9 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	} else if s.Kind == "token_api" && len(s.Steps) == 0 {
 		add("token_api scenario needs a request or steps")
 	}
-	// Normalise copies the rest shorthand Expect into Steps[0]; Steps are
-	// the source of truth, so do not report the same problem twice.
-	if len(s.Steps) == 0 || s.Steps[0].Expect != s.Expect {
-		checkExpect("expect", s.Expect, v, add)
-	}
+	// Normalise moves the rest shorthand Expect into Steps[0] (checked with
+	// the steps above) and clears it here.
+	checkExpect("expect", s.Expect, v, add)
 	checkExpect("observed", s.Observed, v, add)
 	// An empty observed matches every response, so a known issue would
 	// stay KNOWN forever and never report KNOWN-CHANGED.

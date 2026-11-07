@@ -107,3 +107,55 @@ func TestDecodeFile_RejectsSecondDocument(t *testing.T) {
 		t.Fatalf("single document: out=%v err=%v", out, err)
 	}
 }
+
+func TestNormalise_ClearsScenarioExpect(t *testing.T) {
+	want := &Expect{Status: 403}
+	s := &Scenario{ID: "X", Kind: "rest", Method: "GET", Path: "/x", Expect: want}
+	s.Normalise()
+	if s.Expect != nil {
+		t.Errorf("Expect = %+v after Normalise, want nil", s.Expect)
+	}
+	if len(s.Steps) != 1 || s.Steps[0].Expect != want {
+		t.Fatalf("steps = %+v", s.Steps)
+	}
+	if !s.Shorthand() || s.VerdictExpect() != want {
+		t.Errorf("Shorthand=%v VerdictExpect=%+v", s.Shorthand(), s.VerdictExpect())
+	}
+	s.Normalise() // idempotent
+	if len(s.Steps) != 1 || s.VerdictExpect() != want {
+		t.Errorf("second Normalise changed the scenario: %+v", s)
+	}
+	// Multi-step scenarios keep their own (absent) scenario Expect.
+	m := &Scenario{ID: "M", Kind: "rest", Steps: []Request{{Method: "GET", Path: "/a", Expect: want}}}
+	m.Normalise()
+	if m.Shorthand() || m.VerdictExpect() != nil {
+		t.Errorf("multi-step: Shorthand=%v VerdictExpect=%+v", m.Shorthand(), m.VerdictExpect())
+	}
+}
+
+func TestDecodeFile_EmptyAndMultiDocument(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		wantErr    bool
+	}{
+		{"empty file", "", false},
+		{"comment only", "# nothing yet\n", false},
+		{"two documents", "- {id: A}\n---\n- {id: B}\n", true},
+		{"empty first document then a second", "---\n---\n- {id: B}\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "s.yaml")
+			if err := os.WriteFile(p, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out []map[string]any
+			err := decodeFile(p, &out)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if !tc.wantErr && len(out) != 0 {
+				t.Errorf("out = %v, want empty", out)
+			}
+		})
+	}
+}

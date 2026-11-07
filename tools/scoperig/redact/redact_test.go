@@ -29,6 +29,9 @@ func TestString(t *testing.T) {
 		// Upper-case prefixes are not real tokens; not redacting them is accepted.
 		{"upper gho", "GHO_TEST00000000", "GHO_TEST00000000"},
 		{"basic line", "Authorization: Basic eDpzZWNyZXQ=", "Authorization: Basic [REDACTED]"},
+		{"basic json", `{"Authorization": "Basic eDpzZWNyZXQ="}`, `{"Authorization": "Basic [REDACTED]"}`},
+		{"basic json compact", `{"authorization":"basic eDpzZWNyZXQ="}`, `{"authorization":"basic [REDACTED]"}`},
+		{"bearer json", `{"Authorization": "Bearer opaque-value"}`, `{"Authorization": "Bearer [REDACTED]"}`},
 		{"already redacted", "token REDACTED", "token REDACTED"},
 		{"prefix alone", "ghx_", "ghx_"},
 		{"too short", "ghx_abc1234", "ghx_abc1234"},
@@ -104,6 +107,14 @@ func TestContains(t *testing.T) {
 		{"Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x:ghx_test00000000")), true},
 		{"Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x:plainpass")), false},
 		{"Authorization: Basic [REDACTED]", false},
+		// Trailing punctuation after the credential.
+		{"Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x:ghx_test00000000")) + ".", true},
+		{"Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x:ghx_test00000000")) + "\",", true},
+		// JSON-quoted header.
+		{`{"Authorization": "Basic ` + base64.StdEncoding.EncodeToString([]byte("x:ghx_test00000000")) + `"}`, true},
+		// URL-safe alphabet ("-" and "_" instead of "+" and "/").
+		{"Authorization: Basic " + base64.URLEncoding.EncodeToString([]byte("\xfb\xff:ghx_test00000000")), true},
+		{"Authorization: Basic " + base64.RawURLEncoding.EncodeToString([]byte("\xfb\xff:ghx_test00000000")), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {

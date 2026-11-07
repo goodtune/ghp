@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -364,6 +366,8 @@ func fakeDeps(f *fakeGHP, paceCalls *[]int) runDeps {
 			}
 			return time.Millisecond
 		},
+		GHVersion: func(context.Context, string) string { return "2.102.0" },
+		RigCommit: func() string { return "abc1234" },
 	}
 }
 
@@ -436,13 +440,18 @@ func TestRun_EndToEndFake(t *testing.T) {
 		t.Errorf("tokens left live: %v", left)
 	}
 	var doc struct {
-		Tokens struct {
+		GHVersion string `json:"gh_version"`
+		RigCommit string `json:"rig_commit"`
+		Tokens    struct {
 			Created  int      `json:"created"`
 			Revoked  int      `json:"revoked"`
 			Leftover []string `json:"leftover_ids"`
 		} `json:"tokens"`
 	}
 	_ = json.Unmarshal(raw, &doc)
+	if doc.GHVersion != "2.102.0" || doc.RigCommit != "abc1234" {
+		t.Errorf("gh_version=%q rig_commit=%q, want 2.102.0 and abc1234", doc.GHVersion, doc.RigCommit)
+	}
 	if doc.Tokens.Created != 2 || doc.Tokens.Revoked != 2 || len(doc.Tokens.Leftover) != 0 {
 		t.Errorf("tokens = %+v", doc.Tokens)
 	}
@@ -964,5 +973,108 @@ func TestRun_EndSweepRevokesUntrackedToken(t *testing.T) {
 				t.Errorf("leftover = %v, want [tok-1]", doc.Tokens.Leftover)
 			}
 		})
+	}
+}
+
+func TestEscalateOnLeftover(t *testing.T) {
+	cause := errors.New("preflight failed")
+	for _, tc := range []struct {
+		name     string
+		err      error
+		leftover []string
+		want     int // exit code; 0 means nil error
+	}{
+		{"could-not-start with leftover becomes 2", &exitError{code: 3, err: cause}, []string{"t1"}, 2},
+		{"could-not-start without leftover stays 3", &exitError{code: 3, err: cause}, nil, 3},
+		{"exit 2 with leftover stays 2", &exitError{code: 2, err: cause}, []string{"t1"}, 2},
+		{"nil with leftover stays nil", nil, []string{"t1"}, 0},
+		{"nil without leftover stays nil", nil, nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := escalateOnLeftover(tc.err, tc.leftover)
+			if tc.want == 0 {
+				if got != nil {
+					t.Fatalf("err = %v, want nil", got)
+				}
+				return
+			}
+			var ee *exitError
+			if !errors.As(got, &ee) || ee.code != tc.want {
+				t.Fatalf("err = %#v, want exit %d", got, tc.want)
+			}
+			if !errors.Is(got, cause) {
+				t.Errorf("cause lost: %v", got)
+			}
+		})
+	}
+}
+
+func TestWatchSecondSignal(t *testing.T) {
+	revoke := func(context.Context) []string { return []string{"t1", "t2"} }
+	t.Run("second signal revokes and exits 2", func(t *testing.T) {
+		ch := make(chan os.Signal, 2)
+		var out bytes.Buffer
+		code := -1
+		ch <- os.Interrupt
+		ch <- os.Interrupt
+		close(ch)
+		watchSecondSignal(context.Background(), ch, revoke, &out, func(c int) { code = c })
+		if code != 2 || !strings.Contains(out.String(), "t1 t2") {
+			t.Errorf("code=%d out=%q", code, out.String())
+		}
+	})
+	t.Run("first signal alone does nothing", func(t *testing.T) {
+		ch := make(chan os.Signal, 2)
+		code := -1
+		ch <- os.Interrupt
+		close(ch)
+		watchSecondSignal(context.Background(), ch, revoke, io.Discard, func(c int) { code = c })
+		if code != -1 {
+			t.Errorf("exited %d after one signal", code)
+		}
+	})
+	t.Run("signal before subscription counts as first", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		ch := make(chan os.Signal, 2)
+		code := -1
+		ch <- syscall.SIGTERM
+		close(ch)
+		watchSecondSignal(ctx, ch, revoke, io.Discard, func(c int) { code = c })
+		if code != 2 {
+			t.Errorf("code = %d, want 2", code)
+		}
+	})
+}
+
+// Flags override the environment, which overrides the config file.
+func TestLoadWithFlags_Precedence(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfg, []byte("fixtures:\n  repo_a: file/a\n  repo_b: file/b\n  repo_w: file/w\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"GHP_RIG_REPO_A": "env/a", "GHP_RIG_SCENARIOS": "envroot"}
+	getenv := func(k string) string { return env[k] }
+	f := &cliFlags{config: cfg, out: "/tmp/x.json", only: "REPO-*", skipKnown: true, keepGoing: false, verbose: true, createFixtures: true}
+	c, err := loadWithFlags(getenv, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RepoA != "env/a" || c.RepoB != "file/b" || c.Root != "envroot" {
+		t.Errorf("env over file: RepoA=%q RepoB=%q Root=%q", c.RepoA, c.RepoB, c.Root)
+	}
+	if c.ConfigFile != cfg {
+		t.Errorf("explicit --config not used: %q", c.ConfigFile)
+	}
+	if c.Out != "/tmp/x.json" || c.Only != "REPO-*" || !c.SkipKnown || c.KeepGoing || !c.Verbose || !c.CreateFixtures {
+		t.Errorf("flags not applied: %+v", *c)
+	}
+	// Run flags have no environment source: a look-alike variable is ignored.
+	env["GHP_RIG_ONLY"] = "NOPE-*"
+	if c, _ := loadWithFlags(getenv, f); c.Only != "REPO-*" {
+		t.Errorf("Only = %q, want the flag value", c.Only)
+	}
+	if _, err := loadWithFlags(getenv, &cliFlags{config: filepath.Join(t.TempDir(), "missing.yaml")}); err == nil {
+		t.Error("want error for a missing explicit config")
 	}
 }

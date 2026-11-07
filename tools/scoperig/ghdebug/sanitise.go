@@ -78,7 +78,11 @@ func slugPattern(owner, repo string) *regexp.Regexp {
 	return regexp.MustCompile(`(?i)` + regexp.QuoteMeta(owner+"/"+repo))
 }
 
-// identityPattern matches the owner or repo as a whole word, case-insensitively.
+// identityPattern matches the owner or repo as a whole word,
+// case-insensitively. The anchors are "start of text or a non-word
+// character" on each side rather than \b: \b needs a word character next to
+// the boundary, so a name that starts or ends with a non-word character
+// (".github", "repo-") would never match and the check would fail open.
 func identityPattern(owner, repo string) *regexp.Regexp {
 	var alts []string
 	for _, s := range []string{owner, repo} {
@@ -89,7 +93,7 @@ func identityPattern(owner, repo string) *regexp.Regexp {
 	if len(alts) == 0 {
 		return nil
 	}
-	return regexp.MustCompile(`(?i)\b(?:` + strings.Join(alts, "|") + `)\b`)
+	return regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])(?:` + strings.Join(alts, "|") + `)(?:$|[^A-Za-z0-9_])`)
 }
 
 func replaceSlug(v any, slug *regexp.Regexp) any {

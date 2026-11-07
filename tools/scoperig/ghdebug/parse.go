@@ -103,6 +103,10 @@ func Parse(r io.Reader) ([]Exchange, error) {
 		case b == nil:
 			continue
 		case strings.HasPrefix(line, "* Request to "):
+			if b.ex.URL != "" {
+				// A second URL for one exchange: another request's lines.
+				b.ex.Interleaved = true
+			}
 			b.ex.URL = strings.TrimSpace(strings.TrimPrefix(line, "* Request to "))
 			if u, err := url.Parse(b.ex.URL); err == nil {
 				b.ex.Path = u.Path
@@ -123,6 +127,11 @@ func Parse(r io.Reader) ([]Exchange, error) {
 		}
 		if b.sec == secRespBody && strings.HasPrefix(line, "< HTTP/") {
 			// A second status line inside the body: two responses merged.
+			b.ex.Interleaved = true
+		}
+		if b.respLine && (strings.HasPrefix(line, "> ") || line == "GraphQL query:") {
+			// Request lines after this exchange's status line belong to
+			// another, concurrent request (a partial interleave).
 			b.ex.Interleaved = true
 		}
 		switch {

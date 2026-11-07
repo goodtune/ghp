@@ -171,6 +171,12 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 // response body. Each block ends at its blank line (gh prints one after
 // headers and after each body; pretty-printed JSON has none), so a message
 // that follows a response body without a "took" line is kept.
+//
+// "* " and "> " lines are always removed, in every state: gh never starts
+// one of its own messages with either prefix. "* Request at" and
+// "* Request took" end any open block, including an unterminated
+// "GraphQL query:" block, so a capture cut short cannot swallow the rest
+// of stderr.
 func stripDebug(s string) string {
 	const (
 		out      = iota // not inside an exchange block
@@ -186,7 +192,7 @@ func stripDebug(s string) string {
 	for _, l := range strings.SplitAfter(s, "\n") {
 		line := strings.TrimRight(l, "\r\n")
 		switch {
-		case state == gql:
+		case state == gql && !strings.HasPrefix(line, "* Request at ") && !strings.HasPrefix(line, "* Request took "):
 			if strings.HasPrefix(line, "GraphQL variables:") {
 				state, inBody = reqBody, true
 			}

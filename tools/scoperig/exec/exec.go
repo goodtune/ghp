@@ -241,10 +241,11 @@ func capture(env *RunEnv, step string, c map[string]string, obs *expect.Observat
 	return nil
 }
 
-// checkStep applies a step's own Expect unless it is the scenario-level
-// Expect (the rest shorthand), which the runner matches itself.
+// checkStep applies a step's own Expect unless it is the scenario's verdict
+// expectation (the rest shorthand's single step), which the runner
+// classifies itself.
 func checkStep(s *scenario.Scenario, r *scenario.Request, obs *expect.Observation) error {
-	if r.Expect == nil || r.Expect == s.Expect {
+	if r.Expect == nil || r.Expect == s.VerdictExpect() {
 		return nil
 	}
 	if errs := expect.Match(r.Expect, obs); len(errs) > 0 {

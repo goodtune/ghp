@@ -224,3 +224,35 @@ func TestGH_WorkDirIsGitCheckoutOnFixtureBranch(t *testing.T) {
 		t.Errorf("stdout = %q", obs.Stdout)
 	}
 }
+
+func TestStripDebug(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{
+			name: "message after a complete exchange",
+			in:   "* Request at x\n* Request to https://h/a\n> GET /a HTTP/1.1\n\n< HTTP/2.0 403 Forbidden\n\n{}\n\n* Request took 1ms\nHTTP 403: denied\n",
+			want: "HTTP 403: denied\n",
+		},
+		{
+			name: "unterminated GraphQL block ends at the next request",
+			in:   "* Request at x\n> POST /graphql HTTP/1.1\n\nGraphQL query:\nquery { a }\n* Request at y\n* Request took 1ms\ngh: kept message\n",
+			want: "gh: kept message\n",
+		},
+		{
+			name: "unterminated GraphQL block ends at took",
+			in:   "* Request at x\n> POST /graphql HTTP/1.1\n\nGraphQL query:\nquery { a }\n* Request took 2ms\nGraphQL: Resource not accessible\n",
+			want: "GraphQL: Resource not accessible\n",
+		},
+		{
+			name: "star and request lines are always removed",
+			in:   "before\n* anything\n> anything\nafter\n",
+			want: "before\nafter\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripDebug(tt.in); got != tt.want {
+				t.Errorf("stripDebug() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

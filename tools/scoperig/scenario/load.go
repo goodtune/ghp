@@ -105,7 +105,9 @@ func decodeFile(path string, out any) error {
 }
 
 // Normalise converts the rest shorthand (Method/Path/Headers/Body/Expect)
-// into a single step when Steps is empty. It is idempotent. The shorthand
+// into a single step when Steps is empty. It is idempotent. Expect moves to
+// the step and is cleared on the scenario, so a runner cannot read a stale
+// copy; VerdictExpect returns it for classification. The other shorthand
 // fields on the scenario are left as-is.
 func (s *Scenario) Normalise() {
 	if s.Kind != "rest" || len(s.Steps) > 0 || (s.Method == "" && s.Path == "") {
@@ -119,5 +121,19 @@ func (s *Scenario) Normalise() {
 		Body:    s.Body,
 		Expect:  s.Expect,
 	}}
+	s.Expect = nil
 	s.shorthand = true
+}
+
+// Shorthand reports whether Steps was built from the rest shorthand fields.
+func (s *Scenario) Shorthand() bool { return s.shorthand }
+
+// VerdictExpect is the expectation the scenario's final observation is
+// classified against: Expect, or for the rest shorthand (where Normalise
+// moved it into the single step) that step's Expect.
+func (s *Scenario) VerdictExpect() *Expect {
+	if s.Expect == nil && s.shorthand && len(s.Steps) == 1 {
+		return s.Steps[0].Expect
+	}
+	return s.Expect
 }

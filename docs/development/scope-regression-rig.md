@@ -120,6 +120,8 @@ A run starts by sweeping: it revokes every unrevoked token whose session id star
 
 ## Reading the report
 
+The report header records the run id, the instance, the GHP version from preflight, the `gh` version (`gh --version`) and the rig commit (the VCS revision stamped into the binary by `make scoperig`; empty under `go run`, with a `-dirty` suffix for a modified tree).
+
 ### Scenario statuses
 
 | Status | Meaning |
@@ -184,7 +186,7 @@ Cleanup guarantees:
 ./scoperig sweep
 ```
 
-`sweep` revokes every unrevoked `scoperig-*` token. The next `run` does the same automatically.
+`sweep` revokes every unrevoked `scoperig-*` token. The next `run` does the same automatically. `sweep` exits 2 if the sweep fails or any token id is left over.
 
 The rig never writes token values to the report, errors or `gh` captures; all captured output is redacted.
 

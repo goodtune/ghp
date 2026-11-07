@@ -141,6 +141,21 @@ func TestParse_Interleaved(t *testing.T) {
 			want: []bool{true},
 		},
 		{
+			name: "request headers after status line",
+			in:   "* Request at x\n* Request to https://h/a\n> GET /a HTTP/1.1\n\n< HTTP/2.0 200 OK\n> GET /b HTTP/1.1\n> Accept: x\n\n{}\n",
+			want: []bool{true},
+		},
+		{
+			name: "graphql block after status line",
+			in:   "* Request at x\n* Request to https://h/a\n> GET /a HTTP/1.1\n\n< HTTP/2.0 200 OK\n\nGraphQL query:\nquery { a }\n",
+			want: []bool{true},
+		},
+		{
+			name: "second request url in one exchange",
+			in:   "* Request at x\n* Request to https://h/a\n* Request to https://h/b\n> GET /a HTTP/1.1\n\n< HTTP/2.0 200 OK\n\n{}\n",
+			want: []bool{true},
+		},
+		{
 			name: "no response at end of capture is not interleaved",
 			in:   "* Request at x\n* Request to https://h/a\n> GET /a HTTP/1.1\n",
 			want: []bool{false},
