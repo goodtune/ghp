@@ -192,6 +192,9 @@ var alwaysAllowedFields = map[string]struct{}{
 	"endCursor":       {},
 	"startCursor":     {},
 	"cursor":          {},
+	// Edge.node. Root node(id:) is a lookup handled by rootLookupFields
+	// before this table is consulted, and stays cross-repository.
+	"node": {},
 
 	// Root fields that are themselves harmless without further selection;
 	// the children determine the actual scope requirement.
@@ -220,6 +223,22 @@ var alwaysAllowedFields = map[string]struct{}{
 	"websiteUrl":      {},
 	"isViewer":        {},
 	"isSiteAdmin":     {},
+
+	// Actor references on an already-gated parent (#298): the parent field
+	// (issue, pullRequest, reviewRequests, autoMergeRequest, reactionGroups)
+	// carries the scope; these return only User/Bot/Team/Mannequin identity.
+	"assignees":         {},
+	"author":            {},
+	"enabledBy":         {},
+	"requestedReviewer": {},
+	"users":             {},
+
+	// Introspection shape under __type (#298, gh feature-detection probes).
+	// The name `fields` also exists on ProjectV2, whose parent is gated by
+	// projects:read. `args`, `type` and `ofType` are deliberately absent
+	// until gh is seen sending them (`type` collides with object fields).
+	"enumValues": {},
+	"fields":     {},
 }
 
 // fieldScopeRequirements maps GraphQL field names to the GitHub App
@@ -240,6 +259,22 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"timelineItems":                  {"issues", "read"},
 	"reactions":                      {"issues", "read"},
 	"reactionGroups":                 {"issues", "read"},
+	// #298. Issue-graph fields that can point outside the repository
+	// (blockedBy, blocking, parent, subIssues) are not yet cross-repo
+	// classified; see docs/features/token-scoping.md known limitations.
+	// `parent` is also Repository.parent (fork source): issues:read is the
+	// stricter of the two meanings. `comments` is also on PullRequest,
+	// Commit and PullRequestReview: PR comments are issue comments.
+	// `labels` and `milestone` have no gated parent under repository{}.
+	"blockedBy":        {"issues", "read"},
+	"blocking":         {"issues", "read"},
+	"comments":         {"issues", "read"},
+	"issueType":        {"issues", "read"},
+	"labels":           {"issues", "read"},
+	"milestone":        {"issues", "read"},
+	"parent":           {"issues", "read"},
+	"subIssues":        {"issues", "read"},
+	"subIssuesSummary": {"issues", "read"},
 
 	// Pull requests
 	"pullRequest":              {"pull_requests", "read"},
@@ -251,6 +286,11 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"latestOpinionatedReviews": {"pull_requests", "read"},
 	"mergeQueue":               {"pull_requests", "read"},
 	"mergeQueueEntry":          {"pull_requests", "read"},
+	// #298. headRepository/headRepositoryOwner can name a fork outside the
+	// allowlist; not yet cross-repo classified (known limitation).
+	"autoMergeRequest":    {"pull_requests", "read"},
+	"headRepository":      {"pull_requests", "read"},
+	"headRepositoryOwner": {"pull_requests", "read"},
 
 	// Discussions
 	"discussion":           {"discussions", "read"},
@@ -276,6 +316,8 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"commit":                {"contents", "read"},
 	"commitComments":        {"contents", "read"},
 	"history":               {"contents", "read"},
+	"baseRef":               {"contents", "read"}, // #298, like ref/refs
+	"commits":               {"contents", "read"}, // #298
 
 	// Deployments / environments
 	"deployment":   {"deployments", "read"},
@@ -288,6 +330,7 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"workflowRuns":      {"actions", "read"},
 	"actionsCacheUsage": {"actions", "read"},
 	"workflowFile":      {"actions", "read"},
+	"workflow":          {"actions", "read"}, // #298, like workflowRun
 
 	// Statuses & checks
 	"status":            {"statuses", "read"},
@@ -297,6 +340,12 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"checkSuites":       {"checks", "read"},
 	"checkRun":          {"checks", "read"},
 	"checkRuns":         {"checks", "read"},
+	// #298. StatusCheckRollup.contexts mixes CheckRun and StatusContext
+	// items; one entry holds one scope, so checks:read (same as
+	// statusCheckRollup) is required and StatusContext data rides on it.
+	"checkRunCountsByState":      {"checks", "read"},
+	"contexts":                   {"checks", "read"},
+	"statusContextCountsByState": {"statuses", "read"},
 
 	// Security
 	"vulnerabilityAlerts":    {"vulnerability_alerts", "read"},
@@ -305,6 +354,10 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	// Repository administration
 	"collaborators": {"administration", "read"},
 	"invitations":   {"administration", "read"},
+
+	// Repository lists (#298, gh repo list). Also in
+	// crossRepoAnywhereFields, so repository-restricted tokens stay denied.
+	"repositories": {"metadata", "read"},
 
 	// Organization members
 	"membersWithRole": {"members", "read"},
@@ -316,6 +369,9 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"projects":   {"projects", "read"},
 	"projectsV2": {"projects", "read"},
 	"projectV2":  {"projects", "read"},
+	// #298. gh issue/pr view project item probes.
+	"fieldValueByName": {"projects", "read"},
+	"projectItems":     {"projects", "read"},
 
 	// Webhooks (no GraphQL surface for webhook config today, but reserve the
 	// field name in case GitHub adds one).
