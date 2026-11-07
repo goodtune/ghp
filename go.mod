@@ -2,7 +2,7 @@ module github.com/goodtune/ghp
 
 go 1.26.0
 
-toolchain go1.26.10
+toolchain go1.27.3
 
 require (
 	github.com/go-git/go-billy/v5 v5.9.2
