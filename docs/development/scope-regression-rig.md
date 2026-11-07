@@ -220,7 +220,7 @@ Cleanup guarantees:
 
 `sweep` revokes every unrevoked `scoperig-*` token. The next `run` does the same automatically. `sweep` exits 2 if the sweep fails or any token id is left over.
 
-The rig never writes token values to the report, errors or `gh` captures; all captured output is redacted.
+The rig never writes token values to the report, errors or `gh` captures; all captured output is redacted. Redaction finds tokens in plain text, in percent-encoded or JSON `\uXXXX`-escaped form, in `Authorization` Basic, Bearer and token credentials, and in bare base64 or base64url credentials that decode to `<user>:<token>`. The package comment in `tools/scoperig/redact` lists the forms it does not detect.
 
 ## Corpus test and the oracle
 
