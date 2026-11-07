@@ -21,3 +21,5 @@ claims: 2 PASS, 3 FAIL (of which 1 ERROR), 2 KNOWN, 2 GAP   manual: C-MAN   unte
 confidence: 2/(9-2) = 28.6%   (PASS / (base - KNOWN))
 coverage gaps (1): C-NONE
 tokens: 11 created, 11 revoked, 0 leftover
+
+latency: not configured (metrics.prometheus_url)

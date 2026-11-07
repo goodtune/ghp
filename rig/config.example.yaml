@@ -12,6 +12,16 @@ instance:
   # Leave it empty unless the instance sets block.*; BORDER-C43 then
   # reports GAP.
   border_block: []
+# Optional: advisory per-stage latency from Prometheus (issue #321). Leave
+# prometheus_url empty to skip it (the report says "not configured").
+metrics:
+  # A Prometheus base URL, or a Grafana datasource proxy URL such as
+  # https://grafana.example.com/api/datasources/proxy/uid/<datasource-uid>
+  # (anonymous read). /api/v1/query is appended.
+  prometheus_url: ""
+  bearer_token_env: ""   # name of an env var holding a bearer token; empty = anonymous
+  selector: ""           # extra label matchers without braces, e.g. job="ghp"
+  scrape_wait: 45s       # wait after the run so Prometheus scrapes the last requests
 fixtures:
   repo_a: OWNER/ghp-scoperig-a
   repo_b: OWNER/ghp-scoperig-b

@@ -55,6 +55,9 @@ type Report struct {
 		Created, Revoked int
 		LeftoverIDs      []string
 	}
+	// Latency is the advisory latency section; nil means not configured.
+	// It never affects ExitCode.
+	Latency *Latency
 }
 
 // ExitCode returns 1 if any scenario is FAIL or KNOWN-CHANGED, else 2 if any
