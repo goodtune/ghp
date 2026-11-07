@@ -64,7 +64,7 @@ The allowlist compare ignores case for ASCII letters only. A non-ASCII
 spelling that Unicode case rules would map to an allowed name (for example
 `ſ`, U+017F, for `s`, or the Kelvin sign, U+212A, for `k`) does not match.
 GitHub owner and repository names are ASCII. The same rule applies to the
-releases and codeload allow lists, the enterprise exception match list and
+releases and codeload allow lists, the enterprise exception match list, the git cache, installation and team cache keys, and
 the admin user list.
 
 ghp rejects some request paths with `403 Forbidden` before any scope check.
@@ -303,7 +303,10 @@ example `{ node(id: "...") { id } }`, or a `search` that selects only
 counts), when a fragment names a type that is not in the table (including
 interfaces such as `Node`), or when a field other than `id` or
 `__typename` is selected outside a fragment. The fields inside a fragment
-are then checked as usual. The same field names in nested positions, for
+are then checked as usual. A fragment nested directly in the body of a
+gated fragment must have the same type condition, or it is gated the
+same way and its scope is also required: `... on Bot { ...F }` with
+`fragment F on Issue` needs `issues:read` as well as `metadata:read`. The same field names in nested positions, for
 example `Connection.nodes`, are pagination helpers and are not affected.
 These four lookups are still cross-repository fields, so
 repository-restricted tokens cannot use them.
@@ -323,6 +326,13 @@ fields" message can use the named field as a hint for extending
 
 ### Known limitations
 
+- **Some harmless root lookups are denied for every scoped token.** A
+  `search` that selects only counts (for example `repositoryCount`), a
+  root `node`, `nodes` or `resource` that selects only `id` or
+  `__typename`, and `textMatches` under `search { edges { ... } }` have no
+  fragment type that ghp can gate on, so they are rejected as unmapped.
+  Add a fragment with a mapped type condition (for example
+  `... on Repository { id }`) to send such a query.
 - **Scalar leaves under always-allowed parents are not deny-by-default.**
   Without loading GitHub's full SDL the proxy cannot enumerate every
   scalar field name, so unmapped scalars projected directly under an

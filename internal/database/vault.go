@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	vault "github.com/hashicorp/vault/api"
+
+	"github.com/goodtune/ghp/internal/asciiutil"
 )
 
 // Supported Vault auth methods for the ghp database backend.
@@ -717,14 +719,11 @@ func (s *VaultStore) SyncAdminRoles(ctx context.Context, adminUsernames []string
 		return err
 	}
 
-	adminSet := make(map[string]bool)
-	for _, u := range adminUsernames {
-		adminSet[strings.ToLower(u)] = true
-	}
+	adminSet := newAdminSet(adminUsernames)
 
 	for _, user := range users {
 		newRole := "user"
-		if adminSet[strings.ToLower(user.GitHubUsername)] {
+		if adminSet.has(user.GitHubUsername) {
 			newRole = "admin"
 		}
 		if user.Role != newRole {
@@ -1873,3 +1872,20 @@ func (s *VaultStore) DeleteExpiredDeviceAuths(ctx context.Context) (int64, error
 
 // Ensure VaultStore implements Store.
 var _ Store = (*VaultStore)(nil)
+
+// adminSet holds admin logins folded with ASCII-only case rules, so a
+// Kelvin-sign login does not match an ASCII "k" admin entry (#317).
+type adminSet map[string]struct{}
+
+func newAdminSet(names []string) adminSet {
+	set := make(adminSet, len(names))
+	for _, n := range names {
+		set[asciiutil.ToLower(n)] = struct{}{}
+	}
+	return set
+}
+
+func (s adminSet) has(login string) bool {
+	_, ok := s[asciiutil.ToLower(login)]
+	return ok
+}

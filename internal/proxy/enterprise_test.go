@@ -897,3 +897,14 @@ func TestEnterprisePolicy_Match_ASCIIOnlyFold(t *testing.T) {
 		})
 	}
 }
+
+// TestTeamCacheKey_ASCIIOnlyFold covers #317: a Kelvin-sign login must not
+// share a cached membership verdict with the ASCII login.
+func TestTeamCacheKey_ASCIIOnlyFold(t *testing.T) {
+	if got, want := teamCacheKey("Acme", "Trusted", "Kate"), "acme/trusted/kate"; got != want {
+		t.Errorf("teamCacheKey = %q, want %q", got, want)
+	}
+	if teamCacheKey("acme", "trusted", "Kate") == teamCacheKey("acme", "trusted", "kate") {
+		t.Error("Kelvin-sign login shares a cache key with the ASCII login")
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/crypto"
 	ghub "github.com/google/go-github/v93/github"
 	"github.com/hashicorp/golang-lru/v2/expirable"
@@ -303,9 +304,9 @@ func (p *AppTokenProvider) getInstallationPermissions(ctx context.Context, jwtTo
 // given user or organization account. The org endpoint is tried first, then
 // the user endpoint (GitHub returns 404 from the org endpoint for user
 // accounts). Results are cached for installationIDCacheTTL, keyed by the
-// lowercase owner login.
+// lowercase owner login (ASCII-only folding, #317).
 func (p *AppTokenProvider) GetInstallationIDForOwner(ctx context.Context, owner string) (int64, error) {
-	key := strings.ToLower(owner)
+	key := asciiutil.ToLower(owner) // ASCII-only folding (#317)
 	if id, ok := p.installationIDCache.Get(key); ok {
 		return id, nil
 	}

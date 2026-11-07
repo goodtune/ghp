@@ -571,3 +571,30 @@ BFoqyQKBgAJC8ejath862GxPQB9mpkuxwYR+Odp/Uz46xfyrSJrKb0BQrn9v6Kyd
 lEYYwchE0C7L13qVoxEJN9U5XtgNERUpCQi3NCHwD8ADwpyAzQP57UBLS8Bb5ByC
 xARUAV0AcnOf8WgFfswT1z7K4sJABdSBhP1URlo9YBW41+FAzQbm
 -----END RSA PRIVATE KEY-----`
+
+// TestAppTokenProvider_GetInstallationIDForOwner_ASCIIOnlyCacheKey covers
+// #317: a Kelvin-sign owner must not hit the cache entry for the ASCII owner.
+func TestAppTokenProvider_GetInstallationIDForOwner_ASCIIOnlyCacheKey(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if err := json.NewEncoder(w).Encode(map[string]int64{"id": 55}); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{AppID: 1, PrivateKey: testRSAKey, BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, owner := range []string{"kit", "Kit"} {
+		if _, err := provider.GetInstallationIDForOwner(ctx, owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls (Kelvin sign is a distinct key), got %d", callCount)
+	}
+}

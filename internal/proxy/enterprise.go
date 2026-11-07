@@ -350,7 +350,7 @@ func newTeamChecker(identity ExceptionIdentitySource, logger *slog.Logger) *team
 // caller performs the lookup and everyone else waits on its verdict, bounded
 // by their own context (fail closed on cancellation).
 func (c *teamChecker) isMember(ctx context.Context, org, teamSlug, username string) bool {
-	key := strings.ToLower(org) + "/" + strings.ToLower(teamSlug) + "/" + strings.ToLower(username)
+	key := teamCacheKey(org, teamSlug, username)
 	if member, ok := c.cache.Get(key); ok {
 		return member
 	}
@@ -517,4 +517,11 @@ func rawTokenFromAuthValue(v string) string {
 		}
 	}
 	return ""
+}
+
+// teamCacheKey builds the team membership cache key with ASCII-only folding,
+// so a Kelvin-sign login cannot share a cached verdict with an ASCII one
+// (#317).
+func teamCacheKey(org, teamSlug, username string) string {
+	return asciiutil.ToLower(org) + "/" + asciiutil.ToLower(teamSlug) + "/" + asciiutil.ToLower(username)
 }
