@@ -314,6 +314,10 @@ func checkGH(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, add f
 			add("gh: --repo value %q looks like a flag", r)
 			return
 		}
+		if strings.Contains(r, "://") && !strings.HasPrefix(r, "https://") {
+			add("gh: --repo value %q: only https URLs to {{.Host}} are allowed", r)
+			return
+		}
 		host, rr, ok := repoFromSpec(r)
 		if !ok {
 			add("gh: --repo value %q is not OWNER/REPO, HOST/OWNER/REPO or a URL", r)

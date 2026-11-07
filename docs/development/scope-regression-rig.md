@@ -107,6 +107,8 @@ make scoperig-validate
 
 Validation rejects, among other things, any non-GET request whose path does not target `/repos/<W>/...` (the exceptions are the GAP-A1 probe and `token_api` scenarios, which must target `/api/tokens`), and paths with `..`, dot segments or encoded dots. A `gh` argument that contains the literal placeholder host `ghp.example` is rejected; use `{{.Host}}`.
 
+`tools/scoperig/scenario/probe_test.go` holds a standing table of adversarial scenario shapes (host, path, cleanup, empty-matcher and `gh` parser tricks). Each must be rejected by a named rule, and CI runs it with the unit tests. When you find a new way past the validator, add a row there with the fix. A fuzz target (`go test -fuzz FuzzLoadValidate ./tools/scoperig/scenario`) searches for accepted REST writes that leave W.
+
 Offline validation uses placeholder values for the host and the fixture repositories. `run` validates the tree again with the configured host and fixture repositories after it loads the config and before it sends any request, and exits 3 if that fails. So a scenario that hardcodes a placeholder value (for example the placeholder W repository) cannot pass offline and then reach a different repository at run time.
 
 Live run:

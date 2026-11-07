@@ -38,6 +38,7 @@ Scenarios (`rig/scenarios/*.yaml`) test claims (`rig/claims.yaml`) with token pr
 5. `gh` writes may use only flags in `ghFlagTable` (`tools/scoperig/scenario/ghcheck.go`); read-only subcommands are in `ghReadOnly`.
 6. A GraphQL mutation with an unrestricted profile needs a reviewed entry in `mutationWriteAllowlist` (`gqlcheck.go`), like the `GQL-C31.*` pair.
 7. `validate` must print `0 errors`; then run `--only`.
+8. Changing a validator rule (`scenario/validate.go`, `ghcheck.go`, `gqlcheck.go`)? Add a row to the adversarial probe table in `tools/scoperig/scenario/probe_test.go` for the shape it must reject.
 
 **gh upgrade**
 1. Run `oracle` (or capture with `GH_DEBUG=api` and run the importer); expectations already in the directory are kept.

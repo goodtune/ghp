@@ -371,12 +371,16 @@ func TestValidate_EmptyMethod(t *testing.T) {
 
 func TestValidate_TokenAPIPathExact(t *testing.T) {
 	for _, p := range []string{"/api/tokens", "/api/tokens/abc"} {
-		requireNoErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
-			Request: &Request{Method: "POST", Path: p}}), nil))
+		t.Run("ok "+p, func(t *testing.T) {
+			requireNoErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
+				Request: &Request{Method: "POST", Path: p}}), nil))
+		})
 	}
 	for _, p := range []string{"/api/tokensfoo", "/api/tokens/../x", "/api/tokens?x=1", "/api/tokens/abc?x=1"} {
-		requireErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
-			Request: &Request{Method: "POST", Path: p}}), nil), "T")
+		t.Run("bad "+p, func(t *testing.T) {
+			requireErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
+				Request: &Request{Method: "POST", Path: p}}), nil), "T")
+		})
 	}
 	// Cleanup entries of token_api scenarios follow the same rule.
 	requireErr(t, Validate(withScenarios(&Scenario{ID: "T2", Claim: "C1", Kind: "token_api",
@@ -577,8 +581,10 @@ func TestValidate_VhostWithSteps(t *testing.T) {
 
 func TestValidate_BorderBlockCapabilities(t *testing.T) {
 	for _, c := range []string{"border_block_ghp", "border_block_gho", "border_block_github_pat"} {
-		s := &Scenario{ID: "B1", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user", Requires: []string{c}}
-		requireNoErr(t, Validate(withScenarios(s), nil))
+		t.Run(c, func(t *testing.T) {
+			s := &Scenario{ID: "B1", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user", Requires: []string{c}}
+			requireNoErr(t, Validate(withScenarios(s), nil))
+		})
 	}
 	s := &Scenario{ID: "B2", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user", Requires: []string{"bogus"}}
 	requireErr(t, Validate(withScenarios(s), nil), "B2", "border_block_github_pat")
@@ -826,8 +832,10 @@ func TestGraphQLReadOnly(t *testing.T) {
 		"not graphql {":                                  false,
 		"":                                               false,
 	} {
-		if got := GraphQLReadOnly(q); got != want {
-			t.Errorf("GraphQLReadOnly(%q) = %v, want %v", q, got, want)
-		}
+		t.Run(q, func(t *testing.T) {
+			if got := GraphQLReadOnly(q); got != want {
+				t.Errorf("GraphQLReadOnly(%q) = %v, want %v", q, got, want)
+			}
+		})
 	}
 }

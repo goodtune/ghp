@@ -339,8 +339,10 @@ func TestExpectsSuccess(t *testing.T) {
 		{Expect{StatusIn: []int{403, 204}}, true},
 	}
 	for _, tc := range cases {
-		if got := expectsSuccess(&tc.e); got != tc.want {
-			t.Errorf("expectsSuccess(%+v) = %v, want %v", tc.e, got, tc.want)
-		}
+		t.Run(fmt.Sprintf("%+v", tc.e), func(t *testing.T) {
+			if got := expectsSuccess(&tc.e); got != tc.want {
+				t.Errorf("expectsSuccess(%+v) = %v, want %v", tc.e, got, tc.want)
+			}
+		})
 	}
 }
