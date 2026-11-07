@@ -293,5 +293,13 @@
     "created": 11,
     "revoked": 11,
     "leftover_ids": []
+  },
+  "latency": {
+    "status": "not_configured",
+    "error": "",
+    "version": "",
+    "revision": "",
+    "window_seconds": 0,
+    "stages": []
   }
 }

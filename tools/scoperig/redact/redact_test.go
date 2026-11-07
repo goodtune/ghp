@@ -156,3 +156,50 @@ func TestRedact_ExecutorOutputs(t *testing.T) {
 		}
 	}
 }
+
+// TestRedact_EncodedForms covers the forms from issue #337: a
+// percent-encoded token, a JSON \uXXXX-escaped token (the tail must not
+// leak) and a bare base64 "<user>:<token>" credential with no
+// Authorization label.
+func TestRedact_EncodedForms(t *testing.T) {
+	b64 := func(enc *base64.Encoding, s string) string { return enc.EncodeToString([]byte(s)) }
+	tests := []struct {
+		name, in, want string
+		leak           bool // Contains(in) must be true
+	}{
+		{"percent prefix", "q=%67hx_test00000000&x=1", "q=ghx_[REDACTED]&x=1", true},
+		{"percent underscore", "q=ghx%5Ftest00000000", "q=ghx_[REDACTED]", true},
+		{"percent in tail", "ghx_test%30%30%30%30%30%30", "ghx_[REDACTED]", true},
+		{"percent upper hex", "%67%68%78%5Ftest00000000", "ghx_[REDACTED]", true},
+		{"json escaped prefix", `{"t":"ghx_test00000000"}`, `{"t":"ghx_[REDACTED]"}`, true},
+		{"json escaped tail", `{"t":"ghx_abcdefghABCDSECRETTAIL"}`, `{"t":"ghx_[REDACTED]"}`, true},
+		{"json escaped tail short plain", `{"t":"ghx_abcdefghij"}`, `{"t":"ghx_[REDACTED]"}`, true},
+		{"bare base64 std", "cred " + b64(base64.StdEncoding, "x:ghx_test00000000") + " end", "cred [REDACTED] end", true},
+		{"bare base64 raw url", "cred=" + b64(base64.RawURLEncoding, "\xfb\xff:gha_test00000000"), "cred=[REDACTED]", true},
+		{"bare base64 json", `{"c":"` + b64(base64.StdEncoding, "x-access-token:ghs_test00000000") + `"}`, `{"c":"[REDACTED]"}`, true},
+		{"percent after non-token escape", "a%20%67hx_test00000000", "a%20ghx_[REDACTED]", true},
+		{"json escape after newline escape", `{"m":"x\u000a\u0067hx_test00000000"}`, `{"m":"x\u000aghx_[REDACTED]"}`, true},
+		// Non-token neighbours are left alone.
+		{"percent non token", "a%20b%2Fc", "a%20b%2Fc", false},
+		{"json escape non token", `{"m":"line\u000aend"}`, `{"m":"line\u000aend"}`, false},
+		{"bare base64 non token", "x " + b64(base64.StdEncoding, "x:plainpassword") + " y", "x " + b64(base64.StdEncoding, "x:plainpassword") + " y", false},
+		{"bare base64 no user", b64(base64.StdEncoding, "just some text here"), b64(base64.StdEncoding, "just some text here"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Contains([]byte(tt.in)); got != tt.leak {
+				t.Errorf("Contains(%q) = %v, want %v", tt.in, got, tt.leak)
+			}
+			got := String(tt.in)
+			if got != tt.want {
+				t.Errorf("String(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if b := Bytes([]byte(tt.in)); string(b) != tt.want {
+				t.Errorf("Bytes(%q) = %q, want %q", tt.in, b, tt.want)
+			}
+			if Contains([]byte(got)) {
+				t.Errorf("token survived: %q", got)
+			}
+		})
+	}
+}

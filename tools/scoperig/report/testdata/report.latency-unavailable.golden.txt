@@ -1,0 +1,25 @@
+scoperig run 20261105T0412Z-7f3a  instance=ghp.example.test (0.23.0)  scenarios=13
+
+changed (1):
+  C-CHG.a  KNOWN-CHANGED  observed status: want 200, got 401
+
+CLAIM     SCENARIO    STATUS       DETAIL (1 listed above)
+C-ERR     C-ERR.a     ERROR        revoke call failed: ghp_[REDACTED]
+C-FAIL    C-FAIL.a    FAIL         status: want 403, got 200
+C-FAIL    C-FAIL.b    KNOWN        https://github.com/goodtune/ghp/issues/290
+C-FIXED   C-FIXED.a   KNOWN-FIXED  remove known_issue and observed: from C-FIXED.a
+C-GAPREQ  C-GAPREQ.a  GAP          requires repo_create
+C-KNOWN   C-KNOWN.a   KNOWN        https://github.com/goodtune/ghp/issues/290
+C-KNOWN   C-KNOWN.b   PASS         403 Token is not scoped to o/b
+C-MIXED   C-MIXED.a   PASS         403 Token is not scoped to o/b
+C-MIXED   C-MIXED.b   GAP          requires github_vhost
+C-PASS    C-PASS.a    PASS         403 Token is not scoped to o/b
+C-PASS    C-PASS.b    PASS         403 Token is not scoped to o/b
+GAP-A1    GAP-A1.a    KNOWN        https://github.com/goodtune/ghp/issues/290
+
+claims: 2 PASS, 3 FAIL (of which 1 ERROR), 2 KNOWN, 2 GAP   manual: C-MAN   untestable: C-NEV
+confidence: 2/(9-2) = 28.6%   (PASS / (base - KNOWN))
+coverage gaps (1): C-NONE
+tokens: 11 created, 11 revoked, 0 leftover
+
+latency: unavailable (prometheus query: HTTP 401: unauthorized)

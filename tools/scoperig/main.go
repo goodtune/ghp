@@ -151,6 +151,8 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 			if err != nil {
 				return err
 			}
+			// After revocation: the scrape wait must not keep tokens live.
+			rep.Latency = collectLatency(cmd.Context(), c, withOut(deps), rep)
 			if err := rep.WriteTable(stdout); err != nil {
 				return &exitError{code: 2, err: err}
 			}

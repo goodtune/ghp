@@ -41,8 +41,11 @@ man: build
 	./$(BINARY) doc --output doc/man1
 
 ## scoperig: build the scope regression rig (operator tool, not shipped)
+# The commit is stamped explicitly: Go's VCS stamping can read the parent
+# checkout when building inside a git worktree.
+RIG_COMMIT := $(shell git rev-parse HEAD 2>/dev/null)$(shell git diff --quiet HEAD -- 2>/dev/null || echo -dirty)
 scoperig:
-	CGO_ENABLED=0 go build -o scoperig ./tools/scoperig
+	CGO_ENABLED=0 go build -ldflags '-X github.com/goodtune/ghp/tools/scoperig/exec.Commit=$(RIG_COMMIT)' -o scoperig ./tools/scoperig
 
 ## scoperig-validate: offline validation of rig/ scenarios
 scoperig-validate:

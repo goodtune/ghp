@@ -13,7 +13,6 @@ import (
 	"os"
 	osexec "os/exec"
 	"path"
-	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/goodtune/ghp/tools/scoperig/exec"
 	"github.com/goodtune/ghp/tools/scoperig/fixtures"
+	"github.com/goodtune/ghp/tools/scoperig/latency"
 	"github.com/goodtune/ghp/tools/scoperig/redact"
 	"github.com/goodtune/ghp/tools/scoperig/report"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
@@ -60,10 +60,16 @@ type runDeps struct {
 	// Default: `gh --version` via ghPath.
 	GHVersion func(ctx context.Context, ghPath string) string
 	// RigCommit is the VCS revision the rig binary was built from ("" when
-	// unknown). Default: the binary's build info.
+	// unknown). Default exec.RigCommit.
 	RigCommit func() string
 	// RigVersion is the version in the User-Agent. Default exec.RigVersion.
 	RigVersion func() string
+	// Sleep waits d or until ctx ends (the latency scrape wait). Default
+	// a context-aware timer.
+	Sleep func(ctx context.Context, d time.Duration) error
+	// PromHTTP is the client for metrics.prometheus_url. Default: the
+	// config's client (system roots plus GHP_RIG_CA_FILE).
+	PromHTTP *http.Client
 }
 
 func (d *runDeps) defaults() {
@@ -87,11 +93,66 @@ func (d *runDeps) defaults() {
 		d.GHVersion = ghVersion
 	}
 	if d.RigCommit == nil {
-		d.RigCommit = rigCommit
+		d.RigCommit = exec.RigCommit
 	}
 	if d.RigVersion == nil {
 		d.RigVersion = exec.RigVersion
 	}
+	if d.Sleep == nil {
+		d.Sleep = sleepCtx
+	}
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// collectLatency fills the report's advisory Latency section from
+// metrics.prometheus_url: it waits metrics.scrape_wait so the run's last
+// observations are scraped, then reads the decision histograms over the
+// window from the run start to now. Any failure is recorded in the section
+// (status unavailable); it never changes the exit code.
+func collectLatency(ctx context.Context, c *Config, deps runDeps, rep *report.Report) *report.Latency {
+	deps.defaults()
+	m := c.Metrics
+	if m.PrometheusURL == "" {
+		return &report.Latency{Status: report.LatencyNotConfigured}
+	}
+	unavailable := func(err error) *report.Latency {
+		return &report.Latency{Status: report.LatencyUnavailable, Error: redact.String(err.Error())}
+	}
+	start, err := time.Parse(time.RFC3339, rep.StartedAt)
+	if err != nil {
+		return unavailable(fmt.Errorf("run start time: %w", err))
+	}
+	hc := deps.PromHTTP
+	if hc == nil {
+		if hc, err = c.HTTPClient(); err != nil {
+			return unavailable(err)
+		}
+	}
+	hc = exec.WithUserAgent(hc, exec.UserAgent(deps.RigVersion(), rep.RunID))
+	if m.ScrapeWait > 0 {
+		_, _ = fmt.Fprintf(deps.Out, "latency: waiting %s for a Prometheus scrape\n", m.ScrapeWait)
+		if err := deps.Sleep(ctx, m.ScrapeWait); err != nil {
+			return unavailable(fmt.Errorf("interrupted during scrape wait: %w", err))
+		}
+	}
+	cl := &latency.Client{BaseURL: m.PrometheusURL, Bearer: m.Bearer, Selector: m.Selector, HTTP: hc}
+	qctx, cancel := context.WithTimeout(ctx, endOfRunTimeout)
+	defer cancel()
+	lat, err := cl.Collect(qctx, start, deps.Now())
+	if err != nil {
+		return unavailable(err)
+	}
+	return lat
 }
 
 // ghVersion runs `gh --version` with a short timeout and returns the
@@ -113,30 +174,6 @@ func ghVersion(ctx context.Context, ghPath string) string {
 		return ""
 	}
 	return v
-}
-
-// rigCommit returns the vcs.revision from the binary's build info (with a
-// "-dirty" suffix for a modified tree), or "" when it was not stamped (for
-// example under go run).
-func rigCommit() string {
-	bi, ok := debug.ReadBuildInfo()
-	if !ok {
-		return ""
-	}
-	var rev string
-	dirty := false
-	for _, s := range bi.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			rev = s.Value
-		case "vcs.modified":
-			dirty = s.Value == "true"
-		}
-	}
-	if rev != "" && dirty {
-		rev += "-dirty"
-	}
-	return rev
 }
 
 func newRunID(t time.Time) string {

@@ -19,7 +19,7 @@ description: Use when running the GHP scope regression rig, reading its report, 
 
 | Step | Command |
 |---|---|
-| Build | `CGO_ENABLED=0 go build -o /tmp/scoperig ./tools/scoperig` |
+| Build | `make scoperig && mv scoperig /tmp/scoperig` (stamps the worktree commit into the User-Agent and report `rig_commit`) |
 | Static check | `/tmp/scoperig validate` |
 | Fixtures | `/tmp/scoperig fixtures ensure` (creates and revokes one `open` token even when it changes nothing; `--create-fixtures` only to create missing repos, which usually fails for lack of `repo_create`: create `ghp-scoperig-{a,b,w}` by hand with `gh repo create --private`) |
 | Full run | `/tmp/scoperig run --out /tmp/ghp-rig/reports/$(date -u +%Y%m%dT%H%MZ).json` |
@@ -38,7 +38,7 @@ description: Use when running the GHP scope regression rig, reading its report, 
 
 1. If `rig/config.yaml` does not exist, `cp rig/config.example.yaml rig/config.yaml` and replace `OWNER` in the fixtures. Needs `gh` and `git` on PATH. Export `GHP_SERVER_URL` and `GHP_USER_TOKEN` from the `ghp` CLI config (`~/.config/ghp/config.yaml`: `server_url`, `user_token`). If that config has a `dotvault:` stanza, the token is the Vault field named by `dotvault.fields.user_token`, under service `dotvault.service`, read with the dotvault client config `dotvault.config` (default path when empty); read it straight into the variable. Optional: `GHP_RIG_REPO_A/B/W` override `rig/config.yaml`. Never echo them. The live run does not use your `gh` login (gh gets the minted token); only `oracle` does, and it needs it in `hosts.yml` or the macOS keychain (no Linux Secret Service).
 2. Validate, ensure fixtures, run with `--out` under `/tmp/ghp-rig/reports/`. `--skip-known` skips known scenarios.
-3. Read the report: KNOWN-CHANGED rows are at the top; then per-claim results; the confidence line is `PASS/(base-KNOWN)`.
+3. Read the report: KNOWN-CHANGED rows are at the top; then per-claim results; the confidence line is `PASS/(base-KNOWN)`. The last section is latency (advisory, never changes the exit code): set `metrics.prometheus_url` in `rig/config.yaml` to the operator's Prometheus or Grafana datasource proxy URL (never commit it); the run then waits `metrics.scrape_wait` (45s) after revocation. `WARN over-budget` means a stage p99 is above its budget; compare with the previous release's run before filing a performance issue, and treat `WARN low-samples` (n < 100) p99 values as noise.
 4. FAIL: reproduce with `--only '<id>'`. Search issues. If none, write the body and run `gh issue create -R goodtune/ghp --label bug [--label security] --title "scoping: <claim id> <claim> fails" --body-file <file>`. Add `--label security` when the result lets the token do more than its scope allows. Then set `known_issue: <issue URL>` and an `observed:` block (today's behaviour, same shape as `expect:`) on the scenario; re-run `--only` and confirm KNOWN.
 5. KNOWN-FIXED: remove `known_issue` and `observed:`; confirm PASS.
 6. KNOWN-CHANGED: comment the new observation on the issue, update `observed:` and matching corpus entries (corpus: `current`), confirm KNOWN.
