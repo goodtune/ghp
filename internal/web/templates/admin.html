@@ -194,6 +194,9 @@
     </div>
 
     <script>
+        // Canonical permission names accepted in token scopes (internal/permissions).
+        const CANONICAL_PERMISSIONS = {{ .PermissionNamesJSON }};
+
         // ── API helper ──────────────────────────────────────────────
         async function api(method, path, body) {
             const opts = { method, headers: { 'Content-Type': 'application/json' } };
@@ -965,6 +968,21 @@
             reloadCurrentTokenView();
         }
 
+        // validateScopes applies the rules of permissions.Validate on the
+        // server: canonical names only, level read or write. Returns an error
+        // message, or '' when every entry is valid.
+        function validateScopes(scopes) {
+            const bad = [];
+            for (const [name, level] of Object.entries(scopes)) {
+                if (!CANONICAL_PERMISSIONS.includes(name)) {
+                    bad.push('unknown permission "' + name + '"');
+                } else if (level !== 'read' && level !== 'write') {
+                    bad.push('invalid level "' + level + '" for "' + name + '" (must be read or write)');
+                }
+            }
+            return bad.length ? 'Invalid scopes: ' + bad.join('; ') : '';
+        }
+
         function editToken(id, reposJson, scopesJson) {
             // Remove any existing edit row.
             const existing = document.getElementById('edit-token-row');
@@ -994,15 +1012,44 @@
             reposInput.style.cssText = 'width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.875rem;font-family:monospace;margin-bottom:0.75rem;';
 
             const scopesLabel = document.createElement('label');
-            scopesLabel.textContent = 'Scopes (JSON object, e.g. {"contents":"read"}, leave empty {} for open-scoped)';
+            scopesLabel.textContent = 'Permissions (leave all at No access for open-scoped)';
             scopesLabel.style.cssText = 'display:block;margin-bottom:0.25rem;font-size:0.875rem;color:#8b949e;';
-            const scopesInput = document.createElement('textarea');
-            scopesInput.rows = 4;
-            scopesInput.value = Object.keys(currentScopes).length > 0 ? JSON.stringify(currentScopes, null, 2) : '';
-            scopesInput.placeholder = '{\n  "contents": "read",\n  "pull_requests": "write"\n}';
-            scopesInput.style.cssText = 'width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.875rem;font-family:monospace;margin-bottom:0.75rem;';
+            const scopesSelect = document.createElement('ghp-permission-select');
+            scopesSelect.id = 'edit-token-scopes';
+            scopesSelect.setAttribute('optional-metadata', '');
+            scopesSelect.style.marginBottom = '0.5rem';
+            scopesSelect.permissions = Object.fromEntries(CANONICAL_PERMISSIONS.map(n => [n, 'write']));
+            const unapplied = scopesSelect.setValue(currentScopes);
+
+            const scopesWarn = document.createElement('div');
+            scopesWarn.id = 'edit-token-scopes-warning';
+            scopesWarn.style.cssText = 'color:#d29922;font-size:0.875rem;margin-bottom:0.5rem;';
+            const unappliedEntries = Object.entries(unapplied);
+            if (unappliedEntries.length > 0) {
+                scopesWarn.textContent = 'These current entries are not valid scopes and will be removed on save: '
+                    + unappliedEntries.map(([k, v]) => k + ':' + v).join(', ');
+            } else {
+                scopesWarn.style.display = 'none';
+            }
+
+            const jsonToggle = document.createElement('button');
+            jsonToggle.type = 'button';
+            jsonToggle.className = 'btn btn-secondary';
+            jsonToggle.id = 'edit-token-scopes-json-toggle';
+            jsonToggle.textContent = 'Show current scopes as JSON';
+            jsonToggle.style.marginBottom = '0.5rem';
+            const jsonView = document.createElement('pre');
+            jsonView.id = 'edit-token-scopes-json';
+            jsonView.textContent = JSON.stringify(currentScopes, null, 2);
+            jsonView.style.cssText = 'display:none;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:0.8rem;margin-bottom:0.75rem;white-space:pre-wrap;';
+            jsonToggle.addEventListener('click', () => {
+                const hidden = jsonView.style.display === 'none';
+                jsonView.style.display = hidden ? 'block' : 'none';
+                jsonToggle.textContent = hidden ? 'Hide current scopes as JSON' : 'Show current scopes as JSON';
+            });
 
             const errMsg = document.createElement('div');
+            errMsg.id = 'edit-token-error';
             errMsg.style.cssText = 'color:#f85149;margin-bottom:0.5rem;display:none;';
 
             const btnRow = document.createElement('div');
@@ -1025,19 +1072,12 @@
                 errMsg.style.display = 'none';
 
                 const repoLines = reposInput.value.split('\n').map(s => s.trim()).filter(Boolean);
-                let parsedScopes;
-                const rawScopes = scopesInput.value.trim();
-                if (rawScopes === '' || rawScopes === '{}') {
-                    parsedScopes = {};
-                } else {
-                    try {
-                        parsedScopes = JSON.parse(rawScopes);
-                        if (typeof parsedScopes !== 'object' || Array.isArray(parsedScopes)) throw new Error('Must be a JSON object');
-                    } catch (e) {
-                        errMsg.textContent = 'Invalid scopes JSON: ' + e.message;
-                        errMsg.style.display = 'block';
-                        return;
-                    }
+                const parsedScopes = scopesSelect.value;
+                const scopeErr = validateScopes(parsedScopes);
+                if (scopeErr) {
+                    errMsg.textContent = scopeErr;
+                    errMsg.style.display = 'block';
+                    return;
                 }
 
                 saveBtn.textContent = 'Saving…';
@@ -1057,7 +1097,10 @@
             editCell.appendChild(reposLabel);
             editCell.appendChild(reposInput);
             editCell.appendChild(scopesLabel);
-            editCell.appendChild(scopesInput);
+            editCell.appendChild(scopesSelect);
+            editCell.appendChild(scopesWarn);
+            editCell.appendChild(jsonToggle);
+            editCell.appendChild(jsonView);
             editCell.appendChild(errMsg);
             editCell.appendChild(btnRow);
             editRow.appendChild(editCell);
@@ -1247,10 +1290,13 @@
             }
         }
 
+        // esc escapes text for HTML element content and quoted attribute
+        // values. innerHTML alone leaves quotes as-is, which truncated JSON
+        // in data-token-* attributes.
         function esc(s) {
             const d = document.createElement('div');
             d.textContent = s;
-            return d.innerHTML;
+            return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
 
         async function logout() {
