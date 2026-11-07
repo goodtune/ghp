@@ -79,7 +79,28 @@ The stages are:
 | `github_token_resolution` | Loading, decrypting (or refreshing) the real GitHub credential |
 | `upstream_roundtrip` | Proxying the request to GitHub and streaming the response |
 | `redirect_head_check` | HEAD request to the release redirect target to verify asset availability (releases handler only) |
-| `cache_lookup` | Checking whether a request targets a cache-enabled repository |
+| `graphql_analysis` | Parsing a `/graphql` request body and computing its scope and repository requirements (scoped tokens only; open-scoped tokens record no sample) |
+| `cache_lookup` | Checking whether a git request targets a cache-enabled repository (always `token_type="unknown"`) |
+| `forward_proxy_selection` | Selecting the upstream forward proxy for the outbound request |
+| `enterprise_exception` | Evaluating enterprise access restriction exceptions |
+
+Passthrough (`github.com`, `codeload.github.com`) and API-host requests emit
+the same stage names. The histogram cannot separate them by host. Use the
+`backend` label on `ghp_proxy_request_*` to split traffic by host.
+
+A stage that does not run on a code path records no sample. The histogram
+never contains hard-coded zero durations.
+
+**Histogram buckets.** The decision histogram uses these upper bounds:
+10µs, 25µs, 50µs, 100µs, 250µs, 500µs, 1ms, 2.5ms, 5ms, 7.5ms, 10ms, 25ms,
+50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s and 10s.
+
+!!! warning "Bucket change"
+    Releases after 0.24.0 add the 10µs, 25µs, 250µs, 2.5ms and 7.5ms buckets.
+    All earlier buckets are kept. Quantile estimates for cheap stages become
+    more accurate. If a dashboard or alert uses a specific `le` value, check
+    it after you upgrade. Panels that compare data from before and after
+    the upgrade can show a step change.
 
 #### Git Cache Metrics
 
