@@ -270,7 +270,7 @@ When working on `internal/github/registry.go`:
 
 `internal/proxy/graphql.go` enforces token scopes on `/graphql` requests via static analysis. The analyzer is **deny-by-default**: any field it cannot classify against the curated tables below produces a 403. When a legitimate query is rejected, the fix is almost always to add the field name to the right table — not to relax the analyzer.
 
-### The five tables
+### The tables
 
 | Table | Purpose | Add to it when… |
 |---|---|---|
@@ -278,6 +278,8 @@ When working on `internal/github/registry.go`:
 | `fieldScopeRequirements` | Maps a query/read field name → `{permission, level}`. | The field exposes a permission-gated **read** resource (e.g. `pullRequests` → `pull_requests:read`, `discussions` → `discussions:read`). |
 | `mutationScopeRequirements` | Maps a top-level mutation name → `{permission, "write"}`. | A new mutation surfaces (e.g. `createIssue` → `issues:write`). Unmapped mutation root fields are denied — the proxy never grants a write scope it can't classify. |
 | `crossRepoAnywhereFields` / `crossRepoRootOnlyFields` | Field names that can leak data from outside the repository allowlist (`search`, `viewer.repositories`, root-level `node(id:)`, …). `*RootOnly` is for names that are cross-repo only at the operation root (e.g. `node`/`nodes`/`resource`); nested `Connection.nodes` is a benign helper and lives in `alwaysAllowedFields`. | The field can return repositories/objects the analyzer cannot statically pin to a `repository(owner, name)` selection. Repo-scoped tokens are rejected when any cross-repo field appears. |
+| `metadataOnlySubtreeFields` / `metadataSubtreeLeaves` | Fields whose result can belong to another repository (`headRepository`, `headRepositoryOwner`, `parent`, `subIssues`, `blockedBy`, `blocking`; #339). Beneath them only `alwaysAllowedFields` entries and the scalar leaves in `metadataSubtreeLeaves` (`number`, `state`, `title`) may appear; anything else is recorded as cross-repo `<subtree>.<field>`. | A new field returns an object (fork, owner, linked issue) that can sit outside the pinned repository but gh needs its metadata. Add a leaf to `metadataSubtreeLeaves` only when a gh command needs it, and document the disclosure. |
+| `crossRepoParentAwareFields` | Connections that span repositories unless their immediate parent is a pinned `repository(owner, name)` (`issues`, `pullRequests`, `issueComments`, `commitComments`; #340). | A connection exists on both `Repository` and `User`/`Organization`/`Viewer` and the user-level form returns data from every repository. |
 | `typeConditionScopeRequirements` | Maps a fragment type condition beneath a root lookup (`rootLookupFields`: `node`, `nodes`, `resource`, `search`) → `{permission, "read"}` (e.g. `Issue` → `issues:read`, `Repository` → `metadata:read`). Interfaces such as `Node` are deliberately absent. | A client needs a root lookup to read a concrete object type that is not yet mapped. Unmapped type conditions are denied. |
 
 ### How the analyzer decides
@@ -291,8 +293,9 @@ For each field walked:
    2. `fieldScopeRequirements` — record the scope.
    3. **Scalar leaf** (no selection set): permitted at non-root; denied at root (no parent scope to gate it).
    4. **Object-typed field** (has a selection set) that fell through all of the above: flagged as unknown (denied).
-4. **Cross-repo check** runs in parallel — `crossRepoAnywhereFields` always; `crossRepoRootOnlyFields` only when `atRoot==true`.
+4. **Cross-repo check** runs in parallel — `crossRepoAnywhereFields` always; `crossRepoRootOnlyFields` only when `atRoot==true`. The walk also carries a `walkCtx` (immediate parent field name, whether that parent is a pinned `repository(owner, name)` lookup, and the enclosing metadata-only subtree). Fragments pass it through unchanged. `checkCrossRepoContext` applies two parent-aware rules: (a) **metadata-only subtree** — beneath a `metadataOnlySubtreeFields` entry, a field not in `alwaysAllowedFields` (and not a `metadataSubtreeLeaves` scalar leaf) is cross-repo `<subtree>.<field>`; (b) **parent-aware connections** — a `crossRepoParentAwareFields` name whose parent is not a pinned repository lookup is cross-repo `<parent>.<field>` (a bare `Issue.repository` is not pinned). Both rules only add cross-repo entries; scope and unmapped classification still run, so permission-only tokens are unaffected.
 5. **Repository pinning** — `repository(owner, name)` records the repo when each argument is either a **literal string** or a **variable `$v` declared as `String`/`String!` (not a list) whose member in the request's `variables` object is a JSON string**. Anything else sets `hasUnpinnedRepositoryLookup`, which fails the request for repo-scoped tokens: a missing argument; a variable that is undeclared, has another type, is absent from `variables`, or is `null`/number/boolean/array/object. Operation default values are never used. The request envelope is parsed strictly by `parseGraphQLEnvelope` (never by encoding/json struct-tag matching, which folds case and Unicode): every top-level key must be exactly `query`, `operationName`, `variables` or `extensions`, with no duplicates, else 400. No variable resolves when the `variables` object has duplicate keys or the document has more than one operation (`resolveVariables`). The body analysed is the body forwarded, byte for byte. A bare `repository` with **no arguments** (e.g. `Issue.repository`) is a nested type accessor, not a lookup, and is ignored.
+6. **Introspection-only operations** (#342) — when every root selection of a query (fragments expanded) is `__type`, `__schema` or `__typename`, the analysis sets `introspectionOnly` and `graphQLVerdict` skips the "must reference repository(owner, name)" requirement for repo-scoped tokens. Every other check (unmapped fields under `__type`, cross-repo, allowlist) still applies, and any other root field restores the requirement. Do not extend this to other root fields.
 
 The lookup is **by field name only** — the analyzer doesn't load GitHub's SDL. Where the same name on different parent types could mean different things, err toward the stricter scope.
 
@@ -321,7 +324,7 @@ The 403 response names the fields the proxy could not classify (capped at `maxRe
 ### When the user-facing docs need updating
 
 `docs/features/token-scoping.md` has a known-limitations section. Update it when:
-- A trade-off changes (currently: scalar leaves under always-allowed parents are not deny-by-default, variable pinning trusts the forwarded `variables` object, repo-scoped GraphQL mutations are not supported, issue-graph and head-repository fields such as `parent`, `subIssues` and `headRepository` are scope-mapped but not yet cross-repo classified).
+- A trade-off changes (currently: scalar leaves under always-allowed parents are not deny-by-default, variable pinning trusts the forwarded `variables` object, repo-scoped GraphQL mutations are not supported, metadata-only subtrees disclose the name/owner of a fork and the number/title/state of a linked issue in another repository, cross-repo rules match only the field name and its immediate parent).
 - A new class of field is added that operators may run into (e.g. a new cross-repo field).
 
 ## CI
