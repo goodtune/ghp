@@ -315,6 +315,9 @@ type LogFileConfig struct {
 type MetricsConfig struct {
 	Enabled bool   `koanf:"enabled"`
 	Listen  string `koanf:"listen"`
+	// SlowDecisionThreshold logs a slow_decision warn line with the per-stage
+	// breakdown when a request's decision total reaches it. 0 disables.
+	SlowDecisionThreshold time.Duration `koanf:"slow_decision_threshold"`
 }
 
 type OTELConfig struct {
@@ -503,8 +506,9 @@ func Defaults() *Config {
 			Level:  "info",
 		},
 		Metrics: MetricsConfig{
-			Enabled: true,
-			Listen:  ":9136",
+			Enabled:               true,
+			Listen:                ":9136",
+			SlowDecisionThreshold: 10 * time.Millisecond,
 		},
 		OTEL: OTELConfig{
 			Protocol: "grpc",

@@ -471,6 +471,11 @@ const (
 	StageGraphQLAnalysis       = "graphql_analysis"
 	StageEnterpriseException   = "enterprise_exception"
 	StageForwardProxySelection = "forward_proxy_selection"
+	StageRequestBodyRead       = "request_body_read"
+	StageRequestBuild          = "request_build"
+	// StagePipelineOther is derived, not timed: total minus the stages
+	// observed for the same request before total (see WithDecisionTrace).
+	StagePipelineOther = "pipeline_other"
 )
 
 // Vhost label values for ghp_proxy_decision_duration_seconds. The set is
@@ -513,7 +518,15 @@ func ObserveDecision(ctx context.Context, stage, tokenType string, dur time.Dura
 	if tokenType == "" {
 		tokenType = "unknown"
 	}
-	ProxyDecisionDuration.WithLabelValues(stage, tokenType, VhostFromContext(ctx)).Observe(dur.Seconds())
+	vhost := VhostFromContext(ctx)
+	ProxyDecisionDuration.WithLabelValues(stage, tokenType, vhost).Observe(dur.Seconds())
+	if stage == StageTotal {
+		finishDecision(ctx, tokenType, vhost, dur)
+		return
+	}
+	if tr := decisionTraceFrom(ctx); tr != nil {
+		tr.add(stage, dur)
+	}
 }
 
 // ObserveProxyRequest records proxy-level request metrics for a completed request.

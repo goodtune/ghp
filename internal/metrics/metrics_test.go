@@ -1,9 +1,14 @@
 package metrics
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
+	"math"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"testing"
 	"time"
 
@@ -878,5 +883,145 @@ func TestVhostFromContext(t *testing.T) {
 	// An inner WithVhost overrides the outer value.
 	if got := VhostFromContext(WithVhost(ctx, VhostAPI)); got != VhostAPI {
 		t.Errorf("override: got %q, want %q", got, VhostAPI)
+	}
+}
+func getHistogramSum(t *testing.T, h *prometheus.HistogramVec, labels prometheus.Labels) float64 {
+	t.Helper()
+	var m io_prometheus_client.Metric
+	obs, err := h.GetMetricWith(labels)
+	if err != nil {
+		t.Fatalf("GetMetricWith: %v", err)
+	}
+	if err := obs.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return m.GetHistogram().GetSampleSum()
+}
+
+func TestObserveDecision_NewStages(t *testing.T) {
+	for _, stage := range []string{StageRequestBodyRead, StageRequestBuild, StagePipelineOther} {
+		t.Run(stage, func(t *testing.T) {
+			labels := prometheus.Labels{"stage": stage, "token_type": "agent", "vhost": VhostAPI}
+			before := getHistogramCount(t, ProxyDecisionDuration, labels)
+			ObserveDecision(WithVhost(context.Background(), VhostAPI), stage, "agent", time.Millisecond)
+			if got := getHistogramCount(t, ProxyDecisionDuration, labels) - before; got != 1 {
+				t.Errorf("sample count delta = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestDecisionTrace_PipelineOther(t *testing.T) {
+	tests := []struct {
+		name      string
+		stages    map[string]time.Duration
+		total     time.Duration
+		wantOther float64 // seconds
+	}{
+		{"remainder", map[string]time.Duration{StageTokenResolution: 2 * time.Millisecond, StageScopeParsing: time.Millisecond}, 10 * time.Millisecond, 0.007},
+		{"clamped at zero", map[string]time.Duration{StageTokenResolution: 5 * time.Millisecond}, 4 * time.Millisecond, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := WithDecisionTrace(WithVhost(context.Background(), VhostCopilot), "GET", "/x")
+			labels := prometheus.Labels{"stage": StagePipelineOther, "token_type": "proxy", "vhost": VhostCopilot}
+			beforeN := getHistogramCount(t, ProxyDecisionDuration, labels)
+			beforeS := getHistogramSum(t, ProxyDecisionDuration, labels)
+			for s, d := range tt.stages {
+				ObserveDecision(ctx, s, "proxy", d)
+			}
+			ObserveDecision(ctx, StageTotal, "proxy", tt.total)
+			// Stages after total are not part of the pre-forward overhead.
+			ObserveDecision(ctx, StageUpstreamRoundtrip, "proxy", time.Second)
+			if n := getHistogramCount(t, ProxyDecisionDuration, labels) - beforeN; n != 1 {
+				t.Fatalf("pipeline_other count delta = %d, want 1", n)
+			}
+			if s := getHistogramSum(t, ProxyDecisionDuration, labels) - beforeS; math.Abs(s-tt.wantOther) > 1e-9 {
+				t.Errorf("pipeline_other = %v, want %v", s, tt.wantOther)
+			}
+		})
+	}
+}
+
+func TestDecisionTrace_NoTraceNoPipelineOther(t *testing.T) {
+	ctx := WithVhost(context.Background(), VhostWeb)
+	labels := prometheus.Labels{"stage": StagePipelineOther, "token_type": "proxy", "vhost": VhostWeb}
+	before := getHistogramCount(t, ProxyDecisionDuration, labels)
+	ObserveDecision(ctx, StageTotal, "proxy", 50*time.Millisecond)
+	if n := getHistogramCount(t, ProxyDecisionDuration, labels) - before; n != 0 {
+		t.Errorf("pipeline_other recorded without a trace: delta %d", n)
+	}
+}
+
+func TestSlowDecisionLog(t *testing.T) {
+	tests := []struct {
+		name      string
+		threshold time.Duration
+		total     time.Duration
+		wantLog   bool
+	}{
+		{"above threshold", 10 * time.Millisecond, 40 * time.Millisecond, true},
+		{"at threshold", 10 * time.Millisecond, 10 * time.Millisecond, true},
+		{"below threshold", 10 * time.Millisecond, 9 * time.Millisecond, false},
+		{"disabled", 0, time.Second, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			ConfigureSlowDecisionLog(slog.New(slog.NewJSONHandler(&buf, nil)), tt.threshold)
+			t.Cleanup(func() { ConfigureSlowDecisionLog(nil, 0) })
+
+			ctx := WithDecisionTrace(WithVhost(context.Background(), VhostAPI), "POST", "/graphql")
+			ObserveDecision(ctx, StageTokenResolution, "proxy", 3*time.Millisecond)
+			ObserveDecision(ctx, StageRequestBodyRead, "proxy", 2*time.Millisecond)
+			ObserveDecision(ctx, StageTotal, "proxy", tt.total)
+
+			out := strings.TrimSpace(buf.String())
+			if !tt.wantLog {
+				if out != "" {
+					t.Fatalf("unexpected log: %s", out)
+				}
+				return
+			}
+			lines := strings.Split(out, "\n")
+			if len(lines) != 1 {
+				t.Fatalf("got %d log lines, want 1: %s", len(lines), out)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			want := map[string]any{
+				"level":      "WARN",
+				"msg":        "slow_decision",
+				"token_type": "proxy",
+				"vhost":      VhostAPI,
+				"method":     "POST",
+				"path":       "/graphql",
+			}
+			for k, v := range want {
+				if rec[k] != v {
+					t.Errorf("%s = %v, want %v", k, rec[k], v)
+				}
+			}
+			for _, k := range []string{"total_ms", "pipeline_other_ms", "token_resolution_ms", "request_body_read_ms"} {
+				if _, ok := rec[k]; !ok {
+					t.Errorf("missing field %s in %s", k, lines[0])
+				}
+			}
+			if got := rec["token_resolution_ms"]; got != 3.0 {
+				t.Errorf("token_resolution_ms = %v, want 3", got)
+			}
+		})
+	}
+}
+
+func TestSlowDecisionLog_NoTraceStillLogs(t *testing.T) {
+	var buf bytes.Buffer
+	ConfigureSlowDecisionLog(slog.New(slog.NewJSONHandler(&buf, nil)), time.Millisecond)
+	t.Cleanup(func() { ConfigureSlowDecisionLog(nil, 0) })
+	ObserveDecision(WithVhost(context.Background(), VhostWeb), StageTotal, "", 5*time.Millisecond)
+	if !strings.Contains(buf.String(), `"token_type":"unknown"`) {
+		t.Errorf("want slow_decision with token_type unknown, got %q", buf.String())
 	}
 }
