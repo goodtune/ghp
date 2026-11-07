@@ -274,3 +274,15 @@ are reported as `unknown` (the real name is still stored on the message).
 - **At-least-once for durable consumers.** A subscriber that disconnects
   after a delivery was sent but before it was acknowledged sees that
   delivery again on reconnect. Use the delivery GUID to deduplicate.
+  A delivery that the server receives from JetStream just as the client
+  goes away is returned to the stream at once, so the reconnecting client
+  gets it without waiting for the 10-second ack timeout. The server checks
+  for a disconnect at least once a second, so a durable stream ends within
+  about one second of the client going away.
+- **SSE has no client acknowledgement.** The server acknowledges a
+  delivery when the bytes are flushed to the connection, not when the
+  client reads them. The server detects a closed connection
+  asynchronously; an event written in that short window can land in the
+  dead connection's buffers, be acknowledged, and not be replayed on
+  reconnect. Clients that need every event should connect to NATS
+  directly and acknowledge each message themselves.
