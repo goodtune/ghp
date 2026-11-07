@@ -200,21 +200,26 @@ var (
 	// as well as the upstream_roundtrip stage, which includes the actual GitHub
 	// API call and can easily exceed 1s under load or on slow networks.
 	decisionBuckets = []float64{
-		0.00005, // 50µs
-		0.0001,  // 100µs
-		0.0005,  // 500µs
-		0.001,   // 1ms
-		0.005,   // 5ms
-		0.01,    // 10ms
-		0.025,   // 25ms
-		0.05,    // 50ms
-		0.1,     // 100ms
-		0.25,    // 250ms
-		0.5,     // 500ms
-		1.0,     // 1s
-		2.5,     // 2.5s
-		5.0,     // 5s
-		10.0,    // 10s
+		0.00001,  // 10µs
+		0.000025, // 25µs
+		0.00005,  // 50µs
+		0.0001,   // 100µs
+		0.00025,  // 250µs
+		0.0005,   // 500µs
+		0.001,    // 1ms
+		0.0025,   // 2.5ms
+		0.005,    // 5ms
+		0.0075,   // 7.5ms
+		0.01,     // 10ms
+		0.025,    // 25ms
+		0.05,     // 50ms
+		0.1,      // 100ms
+		0.25,     // 250ms
+		0.5,      // 500ms
+		1.0,      // 1s
+		2.5,      // 2.5s
+		5.0,      // 5s
+		10.0,     // 10s
 	}
 
 	// ProxyDecisionDuration records time spent in each stage of the proxy
@@ -235,6 +240,9 @@ var (
 	//   upstream_roundtrip     – proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer)
 	//   redirect_head_check   – HEAD request to the release redirect target to verify asset availability (releases handler only)
 	//   graphql_analysis      – parsing a GraphQL request body and computing the static scope/repository requirements (GraphQL handler only)
+	//   cache_lookup          – git cache middleware database lookup of the per-repository cache record (token_type is always "unknown")
+	//   forward_proxy_selection – choosing the upstream forward proxy for the outbound request
+	//   enterprise_exception  – evaluating enterprise access restriction exceptions
 	ProxyDecisionDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ghp_proxy_decision_duration_seconds",
 		Help:    "Duration of each stage in the proxy decision pipeline.",
