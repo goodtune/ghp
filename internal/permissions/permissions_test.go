@@ -169,6 +169,8 @@ func TestForGitHubApp(t *testing.T) {
 		{"workflows read becomes actions read", map[string]string{"workflows": "read"}, map[string]string{"actions": "read"}},
 		{"workflows read with actions write", map[string]string{"workflows": "read", "actions": "write"}, map[string]string{"actions": "write"}},
 		{"workflows write passes through", map[string]string{"workflows": "write"}, map[string]string{"workflows": "write"}},
+		// Levels are not checked here; Validate is the guard at creation.
+		{"invalid level left untouched", map[string]string{"contents": "admin"}, map[string]string{"contents": "admin"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

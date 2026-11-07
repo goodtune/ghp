@@ -616,10 +616,12 @@ func TestAppTokenProvider_TranslatesEnforcementOnlyNames(t *testing.T) {
 		}
 		got = body.Permissions
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
 			"token":      "ghs_x",
 			"expires_at": time.Now().Add(time.Hour).Format(time.RFC3339),
-		})
+		}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
 	}))
 	defer server.Close()
 

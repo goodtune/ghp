@@ -174,12 +174,20 @@ Two names have special handling. Both checks run inside the
 `scope_enforcement` decision stage.
 
 - `projects` is an enforcement name. The GraphQL Projects v2 tables and the
-  classic REST project rules require `projects:<level>`. A token satisfies
-  that requirement with `projects`, `repository_projects` or
-  `organization_projects` at the same level. GitHub has no `projects` App
-  permission, so for an agent (`gha_`) token GHP sends `projects:<level>` to
-  GitHub as `repository_projects` and `organization_projects` at that level.
-  When the token also names one of those keys, the higher level wins.
+  classic REST project rules (including the repository-level
+  `repos/{o}/{r}/projects` rules) require `projects:<level>`.
+  `projects:<level>`, `repository_projects:<level>` and
+  `organization_projects:<level>` each satisfy that requirement on their own.
+  The levels match as usual: read satisfies read, write satisfies read and
+  write, and read never satisfies write. The alias does not bypass anything
+  else: the repository allowlist still applies, and GitHub still runs its own
+  permission check on the forwarded request.
+- Agent (`gha_`) tokens: GitHub has no `projects` App permission, so GHP
+  mints `projects:<level>` at GitHub as both `repository_projects` and
+  `organization_projects` at that level. When the token also names one of
+  those keys, the higher level wins. This grant is wider than a
+  repository-only need. If a token needs only repository projects, request
+  `repository_projects` directly instead of `projects`.
 - `workflows:read` is **deprecated**. GitHub's `workflows` permission has
   only a write level, and it controls editing workflow files. GitHub gates
   the workflow REST endpoints (list, get, enable, disable, dispatch) on
