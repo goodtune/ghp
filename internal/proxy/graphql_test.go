@@ -800,3 +800,144 @@ func TestServeHTTP_GraphQL_RejectsOversizedBody(t *testing.T) {
 		t.Errorf("expected proxy 413 message in body, got %q", body)
 	}
 }
+
+// #298: field names that gh 2.102.0 sends. Each row is an analyzer-level
+// assertion in the TestAnalyzeGraphQLRequest_PullRequestRequiresScope
+// pattern: the field must be classified (no unknown fields) and must record
+// exactly the listed scopes. The selection sits under an always-allowed
+// parent (repository lookup or __type) so the field's own mapping is the
+// only scope recorded.
+func TestAnalyzeGraphQLRequest_GHFieldMappings298(t *testing.T) {
+	const repo = `repository(owner: \"o\", name: \"r\")`
+	tests := []struct {
+		field string
+		query string
+		want  []scopeRequirement // nil: always allowed, no scope
+	}{
+		// alwaysAllowedFields: actor and introspection metadata.
+		{"assignees", `{ ` + repo + ` { assignees { totalCount } } }`, nil},
+		{"author", `{ ` + repo + ` { author { login } } }`, nil},
+		{"enabledBy", `{ ` + repo + ` { enabledBy { login } } }`, nil},
+		{"enumValues", `{ __type(name: \"SearchType\") { enumValues { name } } }`, nil},
+		{"fields", `{ __type(name: \"Release\") { fields { name } } }`, nil},
+		{"node", `{ ` + repo + ` { edges { node { id } } } }`, nil},
+		{"requestedReviewer", `{ ` + repo + ` { requestedReviewer { __typename } } }`, nil},
+		{"users", `{ ` + repo + ` { users { totalCount } } }`, nil},
+		// fieldScopeRequirements.
+		{"autoMergeRequest", `{ ` + repo + ` { autoMergeRequest { mergeMethod } } }`, []scopeRequirement{{"pull_requests", "read"}}},
+		{"baseRef", `{ ` + repo + ` { baseRef { name } } }`, []scopeRequirement{{"contents", "read"}}},
+		{"blockedBy", `{ ` + repo + ` { blockedBy { totalCount } } }`, []scopeRequirement{{"issues", "read"}}},
+		{"blocking", `{ ` + repo + ` { blocking { totalCount } } }`, []scopeRequirement{{"issues", "read"}}},
+		{"checkRunCountsByState", `{ ` + repo + ` { checkRunCountsByState { count } } }`, []scopeRequirement{{"checks", "read"}}},
+		{"comments", `{ ` + repo + ` { comments { totalCount } } }`, []scopeRequirement{{"issues", "read"}}},
+		{"commits", `{ ` + repo + ` { commits { totalCount } } }`, []scopeRequirement{{"contents", "read"}}},
+		{"contexts", `{ ` + repo + ` { contexts { totalCount } } }`, []scopeRequirement{{"checks", "read"}}},
+		{"fieldValueByName", `{ ` + repo + ` { fieldValueByName(name: \"Status\") { __typename } } }`, []scopeRequirement{{"projects", "read"}}},
+		{"headRepository", `{ ` + repo + ` { headRepository { name } } }`, []scopeRequirement{{"pull_requests", "read"}}},
+		{"headRepositoryOwner", `{ ` + repo + ` { headRepositoryOwner { login } } }`, []scopeRequirement{{"pull_requests", "read"}}},
+		{"issueType", `{ ` + repo + ` { issueType { name } } }`, []scopeRequirement{{"issues", "read"}}},
+		{"labels", `{ ` + repo + ` { labels(first: 1) { nodes { name } } } }`, []scopeRequirement{{"issues", "read"}}},
+		{"milestone", `{ ` + repo + ` { milestone { title } } }`, []scopeRequirement{{"issues", "read"}}},
+		{"parent", `{ ` + repo + ` { parent { name } } }`, []scopeRequirement{{"issues", "read"}}},
+		{"projectItems", `{ ` + repo + ` { projectItems(first: 1) { totalCount } } }`, []scopeRequirement{{"projects", "read"}}},
+		{"statusContextCountsByState", `{ ` + repo + ` { statusContextCountsByState { count } } }`, []scopeRequirement{{"statuses", "read"}}},
+		{"subIssues", `{ ` + repo + ` { subIssues(first: 1) { totalCount } } }`, []scopeRequirement{{"issues", "read"}}},
+		{"subIssuesSummary", `{ ` + repo + ` { subIssuesSummary { total } } }`, []scopeRequirement{{"issues", "read"}}},
+		{"workflow", `{ ` + repo + ` { workflow { name } } }`, []scopeRequirement{{"actions", "read"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.field, func(t *testing.T) {
+			got, err := analyzeGraphQLRequest([]byte(`{"query":"` + tt.query + `"}`))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got.unknownFields) != 0 {
+				t.Fatalf("unknownFields = %v, want none", got.unknownFields)
+			}
+			if !reflect.DeepEqual(got.requiredScopes, tt.want) {
+				t.Errorf("requiredScopes = %v, want %v", got.requiredScopes, tt.want)
+			}
+			if len(got.crossRepoFields) != 0 {
+				t.Errorf("crossRepoFields = %v, want none", got.crossRepoFields)
+			}
+		})
+	}
+}
+
+// #298: repositories needs metadata:read and stays cross-repository.
+func TestAnalyzeGraphQLRequest_RepositoriesMetadataAndCrossRepo(t *testing.T) {
+	got, err := analyzeGraphQLRequest([]byte(`{"query":"{ viewer { repositories(first: 1) { nodes { name } } } }"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.unknownFields) != 0 {
+		t.Fatalf("unknownFields = %v, want none", got.unknownFields)
+	}
+	want := []scopeRequirement{{permission: "metadata", level: "read"}}
+	if !reflect.DeepEqual(got.requiredScopes, want) {
+		t.Errorf("requiredScopes = %v, want %v", got.requiredScopes, want)
+	}
+	if !reflect.DeepEqual(got.crossRepoFields, []string{"repositories"}) {
+		t.Errorf("crossRepoFields = %v, want [repositories]", got.crossRepoFields)
+	}
+}
+
+// #298: gh issue list (labels) passes with issues:read and is denied, naming
+// the scope, for a token without it.
+func TestServeHTTP_GraphQL_PermissionScoped_GHIssueListLabels(t *testing.T) {
+	body := `{"query":"{ repository(owner: \"goodtune\", name: \"ghp\") { issues(first: 1) { nodes { number labels(first: 5) { nodes { name } } } } } }"}`
+	tests := []struct {
+		name   string
+		scopes map[string]string
+		code   int
+	}{
+		{"issues read allowed", map[string]string{"issues": "read"}, http.StatusOK},
+		{"pull requests only denied", map[string]string{"pull_requests": "read"}, http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, ghpToken := newScopeOnlyHandler(t, tt.scopes)
+			req := httptest.NewRequest("POST", "http://api.github.com/graphql", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+ghpToken)
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != tt.code {
+				t.Fatalf("got %d, want %d; body: %s", rr.Code, tt.code, rr.Body.String())
+			}
+			if tt.code == http.StatusForbidden && !strings.Contains(rr.Body.String(), "issues:read") {
+				t.Errorf("expected error to name issues:read, got: %s", rr.Body.String())
+			}
+		})
+	}
+}
+
+// #298: gh pr checks with a token lacking checks:read is denied, naming the
+// scope; with checks:read it passes.
+func TestServeHTTP_GraphQL_PermissionScoped_GHPRChecksContexts(t *testing.T) {
+	body := `{"query":"{ repository(owner: \"goodtune\", name: \"ghp\") { pullRequest(number: 1) { commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 10) { nodes { __typename } } } } } } } } }"}`
+	tests := []struct {
+		name   string
+		scopes map[string]string
+		code   int
+	}{
+		{"with checks read", map[string]string{"pull_requests": "read", "contents": "read", "checks": "read"}, http.StatusOK},
+		{"without checks read", map[string]string{"pull_requests": "read", "contents": "read"}, http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, ghpToken := newScopeOnlyHandler(t, tt.scopes)
+			req := httptest.NewRequest("POST", "http://api.github.com/graphql", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+ghpToken)
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != tt.code {
+				t.Fatalf("got %d, want %d; body: %s", rr.Code, tt.code, rr.Body.String())
+			}
+			if tt.code == http.StatusForbidden && !strings.Contains(rr.Body.String(), "checks:read") {
+				t.Errorf("expected error to name checks:read, got: %s", rr.Body.String())
+			}
+		})
+	}
+}

@@ -22,14 +22,10 @@
           "verdict": "allow"
         },
         "perm-ro": {
-          "verdict": "allow",
-          "known_issue": "https://github.com/goodtune/ghp/issues/298",
-          "current": "deny:unmapped"
+          "verdict": "deny:missing_scope"
         },
         "repo": {
-          "verdict": "deny:cross_repo",
-          "known_issue": "https://github.com/goodtune/ghp/issues/298",
-          "current": "deny:unmapped"
+          "verdict": "deny:cross_repo"
         }
       }
     }

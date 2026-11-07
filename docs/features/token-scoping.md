@@ -374,6 +374,33 @@ fields" message can use the named field as a hint for extending
 `typeConditionScopeRequirements` in
 `internal/proxy/graphql.go` to cover legitimate use cases.
 
+### gh CLI commands
+
+With a permission-restricted token, each `gh` 2.102.0 command needs these
+scopes (`metadata:read` is implied). The scope regression rig and the
+query corpus in `rig/corpus/gh/` check this table.
+
+| Command | Scopes |
+|---|---|
+| `gh repo view` | `contents:read` (the README is read with REST) |
+| `gh repo list` | `metadata:read` |
+| `gh pr list` | `pull_requests:read` |
+| `gh pr view` | `pull_requests:read`, `issues:read`, `contents:read`, `checks:read`, `statuses:read`, `actions:read`; `projects:read` for project items |
+| `gh pr status` | `pull_requests:read`, `contents:read`, `checks:read`, `statuses:read`, `administration:read` (`baseRef.branchProtectionRule`) |
+| `gh pr checks` | `pull_requests:read`, `contents:read`, `checks:read`, `statuses:read`, `actions:read` |
+| `gh pr create` | `pull_requests:write`, `issues:read` (`Repository.parent` has the same name as `Issue.parent`) |
+| `gh issue list` | `issues:read` |
+| `gh issue view` | `issues:read`; `projects:read` for project items |
+| `gh label list` | `issues:read` |
+| `gh release list` | `contents:read` |
+| `gh search prs` | denied: `GET /search/issues` is denied for every scoped token |
+
+With a repository-restricted token, `gh repo list`, `gh pr status` and
+`gh pr checks` are denied because they use cross-repository fields.
+`gh release list` and `gh search prs` are denied because their
+introspection probes (`Release_fields`, `SearchType_enumValues`) have no
+`repository(owner, name)` selection.
+
 ### Known limitations
 
 - **Some harmless root lookups are denied for every scoped token.** A
@@ -395,9 +422,26 @@ fields" message can use the named field as a hint for extending
   body.** A lookup with variables is checked against the values that the
   request sends, which are the values that GitHub uses. A client that
   sends duplicate keys in `variables`, more than one operation, or a non-string value
-  gets a 403 for a repository-restricted token. gh queries that have
-  object fields with no analyzer table entry are still rejected as
-  unmapped (tracked separately).
+  gets a 403 for a repository-restricted token.
+- **Some issue and pull request fields can point outside the allowlist.**
+  `Issue.parent`, `subIssues`, `blockedBy`, `blocking`,
+  `Repository.parent`, `headRepository` and `headRepositoryOwner` can
+  return an issue, fork or owner from another repository. They need the
+  scope of their parent (`issues:read` or `pull_requests:read`) but are
+  not yet in the cross-repository tables, so a repository-restricted
+  token can read the metadata that `gh` selects under them (names,
+  numbers, titles, state). Restricting the selections under these fields
+  is planned.
+- **`contexts` needs only `checks:read`.** A table entry holds one scope.
+  `StatusCheckRollup.contexts` returns check runs and commit statuses, and
+  is mapped to `checks:read`. A `... on StatusContext` fragment inside it
+  also needs `statuses:read`, as does `statusContextCountsByState`.
+- **`projectItems` and `fieldValueByName` need the `projects` scope.**
+  Grant `projects:read` to let `gh issue view` and `gh pr view` read the
+  project items of an issue or pull request.
+- **`labels`, `milestone` and `comments` need `issues:read`.** The names
+  are the same on issues and pull requests, so the stricter meaning is
+  used: a token with only `pull_requests:read` cannot select them.
 - **Repository-restricted GraphQL mutations are not supported.** GitHub
   mutation inputs identify their target by opaque global node ID
   (`repositoryId`), which the proxy cannot statically map to a

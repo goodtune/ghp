@@ -1,8 +1,10 @@
 # gh CLI command matrix (GH-C51): 11 read-only gh commands x profiles open,
 # perm-ro and repo-A, all against repository A. Expectations come from the
 # gh 2.102.0 query corpus (rig/corpus/gh/2.102.0, `current` verdicts) and
-# consensus A9. Commands that fail today carry known_issue + observed:
-#   #298 object fields gh sends that are in no analyzer table
+# consensus A9. Since #298 every field gh 2.102.0 sends is classified.
+# Where a profile deliberately lacks a scope a command needs (perm-ro has
+# no checks, statuses, administration or projects) or the release-list
+# probe has no repository selection, the scenario expects GHP's denial.
 # gh passes owner/name as String variables; since #297 these pin the
 # repository for repo-scoped tokens.
 # The fixture PR has no checks, so `gh pr checks` exits 1 with
@@ -52,26 +54,22 @@
 - id: GH-C51.pr-list.perm-ro
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr list with the perm-ro token. Note: gh sends object fields the analyzer has no table entry for."
+  description: "gh pr list with the perm-ro token."
   profile: perm-ro
   kind: gh
   repo: A
   args: ["pr", "list", "--limit", "5"]
   expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.PRTitle}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.pr-list.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr list with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
+  description: "gh pr list with the repo-A token. Note: gh passes owner/name as String variables, which pin the repository (#297)."
   profile: repo-A
   kind: gh
   repo: A
   args: ["pr", "list", "--limit", "5"]
   expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.PRTitle}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.pr-view.open
   claim: GH-C51
@@ -86,26 +84,22 @@
 - id: GH-C51.pr-view.perm-ro
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr view with the perm-ro token. Note: gh sends object fields the analyzer has no table entry for."
+  description: "gh pr view with the perm-ro token. The perm-ro profile deliberately lacks checks:read and statuses:read, which StatusCheckRollup.contexts and its StatusContext items need, so GHP correctly denies the query naming the missing scopes."
   profile: perm-ro
   kind: gh
   repo: A
   args: ["pr", "view", "{{.Fixture.A.PRNumber}}"]
-  expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.PRTitle}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
+  expect: {exit_code: 1, stderr_contains: ["Token does not grant required GraphQL scopes"]}
 
 - id: GH-C51.pr-view.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr view with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
+  description: "gh pr view with the repo-A token. Note: headRepository and the issue-graph fields are not yet cross-repository classified (docs known limitations), so this passes."
   profile: repo-A
   kind: gh
   repo: A
   args: ["pr", "view", "{{.Fixture.A.PRNumber}}"]
   expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.PRTitle}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.pr-status.open
   claim: GH-C51
@@ -120,26 +114,22 @@
 - id: GH-C51.pr-status.perm-ro
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr status with the perm-ro token. Note: gh sends object fields the analyzer has no table entry for."
+  description: "gh pr status with the perm-ro token. The perm-ro profile deliberately lacks administration:read (baseRef.branchProtectionRule), checks:read and statuses:read, so GHP correctly denies the query naming the missing scopes."
   profile: perm-ro
   kind: gh
   repo: A
   args: ["pr", "status"]
-  expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.PRTitle}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
+  expect: {exit_code: 1, stderr_contains: ["Token does not grant required GraphQL scopes"]}
 
 - id: GH-C51.pr-status.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr status with the repo-A token. Note: root search is cross-repository, so the desired outcome is a cross-repository denial; today the unmapped check fires first."
+  description: "gh pr status with the repo-A token. Note: root search is cross-repository, so a repository-restricted token is denied."
   profile: repo-A
   kind: gh
   repo: A
   args: ["pr", "status"]
   expect: {exit_code: 1, stderr_contains: ["uses cross-repository fields"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.pr-checks.open
   claim: GH-C51
@@ -155,27 +145,23 @@
 - id: GH-C51.pr-checks.perm-ro
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr checks with the perm-ro token. Note: gh sends object fields the analyzer has no table entry for."
+  description: "gh pr checks with the perm-ro token. The perm-ro profile deliberately lacks checks:read and statuses:read, so GHP correctly denies the status-check query naming the missing scopes."
   profile: perm-ro
   kind: gh
   repo: A
   args: ["pr", "checks", "{{.Fixture.A.PRNumber}}"]
   # The fixture PR has no checks, so gh pr checks exits 1.
-  expect: {exit_code: 1, stderr_contains: ["no checks reported"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
+  expect: {exit_code: 1, stderr_contains: ["Token does not grant required GraphQL scopes"]}
 
 - id: GH-C51.pr-checks.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh pr checks with the repo-A token. Note: the status-check query uses root node(id:), which is cross-repository, so the desired outcome is a denial; today the status-check query is rejected first for unmapped fields."
+  description: "gh pr checks with the repo-A token. Note: the status-check query uses root node(id:), which is cross-repository, so a repository-restricted token is denied."
   profile: repo-A
   kind: gh
   repo: A
   args: ["pr", "checks", "{{.Fixture.A.PRNumber}}"]
   expect: {exit_code: 1, stderr_contains: ["uses cross-repository fields"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.issue-list.open
   claim: GH-C51
@@ -190,26 +176,22 @@
 - id: GH-C51.issue-list.perm-ro
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh issue list with the perm-ro token. Note: gh sends object fields the analyzer has no table entry for."
+  description: "gh issue list with the perm-ro token."
   profile: perm-ro
   kind: gh
   repo: A
   args: ["issue", "list"]
   expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.IssueTitle}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.issue-list.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh issue list with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
+  description: "gh issue list with the repo-A token. Note: gh passes owner/name as String variables, which pin the repository (#297)."
   profile: repo-A
   kind: gh
   repo: A
   args: ["issue", "list"]
   expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.IssueTitle}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.issue-view.open
   claim: GH-C51
@@ -224,26 +206,22 @@
 - id: GH-C51.issue-view.perm-ro
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh issue view with the perm-ro token. Note: gh sends object fields the analyzer has no table entry for."
+  description: "gh issue view with the perm-ro token. The main query passes; the perm-ro profile deliberately lacks projects:read, so GHP correctly denies the IssueProjectItems probe naming the missing scope."
   profile: perm-ro
   kind: gh
   repo: A
   args: ["issue", "view", "{{.Fixture.A.IssueNumber}}"]
-  expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.IssueTitle}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
+  expect: {exit_code: 1, stderr_contains: ["Token does not grant required GraphQL scopes"]}
 
 - id: GH-C51.issue-view.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh issue view with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
+  description: "gh issue view with the repo-A token. Note: parent, subIssues, blockedBy and blocking are not yet cross-repository classified (docs known limitations), so this passes."
   profile: repo-A
   kind: gh
   repo: A
   args: ["issue", "view", "{{.Fixture.A.IssueNumber}}"]
   expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.IssueTitle}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.release-list.open
   claim: GH-C51
@@ -258,26 +236,22 @@
 - id: GH-C51.release-list.perm-ro
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh release list with the perm-ro token. Note: gh sends object fields the analyzer has no table entry for."
+  description: "gh release list with the perm-ro token."
   profile: perm-ro
   kind: gh
   repo: A
   args: ["release", "list"]
   expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.ReleaseTag}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.release-list.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh release list with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
+  description: "gh release list with the repo-A token. The Release_fields introspection probe has no repository(owner, name) selection, so GHP correctly denies it for a repository-restricted token (no_repo_ref)."
   profile: repo-A
   kind: gh
   repo: A
   args: ["release", "list"]
-  expect: {exit_code: 0, stdout_contains: ["{{.Fixture.A.ReleaseTag}}"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
+  expect: {exit_code: 1, stderr_contains: ["must reference repository(owner, name)"]}
 
 - id: GH-C51.label-list.open
   claim: GH-C51
@@ -292,26 +266,22 @@
 - id: GH-C51.label-list.perm-ro
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh label list with the perm-ro token. Note: gh sends object fields the analyzer has no table entry for."
+  description: "gh label list with the perm-ro token."
   profile: perm-ro
   kind: gh
   repo: A
   args: ["label", "list"]
   expect: {exit_code: 0, stdout_contains: ["scoperig"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.label-list.repo-A
   claim: GH-C51
   doc: docs/getting-started.md#configure-your-agent
-  description: "gh label list with the repo-A token. Note: gh sends unmapped object fields; after #298 the Release_fields probe has no repository selection, so a repository-scoped token is expected to be denied as no_repo_ref (not by the unpinned lookup, #297)."
+  description: "gh label list with the repo-A token. Note: gh passes owner/name as String variables, which pin the repository (#297)."
   profile: repo-A
   kind: gh
   repo: A
   args: ["label", "list"]
   expect: {exit_code: 0, stdout_contains: ["scoperig"]}
-  known_issue: https://github.com/goodtune/ghp/issues/298
-  observed: {exit_code: 1, stderr_contains: ["GraphQL request references unmapped fields"]}
 
 - id: GH-C51.run-list.open
   claim: GH-C51
