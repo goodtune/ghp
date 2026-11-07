@@ -60,6 +60,12 @@ func init() {
 		// Commits (list/get)
 		{`^/repos/[^/]+/[^/]+/commits(/.*)?$`, "GET", "contents", "read"},
 
+		// Commit comment reactions (#315). Only the reaction sub-resource is
+		// mapped; other commit comment endpoints stay deny-by-default.
+		{`^/repos/[^/]+/[^/]+/comments/[0-9]+/reactions$`, "GET", "contents", "read"},
+		{`^/repos/[^/]+/[^/]+/comments/[0-9]+/reactions$`, "POST", "contents", "write"},
+		{`^/repos/[^/]+/[^/]+/comments/[0-9]+/reactions/[0-9]+$`, "DELETE", "contents", "write"},
+
 		// Compare
 		{`^/repos/[^/]+/[^/]+/compare/.*$`, "GET", "contents", "read"},
 
@@ -93,6 +99,11 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/issues/[0-9]+/assignees(/.*)?$`, "POST", "issues", "write"},
 		{`^/repos/[^/]+/[^/]+/issues/[0-9]+/assignees(/.*)?$`, "DELETE", "issues", "write"},
 		{`^/repos/[^/]+/[^/]+/issues/[0-9]+/(events|timeline|reactions)$`, "GET", "issues", "read"},
+		// Reactions (#315). Issue-comment and PR review comment reactions
+		// are covered by the issues/comments/{id} and pulls/comments/{id}
+		// rules; commit comment reactions are under Commit comments below.
+		{`^/repos/[^/]+/[^/]+/issues/[0-9]+/reactions$`, "POST", "issues", "write"},
+		{`^/repos/[^/]+/[^/]+/issues/[0-9]+/reactions/[0-9]+$`, "DELETE", "issues", "write"},
 		{`^/repos/[^/]+/[^/]+/issues/comments(/.*)?$`, "GET", "issues", "read"},
 		{`^/repos/[^/]+/[^/]+/issues/comments/[0-9]+(/.*)?$`, "POST", "issues", "write"},
 		{`^/repos/[^/]+/[^/]+/issues/comments/[0-9]+(/.*)?$`, "PATCH", "issues", "write"},
@@ -119,11 +130,13 @@ func init() {
 		{`^/repos/[^/]+/[^/]+/actions/secrets(/.*)?$`, "PUT", "secrets", "write"},
 		{`^/repos/[^/]+/[^/]+/actions/secrets(/.*)?$`, "DELETE", "secrets", "write"},
 
-		// Workflows — must be matched before the actions catch-all.
+		// Workflows — GitHub gates these on the Actions permission. The
+		// workflows App permission is write-only and governs editing workflow
+		// files, not these endpoints (#316).
 		// Controls enabling/disabling workflow definitions and dispatching them.
-		{`^/repos/[^/]+/[^/]+/actions/workflows(/.*)?$`, "GET", "workflows", "read"},
-		{`^/repos/[^/]+/[^/]+/actions/workflows/[^/]+/(enable|disable)$`, "", "workflows", "write"},
-		{`^/repos/[^/]+/[^/]+/actions/workflows/[^/]+/dispatches$`, "POST", "workflows", "write"},
+		{`^/repos/[^/]+/[^/]+/actions/workflows(/.*)?$`, "GET", "actions", "read"},
+		{`^/repos/[^/]+/[^/]+/actions/workflows/[^/]+/(enable|disable)$`, "PUT", "actions", "write"},
+		{`^/repos/[^/]+/[^/]+/actions/workflows/[^/]+/dispatches$`, "POST", "actions", "write"},
 
 		// Actions settings, self-hosted runners and variables — before the
 		// actions catch-all. These change repository administration.

@@ -287,7 +287,7 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"workflowRun":       {"actions", "read"},
 	"workflowRuns":      {"actions", "read"},
 	"actionsCacheUsage": {"actions", "read"},
-	"workflowFile":      {"workflows", "read"},
+	"workflowFile":      {"actions", "read"},
 
 	// Statuses & checks
 	"status":            {"statuses", "read"},

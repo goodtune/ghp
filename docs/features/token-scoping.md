@@ -121,6 +121,7 @@ Rules that differ from the general area of the path:
 
 | Endpoint | Permission |
 |---|---|
+| `actions/workflows/*` (list, get, runs; `PUT enable`/`disable`, `POST dispatches`) | `actions:read` (GET) / `actions:write` |
 | `actions/permissions/*`, `actions/runners/*` | `administration:read` (GET) / `administration:write` |
 | `actions/variables/*` | `variables:read` (GET) / `variables:write` |
 | `PUT`/`DELETE environments/{name}` (create, update or delete the environment) | `administration:write` |
@@ -130,28 +131,77 @@ Rules that differ from the general area of the path:
 | `POST forks` | `administration:write` |
 | repository `labels`, `milestones`, `issues/comments/*` | `issues:read` / `issues:write` |
 | `pulls/comments/*`, `PUT pulls/{n}/update-branch` | `pull_requests:read` / `pull_requests:write` |
+| Reactions: `issues/{n}/reactions`, `issues/comments/{id}/reactions` (GET, `POST`, `DELETE .../reactions/{id}`) | `issues:read` / `issues:write` |
+| Reactions: `pulls/comments/{id}/reactions` (GET, `POST`, `DELETE .../reactions/{id}`) | `pull_requests:read` / `pull_requests:write` |
+| Reactions: commit comment `comments/{id}/reactions` (GET, `POST`, `DELETE .../reactions/{id}`) | `contents:read` / `contents:write` |
+| Classic projects: `projects/*`, `repos/{o}/{r}/projects`, `orgs/{o}/projects` | `projects:read` / `projects:write` (see [Permission aliases](#permission-aliases)) |
 | `PATCH check-runs/{id}`, `check-suites` writes | `checks:write` |
 
 ### Valid permission names
 
-GHP accepts only canonical permission names. These are the GitHub App
-repository and organization permission names that agent tokens pass to
-GitHub, plus the names that scope enforcement uses. One name, `projects`, is
-enforcement-only: the GraphQL Projects v2 tables use it, but it is not a
-GitHub App permission name, so agent tokens should not rely on it.
+GHP accepts only canonical permission names. These are the repository and
+organization permission names of the GitHub App permissions object (the
+`app-permissions` schema in GitHub's REST description, used by
+[Create an installation access token for an app](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app)),
+plus the names that scope enforcement uses. Account (user) permissions such
+as `gpg_keys` are not accepted. GHP also keeps `variables` and
+`team_discussions`, which older tokens use.
 
-`actions`, `administration`, `checks`, `codespaces`, `contents`,
-`dependabot_secrets`, `deployments`, `discussions`, `environments`, `issues`,
-`members`, `metadata`, `organization_administration`,
-`organization_custom_roles`, `organization_hooks`, `organization_packages`,
-`organization_plan`, `organization_projects`, `organization_secrets`,
-`organization_self_hosted_runners`, `organization_user_blocking`, `packages`,
-`pages`, `projects`, `pull_requests`, `repository_custom_properties`,
-`repository_hooks`, `repository_projects`, `secret_scanning_alerts`,
-`secrets`, `security_events`, `single_file`, `statuses`, `team_discussions`,
-`variables`, `vulnerability_alerts`, `workflows`.
+`actions`, `administration`, `artifact_metadata`, `attestations`, `checks`,
+`code_quality`, `codespaces`, `contents`,
+`custom_properties_for_organizations`, `dependabot_secrets`, `deployments`,
+`discussions`, `enterprise_custom_properties_for_organizations`,
+`environments`, `issues`, `members`, `merge_queues`, `metadata`,
+`organization_administration`, `organization_announcement_banners`,
+`organization_copilot_agent_settings`, `organization_copilot_requests`,
+`organization_copilot_seat_management`, `organization_custom_org_roles`,
+`organization_custom_properties`, `organization_custom_roles`,
+`organization_events`, `organization_external_properties_for_repos`,
+`organization_hooks`, `organization_packages`,
+`organization_personal_access_token_requests`,
+`organization_personal_access_tokens`, `organization_plan`,
+`organization_projects`, `organization_secrets`,
+`organization_self_hosted_runners`, `organization_user_blocking`,
+`packages`, `pages`, `projects`, `pull_requests`,
+`repository_custom_properties`, `repository_hooks`, `repository_projects`,
+`secret_scanning_alerts`, `secrets`, `security_events`, `single_file`,
+`statuses`, `team_discussions`, `variables`, `vulnerability_alerts`,
+`workflows`.
 
-The level must be `read` or `write`. GHP does not accept aliases. For example,
+### Permission aliases
+
+Two names have special handling. Both checks run inside the
+`scope_enforcement` decision stage.
+
+- `projects` is an enforcement name. The GraphQL Projects v2 tables and the
+  classic REST project rules (including the repository-level
+  `repos/{o}/{r}/projects` rules) require `projects:<level>`.
+  `projects:<level>`, `repository_projects:<level>` and
+  `organization_projects:<level>` each satisfy that requirement on their own.
+  The levels match as usual: read satisfies read, write satisfies read and
+  write, and read never satisfies write. The alias does not bypass anything
+  else: the repository allowlist still applies, and GitHub still runs its own
+  permission check on the forwarded request.
+- Agent (`gha_`) tokens: GitHub has no `projects` App permission, so GHP
+  mints `projects:<level>` at GitHub as both `repository_projects` and
+  `organization_projects` at that level. When the token also names one of
+  those keys, the higher level wins. This grant is wider than a
+  repository-only need. If a token needs only repository projects, request
+  `repository_projects` directly instead of `projects`.
+- `workflows:read` is **deprecated**. GitHub's `workflows` permission has
+  only a write level, and it controls editing workflow files. GitHub gates
+  the workflow REST endpoints (list, get, enable, disable, dispatch) on
+  `actions`. GHP still accepts `workflows:read` for one release. Creating a
+  token with it logs a warning. Enforcement treats it as `actions:read`, and
+  agent tokens send it to GitHub as `actions:read`. Use `actions:read`
+  instead. `workflows:write` is unchanged and does not grant `actions:read`.
+
+Behaviour change: before this release the workflow endpoints required
+`workflows:read`/`workflows:write`. A token with `workflows:write` and no
+`actions` permission can no longer list, enable, disable or dispatch
+workflows; add `actions:read` or `actions:write`.
+
+The level must be `read` or `write`. Apart from the aliases above, GHP does not accept aliases. For example,
 `pulls:write` is rejected: the GitHub permission is `pull_requests`.
 
 Token creation (`POST /api/tokens`, `ghp token create`) and scope updates

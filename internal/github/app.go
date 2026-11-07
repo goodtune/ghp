@@ -23,6 +23,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/crypto"
+	ghppermissions "github.com/goodtune/ghp/internal/permissions"
 	ghub "github.com/google/go-github/v93/github"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 )
@@ -181,6 +182,9 @@ func installationCacheKey(installationID int64, repos []string, permissions map[
 // Results are cached, keyed by installation ID plus the requested repos and
 // permissions, and evicted automatically after installationTokenTTL.
 func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installationID int64, repos []string, permissions map[string]string) (string, error) {
+	// GitHub rejects GHP's enforcement-only names (projects, workflows:read);
+	// translate them to App permission names first.
+	permissions = ghppermissions.ForGitHubApp(permissions)
 	cacheKey := installationCacheKey(installationID, repos, permissions)
 	if tok, ok := p.cache.Get(cacheKey); ok {
 		return tok, nil

@@ -598,3 +598,54 @@ func TestAppTokenProvider_GetInstallationIDForOwner_ASCIIOnlyCacheKey(t *testing
 		t.Errorf("expected 2 API calls (Kelvin sign is a distinct key), got %d", callCount)
 	}
 }
+
+// TestAppTokenProvider_TranslatesEnforcementOnlyNames checks that the
+// access_tokens body never carries GHP's enforcement-only names (#316, #318).
+func TestAppTokenProvider_TranslatesEnforcementOnlyNames(t *testing.T) {
+	var got map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/123/access_tokens" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var body struct {
+			Permissions map[string]string `json:"permissions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		got = body.Permissions
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"token":      "ghs_x",
+			"expires_at": time.Now().Add(time.Hour).Format(time.RFC3339),
+		}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{AppID: 1, PrivateKey: testRSAKey, BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := map[string]string{"projects": "write", "workflows": "read", "contents": "read"}
+	if _, err := provider.GetInstallationToken(context.Background(), 123, nil, in); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"repository_projects": "write", "organization_projects": "write", "actions": "read", "contents": "read"}
+	if len(got) != len(want) {
+		t.Fatalf("permissions = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("permissions[%q] = %q, want %q (all: %v)", k, got[k], v, got)
+		}
+	}
+	if _, ok := got["projects"]; ok {
+		t.Error("access_tokens body carries a projects key")
+	}
+	if in["projects"] != "write" || len(in) != 3 {
+		t.Errorf("caller's map was modified: %v", in)
+	}
+}
