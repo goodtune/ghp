@@ -129,11 +129,96 @@ test.describe("Admin - token scope edit", () => {
     await expect(warn).toBeVisible();
     await expect(warn).toContainText("pulls:write");
 
+    // Changing the permissions drops the invalid entry.
+    await selectLevel(page, "issues", "read");
     const patch = page.waitForRequest(
       (r) => r.method() === "PATCH" && r.url().endsWith(`/api/tokens/${id}`)
     );
     await page.locator('#edit-token-row button:has-text("Save")').click();
-    expect((await patch).postDataJSON().scopes).toEqual({ contents: "read" });
+    expect((await patch).postDataJSON().scopes).toEqual({ contents: "read", issues: "read" });
+  });
+
+  test("repos-only edit omits scopes from the PATCH", async ({ page }) => {
+    const id = await createToken(page, `edit-repos-${Date.now()}`, "contents:read");
+    await openEditRow(page, id);
+    let body: any = null;
+    await page.route(`**/api/tokens/${id}`, async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      body = route.request().postDataJSON();
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+    });
+    await page.locator("#edit-token-row textarea").fill("acme/widgets");
+    await page.locator('#edit-token-row button:has-text("Save")').click();
+    await expect(page.locator("#edit-token-row")).toHaveCount(0);
+    expect(body.repositories).toEqual(["acme/widgets"]);
+    expect("scopes" in body).toBe(false);
+  });
+
+  test("all-invalid stored scopes cannot be widened to open-scoped by default", async ({
+    page,
+  }) => {
+    const id = await createToken(page, `edit-allbad-${Date.now()}`, "contents:read");
+    await page.goto("/admin");
+    await page.waitForLoadState("networkidle");
+    const btn = page.locator(`button[data-edit-token="${id}"]`);
+    // Simulate a stored deny-all scope set that the server no longer accepts.
+    const openStale = async () => {
+      await btn.evaluate((el) => el.setAttribute("data-token-scopes", JSON.stringify({ pulls: "write" })));
+      await btn.click();
+    };
+    await openStale();
+
+    let body: any = null;
+    await page.route(`**/api/tokens/${id}`, async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      body = route.request().postDataJSON();
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+    });
+
+    // Repos-only save keeps the stored (deny-all) scopes untouched.
+    await page.locator("#edit-token-row textarea").fill("acme/widgets");
+    await page.locator('#edit-token-row button:has-text("Save")').click();
+    await expect(page.locator("#edit-token-row")).toHaveCount(0);
+    expect("scopes" in body).toBe(false);
+
+    // Saving with no permission selected still never sends {}: the stored
+    // deny-all entry is kept unless the admin clears scopes explicitly.
+    await openStale();
+    await expect(page.locator("#edit-token-scopes-warning")).toContainText("pulls:write");
+    await page.locator('#edit-token-row button:has-text("Save")').click();
+    await expect(page.locator("#edit-token-row")).toHaveCount(0);
+    expect(body.scopes).toBeUndefined();
+
+    await openStale();
+    await page.locator("#edit-token-clear-scopes").check();
+    await page.locator('#edit-token-row button:has-text("Save")').click();
+    await expect(page.locator("#edit-token-row")).toHaveCount(0);
+    expect(body.scopes).toEqual({});
+  });
+
+  test("explicit clear sends empty scopes", async ({ page }) => {
+    const id = await createToken(page, `edit-clear-${Date.now()}`, "contents:read");
+    await openEditRow(page, id);
+    await selectLevel(page, "contents", "");
+    await page.locator('#edit-token-row button:has-text("Save")').click();
+    await expect(page.locator("#edit-token-error")).toContainText(
+      "This would remove all scopes and make the token open-scoped"
+    );
+
+    await page.locator("#edit-token-clear-scopes").check();
+    const patch = page.waitForRequest(
+      (r) => r.method() === "PATCH" && r.url().endsWith(`/api/tokens/${id}`)
+    );
+    await page.locator('#edit-token-row button:has-text("Save")').click();
+    expect((await patch).postDataJSON().scopes).toEqual({});
+    await expect(page.locator(`tr[data-token-id="${id}"]`)).toContainText("(open)");
+  });
+
+  test("metadata is capped at read", async ({ page }) => {
+    const id = await createToken(page, `edit-meta-${Date.now()}`, "contents:read");
+    await openEditRow(page, id);
+    const opts = page.locator("#edit-token-scopes").locator('select[data-perm="metadata"] option');
+    await expect(opts).toHaveCount(2);
   });
 });
 

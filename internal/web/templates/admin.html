@@ -983,6 +983,11 @@
             return bad.length ? 'Invalid scopes: ' + bad.join('; ') : '';
         }
 
+        function sameScopes(a, b) {
+            const ka = Object.keys(a), kb = Object.keys(b);
+            return ka.length === kb.length && ka.every(k => b[k] === a[k]);
+        }
+
         function editToken(id, reposJson, scopesJson) {
             // Remove any existing edit row.
             const existing = document.getElementById('edit-token-row');
@@ -1018,7 +1023,8 @@
             scopesSelect.id = 'edit-token-scopes';
             scopesSelect.setAttribute('optional-metadata', '');
             scopesSelect.style.marginBottom = '0.5rem';
-            scopesSelect.permissions = Object.fromEntries(CANONICAL_PERMISSIONS.map(n => [n, 'write']));
+            // GitHub has no metadata write; cap it at read.
+            scopesSelect.permissions = Object.fromEntries(CANONICAL_PERMISSIONS.map(n => [n, n === 'metadata' ? 'read' : 'write']));
             const unapplied = scopesSelect.setValue(currentScopes);
 
             const scopesWarn = document.createElement('div');
@@ -1026,11 +1032,25 @@
             scopesWarn.style.cssText = 'color:#d29922;font-size:0.875rem;margin-bottom:0.5rem;';
             const unappliedEntries = Object.entries(unapplied);
             if (unappliedEntries.length > 0) {
-                scopesWarn.textContent = 'These current entries are not valid scopes and will be removed on save: '
+                scopesWarn.textContent = 'These stored entries are not valid scopes. They are kept until you change the permissions or clear all scopes: '
                     + unappliedEntries.map(([k, v]) => k + ':' + v).join(', ');
             } else {
                 scopesWarn.style.display = 'none';
             }
+
+            // Entries of the stored scopes that the selector could apply.
+            const validStored = Object.fromEntries(Object.entries(currentScopes).filter(([k]) => !(k in unapplied)));
+            const storedNonEmpty = Object.keys(currentScopes).length > 0;
+
+            const clearLabel = document.createElement('label');
+            clearLabel.style.cssText = 'display:block;margin-bottom:0.5rem;font-size:0.875rem;color:#8b949e;';
+            const clearChk = document.createElement('input');
+            clearChk.type = 'checkbox';
+            clearChk.id = 'edit-token-clear-scopes';
+            clearChk.style.marginRight = '0.4rem';
+            clearLabel.appendChild(clearChk);
+            clearLabel.appendChild(document.createTextNode('Clear all scopes (make the token open-scoped)'));
+            if (!storedNonEmpty) clearLabel.style.display = 'none';
 
             const jsonToggle = document.createElement('button');
             jsonToggle.type = 'button';
@@ -1072,18 +1092,35 @@
                 errMsg.style.display = 'none';
 
                 const repoLines = reposInput.value.split('\n').map(s => s.trim()).filter(Boolean);
-                const parsedScopes = scopesSelect.value;
-                const scopeErr = validateScopes(parsedScopes);
-                if (scopeErr) {
-                    errMsg.textContent = scopeErr;
-                    errMsg.style.display = 'block';
-                    return;
+                const body = { repositories: repoLines };
+                if (clearChk.checked) {
+                    body.scopes = {};
+                } else {
+                    const parsedScopes = scopesSelect.value;
+                    const scopeErr = validateScopes(parsedScopes);
+                    if (scopeErr) {
+                        errMsg.textContent = scopeErr;
+                        errMsg.style.display = 'block';
+                        return;
+                    }
+                    // Send scopes only when the selection changed, so a
+                    // repositories-only edit never rewrites stored scopes
+                    // (the server treats an absent field as unchanged).
+                    if (!sameScopes(parsedScopes, validStored)) {
+                        if (Object.keys(parsedScopes).length === 0 && storedNonEmpty) {
+                            errMsg.textContent = 'This would remove all scopes and make the token open-scoped. '
+                                + 'Select at least one permission, or tick "Clear all scopes" to do it deliberately.';
+                            errMsg.style.display = 'block';
+                            return;
+                        }
+                        body.scopes = parsedScopes;
+                    }
                 }
 
                 saveBtn.textContent = 'Saving…';
                 saveBtn.disabled = true;
                 try {
-                    await api('PATCH', '/api/tokens/' + id, { repositories: repoLines, scopes: parsedScopes });
+                    await api('PATCH', '/api/tokens/' + id, body);
                     editRow.remove();
                     reloadCurrentTokenView();
                 } catch (e) {
@@ -1099,6 +1136,7 @@
             editCell.appendChild(scopesLabel);
             editCell.appendChild(scopesSelect);
             editCell.appendChild(scopesWarn);
+            editCell.appendChild(clearLabel);
             editCell.appendChild(jsonToggle);
             editCell.appendChild(jsonView);
             editCell.appendChild(errMsg);

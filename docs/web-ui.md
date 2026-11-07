@@ -52,9 +52,19 @@ The admin panel provides:
     - The form checks the scopes with the server's rules before it sends
       them. If the server rejects the update, its message shows in the form.
     - **Show current scopes as JSON** shows the stored scopes as text.
+    - The form sends scopes only when you change the permissions. An edit
+      that changes only the repositories leaves the stored scopes as they
+      are.
     - A stored entry that is not a valid scope (for example `pulls`, from a
-      token created before validation) is listed in a warning and removed
-      when you save.
+      token created before validation) is listed in a warning. It stays
+      stored until you change the permissions, which replaces the stored
+      scopes with your selection.
+    - If the stored scopes hold only invalid entries, the token denies every
+      permission check. Saving without a change keeps it that way; the form
+      does not send empty scopes.
+    - The form does not let an edit remove every scope by accident: empty
+      scopes make the token open-scoped. To do that, tick
+      **Clear all scopes (make the token open-scoped)**.
 
 In dev mode, navigating to `/admin` without a session shows a test-login form
 that authenticates directly as an admin.

@@ -43,6 +43,13 @@ such as `pulls` only shows up after a 400.
    `data-token-repos` attributes was cut off at the first `"` and the edit row
    opened empty. `esc()` now escapes `"` and `'` as well.
 
+10. **No silent widening.** Empty scopes mean open-scoped. The PATCH omits
+    `scopes` when the selection equals the valid subset of the stored scopes,
+    so a repositories-only edit, or a token whose stored entries are all
+    invalid (deny-all), keeps its stored scopes. A selection that would send
+    `{}` while stored scopes are non-empty is blocked unless the admin ticks
+    "Clear all scopes". `metadata` is capped at `read`.
+
 ## Tests
 
 - Go: `handleAdmin` renders the canonical list (`internal/web/handler_test.go`).
