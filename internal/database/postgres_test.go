@@ -285,3 +285,70 @@ func TestPostgresMigrations(t *testing.T) {
 	}
 }
 
+// TestPostgresSyncAdminRoles_TurkishCollation checks that the admin candidate
+// query folds with ASCII rules even when the column collation is Turkish
+// (#334). Under tr-x-icu, LOWER('IVAN') is 'ıvan' (dotless i), so a plain
+// LOWER() pre-filter would drop the true ASCII match IVAN == ivan.
+//
+// Assumption: the postgres test image is built with ICU and provides the
+// tr-x-icu collation. If it does not, the test skips.
+func TestPostgresSyncAdminRoles_TurkishCollation(t *testing.T) {
+	store := newTestPostgresStore(t)
+	ctx := context.Background()
+
+	var n int
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM pg_collation WHERE collname = 'tr-x-icu'`).Scan(&n); err != nil {
+		t.Fatalf("query pg_collation: %v", err)
+	}
+	if n == 0 {
+		t.Skip("tr-x-icu collation not available in this postgres image")
+	}
+	if _, err := store.db.ExecContext(ctx,
+		`ALTER TABLE users ALTER COLUMN github_username TYPE TEXT COLLATE "tr-x-icu"`); err != nil {
+		t.Fatalf("set Turkish collation: %v", err)
+	}
+
+	// Prove the collation really changes LOWER(), so the test is meaningful.
+	var lowered string
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT LOWER('IVAN' COLLATE "tr-x-icu")`).Scan(&lowered); err != nil {
+		t.Fatalf("LOWER under tr-x-icu: %v", err)
+	}
+	if lowered == "ivan" {
+		t.Skip("tr-x-icu LOWER() folds I to i in this image; Turkish case not reproducible")
+	}
+
+	users := []*User{
+		{GitHubID: 1, GitHubUsername: "IVAN", Role: "user"},
+		{GitHubID: 2, GitHubUsername: "Iris", Role: "user"},
+		{GitHubID: 3, GitHubUsername: "bob", Role: "user"},
+	}
+	for _, u := range users {
+		if err := store.UpsertUser(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.SyncAdminRoles(ctx, []string{"ivan", "IRIS"}); err != nil {
+		t.Fatalf("SyncAdminRoles: %v", err)
+	}
+
+	tests := []struct {
+		githubID int64
+		want     string
+	}{
+		{1, "admin"},
+		{2, "admin"},
+		{3, "user"},
+	}
+	for _, tt := range tests {
+		got, err := store.GetUserByGitHubID(ctx, tt.githubID)
+		if err != nil {
+			t.Fatalf("GetUserByGitHubID(%d): %v", tt.githubID, err)
+		}
+		if got.Role != tt.want {
+			t.Errorf("user %q role = %q, want %q", got.GitHubUsername, got.Role, tt.want)
+		}
+	}
+}
