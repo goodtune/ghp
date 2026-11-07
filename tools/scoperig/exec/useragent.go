@@ -3,6 +3,7 @@ package exec
 import (
 	"net/http"
 	"runtime/debug"
+	"strings"
 )
 
 // UserAgent returns the User-Agent the rig sends on every HTTP request:
@@ -15,12 +16,38 @@ func UserAgent(version, runID string) string {
 	return "ghp-scoperig/" + version + " (run=" + runID + ")"
 }
 
-// RigVersion is the rig's version for the User-Agent: the module version
-// when the binary was built from a tagged module, else the first 12
+// Commit is the rig's source revision, stamped at build time by the
+// Makefile's scoperig target:
+//
+//	-ldflags "-X github.com/goodtune/ghp/tools/scoperig/exec.Commit=<sha>[-dirty]"
+//
+// Go's own VCS stamping is used only when Commit is empty. It is unreliable
+// for a build inside a git worktree, where it can resolve the parent checkout
+// and report its pseudo-version and revision instead of the worktree's.
+var Commit string
+
+// RigVersion is the rig's version for the User-Agent: the first 12
+// characters of the stamped Commit (keeping a "-dirty" suffix), else the
+// module version when built from a tagged module, else the first 12
 // characters of the VCS revision, else "dev".
 func RigVersion() string {
 	bi, ok := debug.ReadBuildInfo()
-	if !ok {
+	return rigVersion(Commit, bi, ok)
+}
+
+// RigCommit is the full revision the rig was built from: the stamped Commit,
+// else the VCS revision from the build info (with "-dirty" for a modified
+// tree), else "" (for example under go run).
+func RigCommit() string {
+	bi, ok := debug.ReadBuildInfo()
+	return rigCommit(Commit, bi, ok)
+}
+
+func rigVersion(stamp string, bi *debug.BuildInfo, ok bool) string {
+	if stamp != "" {
+		return shortRev(stamp)
+	}
+	if !ok || bi == nil {
 		return "dev"
 	}
 	if v := bi.Main.Version; v != "" && v != "(devel)" {
@@ -32,6 +59,39 @@ func RigVersion() string {
 		}
 	}
 	return "dev"
+}
+
+func rigCommit(stamp string, bi *debug.BuildInfo, ok bool) string {
+	if stamp != "" {
+		return stamp
+	}
+	if !ok || bi == nil {
+		return ""
+	}
+	var rev string
+	dirty := false
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if rev != "" && dirty {
+		rev += "-dirty"
+	}
+	return rev
+}
+
+// shortRev shortens a revision to 12 characters, keeping a "-dirty" suffix.
+func shortRev(rev string) string {
+	base, dirty := strings.CutSuffix(rev, "-dirty")
+	base = base[:min(12, len(base))]
+	if dirty {
+		return base + "-dirty"
+	}
+	return base
 }
 
 // userAgentTransport sets User-Agent on every request it sends.

@@ -3,6 +3,7 @@ package exec
 import (
 	"net/http"
 	"net/http/httptest"
+	"runtime/debug"
 	"testing"
 )
 
@@ -55,5 +56,44 @@ func TestWithUserAgent(t *testing.T) {
 	}
 	if base.Transport == c.Transport {
 		t.Error("WithUserAgent modified the original client")
+	}
+}
+
+func TestRigVersionAndCommit(t *testing.T) {
+	const sha = "d8f3b9de0123456789abcdef0123456789abcdef"
+	parent := &debug.BuildInfo{
+		Main: debug.Module{Version: "v0.0.0-20261030203245-63f1a39c0404+dirty"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "63f1a39c0404aaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			{Key: "vcs.modified", Value: "true"},
+		},
+	}
+	devel := &debug.BuildInfo{
+		Main:     debug.Module{Version: "(devel)"},
+		Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: sha}},
+	}
+	tests := []struct {
+		name        string
+		stamp       string
+		bi          *debug.BuildInfo
+		ok          bool
+		wantVersion string
+		wantCommit  string
+	}{
+		{"stamp wins over parent checkout VCS info", sha, parent, true, "d8f3b9de0123", sha},
+		{"dirty stamp keeps suffix", sha + "-dirty", parent, true, "d8f3b9de0123-dirty", sha + "-dirty"},
+		{"no stamp falls back to module version and VCS", "", parent, true, "v0.0.0-20261030203245-63f1a39c0404+dirty", "63f1a39c0404aaaaaaaaaaaaaaaaaaaaaaaaaaaa-dirty"},
+		{"no stamp devel uses short revision", "", devel, true, "d8f3b9de0123", sha},
+		{"no stamp no build info", "", nil, false, "dev", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rigVersion(tt.stamp, tt.bi, tt.ok); got != tt.wantVersion {
+				t.Errorf("rigVersion = %q, want %q", got, tt.wantVersion)
+			}
+			if got := rigCommit(tt.stamp, tt.bi, tt.ok); got != tt.wantCommit {
+				t.Errorf("rigCommit = %q, want %q", got, tt.wantCommit)
+			}
+		})
 	}
 }

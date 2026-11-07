@@ -19,7 +19,7 @@ description: Use when running the GHP scope regression rig, reading its report, 
 
 | Step | Command |
 |---|---|
-| Build | `CGO_ENABLED=0 go build -o /tmp/scoperig ./tools/scoperig` |
+| Build | `make scoperig && mv scoperig /tmp/scoperig` (stamps the worktree commit into the User-Agent and report `rig_commit`) |
 | Static check | `/tmp/scoperig validate` |
 | Fixtures | `/tmp/scoperig fixtures ensure` (creates and revokes one `open` token even when it changes nothing; `--create-fixtures` only to create missing repos, which usually fails for lack of `repo_create`: create `ghp-scoperig-{a,b,w}` by hand with `gh repo create --private`) |
 | Full run | `/tmp/scoperig run --out /tmp/ghp-rig/reports/$(date -u +%Y%m%dT%H%MZ).json` |
