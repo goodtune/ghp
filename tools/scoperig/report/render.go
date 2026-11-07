@@ -112,8 +112,12 @@ func (r *Report) writeLatency(ew *errWriter) error {
 				low++
 			}
 		}
+		mean, p50, p95, p99 := "n/a", "n/a", "n/a", "n/a"
+		if s.Samples > 0 {
+			mean, p50, p95, p99 = seconds(s.Mean), seconds(s.P50), seconds(s.P95), seconds(s.P99)
+		}
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n", clean(s.Stage), clean(s.TokenType), s.Samples,
-			seconds(s.Mean), seconds(s.P50), seconds(s.P95), seconds(s.P99), budget, flags)
+			mean, p50, p95, p99, budget, flags)
 	}
 	if err := tw.Flush(); err != nil {
 		return err

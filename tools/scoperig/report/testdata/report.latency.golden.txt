@@ -26,6 +26,7 @@ latency (advisory, does not change the exit code; ghp 0.25.0 d8f3b9de; window 16
 STAGE              TOKEN_TYPE  SAMPLES  MEAN      P50       P95       P99      P99 BUDGET  FLAGS
 scope_enforcement  proxy       108      12µs      6µs       42µs      53µs     < 1.00ms    -
 total              proxy       168      2.10ms    1.70ms    4.50ms    38.00ms  < 15.00ms   WARN over-budget
+graphql_analysis   proxy       0        n/a       n/a       n/a       n/a      < 1.00ms    WARN low-samples
 total              unknown     5        10µs      7µs       22µs      24µs     < 15.00ms   WARN low-samples
 end_to_end         all         167      410.00ms  351.00ms  927.00ms  2.08s    -           -
-latency warnings: 1 over budget, 1 low samples (< 100)
+latency warnings: 1 over budget, 2 low samples (< 100)

@@ -52,6 +52,7 @@ func goldenLatency() *Latency {
 		Stages: []StageLatency{
 			{Stage: "scope_enforcement", TokenType: "proxy", Samples: 108, Mean: 0.000012, P50: 0.000006, P95: 0.000042, P99: 0.000053, BudgetP99: 0.001, Flags: []string{}},
 			{Stage: "total", TokenType: "proxy", Samples: 168, Mean: 0.0021, P50: 0.0017, P95: 0.0045, P99: 0.038, BudgetP99: 0.015, Flags: []string{FlagOverBudget}},
+			{Stage: "graphql_analysis", TokenType: "proxy", Samples: 0, BudgetP99: 0.001, Flags: []string{FlagLowSamples}},
 			{Stage: "total", TokenType: "unknown", Samples: 5, Mean: 0.00001, P50: 0.000007, P95: 0.000022, P99: 0.000024, BudgetP99: 0.015, Flags: []string{FlagLowSamples}},
 			{Stage: "end_to_end", TokenType: "all", Samples: 167, Mean: 0.41, P50: 0.351, P95: 0.927, P99: 2.08, Flags: []string{}},
 		}}

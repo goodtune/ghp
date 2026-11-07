@@ -8,12 +8,14 @@ import (
 	"net/url"
 	"os"
 	osexec "os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/goodtune/ghp/tools/scoperig/redact"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
 )
 
@@ -149,13 +151,41 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 			return nil, fmt.Errorf("instance.token_create_rate: %w", err)
 		}
 	}
-	if c.Metrics, err = loadMetrics(getenv, fc); err != nil {
+	if c.Metrics, err = loadMetrics(getenv, fc, c.UserToken); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-func loadMetrics(getenv func(string) string, fc fileConfig) (MetricsConfig, error) {
+// maxScrapeWait caps metrics.scrape_wait so that a typo cannot hang the rig.
+const maxScrapeWait = 5 * time.Minute
+
+// selectorMatcher matches one PromQL label matcher, label op "value", at the
+// start of the input, with an optional trailing comma.
+var selectorMatcher = regexp.MustCompile(`^\s*[a-zA-Z_][a-zA-Z0-9_]*\s*(=~|!~|!=|=)\s*"(?:[^"\\]|\\.)*"\s*(,|$)`)
+
+// validateSelector accepts only a comma-separated list of label matchers.
+func validateSelector(sel string) error {
+	rest := sel
+	for rest != "" {
+		loc := selectorMatcher.FindStringIndex(rest)
+		if loc == nil {
+			bad := rest
+			if i := strings.IndexByte(bad, ','); i >= 0 {
+				bad = bad[:i]
+			}
+			return fmt.Errorf("metrics.selector: bad matcher %q: want label op \"value\" with op one of = != =~ !~", strings.TrimSpace(bad))
+		}
+		consumed := rest[:loc[1]]
+		rest = rest[loc[1]:]
+		if strings.HasSuffix(consumed, ",") && strings.TrimSpace(rest) == "" {
+			return errors.New(`metrics.selector: bad matcher "": trailing comma`)
+		}
+	}
+	return nil
+}
+
+func loadMetrics(getenv func(string) string, fc fileConfig, userToken string) (MetricsConfig, error) {
 	fm := fc.Metrics
 	m := MetricsConfig{
 		PrometheusURL:  strings.TrimSpace(fm.PrometheusURL),
@@ -172,16 +202,35 @@ func loadMetrics(getenv func(string) string, fc fileConfig) (MetricsConfig, erro
 	if strings.ContainsAny(m.Selector, "{}") {
 		return m, errors.New("metrics.selector: give label matchers only, without braces (for example job=\"ghp\")")
 	}
+	if m.Selector != "" {
+		if err := validateSelector(m.Selector); err != nil {
+			return m, err
+		}
+	}
 	if m.BearerTokenEnv != "" {
 		m.Bearer = strings.TrimSpace(getenv(m.BearerTokenEnv))
 		if m.Bearer == "" && m.PrometheusURL != "" {
 			return m, fmt.Errorf("metrics.bearer_token_env: %s is not set", m.BearerTokenEnv)
+		}
+		if m.Bearer != "" {
+			if userToken != "" && m.Bearer == userToken {
+				return m, fmt.Errorf("metrics.bearer_token_env: %s holds the GHP user token; give a separate Prometheus token", m.BearerTokenEnv)
+			}
+			if redact.Pattern.MatchString(m.Bearer) {
+				return m, fmt.Errorf("metrics.bearer_token_env: %s looks like a GitHub or GHP token; give a separate Prometheus token", m.BearerTokenEnv)
+			}
+			if m.PrometheusURL != "" && !strings.HasPrefix(m.PrometheusURL, "https://") {
+				return m, errors.New("metrics.prometheus_url must use https when metrics.bearer_token_env is set")
+			}
 		}
 	}
 	if fm.ScrapeWait != "" {
 		d, err := time.ParseDuration(fm.ScrapeWait)
 		if err != nil || d < 0 {
 			return m, fmt.Errorf("metrics.scrape_wait: want a non-negative duration such as 45s")
+		}
+		if d > maxScrapeWait {
+			return m, fmt.Errorf("metrics.scrape_wait: %s is too long; give at most 5m", d)
 		}
 		m.ScrapeWait = d
 	}

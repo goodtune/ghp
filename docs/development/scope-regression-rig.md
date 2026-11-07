@@ -178,10 +178,16 @@ metrics:
   prometheus_url: https://grafana.example.com/api/datasources/proxy/uid/<datasource-uid>
   bearer_token_env: ""   # optional: name of an env var that holds a bearer token
   selector: ""           # optional label matchers without braces, for example job="ghp"
-  scrape_wait: 45s       # default 45s
+  scrape_wait: 45s       # default 45s, at most 5m
 ```
 
-`prometheus_url` is a Prometheus base URL or a Grafana datasource proxy URL (anonymous read works); the rig appends `/api/v1/query`. Keep the real URL in `rig/config.yaml`, which is not checked in. The URL must use `http` or `https` and must not hold credentials, a query or a fragment.
+`prometheus_url` is a Prometheus base URL or a Grafana datasource proxy URL (anonymous read works); the rig appends `/api/v1/query`. Keep the real URL in `rig/config.yaml`, which is not checked in. The URL must use `http` or `https` and must not hold credentials, a query or a fragment. When `bearer_token_env` is set, the URL must use `https`, so the bearer token is not sent in clear text.
+
+The rig refuses a bearer token that is equal to `GHP_USER_TOKEN` or that looks like a GitHub or GHP token (`ghp_`, `ghx_`, `gha_`, `github_pat_` and similar). This stops a configuration error from sending a GitHub credential to the Prometheus host. Use a separate token, for example a Grafana service account token.
+
+`selector` must be a comma-separated list of label matchers in the form `label op "value"`. The operator is one of `=`, `!=`, `=~` or `!~`, and the value is a double-quoted string. The rig refuses braces and any other text, and the error names the bad matcher.
+
+`scrape_wait` must be between `0s` and `5m`.
 
 After the run, and after token revocation, the rig waits `scrape_wait` so that Prometheus scrapes the last requests. Then it evaluates `increase(...[<window>])` at the current time. The window starts at the run start, so it includes the scrape wait. The rig reads:
 

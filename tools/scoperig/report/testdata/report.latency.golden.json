@@ -326,6 +326,19 @@
         ]
       },
       {
+        "stage": "graphql_analysis",
+        "token_type": "proxy",
+        "samples": 0,
+        "mean_seconds": 0,
+        "p50_seconds": 0,
+        "p95_seconds": 0,
+        "p99_seconds": 0,
+        "budget_p99_seconds": 0.001,
+        "flags": [
+          "low-samples"
+        ]
+      },
+      {
         "stage": "total",
         "token_type": "unknown",
         "samples": 5,

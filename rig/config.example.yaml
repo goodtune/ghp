@@ -19,9 +19,10 @@ metrics:
   # https://grafana.example.com/api/datasources/proxy/uid/<datasource-uid>
   # (anonymous read). /api/v1/query is appended.
   prometheus_url: ""
-  bearer_token_env: ""   # name of an env var holding a bearer token; empty = anonymous
+  bearer_token_env: ""   # name of an env var holding a bearer token; empty = anonymous;
+                         # needs an https URL; never a GitHub/GHP token
   selector: ""           # extra label matchers without braces, e.g. job="ghp"
-  scrape_wait: 45s       # wait after the run so Prometheus scrapes the last requests
+  scrape_wait: 45s       # wait after the run so Prometheus scrapes the last requests (max 5m)
 fixtures:
   repo_a: OWNER/ghp-scoperig-a
   repo_b: OWNER/ghp-scoperig-b
