@@ -166,3 +166,19 @@ func TestTokenAPI_PollExpandsExpect(t *testing.T) {
 		t.Errorf("poll took %v; the templated expect was not expanded", d)
 	}
 }
+
+// The create observation records when the request was made, so
+// expires_within can be checked against it (#305).
+func TestTokenAPI_CreateRecordsRequestTime(t *testing.T) {
+	env, _, tok := newEnv(t, nil)
+	before := time.Now()
+	s := &scenario.Scenario{ID: "x", Kind: "token_api", Request: &scenario.Request{Method: "POST", Path: "/api/tokens", Body: map[string]any{"duration": "1h"}}}
+	obs, err := (tokenAPIExecutor{}).Run(context.Background(), s, tok, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.RequestedAt.Before(before) || obs.RespondedAt.Before(obs.RequestedAt) || time.Since(obs.RespondedAt) < 0 {
+		t.Errorf("RequestedAt=%v RespondedAt=%v", obs.RequestedAt, obs.RespondedAt)
+	}
+	env.Tokens.RevokeAll(context.Background())
+}

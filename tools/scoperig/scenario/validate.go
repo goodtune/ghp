@@ -424,7 +424,8 @@ func hasAssertion(e *Expect) bool {
 	return e.Status != 0 || len(e.StatusIn) > 0 || len(e.BodyContains) > 0 ||
 		len(e.BodyNotContains) > 0 || len(e.Header) > 0 || len(e.JSON) > 0 ||
 		e.GHPDenial != nil || e.ExitCode != nil || len(e.ExitCodeIn) > 0 ||
-		len(e.StdoutContains) > 0 || len(e.StderrContains) > 0
+		len(e.StdoutContains) > 0 || len(e.StderrContains) > 0 ||
+		e.ExpiresWithin != nil
 }
 
 func checkExpect(where string, e *Expect, v *Vars, add func(string, ...any)) {
@@ -438,6 +439,47 @@ func checkExpect(where string, e *Expect, v *Vars, add func(string, ...any)) {
 		if _, err := ExpandAny(x, v); err != nil {
 			add("%s: %v", where, err)
 		}
+	}
+	if w := e.ExpiresWithin; w != nil {
+		checkExpiresWithin(where, w, v, add)
+	}
+}
+
+// checkExpiresWithin requires a field and min/max durations that expand
+// and parse, with 0 <= min <= max and max > 0.
+func checkExpiresWithin(where string, w *ExpiresWithin, v *Vars, add func(string, ...any)) {
+	if strings.TrimSpace(w.Field) == "" || w.FieldPath() == "$" || w.FieldPath() == "$." {
+		add("%s: expires_within: field is required", where)
+	}
+	parse := func(name, raw string) (time.Duration, bool) {
+		if strings.TrimSpace(raw) == "" {
+			add("%s: expires_within: %s is required", where, name)
+			return 0, false
+		}
+		x, err := Expand(raw, v)
+		if err != nil {
+			add("%s: expires_within: %s: %v", where, name, err)
+			return 0, false
+		}
+		d, err := time.ParseDuration(x)
+		if err != nil {
+			add("%s: expires_within: %s %q is not a duration: %v", where, name, x, err)
+			return 0, false
+		}
+		return d, true
+	}
+	lo, okLo := parse("min", w.Min)
+	hi, okHi := parse("max", w.Max)
+	if !okLo || !okHi {
+		return
+	}
+	switch {
+	case lo < 0:
+		add("%s: expires_within: min %s must not be negative", where, lo)
+	case hi <= 0:
+		add("%s: expires_within: max %s must be positive", where, hi)
+	case lo > hi:
+		add("%s: expires_within: min %s is greater than max %s", where, lo, hi)
 	}
 }
 

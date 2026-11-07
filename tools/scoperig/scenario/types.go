@@ -2,6 +2,8 @@
 // claims, token profiles and scenarios, and loads them from disk.
 package scenario
 
+import "strings"
+
 // Claim is one documented behaviour the rig verifies.
 type Claim struct {
 	ID        string `yaml:"id"`  // "REPO-C05", "GAP-A1"
@@ -47,6 +49,25 @@ type Expect struct {
 	ExitCodeIn      []int             `yaml:"exit_code_in"`
 	StdoutContains  []string          `yaml:"stdout_contains"`
 	StderrContains  []string          `yaml:"stderr_contains"`
+	ExpiresWithin   *ExpiresWithin    `yaml:"expires_within"`
+}
+
+// ExpiresWithin asserts that a JSON timestamp field (RFC 3339) falls inside
+// a window relative to the request: no earlier than request start + Min
+// and no later than response end + Max. Min and Max are Go durations and
+// may be templated (for example "{{add .Instance.DefaultDuration \"-2m\"}}").
+type ExpiresWithin struct {
+	Field string `yaml:"field"` // "expires_at" or a JSON path "$.expires_at"
+	Min   string `yaml:"min"`
+	Max   string `yaml:"max"`
+}
+
+// FieldPath returns Field as a JSON path ("$." prefixed when bare).
+func (w *ExpiresWithin) FieldPath() string {
+	if strings.HasPrefix(w.Field, "$") {
+		return w.Field
+	}
+	return "$." + w.Field
 }
 
 // Scenario is one test case.

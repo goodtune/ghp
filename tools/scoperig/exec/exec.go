@@ -167,6 +167,7 @@ func send(ctx context.Context, env *RunEnv, build func(ctx context.Context) (*ht
 			cancel()
 			return nil, err
 		}
+		started := time.Now()
 		resp, err := client.Do(req)
 		if err != nil {
 			cancel()
@@ -186,7 +187,8 @@ func send(ctx context.Context, env *RunEnv, build func(ctx context.Context) (*ht
 		if rerr != nil {
 			return nil, fmt.Errorf("%s %s: read body: %s", req.Method, req.URL.RequestURI(), redact.String(rerr.Error()))
 		}
-		obs := &expect.Observation{Status: resp.StatusCode, Header: redact.Header(resp.Header), Body: redact.Bytes(body)}
+		obs := &expect.Observation{Status: resp.StatusCode, Header: redact.Header(resp.Header), Body: redact.Bytes(body),
+			RequestedAt: started, RespondedAt: time.Now()}
 		verbose(env, req.Method, req.URL.RequestURI(), obs)
 		return obs, nil
 	}

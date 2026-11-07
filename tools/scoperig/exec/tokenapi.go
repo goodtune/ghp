@@ -128,11 +128,16 @@ func tokenAPIRequest(ctx context.Context, r *scenario.Request, tok tokens.Handle
 			}
 			body = m
 		}
+		started := time.Now()
 		status, resp, err := env.Tokens.CreateRaw(ctx, body)
 		if err != nil {
 			return nil, fmt.Errorf("POST /api/tokens: %s", redact.String(err.Error()))
 		}
-		return jsonObservation(env, method, path, status, resp)
+		obs, err := jsonObservation(env, method, path, status, resp)
+		if obs != nil {
+			obs.RequestedAt, obs.RespondedAt = started, time.Now()
+		}
+		return obs, err
 	case method == http.MethodDelete && strings.HasPrefix(bare, "/api/tokens/"):
 		id := strings.TrimPrefix(bare, "/api/tokens/")
 		if id == "" || strings.Contains(id, "/") {

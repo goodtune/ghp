@@ -127,6 +127,21 @@ make scoperig
 
 A run starts by sweeping: it revokes every unrevoked token whose session id starts with `scoperig-`. Because of this, **concurrent runs against one instance are not supported** — a second run revokes the first run's tokens.
 
+## Matchers
+
+`expect:` and `observed:` blocks share these matchers. Each block needs at least one. String values may be templated.
+
+| Matcher | Holds when |
+|---|---|
+| `status`, `status_in` | The HTTP status equals the value, or is one of the list |
+| `body_contains`, `body_not_contains` | The response body contains (or does not contain) every string |
+| `header` | Each named header's first value equals the string |
+| `json` | Each JSON path (`$.a.b`, `$.items[0].id`) has the string value |
+| `ghp_denial` | The response is (or is not) a GHP denial (403 or 401 with a GHP message) |
+| `exit_code`, `exit_code_in` | The `gh` exit code equals the value, or is one of the list |
+| `stdout_contains`, `stderr_contains` | `gh` output contains every string |
+| `expires_within: {field, min, max}` | The RFC 3339 timestamp at `field` (`expires_at` or a JSON path) is no earlier than request start + `min` and no later than response end + `max`. `min` and `max` are Go durations and may be templated, for example `"{{add .Instance.DefaultDuration \"-2m\"}}"`. Validation requires 0 <= `min` <= `max` and `max` > 0. Leave a margin for clock skew between the rig and the instance. |
+
 ## Reading the report
 
 The report header records the run id, the instance, the GHP version from preflight, the `gh` version (`gh --version`) and the rig commit (the VCS revision stamped into the binary by `make scoperig`; empty under `go run`, with a `-dirty` suffix for a modified tree).

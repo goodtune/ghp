@@ -786,3 +786,31 @@ func TestValidate_GraphQLNeedsQueryOrSteps(t *testing.T) {
 		t.Fatalf("want query-or-steps error, got %v", errs)
 	}
 }
+
+func TestValidate_ExpiresWithin(t *testing.T) {
+	mk := func(w *ExpiresWithin) *Scenario {
+		return &Scenario{ID: "EW", Claim: "C1", Kind: "token_api",
+			Request: &Request{Method: "POST", Path: "/api/tokens", Expect: &Expect{ExpiresWithin: w}}}
+	}
+	t.Run("ok, counts as an assertion", func(t *testing.T) {
+		requireNoErr(t, Validate(rawScenarios(mk(&ExpiresWithin{Field: "expires_at",
+			Min: `{{add .Instance.DefaultDuration "-2m"}}`, Max: `{{add .Instance.DefaultDuration "2m"}}`})), nil))
+	})
+	for _, tc := range []struct {
+		name string
+		w    *ExpiresWithin
+		want string
+	}{
+		{"no field", &ExpiresWithin{Min: "1m", Max: "2m"}, "field is required"},
+		{"no min", &ExpiresWithin{Field: "expires_at", Max: "2m"}, "min is required"},
+		{"bad max", &ExpiresWithin{Field: "expires_at", Min: "1m", Max: "2 minutes"}, "not a duration"},
+		{"bad template", &ExpiresWithin{Field: "expires_at", Min: "{{.Nope}}", Max: "2m"}, "min:"},
+		{"negative min", &ExpiresWithin{Field: "expires_at", Min: "-1m", Max: "2m"}, "must not be negative"},
+		{"zero max", &ExpiresWithin{Field: "expires_at", Min: "0s", Max: "0s"}, "must be positive"},
+		{"min over max", &ExpiresWithin{Field: "expires_at", Min: "3m", Max: "2m"}, "greater than max"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requireErr(t, Validate(rawScenarios(mk(tc.w)), nil), "EW", "expires_within", tc.want)
+		})
+	}
+}

@@ -155,3 +155,18 @@ func TestCaptureVarsAndCheckExpands(t *testing.T) {
 		t.Errorf("CheckExpands err = %v, want an observed error", err)
 	}
 }
+
+func TestExpandExpect_ExpiresWithin(t *testing.T) {
+	v := &Vars{Instance: InstanceVals{DefaultDuration: 24 * time.Hour}}
+	in := &Expect{ExpiresWithin: &ExpiresWithin{Field: "expires_at", Min: `{{add .Instance.DefaultDuration "-2m"}}`, Max: `{{add .Instance.DefaultDuration "2m"}}`}}
+	got, err := ExpandExpect(in, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresWithin.Min != "23h58m0s" || got.ExpiresWithin.Max != "24h2m0s" {
+		t.Errorf("got %+v", got.ExpiresWithin)
+	}
+	if in.ExpiresWithin.Min[0] != '{' {
+		t.Error("input mutated")
+	}
+}

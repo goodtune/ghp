@@ -164,6 +164,16 @@ func ExpandExpect(e *Expect, v *Vars) (*Expect, error) {
 	if out.StderrContains, err = strs(e.StderrContains); err != nil {
 		return nil, err
 	}
+	if e.ExpiresWithin != nil {
+		w := *e.ExpiresWithin
+		if w.Min, err = Expand(w.Min, v); err != nil {
+			return nil, err
+		}
+		if w.Max, err = Expand(w.Max, v); err != nil {
+			return nil, err
+		}
+		out.ExpiresWithin = &w
+	}
 	return &out, nil
 }
 

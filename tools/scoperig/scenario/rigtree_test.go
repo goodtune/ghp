@@ -112,7 +112,7 @@ var task18Claims = map[string]int{
 	"REPO-C05": 1, "REPO-C06": 3, "REPO-C07": 2, "REPO-C10": 1,
 	"PERM-C11": 1, "PERM-C12": 1, "PERM-C13": 2, "PERM-C14": 2, "PERM-C15": 2, "PERM-C16": 1,
 	"OPEN-C20": 3, "OPEN-C21": 1,
-	"LIFE-C37": 1, "LIFE-C38": 1, "LIFE-C40": 1,
+	"LIFE-C37": 2, "LIFE-C38": 1, "LIFE-C40": 1,
 	"BORDER-C43": 3, "BORDER-C44": 1, "MISC-C52": 1,
 }
 
