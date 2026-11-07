@@ -333,6 +333,44 @@ var crossRepoRootOnlyFields = map[string]struct{}{
 	"resource": {},
 }
 
+// rootLookupFields names the root fields that fetch arbitrary objects by
+// global ID, URL or search query (#324). Their result type is an interface
+// or union, so the field name alone says nothing about what is read. At the
+// operation root they never pass through alwaysAllowedFields: each fragment
+// at the result position must name a type condition in
+// typeConditionScopeRequirements, and that scope is required. A result
+// position with no fragment, or a fragment with an unmapped type condition,
+// is unknown (denied). Nested uses (e.g. `Connection.nodes`) are not
+// affected. These names also stay in crossRepoRootOnlyFields or
+// crossRepoAnywhereFields, so repository-restricted tokens still deny them.
+var rootLookupFields = map[string]struct{}{
+	"node":     {},
+	"nodes":    {},
+	"resource": {},
+	"search":   {},
+}
+
+// typeConditionScopeRequirements maps an inline or named fragment type
+// condition beneath a root lookup (see rootLookupFields) to the scope that
+// reading that object type requires. Any type condition not listed here is
+// denied. Interface type conditions (e.g. `Node`, `Comment`) are
+// deliberately absent: they do not pin a concrete type.
+var typeConditionScopeRequirements = map[string]scopeRequirement{
+	"Bot":           {"metadata", "read"},
+	"CheckRun":      {"checks", "read"},
+	"CheckSuite":    {"checks", "read"},
+	"Commit":        {"contents", "read"},
+	"Discussion":    {"discussions", "read"},
+	"Issue":         {"issues", "read"},
+	"Organization":  {"metadata", "read"},
+	"PullRequest":   {"pull_requests", "read"},
+	"Release":       {"contents", "read"},
+	"Repository":    {"metadata", "read"},
+	"StatusContext": {"statuses", "read"},
+	"Team":          {"metadata", "read"},
+	"User":          {"metadata", "read"},
+}
+
 // crossRepoAnywhereFields lists fields that can leak data from
 // repositories other than those addressed by the request's
 // `repository(owner, name)` selections. Repository-scoped tokens cannot
@@ -672,6 +710,18 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int
 		}
 	}
 
+	// Root object lookups are gated on fragment type conditions (#324).
+	if atRoot && !inMutation {
+		if _, ok := rootLookupFields[name]; ok {
+			if name == "search" {
+				a.walkSearchResult(f.SelectionSet, depth+1)
+			} else {
+				a.walkLookupResult(name, f.SelectionSet, depth+1)
+			}
+			return
+		}
+	}
+
 	// Mutation root fields require a write-level scope.
 	if inMutation && atRoot {
 		if name == "__typename" {
@@ -733,6 +783,174 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int
 	// mutation's required scope.
 	if len(f.SelectionSet) > 0 {
 		a.walkSelectionSet(f.SelectionSet, false, false, depth+1)
+	}
+}
+
+// walkLookupResult checks the result position of a root lookup (see
+// rootLookupFields). Only `__typename` and `id` may be selected directly;
+// every other selection must sit inside a fragment whose type condition is
+// in typeConditionScopeRequirements. Fragments without a type condition
+// (e.g. `... @include(if: $x) { ... }`) are transparent. The fragment body
+// is then walked by walkGatedBody, which also gates fragments nested
+// directly in it. A result position with no
+// mapped fragment is recorded as unknown under the lookup name.
+func (a *gqlAnalyzer) walkLookupResult(lookup string, set ast.SelectionSet, depth int) {
+	if !a.walkLookupSelections(lookup, set, depth) {
+		a.seenUnknown[lookup] = struct{}{}
+	}
+}
+
+// walkLookupSelections returns true when at least one mapped fragment was
+// found in set.
+func (a *gqlAnalyzer) walkLookupSelections(lookup string, set ast.SelectionSet, depth int) bool {
+	if depth > maxAnalysisDepth {
+		a.tooDeep = true
+		return false
+	}
+	found := false
+	for _, sel := range set {
+		switch s := sel.(type) {
+		case *ast.Field:
+			if s.Name != "__typename" && s.Name != "id" {
+				a.seenUnknown[lookup+"."+s.Name] = struct{}{}
+			}
+		case *ast.InlineFragment:
+			if s.TypeCondition == "" {
+				if a.walkLookupSelections(lookup, s.SelectionSet, depth+1) {
+					found = true
+				}
+				continue
+			}
+			if a.gateTypeCondition(lookup, s.TypeCondition) {
+				found = true
+			}
+			a.walkGatedBody(lookup, s.TypeCondition, s.SelectionSet, depth+1)
+		case *ast.FragmentSpread:
+			if a.fragmentStack[s.Name] {
+				continue
+			}
+			frag, ok := a.fragments[s.Name]
+			if !ok {
+				a.seenUnknown["fragment:"+s.Name] = struct{}{}
+				continue
+			}
+			if a.gateTypeCondition(lookup, frag.TypeCondition) {
+				found = true
+			}
+			a.fragmentStack[s.Name] = true
+			a.walkGatedBody(lookup, frag.TypeCondition, frag.SelectionSet, depth+1)
+			delete(a.fragmentStack, s.Name)
+		}
+	}
+	return found
+}
+
+// walkGatedBody walks the body of a root-lookup fragment whose type
+// condition is enclosing. Fields are walked as ordinary nested selections.
+// A fragment directly in the body (inline or named) with a type condition
+// that differs from enclosing is gated through typeConditionScopeRequirements
+// as well, so `... on Bot { ...F }` with `fragment F on Issue` needs
+// issues:read. Interfaces and unmapped types are unknown. GitHub rejects
+// such non-overlapping spreads today, but the analyzer does not rely on it.
+func (a *gqlAnalyzer) walkGatedBody(lookup, enclosing string, set ast.SelectionSet, depth int) {
+	if depth > maxAnalysisDepth {
+		a.tooDeep = true
+		return
+	}
+	for _, sel := range set {
+		switch s := sel.(type) {
+		case *ast.Field:
+			a.walkField(s, false, false, depth)
+		case *ast.InlineFragment:
+			inner := enclosing
+			if s.TypeCondition != "" && s.TypeCondition != enclosing {
+				a.gateTypeCondition(lookup, s.TypeCondition)
+				inner = s.TypeCondition
+			}
+			a.walkGatedBody(lookup, inner, s.SelectionSet, depth+1)
+		case *ast.FragmentSpread:
+			if a.fragmentStack[s.Name] {
+				continue
+			}
+			frag, ok := a.fragments[s.Name]
+			if !ok {
+				a.seenUnknown["fragment:"+s.Name] = struct{}{}
+				continue
+			}
+			inner := enclosing
+			if frag.TypeCondition != enclosing {
+				a.gateTypeCondition(lookup, frag.TypeCondition)
+				inner = frag.TypeCondition
+			}
+			a.fragmentStack[s.Name] = true
+			a.walkGatedBody(lookup, inner, frag.SelectionSet, depth+1)
+			delete(a.fragmentStack, s.Name)
+		}
+	}
+}
+
+// gateTypeCondition records the scope for a mapped type condition, or an
+// unknown entry for an unmapped one. It returns true when mapped.
+func (a *gqlAnalyzer) gateTypeCondition(lookup, typeCondition string) bool {
+	req, ok := typeConditionScopeRequirements[typeCondition]
+	if !ok {
+		a.seenUnknown[lookup+"...on "+typeCondition] = struct{}{}
+		return false
+	}
+	a.seenScopes[req] = struct{}{}
+	return true
+}
+
+// walkSearchResult checks the selection set of a root `search` field.
+// `nodes` and `edges { node }` are result positions and are checked with
+// walkLookupResult. Scalar leaves (e.g. `issueCount`), `pageInfo` and
+// `__typename` may sit beside them. Anything else is unknown, and so is a
+// search with no result position.
+func (a *gqlAnalyzer) walkSearchResult(set ast.SelectionSet, depth int) {
+	if depth > maxAnalysisDepth {
+		a.tooDeep = true
+		return
+	}
+	found := false
+	for _, sel := range set {
+		s, ok := sel.(*ast.Field)
+		if !ok {
+			// Fragments on SearchResultItemConnection add nothing a
+			// client needs; deny rather than reason about them.
+			a.seenUnknown["search:fragment"] = struct{}{}
+			continue
+		}
+		switch {
+		case s.Name == "nodes":
+			a.walkLookupResult("search.nodes", s.SelectionSet, depth+1)
+			found = true
+		case s.Name == "edges":
+			for _, esel := range s.SelectionSet {
+				ef, ok := esel.(*ast.Field)
+				switch {
+				case !ok:
+					a.seenUnknown["search.edges:fragment"] = struct{}{}
+				case ef.Name == "node":
+					a.walkLookupResult("search.edges.node", ef.SelectionSet, depth+2)
+					found = true
+				case len(ef.SelectionSet) == 0:
+					// cursor, __typename and other scalar leaves.
+				default:
+					a.seenUnknown["search.edges."+ef.Name] = struct{}{}
+				}
+			}
+		case s.Name == "pageInfo":
+			a.walkSelectionSet(s.SelectionSet, false, false, depth+1)
+		case len(s.SelectionSet) == 0:
+			// issueCount, repositoryCount, __typename and similar leaves.
+		default:
+			a.seenUnknown["search."+s.Name] = struct{}{}
+		}
+	}
+	if !found {
+		// A search that selects no result position (counts only) has no
+		// fragment to gate on, so it stays denied like the other lookups.
+		a.seenUnknown["search"] = struct{}{}
 	}
 }
 

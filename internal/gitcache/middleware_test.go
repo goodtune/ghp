@@ -35,3 +35,20 @@ func TestParseGitPath(t *testing.T) {
 		})
 	}
 }
+
+// TestNormaliseOwnerRepo_ASCIIOnlyFold covers #317: the cache lookup key and
+// metric labels must not fold the Kelvin sign to k.
+func TestNormaliseOwnerRepo_ASCIIOnlyFold(t *testing.T) {
+	tests := []struct{ owner, repo, wantOwner, wantRepo string }{
+		{"Kit", "Repo", "kit", "repo"},
+		{"Kit", "Key", "Kit", "Key"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.owner+"/"+tc.repo, func(t *testing.T) {
+			o, r := normaliseOwnerRepo(tc.owner, tc.repo)
+			if o != tc.wantOwner || r != tc.wantRepo {
+				t.Errorf("got %q/%q, want %q/%q", o, r, tc.wantOwner, tc.wantRepo)
+			}
+		})
+	}
+}

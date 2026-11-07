@@ -151,6 +151,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - Explicit error handling (`if err != nil`)
 - Unit tests colocated with source (`*_test.go`)
 - `CGO_ENABLED=0` for all builds (pure Go, no C dependencies)
+- Compare GitHub owner, repository and login names with `asciiutil.EqualFold` / `asciiutil.ToLower`, never `strings.EqualFold` / `strings.ToLower` (Unicode folding lets `ſ` match `s` and the Kelvin sign match `k`; #317)
 - Configuration via YAML files or environment variables with `GHP_` prefix
 
 ### Sentinel Errors
@@ -263,7 +264,7 @@ When working on `internal/github/registry.go`:
 
 `internal/proxy/graphql.go` enforces token scopes on `/graphql` requests via static analysis. The analyzer is **deny-by-default**: any field it cannot classify against the curated tables below produces a 403. When a legitimate query is rejected, the fix is almost always to add the field name to the right table — not to relax the analyzer.
 
-### The four tables
+### The five tables
 
 | Table | Purpose | Add to it when… |
 |---|---|---|
@@ -271,19 +272,21 @@ When working on `internal/github/registry.go`:
 | `fieldScopeRequirements` | Maps a query/read field name → `{permission, level}`. | The field exposes a permission-gated **read** resource (e.g. `pullRequests` → `pull_requests:read`, `discussions` → `discussions:read`). |
 | `mutationScopeRequirements` | Maps a top-level mutation name → `{permission, "write"}`. | A new mutation surfaces (e.g. `createIssue` → `issues:write`). Unmapped mutation root fields are denied — the proxy never grants a write scope it can't classify. |
 | `crossRepoAnywhereFields` / `crossRepoRootOnlyFields` | Field names that can leak data from outside the repository allowlist (`search`, `viewer.repositories`, root-level `node(id:)`, …). `*RootOnly` is for names that are cross-repo only at the operation root (e.g. `node`/`nodes`/`resource`); nested `Connection.nodes` is a benign helper and lives in `alwaysAllowedFields`. | The field can return repositories/objects the analyzer cannot statically pin to a `repository(owner, name)` selection. Repo-scoped tokens are rejected when any cross-repo field appears. |
+| `typeConditionScopeRequirements` | Maps a fragment type condition beneath a root lookup (`rootLookupFields`: `node`, `nodes`, `resource`, `search`) → `{permission, "read"}` (e.g. `Issue` → `issues:read`, `Repository` → `metadata:read`). Interfaces such as `Node` are deliberately absent. | A client needs a root lookup to read a concrete object type that is not yet mapped. Unmapped type conditions are denied. |
 
 ### How the analyzer decides
 
 For each field walked:
 
-1. **Mutation root field** (mutation operation, `atRoot==true`): `__typename` needs no scope. Otherwise looked up in `mutationScopeRequirements`. Hit → record the scope. Miss → flagged as unknown (denied). A mutation with no mapped field (e.g. only `__typename`) is still denied by the verdict's mutation checks.
-2. **Otherwise** the field is checked against the tables in this order:
+1. **Root object lookup** (non-mutation, `atRoot==true`, name in `rootLookupFields`: `node`, `nodes`, `resource`, `search`): never consults `alwaysAllowedFields` or `fieldScopeRequirements` (#324). At the result position (the field's own selection set; for `search`, under `nodes` and `edges { node }`) every fragment — inline or named — must have a type condition in `typeConditionScopeRequirements`, and that scope is recorded. Fragments with no type condition are transparent. Only `id` and `__typename` may be selected outside a fragment. No mapped fragment, an unmapped type condition, or any other direct field → unknown (denied). Fragment bodies are walked by `walkGatedBody`: a fragment nested directly in the body (inline or named) must have the same type condition or is gated through the table too (its scope added; interface/unmapped → unknown); fields are walked as ordinary nested selections. Nested `Connection.nodes` is unaffected. The names stay in the cross-repo tables, so repo-scoped tokens still deny.
+2. **Mutation root field** (mutation operation, `atRoot==true`): `__typename` needs no scope. Otherwise looked up in `mutationScopeRequirements`. Hit → record the scope. Miss → flagged as unknown (denied). A mutation with no mapped field (e.g. only `__typename`) is still denied by the verdict's mutation checks.
+3. **Otherwise** the field is checked against the tables in this order:
    1. `alwaysAllowedFields` — pass with no scope requirement.
    2. `fieldScopeRequirements` — record the scope.
    3. **Scalar leaf** (no selection set): permitted at non-root; denied at root (no parent scope to gate it).
    4. **Object-typed field** (has a selection set) that fell through all of the above: flagged as unknown (denied).
-3. **Cross-repo check** runs in parallel — `crossRepoAnywhereFields` always; `crossRepoRootOnlyFields` only when `atRoot==true`.
-4. **Repository pinning** — `repository(owner, name)` records the repo when each argument is either a **literal string** or a **variable `$v` declared as `String`/`String!` (not a list) whose member in the request's `variables` object is a JSON string**. Anything else sets `hasUnpinnedRepositoryLookup`, which fails the request for repo-scoped tokens: a missing argument; a variable that is undeclared, has another type, is absent from `variables`, or is `null`/number/boolean/array/object. Operation default values are never used. The request envelope is parsed strictly by `parseGraphQLEnvelope` (never by encoding/json struct-tag matching, which folds case and Unicode): every top-level key must be exactly `query`, `operationName`, `variables` or `extensions`, with no duplicates, else 400. No variable resolves when the `variables` object has duplicate keys or the document has more than one operation (`resolveVariables`). The body analysed is the body forwarded, byte for byte. A bare `repository` with **no arguments** (e.g. `Issue.repository`) is a nested type accessor, not a lookup, and is ignored.
+4. **Cross-repo check** runs in parallel — `crossRepoAnywhereFields` always; `crossRepoRootOnlyFields` only when `atRoot==true`.
+5. **Repository pinning** — `repository(owner, name)` records the repo when each argument is either a **literal string** or a **variable `$v` declared as `String`/`String!` (not a list) whose member in the request's `variables` object is a JSON string**. Anything else sets `hasUnpinnedRepositoryLookup`, which fails the request for repo-scoped tokens: a missing argument; a variable that is undeclared, has another type, is absent from `variables`, or is `null`/number/boolean/array/object. Operation default values are never used. The request envelope is parsed strictly by `parseGraphQLEnvelope` (never by encoding/json struct-tag matching, which folds case and Unicode): every top-level key must be exactly `query`, `operationName`, `variables` or `extensions`, with no duplicates, else 400. No variable resolves when the `variables` object has duplicate keys or the document has more than one operation (`resolveVariables`). The body analysed is the body forwarded, byte for byte. A bare `repository` with **no arguments** (e.g. `Issue.repository`) is a nested type accessor, not a lookup, and is ignored.
 
 The lookup is **by field name only** — the analyzer doesn't load GitHub's SDL. Where the same name on different parent types could mean different things, err toward the stricter scope.
 
@@ -304,6 +307,7 @@ The 403 response names the fields the proxy could not classify (capped at `maxRe
 ### Things to never silently do
 
 - **Never** add a write-capable field to `alwaysAllowedFields`. That table is metadata-only.
+- **Never** add an interface or union (`Node`, `Comment`, `SearchResultItem`, …) to `typeConditionScopeRequirements`, and never let a root lookup fall back to `alwaysAllowedFields`. Only concrete types pin a scope.
 - **Never** add a mutation to `fieldScopeRequirements` (it's checked only for non-mutation paths). Mutations belong in `mutationScopeRequirements`.
 - **Never** skip the cross-repo classification just because a field also has a scope mapping. A field can require a scope **and** be cross-repo (e.g. `search` requires no specific scope but is cross-repo).
 - **Never** loosen `stringArg`/`resolveVariables` beyond the rule in step 4 (for example: using default values, coercing non-string values, resolving variables when keys are duplicated or the document has several operations, relaxing the exact-key envelope check, or analysing a re-encoded body). A repo lookup the proxy cannot resolve exactly as GitHub will can't be allowlist-checked; that's the whole point of `hasUnpinnedRepositoryLookup`.

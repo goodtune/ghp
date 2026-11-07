@@ -60,6 +60,13 @@ because ghp cannot tie it to the allowlist. This includes
 `/repositories/{id}`, `/search/*`, `/user/repos`, `/orgs/*`, `/users/*`,
 `/gists` and package endpoints.
 
+The allowlist compare ignores case for ASCII letters only. A non-ASCII
+spelling that Unicode case rules would map to an allowed name (for example
+`ſ`, U+017F, for `s`, or the Kelvin sign, U+212A, for `k`) does not match.
+GitHub owner and repository names are ASCII. The same rule applies to the
+releases and codeload allow lists, the enterprise exception match list, the git cache, installation and team cache keys, and
+the admin user list.
+
 ghp rejects some request paths with `403 Forbidden` before any scope check.
 This applies to all `ghx_` and `gha_` tokens.
 A path is rejected if it contains a `.` or `..` segment or an empty segment (`//`).
@@ -266,6 +273,44 @@ allowlisted lookups are present in the same query. Every pinned
 repository, literal or variable, must be in the allowlist. Tokens with no
 repository restriction (permission-only or open-scoped) are unaffected.
 
+### Root object lookups
+
+The root fields `node(id:)`, `nodes(ids:)`, `resource(url:)` and
+`search(...)` fetch objects of any type by global ID, URL or search query.
+The field name does not tell ghp which type the client reads, so for
+permission-restricted tokens ghp gates these lookups on the type condition
+of each fragment beneath them:
+
+| Type condition | Required scope |
+|---|---|
+| `Issue` | `issues:read` |
+| `PullRequest` | `pull_requests:read` |
+| `Discussion` | `discussions:read` |
+| `Commit`, `Release` | `contents:read` |
+| `CheckRun`, `CheckSuite` | `checks:read` |
+| `StatusContext` | `statuses:read` |
+| `Repository`, `User`, `Organization`, `Bot`, `Team` | `metadata:read` |
+
+Inline fragments (`... on Issue { body }`) and named fragments
+(`...F` with `fragment F on Issue`) are both checked. A fragment with no
+type condition (`... @include(if: $x) { ... }`) is transparent: the
+fragments inside it are checked. For `search`, the fragments under `nodes`
+and `edges { node }` are checked, and scalar fields such as `issueCount`
+can be selected beside them.
+
+ghp rejects the request as unmapped when a lookup has no fragment (for
+example `{ node(id: "...") { id } }`, or a `search` that selects only
+counts), when a fragment names a type that is not in the table (including
+interfaces such as `Node`), or when a field other than `id` or
+`__typename` is selected outside a fragment. The fields inside a fragment
+are then checked as usual. A fragment nested directly in the body of a
+gated fragment must have the same type condition, or it is gated the
+same way and its scope is also required: `... on Bot { ...F }` with
+`fragment F on Issue` needs `issues:read` as well as `metadata:read`. The same field names in nested positions, for
+example `Connection.nodes`, are pagination helpers and are not affected.
+These four lookups are still cross-repository fields, so
+repository-restricted tokens cannot use them.
+
 At a mutation root, `__typename` needs no scope. All other mutation root
 fields still need a mapped write scope, and a mutation that selects only
 `__typename` is still rejected for scoped tokens.
@@ -275,11 +320,19 @@ analysis, so this cap does not apply to them.
 
 Operators reading 403 responses with a "GraphQL request references unmapped
 fields" message can use the named field as a hint for extending
-`fieldScopeRequirements` or `mutationScopeRequirements` in
+`fieldScopeRequirements`, `mutationScopeRequirements` or
+`typeConditionScopeRequirements` in
 `internal/proxy/graphql.go` to cover legitimate use cases.
 
 ### Known limitations
 
+- **Some harmless root lookups are denied for every scoped token.** A
+  `search` that selects only counts (for example `repositoryCount`), a
+  root `node`, `nodes` or `resource` that selects only `id` or
+  `__typename`, and `textMatches` under `search { edges { ... } }` have no
+  fragment type that ghp can gate on, so they are rejected as unmapped.
+  Add a fragment with a mapped type condition (for example
+  `... on Repository { id }`) to send such a query.
 - **Scalar leaves under always-allowed parents are not deny-by-default.**
   Without loading GitHub's full SDL the proxy cannot enumerate every
   scalar field name, so unmapped scalars projected directly under an

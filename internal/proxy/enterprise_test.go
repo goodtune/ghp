@@ -868,3 +868,43 @@ func TestEnterprisePolicy_SetTransportNilSafe(t *testing.T) {
 	}
 	enabled.SetTransport(http.DefaultTransport)
 }
+
+// TestEnterprisePolicy_Match_ASCIIOnlyFold covers #317: a non-ASCII spelling
+// that Unicode case rules map onto an ASCII exception entry must not match.
+func TestEnterprisePolicy_Match_ASCIIOnlyFold(t *testing.T) {
+	p := NewEnterprisePolicy(config.GitHubConfig{
+		EnterpriseSlug: "acme",
+		EnterpriseExceptions: []config.EnterpriseException{
+			{Match: []string{"kit-org", "partner/users"}},
+		},
+	}, nil, slog.Default())
+	tests := []struct {
+		name, owner, repo string
+		wantHeader        string
+	}{
+		{"ascii owner", "Kit-Org", "r", ""},
+		{"ascii owner/repo", "Partner", "Users", ""},
+		{"kelvin sign owner", "\u212ait-org", "r", "acme"},
+		{"long s repo", "partner", "u\u017fers", "acme"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hdr := http.Header{}
+			p.Apply(context.Background(), hdr, tc.owner, tc.repo, nil, "")
+			if got := hdr.Get(enterpriseHeader); got != tc.wantHeader {
+				t.Errorf("header = %q, want %q", got, tc.wantHeader)
+			}
+		})
+	}
+}
+
+// TestTeamCacheKey_ASCIIOnlyFold covers #317: a Kelvin-sign login must not
+// share a cached membership verdict with the ASCII login.
+func TestTeamCacheKey_ASCIIOnlyFold(t *testing.T) {
+	if got, want := teamCacheKey("Acme", "Trusted", "Kate"), "acme/trusted/kate"; got != want {
+		t.Errorf("teamCacheKey = %q, want %q", got, want)
+	}
+	if teamCacheKey("acme", "trusted", "Kate") == teamCacheKey("acme", "trusted", "kate") {
+		t.Error("Kelvin-sign login shares a cache key with the ASCII login")
+	}
+}

@@ -315,3 +315,8 @@
   claim: "The GraphQL analyzer accepts the queries real gh sends."
   iteration: 2
   testable: periodic
+- id: GAP-A10
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  claim: "Root node, nodes, resource and search lookups require the scope of each fragment type they read."
+  iteration: 2
+  testable: periodic

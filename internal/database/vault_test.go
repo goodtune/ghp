@@ -137,3 +137,25 @@ func TestKVVersionOf(t *testing.T) {
 		})
 	}
 }
+
+// TestAdminSet_ASCIIOnlyFold covers #317 for the Vault admin-role sync.
+func TestAdminSet_ASCIIOnlyFold(t *testing.T) {
+	set := newAdminSet([]string{"kate", "Bob"})
+	tests := []struct {
+		login string
+		want  bool
+	}{
+		{"kate", true},
+		{"KATE", true},
+		{"bob", true},
+		{"Kate", false}, // Kelvin sign
+		{"mallory", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.login, func(t *testing.T) {
+			if got := set.has(tc.login); got != tc.want {
+				t.Errorf("has(%q) = %v, want %v", tc.login, got, tc.want)
+			}
+		})
+	}
+}
