@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
@@ -523,10 +524,11 @@ func (si tokenScopeInfo) isOpenScoped() bool {
 }
 
 // repoAllowed returns true if repo is in the token's repository allowlist.
-// Must only be called when len(si.Repos) > 0.
+// Must only be called when len(si.Repos) > 0. The compare folds ASCII
+// case only, so a non-ASCII spelling cannot match an ASCII entry (#317).
 func (si tokenScopeInfo) repoAllowed(repo string) bool {
 	for _, r := range si.Repos {
-		if strings.EqualFold(r, repo) {
+		if asciiutil.EqualFold(r, repo) {
 			return true
 		}
 	}

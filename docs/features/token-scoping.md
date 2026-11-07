@@ -60,6 +60,13 @@ because ghp cannot tie it to the allowlist. This includes
 `/repositories/{id}`, `/search/*`, `/user/repos`, `/orgs/*`, `/users/*`,
 `/gists` and package endpoints.
 
+The allowlist compare ignores case for ASCII letters only. A non-ASCII
+spelling that Unicode case rules would map to an allowed name (for example
+`ſ`, U+017F, for `s`, or the Kelvin sign, U+212A, for `k`) does not match.
+GitHub owner and repository names are ASCII. The same rule applies to the
+releases and codeload allow lists, the enterprise exception match list and
+the admin user list.
+
 ghp rejects some request paths with `403 Forbidden` before any scope check.
 This applies to all `ghx_` and `gha_` tokens.
 A path is rejected if it contains a `.` or `..` segment or an empty segment (`//`).

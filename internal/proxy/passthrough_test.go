@@ -848,3 +848,25 @@ func TestScopedPassthrough_NativeToken_RecordsMetrics(t *testing.T) {
 		t.Errorf("expected ProxyRequestTotal to increment by 1, got %f", after-before)
 	}
 }
+
+// TestRepoAllowed_ASCIIOnlyFold covers #317.
+func TestRepoAllowed_ASCIIOnlyFold(t *testing.T) {
+	si := tokenScopeInfo{Repos: []string{"users/kit"}}
+	tests := []struct {
+		repo string
+		want bool
+	}{
+		{"users/kit", true},
+		{"Users/KIT", true},
+		{"u\u017fers/kit", false},
+		{"users/\u212ait", false},
+		{"users/other", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.repo, func(t *testing.T) {
+			if got := si.repoAllowed(tc.repo); got != tc.want {
+				t.Errorf("repoAllowed(%q) = %v, want %v", tc.repo, got, tc.want)
+			}
+		})
+	}
+}

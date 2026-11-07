@@ -151,6 +151,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - Explicit error handling (`if err != nil`)
 - Unit tests colocated with source (`*_test.go`)
 - `CGO_ENABLED=0` for all builds (pure Go, no C dependencies)
+- Compare GitHub owner, repository and login names with `asciiutil.EqualFold` / `asciiutil.ToLower`, never `strings.EqualFold` / `strings.ToLower` (Unicode folding lets `ſ` match `s` and the Kelvin sign match `k`; #317)
 - Configuration via YAML files or environment variables with `GHP_` prefix
 
 ### Sentinel Errors

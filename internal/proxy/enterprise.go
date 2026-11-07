@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/hashicorp/golang-lru/v2/expirable"
@@ -95,7 +96,7 @@ func NewEnterprisePolicy(gh config.GitHubConfig, identity ExceptionIdentitySourc
 			hasIdentity: exc.Identity.AppRecordID != "",
 		}
 		for _, m := range exc.Match {
-			m = strings.ToLower(strings.TrimSpace(m))
+			m = asciiutil.ToLower(strings.TrimSpace(m))
 			switch strings.Count(m, "/") {
 			case 0:
 				if m != "" {
@@ -253,7 +254,7 @@ func (p *EnterprisePolicy) evaluate(ctx context.Context, owner, repo string, use
 }
 
 // match returns the exception covering owner (and optionally owner/repo), or
-// nil. Matching is case-insensitive; an owner entry covers every repository
+// nil. Matching is ASCII case-insensitive (#317); an owner entry covers every repository
 // under that account. Exact owner/repo entries take precedence over owner-wide
 // entries regardless of configuration order, so a stricter repository rule
 // (e.g. team-gated or identity-substituting) cannot be shadowed by an earlier
@@ -263,9 +264,9 @@ func (p *EnterprisePolicy) match(owner, repo string) *enterpriseException {
 	if owner == "" {
 		return nil
 	}
-	owner = strings.ToLower(owner)
+	owner = asciiutil.ToLower(owner)
 	if repo != "" {
-		ownerRepo := owner + "/" + strings.ToLower(repo)
+		ownerRepo := owner + "/" + asciiutil.ToLower(repo)
 		for i := range p.exceptions {
 			if _, ok := p.exceptions[i].repos[ownerRepo]; ok {
 				return &p.exceptions[i]
