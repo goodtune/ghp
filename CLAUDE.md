@@ -321,7 +321,7 @@ The 403 response names the fields the proxy could not classify (capped at `maxRe
 ### When the user-facing docs need updating
 
 `docs/features/token-scoping.md` has a known-limitations section. Update it when:
-- A trade-off changes (currently: scalar leaves under always-allowed parents are not deny-by-default, variable pinning trusts the forwarded `variables` object, repo-scoped GraphQL mutations are not supported).
+- A trade-off changes (currently: scalar leaves under always-allowed parents are not deny-by-default, variable pinning trusts the forwarded `variables` object, repo-scoped GraphQL mutations are not supported, issue-graph and head-repository fields such as `parent`, `subIssues` and `headRepository` are scope-mapped but not yet cross-repo classified).
 - A new class of field is added that operators may run into (e.g. a new cross-repo field).
 
 ## CI
