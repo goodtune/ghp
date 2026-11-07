@@ -36,8 +36,15 @@ const (
 	MsgLookupFailed          = "looking up token:"
 	MsgManagementAnonymous   = "Authentication with a GHP-issued token (ghx_ or gha_) is required"
 	MsgManagementNative      = "Native GitHub tokens are not accepted on the GHP management host"
-	DocsURLREST              = "https://docs.github.com/rest"
-	DocsURLGraphQL           = "https://docs.github.com/graphql"
+	MsgRepoRestrictedNonRepo = "Token is restricted to specific repositories"
+	MsgPassthroughUnmapped   = "Token is scoped;"
+	MsgUnsafePath            = "Request path contains an unsafe segment or character"
+	// MsgEndpointNotPermitted is matched as a substring, not a prefix: the
+	// message starts "Endpoint <METHOD> <path>", and a bare "Endpoint"
+	// prefix could match GitHub's own messages.
+	MsgEndpointNotPermitted = " is not permitted for scoped tokens (no scope rule matches)"
+	DocsURLREST             = "https://docs.github.com/rest"
+	DocsURLGraphQL          = "https://docs.github.com/graphql"
 )
 
 var denialPrefixes = []string{
@@ -46,6 +53,13 @@ var denialPrefixes = []string{
 	MsgExpired, MsgBorderPolicy, MsgInvalidToken, MsgAnonymousGit,
 	MsgReleaseDownloads, MsgTokenResolutionFailed, MsgInvalidPrefix,
 	MsgLookupFailed, MsgManagementAnonymous, MsgManagementNative,
+	MsgRepoRestrictedNonRepo, MsgPassthroughUnmapped, MsgUnsafePath,
+}
+
+// denialContains holds GHP denial messages whose fixed text is not at the
+// start; a message must also start with the paired prefix.
+var denialContains = []struct{ prefix, substr string }{
+	{"Endpoint ", MsgEndpointNotPermitted},
 }
 
 // Observation is what an executor saw for one step.
@@ -262,6 +276,11 @@ func IsGHPDenial(body []byte) bool {
 	}
 	for _, p := range denialPrefixes {
 		if strings.HasPrefix(msg, p) {
+			return true
+		}
+	}
+	for _, c := range denialContains {
+		if strings.HasPrefix(msg, c.prefix) && strings.Contains(msg, c.substr) {
 			return true
 		}
 	}
