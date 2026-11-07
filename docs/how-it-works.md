@@ -88,7 +88,10 @@ Tokens can be scoped to specific repositories and permission levels, ensuring
 agents only access what they need. Open-scoped tokens (no restrictions) are
 also supported when full access is appropriate. Permission names are checked
 against one canonical list when a token is created; an unknown name (for
-example `pulls` instead of `pull_requests`) is rejected with HTTP 400.
+example `pulls` instead of `pull_requests`) is rejected with HTTP 400. Two
+aliases exist: `projects` is satisfied by `repository_projects` or
+`organization_projects`, and the deprecated `workflows:read` is treated as
+`actions:read`. Agent tokens send GitHub only App permission names.
 
 See [Token Scoping](features/token-scoping.md) for details.
 
