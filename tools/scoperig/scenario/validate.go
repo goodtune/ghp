@@ -116,33 +116,15 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	add := func(format string, a ...any) { msgs = append(msgs, fmt.Sprintf(format, a...)) }
 
 	// Copy vars and pre-populate Step from capture names.
+	v := CaptureVars(s, &Vars{})
 	vv := *base
-	v := &vv
-	v.Step = map[string]map[string]string{}
+	vv.Step = v.Step
+	v = &vv
 	// Profile IDs are placeholders for every known profile; an unknown
 	// name expands to "" (text/template's index ignores missingkey).
 	v.ProfileIDs = make(map[string]string, len(t.Profiles))
 	for n := range t.Profiles {
 		v.ProfileIDs[n] = "00000000-0000-4000-8000-000000000000"
-	}
-	for _, r := range append(append([]Request{}, s.Steps...), s.Cleanup...) {
-		if len(r.Capture) == 0 {
-			continue
-		}
-		if v.Step[r.Name] == nil {
-			v.Step[r.Name] = map[string]string{}
-		}
-		for c := range r.Capture {
-			v.Step[r.Name][c] = "0"
-		}
-	}
-	if s.Request != nil && len(s.Request.Capture) > 0 {
-		if v.Step[s.Request.Name] == nil {
-			v.Step[s.Request.Name] = map[string]string{}
-		}
-		for c := range s.Request.Capture {
-			v.Step[s.Request.Name][c] = "0"
-		}
 	}
 
 	// Rule 1: references and kind.

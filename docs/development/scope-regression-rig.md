@@ -18,8 +18,10 @@ What iteration 1 does not cover:
 
 - Go 1.24.
 - `gh` on `PATH`, or set `GHP_RIG_GH` to its path.
-- An admin session token (`ghpr_`) for the instance, from `ghp auth login`.
-- The three fixture repositories A, B and W (see [Fixtures](#fixtures)).
+- `git` on `PATH`. The `gh` working directory is an empty git checkout on the fixture branch (`gh pr status` needs a current branch).
+- An admin session token (`ghpr_`) for the instance. It is the `user_token` of the `ghp` CLI config (`~/.config/ghp/config.yaml`, written by `ghp auth login` or `ghp auth set-token`). When that config has a `dotvault:` stanza, the token is the Vault field that `dotvault.fields.user_token` names, read with the dotvault client config `dotvault.config` (or its default path) and service `dotvault.service`. Export it as `GHP_USER_TOKEN` without printing it.
+- The three fixture repositories A, B and W (see [Fixtures](#fixtures)). Usually you create them by hand first: see below.
+- For `oracle` only: your own `gh` login, stored in `hosts.yml` or the macOS keychain. The Linux Secret Service (DBUS) is not passed through. `run` does not need it; it gives `gh` the minted token in `GH_ENTERPRISE_TOKEN`.
 - The instance's TLS certificate must be trusted by the system trust store. `GHP_RIG_CA_FILE` adds a CA bundle for the rig's own HTTP client. The rig passes `SSL_CERT_FILE` through to `gh` when you set it, but Go ignores `SSL_CERT_FILE` on macOS, so on macOS `gh` relies on the system keychain.
 
 ## Configuration
@@ -38,7 +40,7 @@ What iteration 1 does not cover:
 | `GHP_RIG_INSTALLATION_ID` | no | none | Positive integer; enables the `agent_installation` capability |
 | `GHP_RIG_CA_FILE` | no | system pool | Extra PEM CA bundle |
 
-`gh` runs with an environment built from scratch: a fresh `GH_CONFIG_DIR`, a fresh `XDG_CACHE_HOME`, a working directory that is not a git checkout, and the token in `GH_ENTERPRISE_TOKEN` only. No inherited `GH_*` or `GITHUB_*` variable reaches it.
+`gh` runs with an environment built from scratch: a fresh `GH_CONFIG_DIR`, a fresh `XDG_CACHE_HOME`, a fresh working directory that is an empty git repository on the fixture branch (no remotes; `GH_REPO` names the base repository), and the token in `GH_ENTERPRISE_TOKEN` only. No inherited `GH_*` or `GITHUB_*` variable reaches it.
 
 ### `rig/config.yaml`
 
@@ -76,11 +78,16 @@ The preflight step sets these capabilities. A scenario that needs a capability t
 
 ## Fixtures
 
+The `repo_create` capability is usually false: the GitHub credential behind GHP normally lacks the `repo` OAuth scope. So create the three private repositories by hand first, under your own login, then let the rig seed them:
+
 ```bash
+gh repo create --private OWNER/ghp-scoperig-a
+gh repo create --private OWNER/ghp-scoperig-b
+gh repo create --private OWNER/ghp-scoperig-w
 ./scoperig fixtures ensure
 ```
 
-`fixtures ensure` finds and seeds repositories A, B and W through GHP with a temporary `open` token, which it creates and revokes. It seeds, idempotently: a `scoperig` label, an open issue, a `scoperig-fixture` branch with one commit, an open PR from it, and a `scoperig-fixture-v0` release. It then prints the discovered values.
+`fixtures ensure` finds and seeds repositories A, B and W through GHP with a temporary `open` token, which it creates and revokes. It creates and revokes this one token on every call, even when it only reports what it would do (missing repositories and no `--create-fixtures`); this is by design, because it needs the token to probe the capabilities and read the repositories. It seeds, idempotently: a `scoperig` label, an open issue, a `scoperig-fixture` branch with one commit, an open PR from it, and a `scoperig-fixture-v0` release. It then prints the discovered values.
 
 If a repository is missing, it prints what it would create and exits 3. To create them:
 
@@ -134,6 +141,8 @@ The report header records the run id, the instance, the GHP version from preflig
 | KNOWN | Has a `known_issue`; today's behaviour matches its `observed:` block |
 | KNOWN-FIXED | Has a `known_issue`, but `expect:` now holds. Remove `known_issue` and `observed:` |
 | KNOWN-CHANGED | Has a `known_issue`; neither `expect:` nor `observed:` matches. New information; shown in a separate "changed" section |
+
+Templates in `expect:` and `observed:` (for example `json: {"$.login": "{{.Login}}"}`) are expanded with the live values before the scenario sends its first request, and again after it with the step captures. A template that cannot expand makes the scenario ERROR with "not run"; no request is sent. Step and `token_api` poll expectations are expanded the same way before they are matched.
 
 A 5xx response that the scenario does not name in `expect` is always ERROR, never FAIL. This includes a 500 that GHP itself produces.
 

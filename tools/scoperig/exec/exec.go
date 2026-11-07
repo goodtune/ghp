@@ -244,11 +244,19 @@ func capture(env *RunEnv, step string, c map[string]string, obs *expect.Observat
 // checkStep applies a step's own Expect unless it is the scenario's verdict
 // expectation (the rest shorthand's single step), which the runner
 // classifies itself.
-func checkStep(s *scenario.Scenario, r *scenario.Request, obs *expect.Observation) error {
+//
+// Templates in the step's Expect are expanded with the Vars as they stand
+// (earlier steps' captures included); the runner has already checked that
+// they expand (scenario.CheckExpands).
+func checkStep(s *scenario.Scenario, r *scenario.Request, obs *expect.Observation, env *RunEnv) error {
 	if r.Expect == nil || r.Expect == s.VerdictExpect() {
 		return nil
 	}
-	if errs := expect.Match(r.Expect, obs); len(errs) > 0 {
+	want, err := scenario.ExpandExpect(r.Expect, scenario.CaptureVars(s, env.Vars))
+	if err != nil {
+		return fmt.Errorf("step %q: expand expect: %w", r.Name, err)
+	}
+	if errs := expect.Match(want, obs); len(errs) > 0 {
 		return StepFailure{Step: r.Name, Mismatch: errs}
 	}
 	return nil

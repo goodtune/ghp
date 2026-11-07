@@ -506,17 +506,28 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 		return errResult(s, err.Error())
 	}
 	env.Vars.Step = map[string]map[string]string{}
+	// Expand every expectation with the live Vars before any request: a
+	// template that cannot expand is a scenario error found before the
+	// request, not an ERROR that hides a classified result after it.
+	if err := scenario.CheckExpands(s, env.Vars); err != nil {
+		return errResult(s, "not run: expand expectations: "+err.Error())
+	}
 	obs, rerr := ex.Run(ctx, s, tok, env)
 
-	// Expand templated matchers (e.g. json: {"$.login": "{{.Login}}"}) after
-	// the run, so step captures are available, and classify against a copy.
+	// Expand templated matchers (e.g. json: {"$.login": "{{.Login}}"}) again
+	// after the run, so step captures are available, and classify against a
+	// copy. Captures a stopped run never reached keep their placeholder, so
+	// this cannot fail once CheckExpands passed.
 	sc := *s
+	cv := scenario.CaptureVars(s, env.Vars)
 	var xerr error
-	if sc.Expect, xerr = scenario.ExpandExpect(s.VerdictExpect(), env.Vars); xerr == nil {
-		sc.Observed, xerr = scenario.ExpandExpect(s.Observed, env.Vars)
+	if sc.Expect, xerr = scenario.ExpandExpect(s.VerdictExpect(), cv); xerr == nil {
+		sc.Observed, xerr = scenario.ExpandExpect(s.Observed, cv)
 	}
 	if xerr != nil {
-		return errResult(s, "expand expectations: "+xerr.Error())
+		r := errResult(s, "expand expectations: "+xerr.Error())
+		r.Residue = exec.RunCleanup(ctx, s, env)
+		return r
 	}
 	s = &sc
 

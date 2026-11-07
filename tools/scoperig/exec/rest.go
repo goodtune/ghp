@@ -38,7 +38,7 @@ func runSteps(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 		if err != nil {
 			return nil, err
 		}
-		if err := checkStep(s, r, obs); err != nil {
+		if err := checkStep(s, r, obs, env); err != nil {
 			return obs, err
 		}
 		if err := capture(env, r.Name, r.Capture, obs); err != nil {

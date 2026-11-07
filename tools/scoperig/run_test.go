@@ -19,8 +19,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goodtune/ghp/tools/scoperig/exec"
+	"github.com/goodtune/ghp/tools/scoperig/expect"
 	"github.com/goodtune/ghp/tools/scoperig/report"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
+	"github.com/goodtune/ghp/tools/scoperig/tokens"
 )
 
 const (
@@ -1144,5 +1147,45 @@ func TestRigTree_ValidatesWithConfiguredVars(t *testing.T) {
 	c.Instance.Host = "proxy.invalid"
 	for _, e := range scenario.Validate(tree, configVars(c)) {
 		t.Error(e)
+	}
+}
+
+// countingExec records whether Run was called and returns a fixed 403.
+type countingExec struct{ runs int }
+
+func (*countingExec) Kind() string { return "rest" }
+func (c *countingExec) Run(context.Context, *scenario.Scenario, tokens.Handle, *exec.RunEnv) (*expect.Observation, error) {
+	c.runs++
+	return &expect.Observation{Status: 403, Header: http.Header{}, Body: []byte(`{}`)}, nil
+}
+
+// An expectation that cannot expand with the live Vars stops the scenario
+// before any request (#307). Before, the request ran and the expansion
+// error after it turned a classified FAIL into ERROR.
+func TestRunScenario_ExpandsExpectationsBeforeRequest(t *testing.T) {
+	ex := &countingExec{}
+	deps := runDeps{Exec: func(string) (exec.Executor, error) { return ex, nil }}
+	env := &exec.RunEnv{Vars: &scenario.Vars{ProfileIDs: map[string]string{"open": "id-open"}}}
+	handles := map[string]tokens.Handle{"open": {}}
+	mk := func(json string) *scenario.Scenario {
+		s := &scenario.Scenario{ID: "X.y", Claim: "X", Profile: "open", Kind: "rest", Method: "GET", Path: "/user",
+			Expect: &scenario.Expect{Status: 200, JSON: map[string]string{"$.id": json}}}
+		s.Normalise()
+		return s
+	}
+
+	// ProfileIDs only holds the profiles this run created.
+	r := runScenario(context.Background(), mk("{{.ProfileIDs.unused}}"), env, deps, Capabilities{}, handles, nil, nil)
+	if r.Status != report.StatusError || !strings.Contains(r.Detail, "not run") {
+		t.Errorf("status=%s detail=%q, want ERROR not run", r.Status, r.Detail)
+	}
+	if ex.runs != 0 {
+		t.Errorf("executor ran %d time(s) despite the expansion error", ex.runs)
+	}
+
+	// An expectation that expands runs and is classified (403 vs 200: FAIL).
+	r = runScenario(context.Background(), mk("{{.ProfileIDs.open}}"), env, deps, Capabilities{}, handles, nil, nil)
+	if r.Status != report.StatusFail || ex.runs != 1 {
+		t.Errorf("status=%s runs=%d, want FAIL after one run", r.Status, ex.runs)
 	}
 }

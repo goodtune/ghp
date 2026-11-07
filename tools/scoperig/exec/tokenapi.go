@@ -45,6 +45,11 @@ func (tokenAPIExecutor) Run(ctx context.Context, s *scenario.Scenario, tok token
 			if want == nil {
 				want = s.Expect
 			}
+			// Expand templated matchers so the poll compares real values,
+			// not raw "{{...}}".
+			if want, err = scenario.ExpandExpect(want, scenario.CaptureVars(s, env.Vars)); err != nil {
+				return nil, fmt.Errorf("poll: expand expect: %w", err)
+			}
 			obs, err = poll(ctx, s.Poll, want, func() (*expect.Observation, error) { return tokenAPIRequest(ctx, r, tok, env) })
 		} else {
 			obs, err = tokenAPIRequest(ctx, r, tok, env)
@@ -52,7 +57,7 @@ func (tokenAPIExecutor) Run(ctx context.Context, s *scenario.Scenario, tok token
 		if err != nil {
 			return nil, err
 		}
-		if err := checkStep(s, r, obs); err != nil {
+		if err := checkStep(s, r, obs, env); err != nil {
 			return obs, err
 		}
 		if err := capture(env, r.Name, r.Capture, obs); err != nil {

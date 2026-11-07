@@ -166,3 +166,73 @@ func ExpandExpect(e *Expect, v *Vars) (*Expect, error) {
 	}
 	return &out, nil
 }
+
+// capturePlaceholder stands in for a step capture that has not run yet.
+const capturePlaceholder = "0"
+
+// CaptureVars returns a shallow copy of v whose Step map holds v's captured
+// values plus a placeholder for every capture name s declares that has not
+// been captured yet (steps, cleanup and request). Expanding with it fails
+// only for template errors and missing non-capture keys, never because a
+// step has not run (or stopped early). v is not modified.
+func CaptureVars(s *Scenario, v *Vars) *Vars {
+	out := *v
+	out.Step = make(map[string]map[string]string, len(v.Step))
+	for name, caps := range v.Step {
+		m := make(map[string]string, len(caps))
+		for k, val := range caps {
+			m[k] = val
+		}
+		out.Step[name] = m
+	}
+	reqs := append(append([]Request{}, s.Steps...), s.Cleanup...)
+	if s.Request != nil {
+		reqs = append(reqs, *s.Request)
+	}
+	for _, r := range reqs {
+		if len(r.Capture) == 0 {
+			continue
+		}
+		if out.Step[r.Name] == nil {
+			out.Step[r.Name] = map[string]string{}
+		}
+		for c := range r.Capture {
+			if _, ok := out.Step[r.Name][c]; !ok {
+				out.Step[r.Name][c] = capturePlaceholder
+			}
+		}
+	}
+	return &out
+}
+
+// CheckExpands expands every expectation of s (verdict expect, observed,
+// each step's and the request's expect) with CaptureVars(s, v) and returns
+// the first error. The runner calls it before any request, so a template
+// that cannot expand with the live Vars stops the scenario before it sends
+// anything, instead of turning a classified result into ERROR afterwards.
+func CheckExpands(s *Scenario, v *Vars) error {
+	cv := CaptureVars(s, v)
+	check := func(where string, e *Expect) error {
+		if _, err := ExpandExpect(e, cv); err != nil {
+			return fmt.Errorf("%s: %w", where, err)
+		}
+		return nil
+	}
+	if err := check("expect", s.VerdictExpect()); err != nil {
+		return err
+	}
+	if err := check("observed", s.Observed); err != nil {
+		return err
+	}
+	for i := range s.Steps {
+		if err := check(fmt.Sprintf("steps[%d] expect", i), s.Steps[i].Expect); err != nil {
+			return err
+		}
+	}
+	if s.Request != nil {
+		if err := check("request expect", s.Request.Expect); err != nil {
+			return err
+		}
+	}
+	return nil
+}

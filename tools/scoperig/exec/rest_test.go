@@ -196,3 +196,28 @@ func TestREST_Vhost(t *testing.T) {
 		t.Errorf("RequestURI = %q, want %q (no /api/v3 prefix)", gotURI, want)
 	}
 }
+
+// Step expectations are expanded with the Vars, including earlier steps'
+// captures, before they are matched (#307).
+func TestREST_StepExpectIsExpanded(t *testing.T) {
+	env, _, tok := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(201)
+			_, _ = io.WriteString(w, `{"number":7}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"login":"`+"login"+`","number":7}`)
+	}))
+	s := &scenario.Scenario{ID: "x", Kind: "rest",
+		Steps: []scenario.Request{
+			{Name: "create", Method: "POST", Path: "/repos/w/w/issues", Capture: map[string]string{"n": "$.number"},
+				Expect: &scenario.Expect{Status: 201}},
+			{Name: "read", Path: "/repos/w/w/issues/7", Expect: &scenario.Expect{Status: 200,
+				JSON: map[string]string{"$.login": "{{.Login}}", "$.number": `{{index .Step "create" "n"}}`}}},
+			{Name: "last", Path: "/user", Expect: &scenario.Expect{Status: 200}},
+		},
+	}
+	if _, err := (restExecutor{}).Run(context.Background(), s, tok, env); err != nil {
+		t.Fatalf("err = %v, want the templated step expect to hold", err)
+	}
+}
