@@ -67,7 +67,7 @@ func TestAnalyzeGraphQLRequest_RootLookupTypeConditions(t *testing.T) {
 		{"nodes no fragment", `{ nodes(ids: ["a"]) { id } }`, nil, true},
 		{"node no fragment typename only", `{ node(id: "a") { __typename } }`, nil, true},
 		{"unmapped type condition", `{ nodes(ids: ["a"]) { ... on Gist { description } } }`, nil, true},
-		{"interface type condition", `{ nodes(ids: ["a"]) { ... on Node { ... on Issue { body } } } }`, nil, true},
+		{"interface type condition", `{ nodes(ids: ["a"]) { ... on Node { ... on Issue { body } } } }`, []string{"issues:read"}, true},
 		{"direct field beside fragment", `{ nodes(ids: ["a"]) { body ... on Issue { title } } }`, []string{"issues:read"}, true},
 		{"named fragment unmapped", `query { nodes(ids: ["a"]) { ...F } } fragment F on Gist { description }`, nil, true},
 		{"search no fragment", `{ search(query: "x", type: ISSUE, first: 1) { nodes { __typename } } }`, nil, true},
@@ -197,5 +197,60 @@ func TestServeHTTP_GraphQL_RepoScoped_RootLookupDenied(t *testing.T) {
 		if rr.Code != http.StatusForbidden {
 			t.Fatalf("%s: got %d, want 403; body: %s", q, rr.Code, rr.Body.String())
 		}
+	}
+}
+
+// TestAnalyzeGraphQLRequest_RootLookupNestedFragmentsGated: a fragment
+// nested inside a mapped root-lookup fragment must equal the enclosing type
+// or be gated itself. GitHub's validator rejects these non-overlapping
+// spreads today, but the analyzer must not rely on that.
+func TestAnalyzeGraphQLRequest_RootLookupNestedFragmentsGated(t *testing.T) {
+	tests := []struct {
+		name        string
+		query       string
+		wantScopes  []string
+		wantUnknown bool
+	}{
+		{"named Issue inside Bot", `query { node(id: "a") { ... on Bot { ...F } } } fragment F on Issue { body }`, []string{"issues:read", "metadata:read"}, false},
+		{"PullRequest inside Issue", `{ node(id: "a") { ... on Issue { ... on PullRequest { body } } } }`, []string{"issues:read", "pull_requests:read"}, false},
+		{"same type nested", `{ node(id: "a") { ... on Issue { ... on Issue { body } } } }`, []string{"issues:read"}, false},
+		{"untyped nested", `{ node(id: "a") { ... on Issue { ... @include(if: true) { body } } } }`, []string{"issues:read"}, false},
+		{"interface nested", `{ node(id: "a") { ... on Issue { ... on Closable { closed } } } }`, []string{"issues:read"}, true},
+		{"unmapped nested", `{ node(id: "a") { ... on Issue { ... on Gist { description } } } }`, []string{"issues:read"}, true},
+		{"deep under untyped", `{ node(id: "a") { ... on Bot { ... { ... on Issue { body } } } } }`, []string{"issues:read", "metadata:read"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := analyzeGraphQLRequest([]byte(gqlBody(t, tc.query)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s := strings.Join(scopeStrings(got.requiredScopes), ","); s != strings.Join(tc.wantScopes, ",") {
+				t.Errorf("requiredScopes = %s, want %v", s, tc.wantScopes)
+			}
+			if (len(got.unknownFields) > 0) != tc.wantUnknown {
+				t.Errorf("unknownFields = %v, wantUnknown %v", got.unknownFields, tc.wantUnknown)
+			}
+		})
+	}
+}
+
+func TestServeHTTP_GraphQL_RootLookupNestedFragmentProbes(t *testing.T) {
+	tests := []struct {
+		name   string
+		query  string
+		scopes map[string]string
+	}{
+		{"Bot then named Issue, metadata:read", `query { node(id: "a") { ... on Bot { ...F } } } fragment F on Issue { body }`, map[string]string{"metadata": "read"}},
+		{"Issue then PullRequest, issues:read", `{ node(id: "a") { ... on Issue { ... on PullRequest { body } } } }`, map[string]string{"issues": "read"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h, tok := newScopeOnlyHandler(t, tc.scopes)
+			rr := postGraphQL(t, h, tok, tc.query)
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("got %d, want 403; body: %s", rr.Code, rr.Body.String())
+			}
+		})
 	}
 }

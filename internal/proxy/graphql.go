@@ -791,7 +791,8 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int
 // every other selection must sit inside a fragment whose type condition is
 // in typeConditionScopeRequirements. Fragments without a type condition
 // (e.g. `... @include(if: $x) { ... }`) are transparent. The fragment body
-// is then walked as an ordinary nested selection. A result position with no
+// is then walked by walkGatedBody, which also gates fragments nested
+// directly in it. A result position with no
 // mapped fragment is recorded as unknown under the lookup name.
 func (a *gqlAnalyzer) walkLookupResult(lookup string, set ast.SelectionSet, depth int) {
 	if !a.walkLookupSelections(lookup, set, depth) {
@@ -823,7 +824,7 @@ func (a *gqlAnalyzer) walkLookupSelections(lookup string, set ast.SelectionSet, 
 			if a.gateTypeCondition(lookup, s.TypeCondition) {
 				found = true
 			}
-			a.walkSelectionSet(s.SelectionSet, false, false, depth+1)
+			a.walkGatedBody(lookup, s.TypeCondition, s.SelectionSet, depth+1)
 		case *ast.FragmentSpread:
 			if a.fragmentStack[s.Name] {
 				continue
@@ -837,11 +838,55 @@ func (a *gqlAnalyzer) walkLookupSelections(lookup string, set ast.SelectionSet, 
 				found = true
 			}
 			a.fragmentStack[s.Name] = true
-			a.walkSelectionSet(frag.SelectionSet, false, false, depth+1)
+			a.walkGatedBody(lookup, frag.TypeCondition, frag.SelectionSet, depth+1)
 			delete(a.fragmentStack, s.Name)
 		}
 	}
 	return found
+}
+
+// walkGatedBody walks the body of a root-lookup fragment whose type
+// condition is enclosing. Fields are walked as ordinary nested selections.
+// A fragment directly in the body (inline or named) with a type condition
+// that differs from enclosing is gated through typeConditionScopeRequirements
+// as well, so `... on Bot { ...F }` with `fragment F on Issue` needs
+// issues:read. Interfaces and unmapped types are unknown. GitHub rejects
+// such non-overlapping spreads today, but the analyzer does not rely on it.
+func (a *gqlAnalyzer) walkGatedBody(lookup, enclosing string, set ast.SelectionSet, depth int) {
+	if depth > maxAnalysisDepth {
+		a.tooDeep = true
+		return
+	}
+	for _, sel := range set {
+		switch s := sel.(type) {
+		case *ast.Field:
+			a.walkField(s, false, false, depth)
+		case *ast.InlineFragment:
+			inner := enclosing
+			if s.TypeCondition != "" && s.TypeCondition != enclosing {
+				a.gateTypeCondition(lookup, s.TypeCondition)
+				inner = s.TypeCondition
+			}
+			a.walkGatedBody(lookup, inner, s.SelectionSet, depth+1)
+		case *ast.FragmentSpread:
+			if a.fragmentStack[s.Name] {
+				continue
+			}
+			frag, ok := a.fragments[s.Name]
+			if !ok {
+				a.seenUnknown["fragment:"+s.Name] = struct{}{}
+				continue
+			}
+			inner := enclosing
+			if frag.TypeCondition != enclosing {
+				a.gateTypeCondition(lookup, frag.TypeCondition)
+				inner = frag.TypeCondition
+			}
+			a.fragmentStack[s.Name] = true
+			a.walkGatedBody(lookup, inner, frag.SelectionSet, depth+1)
+			delete(a.fragmentStack, s.Name)
+		}
+	}
 }
 
 // gateTypeCondition records the scope for a mapped type condition, or an
