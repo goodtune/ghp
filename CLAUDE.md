@@ -107,9 +107,9 @@ The proxy decision pipeline is broken into individually timed stages so that the
 | `graphql_analysis` | Parsing a `/graphql` request body and statically computing its scope and repository requirements (GraphQL handler, scoped tokens only; open-scoped tokens skip analysis and record no sample) |
 | `cache_lookup` | Git cache middleware database lookup of the per-repository cache record, deciding whether a git request is served from the local mirror (labeled `token_type="unknown"`; runs before token resolution) |
 
-Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tokens, or `unknown` for pre-resolution stages).
+Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tokens, or `unknown` for pre-resolution stages), `vhost` (`api`, `web` for `github.com`, `codeload`, `management`, `copilot`, or `unknown` when there is no inbound request, e.g. background control-plane calls).
 
-Stage names are shared across vhosts: the passthrough (`github.com`, `codeload.github.com`) handlers and the API-host handlers emit the same `stage` values, so the histogram cannot separate them. A `vhost` label is a tracked follow-up; until then, use `ghp_proxy_request_*` (`backend` label) to split traffic by host.
+The vhost is set once on the request context by `newHostDispatch` (`metrics.WithVhost`); `ObserveDecision(ctx, stage, tokenType, dur)` reads it. Always pass the inbound request context (or an outbound request built from it) so the sample lands under the right vhost. Adding the label (#330) breaks queries that match an exact label set; `sum by (...)` queries are unaffected.
 
 Never record a hard-coded zero duration. If a stage does not run on a code path, skip the sample; otherwise time it with `time.Since`.
 

@@ -59,7 +59,7 @@ Grafana or with recording rules if needed.
 |--------|------|-------------|
 | `ghp_proxy_request_duration_seconds` | Histogram | Duration of authenticated requests processed by the proxy (API and git smart-HTTP) (labels: `backend`, `method`, `status`, `token_type`, `type`, `user`, `app`) |
 | `ghp_proxy_request_total` | Counter | Total authenticated requests processed by the proxy (API and git smart-HTTP) (labels: `backend`, `method`, `status`, `token_type`, `type`, `user`, `app`) |
-| `ghp_proxy_decision_duration_seconds` | Histogram | Time spent in each stage of the proxy decision pipeline (labels: `stage`, `token_type`) |
+| `ghp_proxy_decision_duration_seconds` | Histogram | Time spent in each stage of the proxy decision pipeline (labels: `stage`, `token_type`, `vhost`) |
 
 The `type` label distinguishes API traffic from git smart-HTTP traffic (e.g.
 `type="git"` for git operations proxied via the `github.com` backend). The
@@ -84,9 +84,35 @@ The stages are:
 | `forward_proxy_selection` | Selecting the upstream forward proxy for the outbound request |
 | `enterprise_exception` | Evaluating enterprise access restriction exceptions |
 
-Passthrough (`github.com`, `codeload.github.com`) and API-host requests emit
-the same stage names. The histogram cannot separate them by host. Use the
-`backend` label on `ghp_proxy_request_*` to split traffic by host.
+All hosts emit the same stage names. The `vhost` label tells you which host
+received the request:
+
+| `vhost` | Host |
+|---------|------|
+| `api` | `api.github.com` |
+| `web` | `github.com` |
+| `codeload` | `codeload.github.com` |
+| `management` | The management host (web UI and its `/api/v3/` and `/api/graphql` paths) |
+| `copilot` | `*.githubcopilot.com` (only `forward_proxy_selection` samples) |
+| `unknown` | No inbound request, for example a background control-plane call |
+
+Outbound requests keep the vhost of the inbound request. For example, a
+`forward_proxy_selection` sample for a `git clone` has `vhost="web"`.
+
+Example: 95th percentile of `scope_enforcement` per host:
+
+```promql
+histogram_quantile(0.95,
+  sum by (le, vhost) (rate(ghp_proxy_decision_duration_seconds_bucket{stage="scope_enforcement"}[5m])))
+```
+
+!!! warning "Label change"
+    Releases after 0.24.0 add the `vhost` label. Queries that aggregate with
+    `sum by (...)` are unaffected. Queries, alerts or recording rules that
+    match an exact label set must add `vhost`.
+
+The `vhost` label on `ghp_passthrough_scope_denied_total` uses host names
+(`github.com`, `codeload.github.com`), not these short values.
 
 A stage that does not run on a code path records no sample. The histogram
 never contains hard-coded zero durations.

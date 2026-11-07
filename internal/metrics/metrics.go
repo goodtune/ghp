@@ -11,6 +11,7 @@
 package metrics
 
 import (
+	"context"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -243,11 +244,15 @@ var (
 	//   cache_lookup          – git cache middleware database lookup of the per-repository cache record (token_type is always "unknown")
 	//   forward_proxy_selection – choosing the upstream forward proxy for the outbound request
 	//   enterprise_exception  – evaluating enterprise access restriction exceptions
+	//
+	// The "vhost" label names the virtual host that received the request (see
+	// the Vhost* constants): api, web, codeload, management, copilot, or
+	// unknown when no inbound request exists (background control-plane calls).
 	ProxyDecisionDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ghp_proxy_decision_duration_seconds",
 		Help:    "Duration of each stage in the proxy decision pipeline.",
 		Buckets: decisionBuckets,
-	}, []string{"stage", "token_type"})
+	}, []string{"stage", "token_type", "vhost"})
 
 	// --- Git Cache Metrics ---
 
@@ -468,14 +473,47 @@ const (
 	StageForwardProxySelection = "forward_proxy_selection"
 )
 
+// Vhost label values for ghp_proxy_decision_duration_seconds. The set is
+// closed: pass only these constants to WithVhost.
+const (
+	VhostAPI        = "api"
+	VhostWeb        = "web"
+	VhostCodeload   = "codeload"
+	VhostManagement = "management"
+	VhostCopilot    = "copilot"
+	VhostUnknown    = "unknown"
+)
+
+type vhostKey struct{}
+
+// WithVhost returns a copy of ctx that carries the vhost label value. The host
+// dispatcher calls it once per request; outbound requests built from the
+// inbound context inherit it.
+func WithVhost(ctx context.Context, vhost string) context.Context {
+	return context.WithValue(ctx, vhostKey{}, vhost)
+}
+
+// VhostFromContext returns the vhost label value stored by WithVhost, or
+// VhostUnknown when ctx is nil or carries none.
+func VhostFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return VhostUnknown
+	}
+	if v, ok := ctx.Value(vhostKey{}).(string); ok && v != "" {
+		return v
+	}
+	return VhostUnknown
+}
+
 // ObserveDecision records the duration of a single stage in the proxy
-// decision pipeline. tokenType should be "proxy", "agent", or "" for stages
-// that run before the token type is known (normalised to "unknown").
-func ObserveDecision(stage, tokenType string, dur time.Duration) {
+// decision pipeline. The vhost label is read from ctx (see WithVhost).
+// tokenType should be "proxy", "agent", or "" for stages that run before the
+// token type is known (normalised to "unknown").
+func ObserveDecision(ctx context.Context, stage, tokenType string, dur time.Duration) {
 	if tokenType == "" {
 		tokenType = "unknown"
 	}
-	ProxyDecisionDuration.WithLabelValues(stage, tokenType).Observe(dur.Seconds())
+	ProxyDecisionDuration.WithLabelValues(stage, tokenType, VhostFromContext(ctx)).Observe(dur.Seconds())
 }
 
 // ObserveProxyRequest records proxy-level request metrics for a completed request.

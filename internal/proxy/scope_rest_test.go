@@ -447,11 +447,12 @@ func TestDecideREST_ActionsAdminRules(t *testing.T) {
 	}
 }
 
-// The unsafe-path denial must record a real scope_enforcement duration.
+// The unsafe-path denial must record a real scope_enforcement duration in the
+// series of the vhost carried on the request context (#330).
 func TestServeHTTP_UnsafePathRecordsScopeEnforcement(t *testing.T) {
 	read := func() (uint64, float64) {
 		m := &dto.Metric{}
-		obs := metrics.ProxyDecisionDuration.WithLabelValues(metrics.StageScopeEnforcement, "proxy")
+		obs := metrics.ProxyDecisionDuration.WithLabelValues(metrics.StageScopeEnforcement, "proxy", metrics.VhostAPI)
 		if err := obs.(prometheus.Metric).Write(m); err != nil {
 			t.Fatal(err)
 		}
@@ -461,6 +462,7 @@ func TestServeHTTP_UnsafePathRecordsScopeEnforcement(t *testing.T) {
 	beforeCount, beforeSum := read()
 	req := httptest.NewRequest("GET", "http://api.github.com/", nil)
 	req.URL.Path = "/repos/owner/a/../../owner/b/contents"
+	req = req.WithContext(metrics.WithVhost(req.Context(), metrics.VhostAPI))
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)

@@ -468,14 +468,14 @@ func (fr *ForwardProxyRouter) ProxyFunc() func(*http.Request) (*url.URL, error) 
 		// host:port targets (SSRF/port-scan). Unauthenticated requests fall
 		// through to normal ruleset selection.
 		if info.ClientProxy != nil && info.TokenID != "" {
-			metrics.ObserveDecision(metrics.StageForwardProxySelection, info.TokenType, time.Since(start))
+			metrics.ObserveDecision(req.Context(), metrics.StageForwardProxySelection, info.TokenType, time.Since(start))
 			metrics.ForwardProxySelectTotal.WithLabelValues("", ForwardProxyLayerHeader).Inc()
 			metrics.ForwardProxyClientSpecifiedTotal.WithLabelValues(info.ClientProxy.Scheme, info.TokenType).Inc()
 			return info.ClientProxy, nil
 		}
 		selectStart := time.Now()
 		u, ruleset, layer := fr.Select(info.ClientIP, info.TokenID, info.AppID)
-		metrics.ObserveDecision(metrics.StageForwardProxySelection, info.TokenType, time.Since(selectStart))
+		metrics.ObserveDecision(req.Context(), metrics.StageForwardProxySelection, info.TokenType, time.Since(selectStart))
 		metrics.ForwardProxySelectTotal.WithLabelValues(ruleset, layer).Inc()
 		if u == nil {
 			return fr.ambient(req)
@@ -489,7 +489,7 @@ func (fr *ForwardProxyRouter) ProxyFunc() func(*http.Request) (*url.URL, error) 
 func (fr *ForwardProxyRouter) controlProxy(req *http.Request) (*url.URL, error) {
 	start := time.Now()
 	u, ruleset, layer := fr.SelectControl()
-	metrics.ObserveDecision(metrics.StageForwardProxySelection, "", time.Since(start))
+	metrics.ObserveDecision(req.Context(), metrics.StageForwardProxySelection, "", time.Since(start))
 	metrics.ForwardProxySelectTotal.WithLabelValues(ruleset, layer).Inc()
 	if u == nil {
 		return fr.ambient(req)
@@ -510,7 +510,7 @@ func (fr *ForwardProxyRouter) ControlProxyFunc() func(*http.Request) (*url.URL, 
 // operator's mirror). Those hosts are typically internal, so the default is
 // DIRECT — no proxy at all, not even the ambient environment. A control rule
 // with include_non_github=true opts them into the control ruleset instead.
-func (fr *ForwardProxyRouter) nonGitHubControlProxy(_ *http.Request) (*url.URL, error) {
+func (fr *ForwardProxyRouter) nonGitHubControlProxy(req *http.Request) (*url.URL, error) {
 	fr.mu.RLock()
 	table := fr.table
 	fr.mu.RUnlock()
@@ -518,11 +518,11 @@ func (fr *ForwardProxyRouter) nonGitHubControlProxy(_ *http.Request) (*url.URL, 
 	start := time.Now()
 	if table.control != nil && table.controlNonGitHub {
 		u := table.control.pick("")
-		metrics.ObserveDecision(metrics.StageForwardProxySelection, "", time.Since(start))
+		metrics.ObserveDecision(req.Context(), metrics.StageForwardProxySelection, "", time.Since(start))
 		metrics.ForwardProxySelectTotal.WithLabelValues(table.control.name, ForwardProxyLayerControl).Inc()
 		return u, nil
 	}
-	metrics.ObserveDecision(metrics.StageForwardProxySelection, "", time.Since(start))
+	metrics.ObserveDecision(req.Context(), metrics.StageForwardProxySelection, "", time.Since(start))
 	metrics.ForwardProxySelectTotal.WithLabelValues("", ForwardProxyLayerDirect).Inc()
 	return nil, nil
 }
