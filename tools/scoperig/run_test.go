@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/goodtune/ghp/tools/scoperig/report"
+	"github.com/goodtune/ghp/tools/scoperig/scenario"
 )
 
 const (
@@ -1076,5 +1077,72 @@ func TestLoadWithFlags_Precedence(t *testing.T) {
 	}
 	if _, err := loadWithFlags(getenv, &cliFlags{config: filepath.Join(t.TempDir(), "missing.yaml")}); err == nil {
 		t.Error("want error for a missing explicit config")
+	}
+}
+
+// A scenario that hardcodes the placeholder W repository passes static
+// validation but targets a non-W repository at run time. runRig re-validates
+// with the configured Vars and stops before any request (#304).
+func TestRun_RevalidatesWithConfiguredVars(t *testing.T) {
+	f := newFakeGHP(t)
+	root, cfg := writeTree(t, f.host(), testScenarios+`
+- id: REPO-C05.literal-placeholder-w
+  claim: REPO-C05
+  profile: open
+  kind: rest
+  method: POST
+  path: /repos/w-owner/w-repo/issues
+  body: {title: x}
+  expect: {status: 403}
+`)
+	env := fakeEnv(f, root)
+	if res := runCLI(t, env, fakeDeps(f, nil), "validate", "--config", cfg); res.code != 0 {
+		t.Fatalf("static validate exit = %d, want 0 (placeholder Vars)\n%s", res.code, res.stdout)
+	}
+	res := runCLI(t, env, fakeDeps(f, nil), "run", "--config", cfg)
+	if res.code != 3 {
+		t.Fatalf("run exit = %d, want 3\nstderr:\n%s", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "configured host and fixtures") || !strings.Contains(res.stderr, "literal-placeholder-w") {
+		t.Errorf("stderr = %s", res.stderr)
+	}
+	f.mu.Lock()
+	n := f.requests
+	f.mu.Unlock()
+	if n != 0 {
+		t.Errorf("%d request(s) reached the instance before re-validation", n)
+	}
+}
+
+func TestConfigVars(t *testing.T) {
+	c := &Config{RepoA: "o/a", RepoB: "o/b", RepoW: "o/w"}
+	c.Instance.Host = "proxy.invalid"
+	c.Instance.MaxDuration = 5 * time.Hour
+	v := configVars(c)
+	if v.Host != "proxy.invalid" || v.Instance.Host != "proxy.invalid" {
+		t.Errorf("host = %q / %q", v.Host, v.Instance.Host)
+	}
+	if v.RepoA.String() != "o/a" || v.RepoB.String() != "o/b" || v.RepoW.String() != "o/w" {
+		t.Errorf("repos = %s %s %s", v.RepoA, v.RepoB, v.RepoW)
+	}
+	if v.Instance.MaxDuration != 5*time.Hour || v.Instance.DefaultDuration == 0 {
+		t.Errorf("durations = %v %v", v.Instance.DefaultDuration, v.Instance.MaxDuration)
+	}
+	if v.RepoW.ID == 0 || v.Login == "" {
+		t.Error("discovery-only values should stay placeholders")
+	}
+}
+
+// The committed rig tree must also validate with configured (non-placeholder)
+// Vars, or every live run would stop at re-validation.
+func TestRigTree_ValidatesWithConfiguredVars(t *testing.T) {
+	tree, err := scenario.Load("../../rig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Config{RepoA: "fixture-owner/ghp-scoperig-a", RepoB: "fixture-owner/ghp-scoperig-b", RepoW: "fixture-owner/ghp-scoperig-w"}
+	c.Instance.Host = "proxy.invalid"
+	for _, e := range scenario.Validate(tree, configVars(c)) {
+		t.Error(e)
 	}
 }

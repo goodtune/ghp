@@ -28,6 +28,12 @@ var validVhosts = map[string]bool{"github.com": true}
 // maxProfileDuration bounds every profile so leaked tokens expire quickly.
 const maxProfileDuration = 2 * time.Hour
 
+// PlaceholderHost is the instance host in PlaceholderVars. A scenario must
+// reach the instance through {{.Host}}; a literal copy of this host passes
+// static validation but becomes a foreign host at run time, so the gh
+// checks reject it outright.
+const PlaceholderHost = "ghp.example"
+
 // PlaceholderVars returns Vars filled with fixed fake values. Validate uses
 // it when called with nil Vars, so static validation never needs live
 // fixtures. The IDs and node IDs are deliberately distinctive so that a
@@ -36,12 +42,12 @@ func PlaceholderVars() *Vars {
 	f := FixtureVals{IssueNumber: 1, PRNumber: 2, ReleaseID: 3, Branch: "branch", Label: "label",
 		PRTitle: "pr", IssueTitle: "issue", ReleaseTag: "v0"}
 	return &Vars{
-		RunID: "run", Host: "ghp.example", Login: "login",
+		RunID: "run", Host: PlaceholderHost, Login: "login",
 		RepoA:   RepoRef{Owner: "a-owner", Name: "a-repo", ID: 900000101, NodeID: "R_placeholderA"},
 		RepoB:   RepoRef{Owner: "b-owner", Name: "b-repo", ID: 900000202, NodeID: "R_placeholderB"},
 		RepoW:   RepoRef{Owner: "w-owner", Name: "w-repo", ID: 900000303, NodeID: "R_placeholderW"},
 		Fixture: map[string]FixtureVals{"A": f, "B": f, "W": f},
-		Instance: InstanceVals{Host: "ghp.example",
+		Instance: InstanceVals{Host: PlaceholderHost,
 			DefaultDuration: time.Hour, MaxDuration: 168 * time.Hour},
 		Step: map[string]map[string]string{},
 	}

@@ -98,7 +98,9 @@ Validate offline first. This needs no network and no environment:
 make scoperig-validate
 ```
 
-Validation rejects, among other things, any non-GET request whose path does not target `/repos/<W>/...` (the exceptions are the GAP-A1 probe and `token_api` scenarios, which must target `/api/tokens`), and paths with `..`, dot segments or encoded dots.
+Validation rejects, among other things, any non-GET request whose path does not target `/repos/<W>/...` (the exceptions are the GAP-A1 probe and `token_api` scenarios, which must target `/api/tokens`), and paths with `..`, dot segments or encoded dots. A `gh` argument that contains the literal placeholder host `ghp.example` is rejected; use `{{.Host}}`.
+
+Offline validation uses placeholder values for the host and the fixture repositories. `run` validates the tree again with the configured host and fixture repositories after it loads the config and before it sends any request, and exits 3 if that fails. So a scenario that hardcodes a placeholder value (for example the placeholder W repository) cannot pass offline and then reach a different repository at run time.
 
 Live run:
 

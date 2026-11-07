@@ -275,6 +275,24 @@ func TestValidate_GHPositionalFixtureArgs(t *testing.T) {
 	}
 }
 
+// A literal placeholder host passes the host check against PlaceholderVars
+// but is a foreign host at run time; it is rejected outright (#304).
+func TestValidate_GHPlaceholderHostLiteral(t *testing.T) {
+	for _, s := range []*Scenario{
+		ghScenario("PH1", "", "repo", "view", PlaceholderHost+"/{{.RepoA}}"),
+		ghScenario("PH2", "", "pr", "list", "-R", "GHP.Example/{{.RepoA}}"),
+		ghScenario("PH3", "", "issue", "create", "--repo", PlaceholderHost+"/{{.RepoW}}", "--title", "x"),
+		ghScenario("PH4", "", "api", "https://"+PlaceholderHost+"/api/v3/repos/{{.RepoA}}"),
+		ghScenario("PH5", "W", "pr", "comment", "https://"+PlaceholderHost+"/{{.RepoW}}/pull/1", "--body", "x"),
+	} {
+		t.Run(s.ID, func(t *testing.T) {
+			requireErr(t, Validate(withScenarios(s), nil), s.ID, "placeholder host")
+		})
+	}
+	// The templated host is still accepted.
+	requireNoErr(t, Validate(withScenarios(ghScenario("PH-OK", "", "repo", "view", "{{.Host}}/{{.RepoA}}")), nil))
+}
+
 func TestValidate_GraphQLMutationTargets(t *testing.T) {
 	mutVar := `mutation($id: ID!) { createIssue(input:{repositoryId:$id, title:"x"}) { issue { number } } }`
 	cases := []struct {

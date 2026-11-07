@@ -172,6 +172,32 @@ func selectScenarios(t *scenario.Tree, only string, skipKnown bool) ([]*scenario
 	return out, nil
 }
 
+// configVars is PlaceholderVars with the configured instance host and
+// fixture repositories: the Vars that config load makes known before any
+// request. Values that only discovery provides (login, repository ids,
+// fixture numbers) stay placeholders.
+func configVars(c *Config) *scenario.Vars {
+	v := scenario.PlaceholderVars()
+	if c.Instance.Host != "" {
+		v.Host, v.Instance.Host = c.Instance.Host, c.Instance.Host
+	}
+	if c.Instance.DefaultDuration > 0 {
+		v.Instance.DefaultDuration = c.Instance.DefaultDuration
+	}
+	if c.Instance.MaxDuration > 0 {
+		v.Instance.MaxDuration = c.Instance.MaxDuration
+	}
+	for _, r := range []struct {
+		spec string
+		ref  *scenario.RepoRef
+	}{{c.RepoA, &v.RepoA}, {c.RepoB, &v.RepoB}, {c.RepoW, &v.RepoW}} {
+		if rr := repoRef(r.spec); rr.Owner != "" && rr.Name != "" {
+			r.ref.Owner, r.ref.Name = rr.Owner, rr.Name
+		}
+	}
+	return v
+}
+
 func repoRef(s string) scenario.RepoRef {
 	o, n, _ := strings.Cut(s, "/")
 	return scenario.RepoRef{Owner: o, Name: n}
@@ -195,6 +221,12 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	tree, verrs := loadTree(c.Root)
 	if len(verrs) > 0 {
 		return nil, &exitError{code: 3, err: fmt.Errorf("validation failed: %w", errors.Join(verrs...))}
+	}
+	// Validate again with the real host and fixture repositories, before
+	// any request: static validation uses PlaceholderVars, so a rule that
+	// depends on Vars could pass there and differ at run time.
+	if verrs := scenario.Validate(tree, configVars(c)); len(verrs) > 0 {
+		return nil, &exitError{code: 3, err: fmt.Errorf("validation with the configured host and fixtures failed: %w", errors.Join(verrs...))}
 	}
 	selected, err := selectScenarios(tree, c.Only, c.SkipKnown)
 	if err != nil {
