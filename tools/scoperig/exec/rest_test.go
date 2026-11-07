@@ -297,3 +297,15 @@ func TestREST_StepExpectIsExpanded(t *testing.T) {
 		t.Fatalf("err = %v, want the templated step expect to hold", err)
 	}
 }
+
+// Cleanup expectations are expanded before matching.
+func TestREST_CleanupExpectIsExpanded(t *testing.T) {
+	env, _, _ := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"login":"login"}`)
+	}))
+	s := &scenario.Scenario{ID: "x", Kind: "rest", Cleanup: []scenario.Request{{Method: "PATCH", Path: "/repos/w/w/x",
+		Expect: &scenario.Expect{JSON: map[string]string{"$.login": "{{.Login}}"}}}}}
+	if res := RunCleanup(context.Background(), s, env); len(res) != 0 {
+		t.Fatalf("residue = %v", res)
+	}
+}

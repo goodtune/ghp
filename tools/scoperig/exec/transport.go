@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/goodtune/ghp/tools/scoperig/expect"
 	"github.com/goodtune/ghp/tools/scoperig/ghdebug"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
 )
@@ -94,17 +95,36 @@ func ghTransportFailure(stderr string) string {
 }
 
 // ghExchangesIdempotent reports whether every request gh logged can be
-// re-sent safely: GET/HEAD, or a GraphQL document with only query
-// operations. A POST whose body could not be parsed as such is not.
+// re-sent safely. It fails closed: false for no exchanges, any interleaved
+// exchange (its fields cannot be trusted), any exchange with more than one
+// request line, any GraphQL body that is not a POST of a query-only
+// document, and any other method than GET/HEAD/OPTIONS.
 func ghExchangesIdempotent(ex []ghdebug.Exchange) bool {
+	if len(ex) == 0 {
+		return false
+	}
 	for _, x := range ex {
-		switch strings.ToUpper(x.Method) {
-		case "GET", "HEAD", "OPTIONS":
+		if x.Interleaved || x.RequestLines > 1 {
+			return false
+		}
+		m := strings.ToUpper(x.Method)
+		if x.GraphQL != nil {
+			if m != "POST" || !scenario.GraphQLReadOnly(x.GraphQL.Query) {
+				return false
+			}
 			continue
 		}
-		if x.GraphQL == nil || !scenario.GraphQLReadOnly(x.GraphQL.Query) {
+		switch m {
+		case "GET", "HEAD", "OPTIONS":
+		default:
 			return false
 		}
 	}
 	return true
+}
+
+// ghRetryable reports whether a gh run may be repeated: its stderr capture
+// is complete and every logged request is idempotent.
+func ghRetryable(obs *expect.Observation) bool {
+	return !obs.GHStderrTruncated && ghExchangesIdempotent(obs.Exchanges)
 }

@@ -33,6 +33,9 @@ type Exchange struct {
 	// Interleaved is set when gh's debug output for this exchange overlaps
 	// another concurrent request, so its fields cannot be trusted.
 	Interleaved bool
+	// RequestLines counts "> METHOD target HTTP/x" lines logged for this
+	// exchange. More than one means two requests merged into one exchange.
+	RequestLines int
 }
 
 // GraphQLRequest is the query, variables and operation name of a GraphQL call.
@@ -165,7 +168,12 @@ func Parse(r io.Reader) ([]Exchange, error) {
 	return out, nil
 }
 
+var requestLineRE = regexp.MustCompile(`^[A-Z]+ \S+ HTTP/\d`)
+
 func (b *builder) addRequestLine(s string) {
+	if requestLineRE.MatchString(s) {
+		b.ex.RequestLines++
+	}
 	if !b.reqLine {
 		b.reqLine = true
 		if f := strings.Fields(s); len(f) >= 2 && !strings.Contains(f[0], ":") {

@@ -116,7 +116,7 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 		if line == "" {
 			return obs, nil
 		}
-		if !ghExchangesIdempotent(obs.Exchanges) {
+		if !ghRetryable(obs) {
 			return nil, fmt.Errorf("scenario %s: gh transport error during a write (not retried: the write may have been applied): %s", s.ID, line)
 		}
 		if attempt >= TransportRetries {
@@ -187,6 +187,9 @@ func runGHOnce(ctx context.Context, s *scenario.Scenario, args []string, host, r
 		Stdout:    string(redact.Bytes(stdout.buf.Bytes())),
 		Stderr:    capString(redact.String(stripDebug(stderr.buf.String())), MaxBody),
 		Exchanges: exchanges,
+		// Exchanges past the cap are missing, so the run cannot be shown
+		// to be idempotent.
+		GHStderrTruncated: stderr.truncated,
 	}
 	if d := ghdebug.FirstDenied(exchanges); d != nil {
 		obs.Status = d.Status
@@ -275,17 +278,21 @@ func capString(s string, n int) string {
 
 // capWriter keeps the first max bytes and discards the rest.
 type capWriter struct {
-	buf bytes.Buffer
-	max int
+	buf       bytes.Buffer
+	max       int
+	truncated bool
 }
 
 func (w *capWriter) Write(p []byte) (int, error) {
-	if room := w.max - w.buf.Len(); room > 0 {
-		if len(p) > room {
-			w.buf.Write(p[:room])
-		} else {
-			w.buf.Write(p)
-		}
+	room := w.max - w.buf.Len()
+	switch {
+	case len(p) <= room:
+		w.buf.Write(p)
+	case room > 0:
+		w.buf.Write(p[:room])
+		w.truncated = true
+	case len(p) > 0:
+		w.truncated = true
 	}
 	return len(p), nil
 }

@@ -244,5 +244,10 @@ func CheckExpands(s *Scenario, v *Vars) error {
 			return err
 		}
 	}
+	for i := range s.Cleanup {
+		if err := check(fmt.Sprintf("cleanup[%d] expect", i), s.Cleanup[i].Expect); err != nil {
+			return err
+		}
+	}
 	return nil
 }

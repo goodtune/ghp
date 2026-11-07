@@ -303,7 +303,12 @@ func RunCleanup(ctx context.Context, s *scenario.Scenario, env *RunEnv) (residue
 			residue = append(residue, redact.String(where+": "+err.Error()))
 		case obs.Status == http.StatusNotFound || (obs.Status >= 200 && obs.Status < 300):
 			if r.Expect != nil {
-				if errs := expect.Match(r.Expect, obs); len(errs) > 0 {
+				want, xerr := scenario.ExpandExpect(r.Expect, scenario.CaptureVars(s, env.Vars))
+				if xerr != nil {
+					residue = append(residue, redact.String(where+": expand expect: "+xerr.Error()))
+					continue
+				}
+				if errs := expect.Match(want, obs); len(errs) > 0 {
 					residue = append(residue, redact.String(where+": "+errors.Join(errs...).Error()))
 				}
 			}

@@ -1,6 +1,11 @@
 // Package redact removes GitHub and GHP token values from text, bodies and
 // headers. Everything in the scope regression rig that could print a token
 // must pass its output through this package.
+//
+// Known limitations (not detected or masked today):
+//   - a percent-encoded token prefix (for example "ghx%5F...");
+//   - a bare base64 credential with no "Authorization" label next to it;
+//   - a token whose tail is JSON \uXXXX-escaped (for example "ghx_\u0041...").
 package redact
 
 import (

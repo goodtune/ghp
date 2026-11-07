@@ -76,6 +76,8 @@ type Observation struct {
 	// observation (zero when not recorded). expires_within is relative to
 	// them.
 	RequestedAt, RespondedAt time.Time
+	// GHStderrTruncated is set when gh's stderr exceeded the capture cap.
+	GHStderrTruncated bool
 }
 
 // Match returns nil if every set field of e holds, else one error per

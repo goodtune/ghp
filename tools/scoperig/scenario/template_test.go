@@ -170,3 +170,12 @@ func TestExpandExpect_ExpiresWithin(t *testing.T) {
 		t.Error("input mutated")
 	}
 }
+
+func TestCheckExpands_Cleanup(t *testing.T) {
+	s := &Scenario{ID: "x", Kind: "rest", Method: "GET", Path: "/u", Expect: &Expect{Status: 200},
+		Cleanup: []Request{{Method: "DELETE", Path: "/repos/w/w/x", Expect: &Expect{BodyContains: []string{"{{.Nope}}"}}}}}
+	s.Normalise()
+	if err := CheckExpands(s, &Vars{}); err == nil || !strings.Contains(err.Error(), "cleanup[0]") {
+		t.Errorf("err = %v, want a cleanup[0] error", err)
+	}
+}
