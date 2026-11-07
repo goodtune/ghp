@@ -112,7 +112,7 @@ func TestRender_Sections(t *testing.T) {
 	if changed < 0 || table < 0 || changed > table {
 		t.Errorf("changed section must come before the table:\n%s", out)
 	}
-	for _, s := range []string{"remove known_issue and observed: from C-FIXED.a", "coverage gaps (1): C-NONE", "manual: C-MAN", "untestable: C-NEV", "confidence: 2/(9-2) = 28.6%"} {
+	for _, s := range []string{"remove known_issue and observed: from C-FIXED.a", "coverage gaps (1): C-NONE", "manual: C-MAN", "untestable: C-NEV", "confidence: 2/(10-3) = 28.6%", "coverage: 8/10 = 80.0%"} {
 		if !strings.Contains(out, s) {
 			t.Errorf("missing %q", s)
 		}

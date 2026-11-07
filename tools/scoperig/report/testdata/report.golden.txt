@@ -17,8 +17,9 @@ C-PASS    C-PASS.a    PASS         403 Token is not scoped to o/b
 C-PASS    C-PASS.b    PASS         403 Token is not scoped to o/b
 GAP-A1    GAP-A1.a    KNOWN        https://github.com/goodtune/ghp/issues/290
 
-claims: 2 PASS, 3 FAIL (of which 1 ERROR), 2 KNOWN, 2 GAP   manual: C-MAN   untestable: C-NEV
-confidence: 2/(9-2) = 28.6%   (PASS / (base - KNOWN))
+claims: 2 PASS, 3 FAIL (of which 1 ERROR), 3 KNOWN, 2 GAP   manual: C-MAN   untestable: C-NEV
+confidence: 2/(10-3) = 28.6%   (PASS / (base - KNOWN))
+coverage: 8/10 = 80.0%   (base claims with a runnable scenario / base)
 coverage gaps (1): C-NONE
 tokens: 11 created, 11 revoked, 0 leftover
 
