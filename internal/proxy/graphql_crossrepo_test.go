@@ -46,6 +46,9 @@ func TestGraphQLVerdict_CrossRepoSubtrees(t *testing.T) {
 		{"subIssues body denied", repoA, `{` + pin + `{issue(number:1){subIssues(first:1){nodes{body}}}}}`, reasonCrossRepo, "subIssues.body", ""},
 		{"blockedBy body denied", repoA, `{` + pin + `{issue(number:1){blockedBy(first:1){nodes{body}}}}}`, reasonCrossRepo, "blockedBy.body", ""},
 		{"blocking body denied", repoA, `{` + pin + `{issue(number:1){blocking(first:1){nodes{body}}}}}`, reasonCrossRepo, "blocking.body", ""},
+		{"closedByPullRequestsReferences metadata allowed", repoA, `{` + pin + `{issue(number:1){closedByPullRequestsReferences(first:1){nodes{number title state repository{nameWithOwner}}}}}}`, reasonAllow, "", "o/r"},
+		{"closedByPullRequestsReferences body denied", repoA, `{` + pin + `{issue(number:1){closedByPullRequestsReferences(first:1){nodes{body repository{nameWithOwner}}}}}}`, reasonCrossRepo, "closedByPullRequestsReferences.body", ""},
+		{"perm-only closedByPullRequestsReferences body allowed", permRO, `{` + pin + `{issue(number:1){closedByPullRequestsReferences(first:1){nodes{body}}}}}`, reasonAllow, "", "o/r"},
 		{"perm-only headRepository issues still scope-checked", permRO, `{` + pin + `{pullRequest(number:1){headRepository{issues(first:1){nodes{body}}}}}}`, reasonAllow, "", "o/r"},
 
 		// #340 parent-aware issues/pullRequests.
@@ -154,6 +157,8 @@ func TestServeHTTP_GraphQL_RepoScoped_CrossRepoSubtrees(t *testing.T) {
 		{"headRepository nameWithOwner", `{ repository(owner: "goodtune", name: "ghp") { pullRequest(number: 1) { headRepository { nameWithOwner } } } }`, http.StatusOK, ""},
 		{"headRepository issues", `{ repository(owner: "goodtune", name: "ghp") { pullRequest(number: 1) { headRepository { issues(first: 1) { nodes { body } } } } } }`, http.StatusForbidden, "headRepository.issues"},
 		{"Repository.parent issues", `{ repository(owner: "goodtune", name: "ghp") { parent { issues(first: 1) { nodes { body } } } } }`, http.StatusForbidden, "parent.issues"},
+		{"closedByPullRequestsReferences body", `{ repository(owner: "goodtune", name: "ghp") { issue(number: 1) { closedByPullRequestsReferences(first: 1) { nodes { body } } } } }`, http.StatusForbidden, "closedByPullRequestsReferences.body"},
+		{"closedByPullRequestsReferences metadata", `{ repository(owner: "goodtune", name: "ghp") { issue(number: 1) { closedByPullRequestsReferences(first: 1) { nodes { number title repository { nameWithOwner } } } } } }`, http.StatusOK, ""},
 		{"PullRequest_fields2 introspection", `query PullRequest_fields2 { WorkflowRun: __type(name: "WorkflowRun") { fields(includeDeprecated: true) { name } } }`, http.StatusOK, ""},
 	}
 	for _, tt := range tests {
