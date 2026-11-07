@@ -180,7 +180,7 @@ func (p *EnterprisePolicy) Apply(ctx context.Context, hdr http.Header, owner, re
 	} else {
 		hdr.Set(enterpriseHeader, p.slug)
 	}
-	metrics.ObserveDecision(metrics.StageEnterpriseException, tokenType, time.Since(start))
+	metrics.ObserveDecision(ctx, metrics.StageEnterpriseException, tokenType, time.Since(start))
 	return token
 }
 

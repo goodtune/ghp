@@ -73,24 +73,24 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	lookupStart := time.Now()
 	cached, err := cl.store.GetCachedRepositoryByOwnerName(r.Context(), owner, repo)
 	if err != nil {
-		metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageCacheLookup, "", time.Since(lookupStart))
 		cl.logger.Error("cache lookup failed", "error", err, "owner", owner, "repo", repo)
 		cl.inner.ServeHTTP(w, r)
 		return
 	}
 	if cached == nil {
-		metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageCacheLookup, "", time.Since(lookupStart))
 		metrics.CacheRequestTotal.WithLabelValues(owner, repo, "nocache").Inc()
 		cl.inner.ServeHTTP(w, r)
 		return
 	}
 	if !cached.Enabled {
-		metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageCacheLookup, "", time.Since(lookupStart))
 		metrics.CacheRequestTotal.WithLabelValues(owner, repo, "bypass").Inc()
 		cl.inner.ServeHTTP(w, r)
 		return
 	}
-	metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
+	metrics.ObserveDecision(r.Context(), metrics.StageCacheLookup, "", time.Since(lookupStart))
 
 	// Inject per-repo upstream timeout into request context if configured.
 	if cached.TimeoutSeconds != nil {

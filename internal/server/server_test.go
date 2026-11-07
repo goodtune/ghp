@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/web"
 )
 
@@ -175,6 +176,45 @@ func TestHostDispatch_EmptyManagementHost(t *testing.T) {
 			body := rr.Body.String()
 			if body != tt.expected {
 				t.Errorf("host %s: expected %q, got %q", tt.host, tt.expected, body)
+			}
+		})
+	}
+}
+
+// TestHostDispatch_SetsVhost checks that the dispatcher stores the decision
+// histogram vhost label on the request context for each backend (#330).
+func TestHostDispatch_SetsVhost(t *testing.T) {
+	var got string
+	capture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = metrics.VhostFromContext(r.Context())
+	})
+	dispatch := newHostDispatch(hostDispatchConfig{
+		apiHandler:      capture,
+		githubHandler:   capture,
+		codeloadHandler: capture,
+		copilotHandler:  capture,
+		mgmtHandler:     capture,
+		managementHost:  "ghp.example.com",
+	})
+
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"api.github.com", metrics.VhostAPI},
+		{"GitHub.com:443", metrics.VhostWeb},
+		{"codeload.github.com", metrics.VhostCodeload},
+		{"api.githubcopilot.com", metrics.VhostCopilot},
+		{"ghp.example.com", metrics.VhostManagement},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			got = ""
+			req := httptest.NewRequest("GET", "/", nil)
+			req.Host = tt.host
+			dispatch.ServeHTTP(httptest.NewRecorder(), req)
+			if got != tt.want {
+				t.Errorf("host %q: vhost = %q, want %q", tt.host, got, tt.want)
 			}
 		})
 	}

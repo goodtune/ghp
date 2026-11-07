@@ -36,14 +36,14 @@ func RequireGHPToken(next http.Handler, cfg *config.Config) http.Handler {
 			if tt, ok := token.TokenTypeFromPrefix(clientToken); ok {
 				tokenType = string(tt)
 			}
-			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, tokenType, time.Since(start))
+			metrics.ObserveDecision(r.Context(), metrics.StageBorderPolicyCheck, tokenType, time.Since(start))
 			next.ServeHTTP(w, r)
 			return
 		}
 		reject := func(reason string, status int, msg string) {
 			metrics.ManagementHostRejectedTotal.WithLabelValues(reason).Inc()
-			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(start))
-			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
+			metrics.ObserveDecision(r.Context(), metrics.StageBorderPolicyCheck, "", time.Since(start))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, "unknown", time.Since(start))
 			writeError(w, status, msg)
 		}
 		if rawCredential == "" {

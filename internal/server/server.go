@@ -954,19 +954,26 @@ func newHostDispatch(cfg hostDispatchConfig) http.Handler {
 
 		switch {
 		case host == backend.API:
-			cfg.apiHandler.ServeHTTP(w, r)
+			serveVhost(cfg.apiHandler, metrics.VhostAPI, w, r)
 		case host == backend.GitHub:
-			cfg.githubHandler.ServeHTTP(w, r)
+			serveVhost(cfg.githubHandler, metrics.VhostWeb, w, r)
 		case host == backend.Codeload:
-			cfg.codeloadHandler.ServeHTTP(w, r)
+			serveVhost(cfg.codeloadHandler, metrics.VhostCodeload, w, r)
 		case host == "githubcopilot.com" || strings.HasSuffix(host, ".githubcopilot.com"):
-			cfg.copilotHandler.ServeHTTP(w, r)
+			serveVhost(cfg.copilotHandler, metrics.VhostCopilot, w, r)
 		case cfg.managementHost == "" || strings.EqualFold(host, cfg.managementHost):
-			cfg.mgmtHandler.ServeHTTP(w, r)
+			serveVhost(cfg.mgmtHandler, metrics.VhostManagement, w, r)
 		default:
 			http.NotFound(w, r)
 		}
 	})
+}
+
+// serveVhost tags the request context with the decision histogram vhost label
+// (#330) and serves it with h. Every ObserveDecision call downstream, and every
+// outbound request built from this context, reads the label from it.
+func serveVhost(h http.Handler, vhost string, w http.ResponseWriter, r *http.Request) {
+	h.ServeHTTP(w, r.WithContext(metrics.WithVhost(r.Context(), vhost)))
 }
 
 func notifySystemd(state string) {
