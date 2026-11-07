@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goodtune/ghp/tools/scoperig/exec"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
 	"github.com/goodtune/ghp/tools/scoperig/tokens"
 )
@@ -119,7 +120,7 @@ func ProbeCapabilities(ctx context.Context, c *Config, hc *http.Client, open tok
 		caps[k] = v
 	}
 
-	caps["github_vhost"] = probeVHost(ctx, c.Instance.Host, rootCAs(hc))
+	caps["github_vhost"] = probeVHost(ctx, c.Instance.Host, rootCAs(hc), exec.UserAgentOf(hc))
 
 	if c.InstallationID > 0 && c.ServerURL != "" {
 		if st, _, _, err := get(ctx, hc, c.ServerURL+"/api/tokens?all=true", c.session); err == nil && st == http.StatusOK {
@@ -154,7 +155,7 @@ func borderCapabilities(block []string) Capabilities {
 // probeVHost dials host (port 443 unless given) with SNI github.com, verifying
 // against pool, then sends GET /. Any HTTP response means the instance serves
 // the github.com virtual host.
-func probeVHost(ctx context.Context, host string, pool *x509.CertPool) bool {
+func probeVHost(ctx context.Context, host string, pool *x509.CertPool, ua string) bool {
 	addr := host
 	if _, _, err := net.SplitHostPort(host); err != nil {
 		addr = net.JoinHostPort(host, "443")
@@ -175,6 +176,9 @@ func probeVHost(ctx context.Context, host string, pool *x509.CertPool) bool {
 	if err != nil {
 		return false
 	}
+	if ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
 	resp, err := tr.RoundTrip(req)
 	if err != nil {
 		return false
@@ -184,7 +188,7 @@ func probeVHost(ctx context.Context, host string, pool *x509.CertPool) bool {
 }
 
 func rootCAs(hc *http.Client) *x509.CertPool {
-	if tr, ok := hc.Transport.(*http.Transport); ok && tr.TLSClientConfig != nil {
+	if tr, ok := exec.BaseTransport(hc.Transport).(*http.Transport); ok && tr.TLSClientConfig != nil {
 		return tr.TLSClientConfig.RootCAs
 	}
 	return nil

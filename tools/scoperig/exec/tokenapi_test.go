@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/goodtune/ghp/tools/scoperig/expect"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
@@ -140,4 +141,44 @@ func TestTokenAPI_QueryStillUsesManager(t *testing.T) {
 	if len(fm.deletes) != 1 || fm.deletes[0] != tok.ID() {
 		t.Errorf("deletes = %v, want [%s] (DELETE with query must go through Revoke)", fm.deletes, tok.ID())
 	}
+}
+
+// A templated poll expectation is expanded, so the poll stops as soon as
+// the real value matches instead of comparing the raw "{{...}}" (#307).
+func TestTokenAPI_PollExpandsExpect(t *testing.T) {
+	env, _, tok := newEnv(t, nil)
+	env.Vars.Login = "true"
+	s := &scenario.Scenario{ID: "x", Kind: "token_api",
+		Poll: &scenario.Poll{Interval: "10ms", Timeout: "2s"},
+		Request: &scenario.Request{Path: "/api/tokens?all=true",
+			Expect: &scenario.Expect{Status: 200, BodyContains: []string{`"auth":{{.Login}}`}}},
+	}
+	start := time.Now()
+	obs, err := (tokenAPIExecutor{}).Run(context.Background(), s, tok, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(obs.Body), `"auth":true`) {
+		t.Fatalf("body = %s", obs.Body)
+	}
+	// Unexpanded, the matcher never holds and the poll runs to its timeout.
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("poll took %v; the templated expect was not expanded", d)
+	}
+}
+
+// The create observation records when the request was made, so
+// expires_within can be checked against it (#305).
+func TestTokenAPI_CreateRecordsRequestTime(t *testing.T) {
+	env, _, tok := newEnv(t, nil)
+	before := time.Now()
+	s := &scenario.Scenario{ID: "x", Kind: "token_api", Request: &scenario.Request{Method: "POST", Path: "/api/tokens", Body: map[string]any{"duration": "1h"}}}
+	obs, err := (tokenAPIExecutor{}).Run(context.Background(), s, tok, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.RequestedAt.Before(before) || obs.RespondedAt.Before(obs.RequestedAt) || time.Since(obs.RespondedAt) < 0 {
+		t.Errorf("RequestedAt=%v RespondedAt=%v", obs.RequestedAt, obs.RespondedAt)
+	}
+	env.Tokens.RevokeAll(context.Background())
 }

@@ -27,7 +27,9 @@ func TestRunOracleGH_KillsProcessGroup(t *testing.T) {
 	if err := os.WriteFile(gh, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// Generous: under a loaded test run the script may need well over
+	// 500ms to start its child and write the pid file.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	start := time.Now()
 	_, _ = runOracleGH(ctx, gh, dir, []string{"PATH=/bin:/usr/bin"}, nil, io.Discard, io.Discard)

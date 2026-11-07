@@ -262,6 +262,15 @@ func checkGH(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, add f
 		add("gh: repo %q must be A, B or W", sc.Repo)
 	}
 
+	// A literal placeholder host validates against PlaceholderVars but is a
+	// foreign host at run time (where {{.Host}} is the real instance).
+	for _, a := range rawArgs {
+		if strings.Contains(strings.ToLower(a), PlaceholderHost) {
+			add("gh: argument %q contains the placeholder host %s; use {{.Host}}", a, PlaceholderHost)
+			return
+		}
+	}
+
 	// Never print the credential into rig output.
 	for _, a := range args {
 		if a == "--show-token" || strings.HasPrefix(a, "--show-token=") {
@@ -303,6 +312,10 @@ func checkGH(args, rawArgs []string, sc *Scenario, prof *Profile, v *Vars, add f
 	for _, r := range g.flags["--repo"] {
 		if strings.HasPrefix(r, "-") {
 			add("gh: --repo value %q looks like a flag", r)
+			return
+		}
+		if strings.Contains(r, "://") && !strings.HasPrefix(r, "https://") {
+			add("gh: --repo value %q: only https URLs to {{.Host}} are allowed", r)
 			return
 		}
 		host, rr, ok := repoFromSpec(r)

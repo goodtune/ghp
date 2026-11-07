@@ -28,12 +28,13 @@ func Classify(s *scenario.Scenario, o *expect.Observation, rigErr error) (Status
 	if o == nil {
 		return StatusError, "no observation"
 	}
-	expErrs := expect.Match(s.Expect, o)
+	want := s.VerdictExpect()
+	expErrs := expect.Match(want, o)
 	if s.KnownIssue != "" {
 		obsErrs := expect.Match(s.Observed, o)
 		switch {
 		case len(expErrs) == 0:
-			if e := upstreamError(s.Expect, o, nil); e != "" {
+			if e := upstreamError(want, o, nil); e != "" {
 				return StatusError, e
 			}
 			return StatusKnownFixed, "remove known_issue and observed: from " + oneLine(s.ID)
@@ -49,7 +50,7 @@ func Classify(s *scenario.Scenario, o *expect.Observation, rigErr error) (Status
 			return StatusKnownChanged, oneLine("observed " + joinErrs(obsErrs) + "; expect " + joinErrs(expErrs))
 		}
 	}
-	if e := upstreamError(s.Expect, o, expErrs); e != "" {
+	if e := upstreamError(want, o, expErrs); e != "" {
 		return StatusError, e
 	}
 	if len(expErrs) > 0 {

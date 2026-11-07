@@ -33,9 +33,9 @@ const revokeTimeout = 60 * time.Second
 // Pace returns the delay between creates for a server limit of ratePerMin
 // requests per minute, using 75% of that limit.
 func Pace(ratePerMin int) time.Duration {
-	if ratePerMin <= 0 {
-		ratePerMin = 20
-	}
+	// The default rate lives in config (defaultTokenCreateRate); a
+	// non-positive rate here only guards the division.
+	ratePerMin = max(ratePerMin, 1)
 	return time.Duration(float64(time.Minute) / (float64(ratePerMin) * 0.75))
 }
 

@@ -1,6 +1,11 @@
 // Package redact removes GitHub and GHP token values from text, bodies and
 // headers. Everything in the scope regression rig that could print a token
 // must pass its output through this package.
+//
+// Known limitations (not detected or masked today):
+//   - a percent-encoded token prefix (for example "ghx%5F...");
+//   - a bare base64 credential with no "Authorization" label next to it;
+//   - a token whose tail is JSON \uXXXX-escaped (for example "ghx_\u0041...").
 package redact
 
 import (
@@ -23,12 +28,23 @@ const (
 
 var replacementBytes = []byte(replacement)
 
-// authLine matches an Authorization header written as free text, so that
-// credentials that are not token-shaped (for example Basic base64) are masked.
-var authLine = regexp.MustCompile(`(?i)(authorization:\s*(basic|bearer|token)\s+)\S+`)
+// authLine matches an Authorization header written as free text or as a
+// JSON member ("Authorization": "Basic ..."), so that credentials that are
+// not token-shaped (for example Basic base64) are masked. The credential
+// stops at whitespace or a quote, so redacted JSON stays valid.
+var authLine = regexp.MustCompile(`(?i)(authorization"?\s*:\s*"?(basic|bearer|token)\s+)[^\s"]+`)
 
-// basicLine captures the credential of an Authorization: Basic line.
-var basicLine = regexp.MustCompile(`(?i)authorization:\s*basic\s+(\S+)`)
+// basicLine captures the credential of an Authorization: Basic line, free
+// text or JSON-quoted. Only base64 characters (standard and URL-safe) are
+// captured, so trailing punctuation (a quote, comma or full stop) does not
+// stop the credential from decoding.
+var basicLine = regexp.MustCompile(`(?i)authorization"?\s*:\s*"?basic\s+([A-Za-z0-9+/_=-]+)`)
+
+// basicEncodings are tried in turn when decoding a Basic credential.
+var basicEncodings = []*base64.Encoding{
+	base64.StdEncoding, base64.RawStdEncoding,
+	base64.URLEncoding, base64.RawURLEncoding,
+}
 
 // sensitiveHeaders have their whole value replaced, token-shaped or not.
 var sensitiveHeaders = []string{"Authorization", "Cookie", "Set-Cookie"}
@@ -79,7 +95,7 @@ func Contains(b []byte) bool {
 		return true
 	}
 	for _, m := range basicLine.FindAllSubmatch(b, -1) {
-		for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
+		for _, enc := range basicEncodings {
 			if dec, err := enc.DecodeString(string(m[1])); err == nil && Pattern.Match(dec) {
 				return true
 			}

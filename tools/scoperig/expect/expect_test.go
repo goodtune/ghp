@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
 )
@@ -127,5 +128,48 @@ func TestIsGHPDenial(t *testing.T) {
 	}
 	if GHPMessage([]byte(`{"message":"hi"}`)) != "hi" || GHPMessage([]byte(`[1]`)) != "" || GHPMessage([]byte(`{"message":42}`)) != "" {
 		t.Error("GHPMessage")
+	}
+}
+
+func TestMatch_ExpiresWithin(t *testing.T) {
+	t0 := time.Date(2026, 11, 7, 1, 0, 0, 0, time.UTC)
+	body := func(ts string) []byte {
+		return []byte(`{"id":"x","expires_at":"` + ts + `","nested":{"at":"` + ts + `"}}`)
+	}
+	obs := func(ts string) *Observation {
+		return &Observation{Status: 201, Body: body(ts), RequestedAt: t0, RespondedAt: t0.Add(2 * time.Second)}
+	}
+	w := func(field, lo, hi string) scenario.Expect {
+		return scenario.Expect{ExpiresWithin: &scenario.ExpiresWithin{Field: field, Min: lo, Max: hi}}
+	}
+	tests := []struct {
+		name    string
+		e       scenario.Expect
+		o       *Observation
+		wantErr string
+	}{
+		{"inside", w("expires_at", "23h58m", "24h2m"), obs("2026-11-08T01:00:01Z"), ""},
+		{"json path field", w("$.nested.at", "59m", "61m"), obs("2026-11-07T02:00:00Z"), ""},
+		{"upper bound uses response end", w("expires_at", "0s", "1h"), obs("2026-11-07T02:00:02Z"), ""},
+		{"too early", w("expires_at", "23h58m", "24h2m"), obs("2026-11-07T02:00:00Z"), "want between request+23h58m0s"},
+		{"too late", w("expires_at", "55m", "65m"), obs("2026-11-08T01:00:00Z"), "got 2026-11-08T01:00:00Z"},
+		{"null", w("expires_at", "1m", "2m"), &Observation{Status: 201, Body: []byte(`{"expires_at":null}`), RequestedAt: t0}, "RFC 3339"},
+		{"missing", w("expires_at", "1m", "2m"), &Observation{Status: 201, Body: []byte(`{}`), RequestedAt: t0}, "want a timestamp"},
+		{"no request time", w("expires_at", "1m", "2m"), &Observation{Status: 201, Body: body("2026-11-07T01:01:30Z")}, "no request time"},
+		{"bad duration", w("expires_at", "soon", "2m"), obs("2026-11-07T01:01:30Z"), "bad min"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := Match(&tt.e, tt.o)
+			if tt.wantErr == "" {
+				if len(errs) != 0 {
+					t.Fatalf("errs = %v", errs)
+				}
+				return
+			}
+			if len(errs) != 1 || !strings.Contains(errs[0].Error(), tt.wantErr) {
+				t.Fatalf("errs = %v, want one containing %q", errs, tt.wantErr)
+			}
+		})
 	}
 }

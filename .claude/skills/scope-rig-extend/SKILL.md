@@ -26,6 +26,7 @@ Scenarios (`rig/scenarios/*.yaml`) test claims (`rig/claims.yaml`) with token pr
 | Oracle notes | Only `pr_create_dryrun` "creates" (`--dry-run`, explicit `--head`, non-git temp dir). gh credential must be in `hosts.yml` or macOS keychain (no Linux DBUS). Review every `+ operation` / `+ field` diff line: new operations default to `verdict: allow`. An oracle repo whose owner or name is a gh subcommand word or GraphQL keyword (`list`, `view`, `on`, `node`) is refused by the identity scrub (fails closed). An empty capture never overwrites an existing entry. |
 | Import captures | `go run ./tools/scoperig/corpus/importghdebug -in <dir> -out rig/corpus/gh/<ver> -gh-version <ver> -owner cli -repo cli` |
 | Corpus test | `go test ./internal/proxy -run GHCorpus -count=1` |
+| Matchers | `status`/`status_in`, `body_contains`/`body_not_contains`, `header`, `json`, `ghp_denial`, `exit_code`/`exit_code_in`, `stdout_contains`/`stderr_contains`, `expires_within: {field: expires_at, min: 58m, max: 62m}` (timestamp window relative to the request; templated min/max allowed; leave a clock-skew margin). Table: docs/development/scope-regression-rig.md#matchers |
 
 ## Implementation
 
@@ -37,6 +38,7 @@ Scenarios (`rig/scenarios/*.yaml`) test claims (`rig/claims.yaml`) with token pr
 5. `gh` writes may use only flags in `ghFlagTable` (`tools/scoperig/scenario/ghcheck.go`); read-only subcommands are in `ghReadOnly`.
 6. A GraphQL mutation with an unrestricted profile needs a reviewed entry in `mutationWriteAllowlist` (`gqlcheck.go`), like the `GQL-C31.*` pair.
 7. `validate` must print `0 errors`; then run `--only`.
+8. Changing a validator rule (`scenario/validate.go`, `ghcheck.go`, `gqlcheck.go`)? Add a row to the adversarial probe table in `tools/scoperig/scenario/probe_test.go` for the shape it must reject.
 
 **gh upgrade**
 1. Run `oracle` (or capture with `GH_DEBUG=api` and run the importer); expectations already in the directory are kept.

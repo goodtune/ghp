@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/goodtune/ghp/tools/scoperig/ghdebug"
 	"github.com/goodtune/ghp/tools/scoperig/redact"
@@ -71,6 +72,12 @@ type Observation struct {
 	Stdout    string
 	Stderr    string
 	Exchanges []ghdebug.Exchange
+	// RequestedAt and RespondedAt bracket the request that produced this
+	// observation (zero when not recorded). expires_within is relative to
+	// them.
+	RequestedAt, RespondedAt time.Time
+	// GHStderrTruncated is set when gh's stderr exceeded the capture cap.
+	GHStderrTruncated bool
 }
 
 // Match returns nil if every set field of e holds, else one error per
@@ -145,6 +152,11 @@ func Match(e *scenario.Expect, o *Observation) []error {
 			add("stderr: want contains %q, got %s", s, snippet([]byte(o.Stderr)))
 		}
 	}
+	if w := e.ExpiresWithin; w != nil {
+		if msg := matchExpiresWithin(w, o); msg != "" {
+			add("%s", msg)
+		}
+	}
 	if len(errs) == 0 {
 		return nil
 	}
@@ -153,6 +165,42 @@ func Match(e *scenario.Expect, o *Observation) []error {
 		out[i] = fmt.Errorf("%s", redact.String(s))
 	}
 	return out
+}
+
+// matchExpiresWithin checks that the timestamp at w's field lies in
+// [RequestedAt+min, RespondedAt+max]. It returns "" when it holds.
+func matchExpiresWithin(w *scenario.ExpiresWithin, o *Observation) string {
+	path := w.FieldPath()
+	lo, err := time.ParseDuration(w.Min)
+	if err != nil {
+		return fmt.Sprintf("expires_within %s: bad min %q: %v", path, w.Min, err)
+	}
+	hi, err := time.ParseDuration(w.Max)
+	if err != nil {
+		return fmt.Sprintf("expires_within %s: bad max %q: %v", path, w.Max, err)
+	}
+	if o.RequestedAt.IsZero() {
+		return fmt.Sprintf("expires_within %s: no request time recorded", path)
+	}
+	end := o.RespondedAt
+	if end.IsZero() {
+		end = o.RequestedAt
+	}
+	raw, err := JSONPath(o.Body, path)
+	if err != nil {
+		return fmt.Sprintf("expires_within %s: want a timestamp, got error (%v)", path, err)
+	}
+	got, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return fmt.Sprintf("expires_within %s: want an RFC 3339 timestamp, got %q", path, raw)
+	}
+	earliest, latest := o.RequestedAt.Add(lo), end.Add(hi)
+	if got.Before(earliest) || got.After(latest) {
+		return fmt.Sprintf("expires_within %s: want between request+%s and response+%s (%s..%s), got %s (request+%s)",
+			path, lo, hi, earliest.UTC().Format(time.RFC3339), latest.UTC().Format(time.RFC3339),
+			got.UTC().Format(time.RFC3339), got.Sub(o.RequestedAt).Round(time.Second))
+	}
+	return ""
 }
 
 const snippetMax = 200

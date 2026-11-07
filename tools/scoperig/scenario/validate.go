@@ -28,6 +28,12 @@ var validVhosts = map[string]bool{"github.com": true}
 // maxProfileDuration bounds every profile so leaked tokens expire quickly.
 const maxProfileDuration = 2 * time.Hour
 
+// PlaceholderHost is the instance host in PlaceholderVars. A scenario must
+// reach the instance through {{.Host}}; a literal copy of this host passes
+// static validation but becomes a foreign host at run time, so the gh
+// checks reject it outright.
+const PlaceholderHost = "ghp.example"
+
 // PlaceholderVars returns Vars filled with fixed fake values. Validate uses
 // it when called with nil Vars, so static validation never needs live
 // fixtures. The IDs and node IDs are deliberately distinctive so that a
@@ -36,12 +42,12 @@ func PlaceholderVars() *Vars {
 	f := FixtureVals{IssueNumber: 1, PRNumber: 2, ReleaseID: 3, Branch: "branch", Label: "label",
 		PRTitle: "pr", IssueTitle: "issue", ReleaseTag: "v0"}
 	return &Vars{
-		RunID: "run", Host: "ghp.example", Login: "login",
+		RunID: "run", Host: PlaceholderHost, Login: "login",
 		RepoA:   RepoRef{Owner: "a-owner", Name: "a-repo", ID: 900000101, NodeID: "R_placeholderA"},
 		RepoB:   RepoRef{Owner: "b-owner", Name: "b-repo", ID: 900000202, NodeID: "R_placeholderB"},
 		RepoW:   RepoRef{Owner: "w-owner", Name: "w-repo", ID: 900000303, NodeID: "R_placeholderW"},
 		Fixture: map[string]FixtureVals{"A": f, "B": f, "W": f},
-		Instance: InstanceVals{Host: "ghp.example",
+		Instance: InstanceVals{Host: PlaceholderHost,
 			DefaultDuration: time.Hour, MaxDuration: 168 * time.Hour},
 		Step: map[string]map[string]string{},
 	}
@@ -110,33 +116,15 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	add := func(format string, a ...any) { msgs = append(msgs, fmt.Sprintf(format, a...)) }
 
 	// Copy vars and pre-populate Step from capture names.
+	v := CaptureVars(s, &Vars{})
 	vv := *base
-	v := &vv
-	v.Step = map[string]map[string]string{}
+	vv.Step = v.Step
+	v = &vv
 	// Profile IDs are placeholders for every known profile; an unknown
 	// name expands to "" (text/template's index ignores missingkey).
 	v.ProfileIDs = make(map[string]string, len(t.Profiles))
 	for n := range t.Profiles {
 		v.ProfileIDs[n] = "00000000-0000-4000-8000-000000000000"
-	}
-	for _, r := range append(append([]Request{}, s.Steps...), s.Cleanup...) {
-		if len(r.Capture) == 0 {
-			continue
-		}
-		if v.Step[r.Name] == nil {
-			v.Step[r.Name] = map[string]string{}
-		}
-		for c := range r.Capture {
-			v.Step[r.Name][c] = "0"
-		}
-	}
-	if s.Request != nil && len(s.Request.Capture) > 0 {
-		if v.Step[s.Request.Name] == nil {
-			v.Step[s.Request.Name] = map[string]string{}
-		}
-		for c := range s.Request.Capture {
-			v.Step[s.Request.Name][c] = "0"
-		}
 	}
 
 	// Rule 1: references and kind.
@@ -359,11 +347,9 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	} else if s.Kind == "token_api" && len(s.Steps) == 0 {
 		add("token_api scenario needs a request or steps")
 	}
-	// Normalise copies the rest shorthand Expect into Steps[0]; Steps are
-	// the source of truth, so do not report the same problem twice.
-	if len(s.Steps) == 0 || s.Steps[0].Expect != s.Expect {
-		checkExpect("expect", s.Expect, v, add)
-	}
+	// Normalise moves the rest shorthand Expect into Steps[0] (checked with
+	// the steps above) and clears it here.
+	checkExpect("expect", s.Expect, v, add)
 	checkExpect("observed", s.Observed, v, add)
 	// An empty observed matches every response, so a known issue would
 	// stay KNOWN forever and never report KNOWN-CHANGED.
@@ -438,7 +424,8 @@ func hasAssertion(e *Expect) bool {
 	return e.Status != 0 || len(e.StatusIn) > 0 || len(e.BodyContains) > 0 ||
 		len(e.BodyNotContains) > 0 || len(e.Header) > 0 || len(e.JSON) > 0 ||
 		e.GHPDenial != nil || e.ExitCode != nil || len(e.ExitCodeIn) > 0 ||
-		len(e.StdoutContains) > 0 || len(e.StderrContains) > 0
+		len(e.StdoutContains) > 0 || len(e.StderrContains) > 0 ||
+		e.ExpiresWithin != nil
 }
 
 func checkExpect(where string, e *Expect, v *Vars, add func(string, ...any)) {
@@ -452,6 +439,47 @@ func checkExpect(where string, e *Expect, v *Vars, add func(string, ...any)) {
 		if _, err := ExpandAny(x, v); err != nil {
 			add("%s: %v", where, err)
 		}
+	}
+	if w := e.ExpiresWithin; w != nil {
+		checkExpiresWithin(where, w, v, add)
+	}
+}
+
+// checkExpiresWithin requires a field and min/max durations that expand
+// and parse, with 0 <= min <= max and max > 0.
+func checkExpiresWithin(where string, w *ExpiresWithin, v *Vars, add func(string, ...any)) {
+	if strings.TrimSpace(w.Field) == "" || w.FieldPath() == "$" || w.FieldPath() == "$." {
+		add("%s: expires_within: field is required", where)
+	}
+	parse := func(name, raw string) (time.Duration, bool) {
+		if strings.TrimSpace(raw) == "" {
+			add("%s: expires_within: %s is required", where, name)
+			return 0, false
+		}
+		x, err := Expand(raw, v)
+		if err != nil {
+			add("%s: expires_within: %s: %v", where, name, err)
+			return 0, false
+		}
+		d, err := time.ParseDuration(x)
+		if err != nil {
+			add("%s: expires_within: %s %q is not a duration: %v", where, name, x, err)
+			return 0, false
+		}
+		return d, true
+	}
+	lo, okLo := parse("min", w.Min)
+	hi, okHi := parse("max", w.Max)
+	if !okLo || !okHi {
+		return
+	}
+	switch {
+	case lo < 0:
+		add("%s: expires_within: min %s must not be negative", where, lo)
+	case hi <= 0:
+		add("%s: expires_within: max %s must be positive", where, hi)
+	case lo > hi:
+		add("%s: expires_within: min %s is greater than max %s", where, lo, hi)
 	}
 }
 

@@ -18,8 +18,10 @@ What iteration 1 does not cover:
 
 - Go 1.24.
 - `gh` on `PATH`, or set `GHP_RIG_GH` to its path.
-- An admin session token (`ghpr_`) for the instance, from `ghp auth login`.
-- The three fixture repositories A, B and W (see [Fixtures](#fixtures)).
+- `git` on `PATH`. The `gh` working directory is an empty git checkout on the fixture branch (`gh pr status` needs a current branch).
+- An admin session token (`ghpr_`) for the instance. It is the `user_token` of the `ghp` CLI config (`~/.config/ghp/config.yaml`, written by `ghp auth login` or `ghp auth set-token`). When that config has a `dotvault:` stanza, the token is the Vault field that `dotvault.fields.user_token` names, read with the dotvault client config `dotvault.config` (or its default path) and service `dotvault.service`. Export it as `GHP_USER_TOKEN` without printing it.
+- The three fixture repositories A, B and W (see [Fixtures](#fixtures)). Usually you create them by hand first: see below.
+- For `oracle` only: your own `gh` login, stored in `hosts.yml` or the macOS keychain. The Linux Secret Service (DBUS) is not passed through. `run` does not need it; it gives `gh` the minted token in `GH_ENTERPRISE_TOKEN`.
 - The instance's TLS certificate must be trusted by the system trust store. `GHP_RIG_CA_FILE` adds a CA bundle for the rig's own HTTP client. The rig passes `SSL_CERT_FILE` through to `gh` when you set it, but Go ignores `SSL_CERT_FILE` on macOS, so on macOS `gh` relies on the system keychain.
 
 ## Configuration
@@ -38,7 +40,7 @@ What iteration 1 does not cover:
 | `GHP_RIG_INSTALLATION_ID` | no | none | Positive integer; enables the `agent_installation` capability |
 | `GHP_RIG_CA_FILE` | no | system pool | Extra PEM CA bundle |
 
-`gh` runs with an environment built from scratch: a fresh `GH_CONFIG_DIR`, a fresh `XDG_CACHE_HOME`, a working directory that is not a git checkout, and the token in `GH_ENTERPRISE_TOKEN` only. No inherited `GH_*` or `GITHUB_*` variable reaches it.
+`gh` runs with an environment built from scratch: a fresh `GH_CONFIG_DIR`, a fresh `XDG_CACHE_HOME`, a fresh working directory that is an empty git repository on the fixture branch (no remotes; `GH_REPO` names the base repository), and the token in `GH_ENTERPRISE_TOKEN` only. No inherited `GH_*` or `GITHUB_*` variable reaches it.
 
 ### `rig/config.yaml`
 
@@ -76,11 +78,16 @@ The preflight step sets these capabilities. A scenario that needs a capability t
 
 ## Fixtures
 
+The `repo_create` capability is usually false: the GitHub credential behind GHP normally lacks the `repo` OAuth scope. So create the three private repositories by hand first, under your own login, then let the rig seed them:
+
 ```bash
+gh repo create --private OWNER/ghp-scoperig-a
+gh repo create --private OWNER/ghp-scoperig-b
+gh repo create --private OWNER/ghp-scoperig-w
 ./scoperig fixtures ensure
 ```
 
-`fixtures ensure` finds and seeds repositories A, B and W through GHP with a temporary `open` token, which it creates and revokes. It seeds, idempotently: a `scoperig` label, an open issue, a `scoperig-fixture` branch with one commit, an open PR from it, and a `scoperig-fixture-v0` release. It then prints the discovered values.
+`fixtures ensure` finds and seeds repositories A, B and W through GHP with a temporary `open` token, which it creates and revokes. It creates and revokes this one token on every call, even when it only reports what it would do (missing repositories and no `--create-fixtures`); this is by design, because it needs the token to probe the capabilities and read the repositories. It seeds, idempotently: a `scoperig` label, an open issue, a `scoperig-fixture` branch with one commit, an open PR from it, and a `scoperig-fixture-v0` release. It then prints the discovered values.
 
 If a repository is missing, it prints what it would create and exits 3. To create them:
 
@@ -98,7 +105,11 @@ Validate offline first. This needs no network and no environment:
 make scoperig-validate
 ```
 
-Validation rejects, among other things, any non-GET request whose path does not target `/repos/<W>/...` (the exceptions are the GAP-A1 probe and `token_api` scenarios, which must target `/api/tokens`), and paths with `..`, dot segments or encoded dots.
+Validation rejects, among other things, any non-GET request whose path does not target `/repos/<W>/...` (the exceptions are the GAP-A1 probe and `token_api` scenarios, which must target `/api/tokens`), and paths with `..`, dot segments or encoded dots. A `gh` argument that contains the literal placeholder host `ghp.example` is rejected; use `{{.Host}}`.
+
+`tools/scoperig/scenario/probe_test.go` holds a standing table of adversarial scenario shapes (host, path, cleanup, empty-matcher and `gh` parser tricks). Each must be rejected by a named rule, and CI runs it with the unit tests. When you find a new way past the validator, add a row there with the fix. A fuzz target (`go test -fuzz FuzzLoadValidate ./tools/scoperig/scenario`) searches for accepted REST writes that leave W.
+
+Offline validation uses placeholder values for the host and the fixture repositories. `run` validates the tree again with the configured host and fixture repositories after it loads the config and before it sends any request, and exits 3 if that fails. So a scenario that hardcodes a placeholder value (for example the placeholder W repository) cannot pass offline and then reach a different repository at run time.
 
 Live run:
 
@@ -116,9 +127,28 @@ make scoperig
 - `--skip-known` — skip scenarios that have a `known_issue`. By default KNOWN scenarios run, so they can report KNOWN-FIXED or KNOWN-CHANGED.
 - `--keep-going` — continue after a FAIL or ERROR (default true).
 
+Every HTTP request the rig itself sends (preflight, token management, proxied REST and GraphQL, fixture discovery and seeding, the `github.com` virtual-host probe) carries the User-Agent `ghp-scoperig/<version> (run=<run-id>)`. `<version>` is the module version, or the first 12 characters of the VCS revision for a binary built from a checkout, or `dev`; `<run-id>` is the run id printed in the report (for `sweep` and `fixtures ensure`, the id of their own token session). Filter the instance's access logs on it to isolate one run. `gh` runs keep the GitHub CLI's own User-Agent: `gh` has no setting to change it.
+
 A run starts by sweeping: it revokes every unrevoked token whose session id starts with `scoperig-`. Because of this, **concurrent runs against one instance are not supported** — a second run revokes the first run's tokens.
 
+## Matchers
+
+`expect:` and `observed:` blocks share these matchers. Each block needs at least one. String values may be templated.
+
+| Matcher | Holds when |
+|---|---|
+| `status`, `status_in` | The HTTP status equals the value, or is one of the list |
+| `body_contains`, `body_not_contains` | The response body contains (or does not contain) every string |
+| `header` | Each named header's first value equals the string |
+| `json` | Each JSON path (`$.a.b`, `$.items[0].id`) has the string value |
+| `ghp_denial` | The response is (or is not) a GHP denial (403 or 401 with a GHP message) |
+| `exit_code`, `exit_code_in` | The `gh` exit code equals the value, or is one of the list |
+| `stdout_contains`, `stderr_contains` | `gh` output contains every string |
+| `expires_within: {field, min, max}` | The RFC 3339 timestamp at `field` (`expires_at` or a JSON path) is no earlier than request start + `min` and no later than response end + `max`. `min` and `max` are Go durations and may be templated, for example `"{{add .Instance.DefaultDuration \"-2m\"}}"`. Validation requires 0 <= `min` <= `max` and `max` > 0. Leave a margin for clock skew between the rig and the instance. |
+
 ## Reading the report
+
+The report header records the run id, the instance, the GHP version from preflight, the `gh` version (`gh --version`) and the rig commit (the VCS revision stamped into the binary by `make scoperig`; empty under `go run`, with a `-dirty` suffix for a modified tree).
 
 ### Scenario statuses
 
@@ -130,6 +160,10 @@ A run starts by sweeping: it revokes every unrevoked token whose session id star
 | KNOWN | Has a `known_issue`; today's behaviour matches its `observed:` block |
 | KNOWN-FIXED | Has a `known_issue`, but `expect:` now holds. Remove `known_issue` and `observed:` |
 | KNOWN-CHANGED | Has a `known_issue`; neither `expect:` nor `observed:` matches. New information; shown in a separate "changed" section |
+
+Templates in `expect:` and `observed:` (for example `json: {"$.login": "{{.Login}}"}`) are expanded with the live values before the scenario sends its first request, and again after it with the step captures. A template that cannot expand makes the scenario ERROR with "not run"; no request is sent. Step and `token_api` poll expectations are expanded the same way before they are matched.
+
+A transport error (no HTTP response: connection reset, HTTP/2 GOAWAY, EOF, including through a forward proxy) is retried up to 2 times with backoff (0.5 s, then 1 s), but only when re-sending cannot duplicate a write: GET and HEAD requests, read-only GraphQL documents (queries only), a failed dial, and `gh` runs whose logged requests are all of those kinds. A transport error that remains, or one during a write, makes the scenario ERROR, never FAIL or KNOWN-CHANGED, because no product response was observed.
 
 A 5xx response that the scenario does not name in `expect` is always ERROR, never FAIL. This includes a 500 that GHP itself produces.
 
@@ -184,7 +218,7 @@ Cleanup guarantees:
 ./scoperig sweep
 ```
 
-`sweep` revokes every unrevoked `scoperig-*` token. The next `run` does the same automatically.
+`sweep` revokes every unrevoked `scoperig-*` token. The next `run` does the same automatically. `sweep` exits 2 if the sweep fails or any token id is left over.
 
 The rig never writes token values to the report, errors or `gh` captures; all captured output is redacted.
 

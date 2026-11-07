@@ -124,3 +124,58 @@ func TestExpandExpect(t *testing.T) {
 		t.Errorf("missing key: want error")
 	}
 }
+
+func TestCaptureVarsAndCheckExpands(t *testing.T) {
+	s := &Scenario{ID: "x", Kind: "rest",
+		Steps: []Request{
+			{Name: "mk", Method: "POST", Path: "/p", Capture: map[string]string{"n": "$.n"}, Expect: &Expect{Status: 201}},
+			{Name: "rd", Path: `/p/{{index .Step "mk" "n"}}`, Expect: &Expect{Status: 200, JSON: map[string]string{"$.n": `{{index .Step "mk" "n"}}`}}},
+		},
+		Observed: &Expect{Status: 403, BodyContains: []string{"{{.Login}}"}},
+	}
+	v := &Vars{Login: "octo", Step: map[string]map[string]string{}}
+	cv := CaptureVars(s, v)
+	if cv.Step["mk"]["n"] != capturePlaceholder {
+		t.Errorf("placeholder capture = %q", cv.Step["mk"]["n"])
+	}
+	v.Step["mk"] = map[string]string{"n": "7"}
+	cv2 := CaptureVars(s, v)
+	if got := cv2.Step["mk"]["n"]; got != "7" {
+		t.Errorf("real capture = %q, want 7", got)
+	}
+	cv2.Step["mk"]["n"] = "changed"
+	if v.Step["mk"]["n"] != "7" {
+		t.Error("CaptureVars mutated its input")
+	}
+	if err := CheckExpands(s, v); err != nil {
+		t.Errorf("CheckExpands: %v", err)
+	}
+	s.Observed.BodyContains = []string{"{{.Nope}}"}
+	if err := CheckExpands(s, v); err == nil || !strings.Contains(err.Error(), "observed") {
+		t.Errorf("CheckExpands err = %v, want an observed error", err)
+	}
+}
+
+func TestExpandExpect_ExpiresWithin(t *testing.T) {
+	v := &Vars{Instance: InstanceVals{DefaultDuration: 24 * time.Hour}}
+	in := &Expect{ExpiresWithin: &ExpiresWithin{Field: "expires_at", Min: `{{add .Instance.DefaultDuration "-2m"}}`, Max: `{{add .Instance.DefaultDuration "2m"}}`}}
+	got, err := ExpandExpect(in, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresWithin.Min != "23h58m0s" || got.ExpiresWithin.Max != "24h2m0s" {
+		t.Errorf("got %+v", got.ExpiresWithin)
+	}
+	if in.ExpiresWithin.Min[0] != '{' {
+		t.Error("input mutated")
+	}
+}
+
+func TestCheckExpands_Cleanup(t *testing.T) {
+	s := &Scenario{ID: "x", Kind: "rest", Method: "GET", Path: "/u", Expect: &Expect{Status: 200},
+		Cleanup: []Request{{Method: "DELETE", Path: "/repos/w/w/x", Expect: &Expect{BodyContains: []string{"{{.Nope}}"}}}}}
+	s.Normalise()
+	if err := CheckExpands(s, &Vars{}); err == nil || !strings.Contains(err.Error(), "cleanup[0]") {
+		t.Errorf("err = %v, want a cleanup[0] error", err)
+	}
+}
