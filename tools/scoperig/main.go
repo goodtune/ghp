@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/goodtune/ghp/tools/scoperig/exec"
 	"github.com/goodtune/ghp/tools/scoperig/fixtures"
 	"github.com/goodtune/ghp/tools/scoperig/redact"
 	"github.com/goodtune/ghp/tools/scoperig/report"
@@ -288,11 +289,13 @@ func connect(ctx context.Context, c *Config, deps runDeps) (*http.Client, *token
 			return nil, nil, &exitError{code: 3, err: err}
 		}
 	}
+	runID := deps.RunID()
+	hc = exec.WithUserAgent(hc, exec.UserAgent(deps.RigVersion(), runID))
 	if _, err := Preflight(ctx, c, hc); err != nil {
 		return nil, nil, &exitError{code: 3, err: err}
 	}
 	pace := deps.Pace(c.TokenCreateRate)
-	mgr := tokens.NewManager(c.ServerURL, c.UserToken, deps.RunID(), hc, pace)
+	mgr := tokens.NewManager(c.ServerURL, c.UserToken, runID, hc, pace)
 	if deps.OnManager != nil {
 		deps.OnManager(mgr)
 	}

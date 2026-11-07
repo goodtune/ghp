@@ -125,6 +125,8 @@ make scoperig
 - `--skip-known` — skip scenarios that have a `known_issue`. By default KNOWN scenarios run, so they can report KNOWN-FIXED or KNOWN-CHANGED.
 - `--keep-going` — continue after a FAIL or ERROR (default true).
 
+Every HTTP request the rig itself sends (preflight, token management, proxied REST and GraphQL, fixture discovery and seeding, the `github.com` virtual-host probe) carries the User-Agent `ghp-scoperig/<version> (run=<run-id>)`. `<version>` is the module version, or the first 12 characters of the VCS revision for a binary built from a checkout, or `dev`; `<run-id>` is the run id printed in the report (for `sweep` and `fixtures ensure`, the id of their own token session). Filter the instance's access logs on it to isolate one run. `gh` runs keep the GitHub CLI's own User-Agent: `gh` has no setting to change it.
+
 A run starts by sweeping: it revokes every unrevoked token whose session id starts with `scoperig-`. Because of this, **concurrent runs against one instance are not supported** — a second run revokes the first run's tokens.
 
 ## Matchers

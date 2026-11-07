@@ -62,6 +62,8 @@ type runDeps struct {
 	// RigCommit is the VCS revision the rig binary was built from ("" when
 	// unknown). Default: the binary's build info.
 	RigCommit func() string
+	// RigVersion is the version in the User-Agent. Default exec.RigVersion.
+	RigVersion func() string
 }
 
 func (d *runDeps) defaults() {
@@ -86,6 +88,9 @@ func (d *runDeps) defaults() {
 	}
 	if d.RigCommit == nil {
 		d.RigCommit = rigCommit
+	}
+	if d.RigVersion == nil {
+		d.RigVersion = exec.RigVersion
 	}
 }
 
@@ -246,12 +251,15 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 			return nil, &exitError{code: 3, err: err}
 		}
 	}
+	// Every rig request, preflight included, carries the run id in its
+	// User-Agent so the run can be isolated in the instance's logs.
+	runID := deps.RunID()
+	hc = exec.WithUserAgent(hc, exec.UserAgent(deps.RigVersion(), runID))
 	version, err := Preflight(ctx, c, hc)
 	if err != nil {
 		return nil, &exitError{code: 3, err: err}
 	}
 
-	runID := deps.RunID()
 	started := deps.Now().UTC()
 	pace := deps.Pace(c.TokenCreateRate)
 	mgr := tokens.NewManager(c.ServerURL, c.UserToken, runID, hc, pace)

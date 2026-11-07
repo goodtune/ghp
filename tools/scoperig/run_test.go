@@ -51,6 +51,7 @@ type fakeGHP struct {
 	pushW      bool
 	deletes    []string          // ids passed to DELETE /api/tokens/{id}, in order
 	onScenario func(path string) // called for scenario (non-fixture) GETs
+	userAgents map[string]int    // User-Agent -> request count
 }
 
 type fakeTok struct {
@@ -95,6 +96,10 @@ func (f *fakeGHP) tokenOK(r *http.Request) bool {
 func (f *fakeGHP) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.requests++
+	if f.userAgents == nil {
+		f.userAgents = map[string]int{}
+	}
+	f.userAgents[r.Header.Get("User-Agent")]++
 	if strings.HasPrefix(r.URL.Path, "/api/v3") && r.Method != http.MethodGet {
 		f.apiWrites++
 	}
@@ -370,8 +375,9 @@ func fakeDeps(f *fakeGHP, paceCalls *[]int) runDeps {
 			}
 			return time.Millisecond
 		},
-		GHVersion: func(context.Context, string) string { return "2.102.0" },
-		RigCommit: func() string { return "abc1234" },
+		GHVersion:  func(context.Context, string) string { return "2.102.0" },
+		RigCommit:  func() string { return "abc1234" },
+		RigVersion: func() string { return "v9.9.9" },
 	}
 }
 
@@ -453,6 +459,14 @@ func TestRun_EndToEndFake(t *testing.T) {
 		} `json:"tokens"`
 	}
 	_ = json.Unmarshal(raw, &doc)
+	// Every request (preflight, management, proxy, fixtures, scenarios)
+	// carries the rig User-Agent with this run's id.
+	f.mu.Lock()
+	uas := f.userAgents
+	f.mu.Unlock()
+	if want := "ghp-scoperig/v9.9.9 (run=20261105T0412Z-7f3a)"; len(uas) != 1 || uas[want] == 0 {
+		t.Errorf("User-Agents = %v, want only %q", uas, want)
+	}
 	if doc.GHVersion != "2.102.0" || doc.RigCommit != "abc1234" {
 		t.Errorf("gh_version=%q rig_commit=%q, want 2.102.0 and abc1234", doc.GHVersion, doc.RigCommit)
 	}

@@ -133,7 +133,9 @@ func TestIsGHPDenial(t *testing.T) {
 
 func TestMatch_ExpiresWithin(t *testing.T) {
 	t0 := time.Date(2026, 11, 7, 1, 0, 0, 0, time.UTC)
-	body := func(ts string) []byte { return []byte(`{"id":"x","expires_at":"` + ts + `","nested":{"at":"` + ts + `"}}`) }
+	body := func(ts string) []byte {
+		return []byte(`{"id":"x","expires_at":"` + ts + `","nested":{"at":"` + ts + `"}}`)
+	}
 	obs := func(ts string) *Observation {
 		return &Observation{Status: 201, Body: body(ts), RequestedAt: t0, RespondedAt: t0.Add(2 * time.Second)}
 	}

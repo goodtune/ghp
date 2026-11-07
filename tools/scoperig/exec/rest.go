@@ -76,10 +76,8 @@ func vhostRequest(ctx context.Context, path string, r *scenario.Request, tok tok
 		base = &http.Client{Timeout: RequestTimeout}
 	}
 	var tr *http.Transport
-	if t, ok := base.Transport.(*http.Transport); ok {
+	if t, ok := BaseTransport(base.Transport).(*http.Transport); ok {
 		tr = t.Clone()
-	} else if base.Transport == nil {
-		tr = http.DefaultTransport.(*http.Transport).Clone()
 	} else {
 		return nil, fmt.Errorf("vhost %s: unsupported transport %T", r.Vhost, base.Transport)
 	}
@@ -89,7 +87,7 @@ func vhostRequest(ctx context.Context, path string, r *scenario.Request, tok tok
 	tr.TLSClientConfig.ServerName = r.Vhost
 	defer tr.CloseIdleConnections()
 	client := *base
-	client.Transport = tr
+	client.Transport = rewrap(base.Transport, tr)
 	venv := *env
 	venv.HTTP = &client
 	host := r.Vhost

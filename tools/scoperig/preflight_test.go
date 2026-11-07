@@ -223,7 +223,7 @@ func TestProbeCapabilities(t *testing.T) {
 	t.Run("vhost dial fails", func(t *testing.T) {
 		srv := probeServer(t, probeOpts{tokensAll: 200})
 		srv.Close()
-		if probeVHost(context.Background(), "127.0.0.1:1", nil) {
+		if probeVHost(context.Background(), "127.0.0.1:1", nil, "") {
 			t.Fatal("want false")
 		}
 	})
