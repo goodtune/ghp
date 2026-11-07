@@ -8,11 +8,13 @@
   "summary": {
     "pass": 2,
     "fail": 3,
-    "known": 2,
+    "known": 3,
     "error": 1,
     "gap": 2,
-    "base": 9,
+    "base": 10,
     "confidence": 0.2857142857142857,
+    "covered": 8,
+    "coverage": 0.8,
     "manual": [
       "C-MAN"
     ],

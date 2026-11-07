@@ -62,6 +62,7 @@ func (r *Report) WriteTable(w io.Writer) error {
 	ew.printf("\nclaims: %d PASS, %d FAIL (of which %d ERROR), %d KNOWN, %d GAP   manual: %s   untestable: %s\n",
 		sm.Pass, sm.Fail, sm.Error, sm.Known, sm.Gap, list(sm.Manual), list(sm.Untestable))
 	ew.printf("confidence: %s   (PASS / (base - KNOWN))\n", sm.ConfidenceText())
+	ew.printf("coverage: %s   (base claims with a runnable scenario / base)\n", sm.CoverageText())
 	ew.printf("coverage gaps (%d): %s\n", len(sm.Gaps), list(sm.Gaps))
 	ew.printf("tokens: %d created, %d revoked, %d leftover", r.Tokens.Created, r.Tokens.Revoked, len(r.Tokens.LeftoverIDs))
 	if len(r.Tokens.LeftoverIDs) > 0 {
@@ -207,6 +208,8 @@ type jsonReport struct {
 		Gap        int      `json:"gap"`
 		Base       int      `json:"base"`
 		Confidence float64  `json:"confidence"`
+		Covered    int      `json:"covered"`
+		Coverage   float64  `json:"coverage"`
 		Manual     []string `json:"manual"`
 		Untestable []string `json:"untestable"`
 	} `json:"summary"`
@@ -273,6 +276,7 @@ func (r *Report) WriteJSON(w io.Writer) error {
 	sm := r.Summary
 	j.Summary.Pass, j.Summary.Fail, j.Summary.Known, j.Summary.Error = sm.Pass, sm.Fail, sm.Known, sm.Error
 	j.Summary.Gap, j.Summary.Base, j.Summary.Confidence = sm.Gap, sm.Base, sm.Confidence
+	j.Summary.Covered, j.Summary.Coverage = sm.Covered, sm.Coverage
 	j.Summary.Manual, j.Summary.Untestable = cleanList(sm.Manual), cleanList(sm.Untestable)
 	j.CoverageGaps = cleanList(sm.Gaps)
 	j.Claims = make([]jsonClaim, 0, len(r.Claims))

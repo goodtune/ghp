@@ -40,10 +40,11 @@ type ClaimResult struct {
 // Summary holds the claim counts over base and the confidence figure.
 // Pass, Fail, Known, Error and Gap count base claims only (Error counts
 // base claims with at least one ERROR scenario; those claims are also FAIL).
+// Covered counts base claims with at least one runnable scenario result.
 type Summary struct {
-	Pass, Fail, Known, Error, Gap, Base int
-	Confidence                          float64
-	Manual, Untestable, Gaps            []string
+	Pass, Fail, Known, Error, Gap, Base, Covered int
+	Confidence, Coverage                         float64
+	Manual, Untestable, Gaps                     []string
 }
 
 // Report is one rig run.

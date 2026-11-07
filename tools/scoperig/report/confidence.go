@@ -3,7 +3,6 @@ package report
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
 )
@@ -52,13 +51,16 @@ func rollUp(rs []ScenarioResult) Status {
 	return StatusGap
 }
 
-// inBase reports whether a claim counts toward the confidence base.
+// inBase reports whether a claim counts toward the confidence base. GAP
+// probes count like any other periodic claim: every GAP scenario expects the
+// safe behaviour, so a closed bypass PASSes and raises confidence (#349).
 func inBase(c scenario.Claim) bool {
-	return c.Testable == "periodic" && !strings.HasPrefix(c.ID, "GAP-")
+	return c.Testable == "periodic"
 }
 
 // Summarise counts base claims by status and lists manual, untestable and
-// coverage-gap (base claims with no scenario at all) claims.
+// coverage-gap (base claims with no scenario at all) claims. Covered counts
+// base claims with at least one runnable (non-GAP) scenario result.
 func Summarise(t *scenario.Tree, claims []ClaimResult) Summary {
 	var s Summary
 	for _, cr := range claims {
@@ -92,11 +94,18 @@ func Summarise(t *scenario.Tree, claims []ClaimResult) Summary {
 				break
 			}
 		}
+		for _, r := range cr.Scenarios {
+			if r.Status != StatusGap {
+				s.Covered++
+				break
+			}
+		}
 		if len(cr.Scenarios) == 0 {
 			s.Gaps = append(s.Gaps, c.ID)
 		}
 	}
 	s.Confidence = Confidence(s.Pass, s.Known, s.Base)
+	s.Coverage = Coverage(s.Covered, s.Base)
 	return s
 }
 
@@ -112,4 +121,17 @@ func Confidence(pass, known, base int) float64 {
 // ConfidenceText renders the formula, e.g. "26/(50-1) = 53.1%".
 func (s Summary) ConfidenceText() string {
 	return fmt.Sprintf("%d/(%d-%d) = %.1f%%", s.Pass, s.Base, s.Known, s.Confidence*100)
+}
+
+// Coverage is covered / base, or 0 when base is not positive.
+func Coverage(covered, base int) float64 {
+	if base <= 0 {
+		return 0
+	}
+	return float64(covered) / float64(base)
+}
+
+// CoverageText renders the formula, e.g. "40/60 = 66.7%".
+func (s Summary) CoverageText() string {
+	return fmt.Sprintf("%d/%d = %.1f%%", s.Covered, s.Base, s.Coverage*100)
 }

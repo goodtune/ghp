@@ -223,9 +223,10 @@ Limitations: the histograms are instance-wide, so other traffic in the window (i
 
 ### Confidence and coverage gaps
 
-- base = claims whose `testable` is not `never` or `manual`. Manual claims are listed as "manual"; `never` claims as "untestable". GAP probes (A1–A9) are reported but not in base.
+- base = claims whose `testable` is `periodic`. Manual claims are listed as "manual"; `never` claims as "untestable". GAP probes (`GAP-*`) that are `periodic` are in base like any other claim. Every GAP scenario expects the safe behaviour, so a closed bypass is PASS and raises confidence, and a regression is FAIL and lowers it.
 - **confidence = PASS / (base − KNOWN)**.
-- The coverage-gap list names every base claim with no runnable scenario.
+- **coverage = covered / base**, where covered is the number of base claims with at least one runnable (not GAP) scenario result. Coverage tells you how much of base the run exercised; confidence tells you how much of that holds. The text report prints both lines; the JSON report has `summary.covered` and `summary.coverage`.
+- The coverage-gap list names every base claim with no scenario at all.
 
 Iteration 1 covers 28 claims. The prediction is 27 PASS and 22 GAP, so confidence is 27 / 49 (1 KNOWN), about 55%. Planned iterations:
 
