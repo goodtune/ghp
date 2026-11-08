@@ -104,13 +104,24 @@ The proxy decision pipeline is broken into individually timed stages so that the
 | `forward_proxy_selection` | Selecting the upstream forward proxy for the outbound request (ruleset lookup: token → app → net → system layers for proxied traffic; control → system for control-plane calls, labeled `token_type="unknown"`) |
 | `upstream_roundtrip` | Proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer) |
 | `redirect_head_check` | HEAD request to the release redirect target to verify asset availability before issuing a 302 (releases handler only) |
+| `graphql_analysis` | Parsing a `/graphql` request body and statically computing its scope and repository requirements (GraphQL handler, scoped tokens only; open-scoped tokens skip analysis and record no sample) |
+| `cache_lookup` | Git cache middleware database lookup of the per-repository cache record, deciding whether a git request is served from the local mirror (labeled `token_type="unknown"`; runs before token resolution) |
+| `request_body_read` | Buffering the client's `/graphql` request body before analysis (GraphQL handler, scoped tokens only); includes waiting for the client to upload the body |
+| `request_build` | Building the outbound request in `forwardRequest` (URL, request clone, header copy), up to the enterprise exception call |
+| `pipeline_other` | Derived, not timed: `total` minus the sum of the stages observed for the same request before `total`. Recorded only for requests that pass through `proxy.Handler.ServeHTTP` (the per-request trace is set there with `metrics.WithDecisionTrace`). A large value means time outside every stage (GC, scheduling, or a new untimed span) |
 
-Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tokens, or `unknown` for pre-resolution stages).
+Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tokens, or `unknown` for pre-resolution stages), `vhost` (`api`, `web` for `github.com`, `codeload`, `management`, `copilot`, or `unknown` when there is no inbound request, e.g. background control-plane calls).
+
+The vhost is set once on the request context by `newHostDispatch` (`metrics.WithVhost`); `ObserveDecision(ctx, stage, tokenType, dur)` reads it. Always pass the inbound request context (or an outbound request built from it) so the sample lands under the right vhost. Adding the label (#330) breaks queries that match an exact label set; `sum by (...)` queries are unaffected.
+
+When `total` reaches `metrics.slow_decision_threshold` (default 10ms, `GHP_METRICS_SLOW_DECISION_THRESHOLD`, `0` disables), `ObserveDecision` logs one `slow_decision` warn line with `total_ms`, `pipeline_other_ms`, a `<stage>_ms` field per traced stage, `token_type`, `vhost`, `method` and `path`. It never logs the token. Any new stage observed before `total` appears in that line and is subtracted from `pipeline_other` automatically.
+
+Never record a hard-coded zero duration. If a stage does not run on a code path, skip the sample; otherwise time it with `time.Since`.
 
 ### Guidelines for new metrics
 
 - **Instrument every decision point.** If code determines whether a request should proceed, be blocked, or be modified, that decision must be timed.
-- **Use fine-grained histogram buckets** for internal decision stages (50µs–1s range); extend to multi-second buckets (2.5s–10s) for `upstream_roundtrip` which can exceed 1s on slow networks or under GitHub load. Use default Prometheus buckets for end-to-end request durations.
+- **Use fine-grained histogram buckets** for internal decision stages (10µs–1s range); extend to multi-second buckets (2.5s–10s) for `upstream_roundtrip` which can exceed 1s on slow networks or under GitHub load. Use default Prometheus buckets for end-to-end request durations.
 - **Label cardinality matters.** Avoid unbounded label values (e.g. don't use full paths as labels). Use the existing `ObserveDecision()` and `ObserveProxyRequest()` helpers.
 - **Test every metric.** New metrics must have a corresponding test in `internal/metrics/metrics_test.go` that verifies the metric increments correctly.
 
@@ -123,6 +134,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - `ghp_token_scope_rejected_total` — token scope entries rejected at creation/update by `reason` (`unknown_permission`, `invalid_level`)
 - `ghp_github_ratelimit_remaining` / `ghp_github_ratelimit_limit` — GitHub rate limit gauges
 - `ghp_github_token_refresh_total` — OAuth token refresh attempts
+- `ghp_agent_repo_narrowing_failed_total` — installation token mints refused because agent-token repositories could not be narrowed to the installation account, by `reason` (`owner_mismatch`, `malformed`, `lookup_failed`, `empty_login`)
 - `ghp_auth_rate_limit_total` — rate limiter rejections
 - `ghp_scope_unmapped_denied_total` — scoped-token REST requests denied because no scope rule matched (`token_type`, `method`)
 - `ghp_enterprise_exception_total` — enterprise restriction exception matches by outcome (`header_omitted`, `identity_substituted`, `team_denied`, `unauthenticated_denied`, `identity_error`)
@@ -151,6 +163,7 @@ Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tok
 - Explicit error handling (`if err != nil`)
 - Unit tests colocated with source (`*_test.go`)
 - `CGO_ENABLED=0` for all builds (pure Go, no C dependencies)
+- Compare GitHub owner, repository and login names with `asciiutil.EqualFold` / `asciiutil.ToLower`, never `strings.EqualFold` / `strings.ToLower` (Unicode folding lets `ſ` match `s` and the Kelvin sign match `k`; #317)
 - Configuration via YAML files or environment variables with `GHP_` prefix
 
 ### Sentinel Errors
@@ -263,7 +276,7 @@ When working on `internal/github/registry.go`:
 
 `internal/proxy/graphql.go` enforces token scopes on `/graphql` requests via static analysis. The analyzer is **deny-by-default**: any field it cannot classify against the curated tables below produces a 403. When a legitimate query is rejected, the fix is almost always to add the field name to the right table — not to relax the analyzer.
 
-### The four tables
+### The tables
 
 | Table | Purpose | Add to it when… |
 |---|---|---|
@@ -271,19 +284,24 @@ When working on `internal/github/registry.go`:
 | `fieldScopeRequirements` | Maps a query/read field name → `{permission, level}`. | The field exposes a permission-gated **read** resource (e.g. `pullRequests` → `pull_requests:read`, `discussions` → `discussions:read`). |
 | `mutationScopeRequirements` | Maps a top-level mutation name → `{permission, "write"}`. | A new mutation surfaces (e.g. `createIssue` → `issues:write`). Unmapped mutation root fields are denied — the proxy never grants a write scope it can't classify. |
 | `crossRepoAnywhereFields` / `crossRepoRootOnlyFields` | Field names that can leak data from outside the repository allowlist (`search`, `viewer.repositories`, root-level `node(id:)`, …). `*RootOnly` is for names that are cross-repo only at the operation root (e.g. `node`/`nodes`/`resource`); nested `Connection.nodes` is a benign helper and lives in `alwaysAllowedFields`. | The field can return repositories/objects the analyzer cannot statically pin to a `repository(owner, name)` selection. Repo-scoped tokens are rejected when any cross-repo field appears. |
+| `metadataOnlySubtreeFields` / `metadataSubtreeLeaves` | Fields whose result can belong to another repository (`headRepository`, `headRepositoryOwner`, `parent`, `subIssues`, `blockedBy`, `blocking`, `closedByPullRequestsReferences`; #339). Beneath them only `alwaysAllowedFields` entries and the scalar leaves in `metadataSubtreeLeaves` (`number`, `state`, `title`) may appear; anything else is recorded as cross-repo `<subtree>.<field>`. | A new field returns an object (fork, owner, linked issue) that can sit outside the pinned repository but gh needs its metadata. Add a leaf to `metadataSubtreeLeaves` only when a gh command needs it, and document the disclosure. |
+| `crossRepoParentAwareFields` | Connections that span repositories unless their immediate parent is a pinned `repository(owner, name)` (`issues`, `pullRequests`, `issueComments`, `commitComments`; #340). | A connection exists on both `Repository` and `User`/`Organization`/`Viewer` and the user-level form returns data from every repository. |
+| `typeConditionScopeRequirements` | Maps a fragment type condition beneath a root lookup (`rootLookupFields`: `node`, `nodes`, `resource`, `search`) → `{permission, "read"}` (e.g. `Issue` → `issues:read`, `Repository` → `metadata:read`). Interfaces such as `Node` are deliberately absent. | A client needs a root lookup to read a concrete object type that is not yet mapped. Unmapped type conditions are denied. |
 
 ### How the analyzer decides
 
 For each field walked:
 
-1. **Mutation root field** (mutation operation, `atRoot==true`): `__typename` needs no scope. Otherwise looked up in `mutationScopeRequirements`. Hit → record the scope. Miss → flagged as unknown (denied). A mutation with no mapped field (e.g. only `__typename`) is still denied by the verdict's mutation checks.
-2. **Otherwise** the field is checked against the tables in this order:
+1. **Root object lookup** (non-mutation, `atRoot==true`, name in `rootLookupFields`: `node`, `nodes`, `resource`, `search`): never consults `alwaysAllowedFields` or `fieldScopeRequirements` (#324). At the result position (the field's own selection set; for `search`, under `nodes` and `edges { node }`) every fragment — inline or named — must have a type condition in `typeConditionScopeRequirements`, and that scope is recorded. Fragments with no type condition are transparent. Only `id` and `__typename` may be selected outside a fragment. No mapped fragment, an unmapped type condition, or any other direct field → unknown (denied). Fragment bodies are walked by `walkGatedBody`: a fragment nested directly in the body (inline or named) must have the same type condition or is gated through the table too (its scope added; interface/unmapped → unknown); fields are walked as ordinary nested selections. Nested `Connection.nodes` is unaffected. The names stay in the cross-repo tables, so repo-scoped tokens still deny.
+2. **Mutation root field** (mutation operation, `atRoot==true`): `__typename` needs no scope. Otherwise looked up in `mutationScopeRequirements`. Hit → record the scope. Miss → flagged as unknown (denied). A mutation with no mapped field (e.g. only `__typename`) is still denied by the verdict's mutation checks.
+3. **Otherwise** the field is checked against the tables in this order:
    1. `alwaysAllowedFields` — pass with no scope requirement.
    2. `fieldScopeRequirements` — record the scope.
    3. **Scalar leaf** (no selection set): permitted at non-root; denied at root (no parent scope to gate it).
    4. **Object-typed field** (has a selection set) that fell through all of the above: flagged as unknown (denied).
-3. **Cross-repo check** runs in parallel — `crossRepoAnywhereFields` always; `crossRepoRootOnlyFields` only when `atRoot==true`.
-4. **Repository pinning** — `repository(owner, name)` records the repo when each argument is either a **literal string** or a **variable `$v` declared as `String`/`String!` (not a list) whose member in the request's `variables` object is a JSON string**. Anything else sets `hasUnpinnedRepositoryLookup`, which fails the request for repo-scoped tokens: a missing argument; a variable that is undeclared, has another type, is absent from `variables`, or is `null`/number/boolean/array/object. Operation default values are never used. The request envelope is parsed strictly by `parseGraphQLEnvelope` (never by encoding/json struct-tag matching, which folds case and Unicode): every top-level key must be exactly `query`, `operationName`, `variables` or `extensions`, with no duplicates, else 400. No variable resolves when the `variables` object has duplicate keys or the document has more than one operation (`resolveVariables`). The body analysed is the body forwarded, byte for byte. A bare `repository` with **no arguments** (e.g. `Issue.repository`) is a nested type accessor, not a lookup, and is ignored.
+4. **Cross-repo check** runs in parallel — `crossRepoAnywhereFields` always; `crossRepoRootOnlyFields` only when `atRoot==true`. The walk also carries a `walkCtx` (immediate parent field name, whether that parent is a pinned `repository(owner, name)` lookup, and the enclosing metadata-only subtree). Fragments pass it through unchanged. `checkCrossRepoContext` applies two parent-aware rules: (a) **metadata-only subtree** — beneath a `metadataOnlySubtreeFields` entry, a field not in `alwaysAllowedFields` (and not a `metadataSubtreeLeaves` scalar leaf) is cross-repo `<subtree>.<field>`; (b) **parent-aware connections** — a `crossRepoParentAwareFields` name whose parent is not a pinned repository lookup is cross-repo `<parent>.<field>` (a bare `Issue.repository` is not pinned). Both rules only add cross-repo entries; scope and unmapped classification still run, so permission-only tokens are unaffected.
+5. **Repository pinning** — `repository(owner, name)` records the repo when each argument is either a **literal string** or a **variable `$v` declared as `String`/`String!` (not a list) whose member in the request's `variables` object is a JSON string**. Anything else sets `hasUnpinnedRepositoryLookup`, which fails the request for repo-scoped tokens: a missing argument; a variable that is undeclared, has another type, is absent from `variables`, or is `null`/number/boolean/array/object. Operation default values are never used. The request envelope is parsed strictly by `parseGraphQLEnvelope` (never by encoding/json struct-tag matching, which folds case and Unicode): every top-level key must be exactly `query`, `operationName`, `variables` or `extensions`, with no duplicates, else 400. No variable resolves when the `variables` object has duplicate keys or the document has more than one operation (`resolveVariables`). The body analysed is the body forwarded, byte for byte. A bare `repository` with **no arguments** (e.g. `Issue.repository`) is a nested type accessor, not a lookup, and is ignored.
+6. **Introspection-only operations** (#342) — when every root selection of a query (fragments expanded) is `__type`, `__schema` or `__typename`, the analysis sets `introspectionOnly` and `graphQLVerdict` skips the "must reference repository(owner, name)" requirement for repo-scoped tokens. Every other check (unmapped fields under `__type`, cross-repo, allowlist) still applies, and any other root field restores the requirement. Do not extend this to other root fields.
 
 The lookup is **by field name only** — the analyzer doesn't load GitHub's SDL. Where the same name on different parent types could mean different things, err toward the stricter scope.
 
@@ -304,6 +322,7 @@ The 403 response names the fields the proxy could not classify (capped at `maxRe
 ### Things to never silently do
 
 - **Never** add a write-capable field to `alwaysAllowedFields`. That table is metadata-only.
+- **Never** add an interface or union (`Node`, `Comment`, `SearchResultItem`, …) to `typeConditionScopeRequirements`, and never let a root lookup fall back to `alwaysAllowedFields`. Only concrete types pin a scope.
 - **Never** add a mutation to `fieldScopeRequirements` (it's checked only for non-mutation paths). Mutations belong in `mutationScopeRequirements`.
 - **Never** skip the cross-repo classification just because a field also has a scope mapping. A field can require a scope **and** be cross-repo (e.g. `search` requires no specific scope but is cross-repo).
 - **Never** loosen `stringArg`/`resolveVariables` beyond the rule in step 4 (for example: using default values, coercing non-string values, resolving variables when keys are duplicated or the document has several operations, relaxing the exact-key envelope check, or analysing a re-encoded body). A repo lookup the proxy cannot resolve exactly as GitHub will can't be allowlist-checked; that's the whole point of `hasUnpinnedRepositoryLookup`.
@@ -311,7 +330,7 @@ The 403 response names the fields the proxy could not classify (capped at `maxRe
 ### When the user-facing docs need updating
 
 `docs/features/token-scoping.md` has a known-limitations section. Update it when:
-- A trade-off changes (currently: scalar leaves under always-allowed parents are not deny-by-default, variable pinning trusts the forwarded `variables` object, repo-scoped GraphQL mutations are not supported).
+- A trade-off changes (currently: scalar leaves under always-allowed parents are not deny-by-default, variable pinning trusts the forwarded `variables` object, repo-scoped GraphQL mutations are not supported, metadata-only subtrees disclose the name/owner of a fork and the number/title/state of a linked issue in another repository, cross-repo rules match only the field name and its immediate parent).
 - A new class of field is added that operators may run into (e.g. a new cross-repo field).
 
 ## CI

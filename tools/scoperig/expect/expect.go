@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/goodtune/ghp/tools/scoperig/ghdebug"
 	"github.com/goodtune/ghp/tools/scoperig/redact"
@@ -36,8 +37,15 @@ const (
 	MsgLookupFailed          = "looking up token:"
 	MsgManagementAnonymous   = "Authentication with a GHP-issued token (ghx_ or gha_) is required"
 	MsgManagementNative      = "Native GitHub tokens are not accepted on the GHP management host"
-	DocsURLREST              = "https://docs.github.com/rest"
-	DocsURLGraphQL           = "https://docs.github.com/graphql"
+	MsgRepoRestrictedNonRepo = "Token is restricted to specific repositories"
+	MsgPassthroughUnmapped   = "Token is scoped;"
+	MsgUnsafePath            = "Request path contains an unsafe segment or character"
+	// MsgEndpointNotPermitted is matched as a substring, not a prefix: the
+	// message starts "Endpoint <METHOD> <path>", and a bare "Endpoint"
+	// prefix could match GitHub's own messages.
+	MsgEndpointNotPermitted = " is not permitted for scoped tokens (no scope rule matches)"
+	DocsURLREST             = "https://docs.github.com/rest"
+	DocsURLGraphQL          = "https://docs.github.com/graphql"
 )
 
 var denialPrefixes = []string{
@@ -46,6 +54,13 @@ var denialPrefixes = []string{
 	MsgExpired, MsgBorderPolicy, MsgInvalidToken, MsgAnonymousGit,
 	MsgReleaseDownloads, MsgTokenResolutionFailed, MsgInvalidPrefix,
 	MsgLookupFailed, MsgManagementAnonymous, MsgManagementNative,
+	MsgRepoRestrictedNonRepo, MsgPassthroughUnmapped, MsgUnsafePath,
+}
+
+// denialContains holds GHP denial messages whose fixed text is not at the
+// start; a message must also start with the paired prefix.
+var denialContains = []struct{ prefix, substr string }{
+	{"Endpoint ", MsgEndpointNotPermitted},
 }
 
 // Observation is what an executor saw for one step.
@@ -57,6 +72,12 @@ type Observation struct {
 	Stdout    string
 	Stderr    string
 	Exchanges []ghdebug.Exchange
+	// RequestedAt and RespondedAt bracket the request that produced this
+	// observation (zero when not recorded). expires_within is relative to
+	// them.
+	RequestedAt, RespondedAt time.Time
+	// GHStderrTruncated is set when gh's stderr exceeded the capture cap.
+	GHStderrTruncated bool
 }
 
 // Match returns nil if every set field of e holds, else one error per
@@ -92,6 +113,17 @@ func Match(e *scenario.Expect, o *Observation) []error {
 	for _, k := range sortedKeys(e.Header) {
 		if got := o.Header.Get(k); got != e.Header[k] {
 			add("header %s: want %q, got %q", k, e.Header[k], got)
+		}
+	}
+	if len(e.HeaderNotContains) > 0 {
+		lines := headerLines(o.Header, e.HeaderNotContainsExcept)
+		for _, s := range e.HeaderNotContains {
+			for _, l := range lines {
+				if strings.Contains(l, s) {
+					add("headers: want not contains %q, got %q", s, l)
+					break
+				}
+			}
 		}
 	}
 	for _, k := range sortedKeys(e.JSON) {
@@ -131,6 +163,11 @@ func Match(e *scenario.Expect, o *Observation) []error {
 			add("stderr: want contains %q, got %s", s, snippet([]byte(o.Stderr)))
 		}
 	}
+	if w := e.ExpiresWithin; w != nil {
+		if msg := matchExpiresWithin(w, o); msg != "" {
+			add("%s", msg)
+		}
+	}
 	if len(errs) == 0 {
 		return nil
 	}
@@ -139,6 +176,42 @@ func Match(e *scenario.Expect, o *Observation) []error {
 		out[i] = fmt.Errorf("%s", redact.String(s))
 	}
 	return out
+}
+
+// matchExpiresWithin checks that the timestamp at w's field lies in
+// [RequestedAt+min, RespondedAt+max]. It returns "" when it holds.
+func matchExpiresWithin(w *scenario.ExpiresWithin, o *Observation) string {
+	path := w.FieldPath()
+	lo, err := time.ParseDuration(w.Min)
+	if err != nil {
+		return fmt.Sprintf("expires_within %s: bad min %q: %v", path, w.Min, err)
+	}
+	hi, err := time.ParseDuration(w.Max)
+	if err != nil {
+		return fmt.Sprintf("expires_within %s: bad max %q: %v", path, w.Max, err)
+	}
+	if o.RequestedAt.IsZero() {
+		return fmt.Sprintf("expires_within %s: no request time recorded", path)
+	}
+	end := o.RespondedAt
+	if end.IsZero() {
+		end = o.RequestedAt
+	}
+	raw, err := JSONPath(o.Body, path)
+	if err != nil {
+		return fmt.Sprintf("expires_within %s: want a timestamp, got error (%v)", path, err)
+	}
+	got, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return fmt.Sprintf("expires_within %s: want an RFC 3339 timestamp, got %q", path, raw)
+	}
+	earliest, latest := o.RequestedAt.Add(lo), end.Add(hi)
+	if got.Before(earliest) || got.After(latest) {
+		return fmt.Sprintf("expires_within %s: want between request+%s and response+%s (%s..%s), got %s (request+%s)",
+			path, lo, hi, earliest.UTC().Format(time.RFC3339), latest.UTC().Format(time.RFC3339),
+			got.UTC().Format(time.RFC3339), got.Sub(o.RequestedAt).Round(time.Second))
+	}
+	return ""
 }
 
 const snippetMax = 200
@@ -265,6 +338,11 @@ func IsGHPDenial(body []byte) bool {
 			return true
 		}
 	}
+	for _, c := range denialContains {
+		if strings.HasPrefix(msg, c.prefix) && strings.Contains(msg, c.substr) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -272,4 +350,27 @@ func IsGHPDenial(body []byte) bool {
 // 403 status carrying a GHP denial message.
 func IsGHPDenialResponse(status int, body []byte) bool {
 	return (status == 401 || status == 403) && IsGHPDenial(body)
+}
+
+// headerLines returns "Name: value" for every value of h, sorted by name,
+// leaving out the headers named in except (case-insensitive).
+func headerLines(h http.Header, except []string) []string {
+	skip := make(map[string]bool, len(except))
+	for _, x := range except {
+		skip[http.CanonicalHeaderKey(x)] = true
+	}
+	names := make([]string, 0, len(h))
+	for k := range h {
+		if !skip[http.CanonicalHeaderKey(k)] {
+			names = append(names, k)
+		}
+	}
+	sort.Strings(names)
+	var out []string
+	for _, k := range names {
+		for _, v := range h[k] {
+			out = append(out, k+": "+v)
+		}
+	}
+	return out
 }

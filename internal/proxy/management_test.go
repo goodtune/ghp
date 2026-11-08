@@ -117,6 +117,31 @@ func decisionStageSampleCount(t *testing.T, stage, tokenType string) uint64 {
 	return 0
 }
 
+// decisionStageSampleSum returns the observation sum (seconds) of a decision
+// stage histogram for the given token type label.
+func decisionStageSampleSum(t *testing.T, stage, tokenType string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "ghp_proxy_decision_duration_seconds" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				labels[lp.GetName()] = lp.GetValue()
+			}
+			if labels["stage"] == stage && labels["token_type"] == tokenType {
+				return m.GetHistogram().GetSampleSum()
+			}
+		}
+	}
+	return 0
+}
+
 // TestRequireGHPToken_PassObservesBorderStage checks that the pass path is
 // timed under border_policy_check with the token type from the prefix, and
 // that total is left to the downstream handler.

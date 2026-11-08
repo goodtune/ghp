@@ -293,7 +293,7 @@ func deniedCount(t *testing.T, vhost, reason string) float64 {
 	return m.GetCounter().GetValue()
 }
 
-func scopeStageSampleCount(t *testing.T, tokenType string) uint64 {
+func scopeStageSampleCount(t *testing.T, tokenType, vhost string) uint64 {
 	t.Helper()
 	mfs, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
@@ -308,7 +308,7 @@ func scopeStageSampleCount(t *testing.T, tokenType string) uint64 {
 			for _, lp := range m.GetLabel() {
 				labels[lp.GetName()] = lp.GetValue()
 			}
-			if labels["stage"] == metrics.StageScopeEnforcement && labels["token_type"] == tokenType {
+			if labels["stage"] == metrics.StageScopeEnforcement && labels["token_type"] == tokenType && labels["vhost"] == vhost {
 				return m.GetHistogram().GetSampleCount()
 			}
 		}
@@ -327,10 +327,11 @@ func TestScopedWebHandler_MappingTimed(t *testing.T) {
 		path   string
 		codeld bool
 		want   uint64
+		vhost  string
 	}{
-		{"github scoped archive", "acme/a", "github.com", "/acme/a/archive/HEAD.tar.gz", false, 2},
-		{"github open-scoped", "", "github.com", "/acme/a/pulls", false, 1},
-		{"codeload scoped", "acme/a", "codeload.github.com", "/acme/a/zip/main", true, 2},
+		{"github scoped archive", "acme/a", "github.com", "/acme/a/archive/HEAD.tar.gz", false, 2, metrics.VhostWeb},
+		{"github open-scoped", "", "github.com", "/acme/a/pulls", false, 1, metrics.VhostWeb},
+		{"codeload scoped", "acme/a", "codeload.github.com", "/acme/a/zip/main", true, 2, metrics.VhostCodeload},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -340,15 +341,16 @@ func TestScopedWebHandler_MappingTimed(t *testing.T) {
 			if tt.codeld {
 				h = f.codeloadHandler()
 			}
-			before := scopeStageSampleCount(t, "proxy")
+			before := scopeStageSampleCount(t, "proxy", tt.vhost)
 			req := httptest.NewRequest("GET", "http://"+tt.host+tt.path, nil)
+			req = req.WithContext(metrics.WithVhost(req.Context(), tt.vhost))
 			req.Header.Set("Authorization", "Bearer "+tok)
 			rr := httptest.NewRecorder()
 			h.ServeHTTP(rr, req)
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d; body: %s", rr.Code, rr.Body.String())
 			}
-			if got := scopeStageSampleCount(t, "proxy") - before; got != tt.want {
+			if got := scopeStageSampleCount(t, "proxy", tt.vhost) - before; got != tt.want {
 				t.Fatalf("scope_enforcement samples = %d, want %d", got, tt.want)
 			}
 		})

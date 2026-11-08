@@ -25,3 +25,53 @@
   expect:
     status: 200
     header: {X-OAuth-Scopes: "contents:read, metadata:read"}
+
+# TOK-C01: the client never sees the real credential. Observations are
+# redacted, so a token-shaped string in a response shows as
+# "<prefix>[REDACTED]" (ghx_, gho_, ghu_, ghp_, ghs_, ghr_, github_pat_).
+# Other forms show as a bare "[REDACTED]": a base64 Basic credential, a
+# bearer/token value, and a wholly masked Authorization or Cookie header.
+# So the body and every header line must not contain "[REDACTED]" at all.
+# Set-Cookie is exempt: redaction masks it whole whatever it holds.
+- id: TOK-C01.user-no-credential
+  claim: TOK-C01
+  doc: docs/features/token-scoping.md#proxy-tokens-ghx_
+  description: GET /user with an open token returns no token-shaped string (not the ghx_ token, not the GitHub credential) in the body or headers.
+  profile: open
+  kind: rest
+  method: GET
+  path: /user
+  expect:
+    status: 200
+    json: {"$.login": "{{.Login}}"}
+    body_not_contains: ["[REDACTED]"]
+    header_not_contains: ["[REDACTED]"]
+    header_not_contains_except: [Set-Cookie]
+
+- id: TOK-C01.scoped-repo-no-credential
+  claim: TOK-C01
+  doc: docs/features/token-scoping.md#proxy-tokens-ghx_
+  description: GET /repos/A with a scoped token returns no token-shaped string in the body or headers.
+  profile: repo-A-perm-ro
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}
+  expect:
+    status: 200
+    body_not_contains: ["[REDACTED]"]
+    header_not_contains: ["[REDACTED]"]
+    header_not_contains_except: [Set-Cookie]
+
+- id: TOK-C01.graphql-no-credential
+  claim: TOK-C01
+  doc: docs/features/token-scoping.md#proxy-tokens-ghx_
+  description: A GraphQL viewer query with an open token returns no token-shaped string in the body or headers.
+  profile: open
+  kind: graphql
+  query: "{ viewer { login } }"
+  expect:
+    status: 200
+    json: {"$.data.viewer.login": "{{.Login}}"}
+    body_not_contains: ["[REDACTED]"]
+    header_not_contains: ["[REDACTED]"]
+    header_not_contains_except: [Set-Cookie]

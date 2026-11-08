@@ -11,6 +11,7 @@
 package metrics
 
 import (
+	"context"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -188,6 +189,15 @@ var (
 		Help: "Total number of enterprise access restriction exception matches, by outcome.",
 	}, []string{"outcome"})
 
+	// AgentRepoNarrowingFailedTotal counts installation token mints refused
+	// because the repository list could not be narrowed to bare names of the
+	// installation account (#294), by reason: "owner_mismatch", "malformed",
+	// "lookup_failed" or "empty_login".
+	AgentRepoNarrowingFailedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_agent_repo_narrowing_failed_total",
+		Help: "Installation token mints refused because repositories could not be narrowed to the installation account, by reason.",
+	}, []string{"reason"})
+
 	// ScopeUnmappedDeniedTotal counts REST requests from scoped tokens that
 	// were denied because no scope rule matched the method and path
 	// (deny-by-default). The method label is normalised by NormalizeMethod.
@@ -200,21 +210,26 @@ var (
 	// as well as the upstream_roundtrip stage, which includes the actual GitHub
 	// API call and can easily exceed 1s under load or on slow networks.
 	decisionBuckets = []float64{
-		0.00005, // 50µs
-		0.0001,  // 100µs
-		0.0005,  // 500µs
-		0.001,   // 1ms
-		0.005,   // 5ms
-		0.01,    // 10ms
-		0.025,   // 25ms
-		0.05,    // 50ms
-		0.1,     // 100ms
-		0.25,    // 250ms
-		0.5,     // 500ms
-		1.0,     // 1s
-		2.5,     // 2.5s
-		5.0,     // 5s
-		10.0,    // 10s
+		0.00001,  // 10µs
+		0.000025, // 25µs
+		0.00005,  // 50µs
+		0.0001,   // 100µs
+		0.00025,  // 250µs
+		0.0005,   // 500µs
+		0.001,    // 1ms
+		0.0025,   // 2.5ms
+		0.005,    // 5ms
+		0.0075,   // 7.5ms
+		0.01,     // 10ms
+		0.025,    // 25ms
+		0.05,     // 50ms
+		0.1,      // 100ms
+		0.25,     // 250ms
+		0.5,      // 500ms
+		1.0,      // 1s
+		2.5,      // 2.5s
+		5.0,      // 5s
+		10.0,     // 10s
 	}
 
 	// ProxyDecisionDuration records time spent in each stage of the proxy
@@ -235,11 +250,18 @@ var (
 	//   upstream_roundtrip     – proxying the upstream GitHub request and streaming the response (network + GitHub processing + response body transfer)
 	//   redirect_head_check   – HEAD request to the release redirect target to verify asset availability (releases handler only)
 	//   graphql_analysis      – parsing a GraphQL request body and computing the static scope/repository requirements (GraphQL handler only)
+	//   cache_lookup          – git cache middleware database lookup of the per-repository cache record (token_type is always "unknown")
+	//   forward_proxy_selection – choosing the upstream forward proxy for the outbound request
+	//   enterprise_exception  – evaluating enterprise access restriction exceptions
+	//
+	// The "vhost" label names the virtual host that received the request (see
+	// the Vhost* constants): api, web, codeload, management, copilot, or
+	// unknown when no inbound request exists (background control-plane calls).
 	ProxyDecisionDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ghp_proxy_decision_duration_seconds",
 		Help:    "Duration of each stage in the proxy decision pipeline.",
 		Buckets: decisionBuckets,
-	}, []string{"stage", "token_type"})
+	}, []string{"stage", "token_type", "vhost"})
 
 	// --- Git Cache Metrics ---
 
@@ -458,16 +480,62 @@ const (
 	StageGraphQLAnalysis       = "graphql_analysis"
 	StageEnterpriseException   = "enterprise_exception"
 	StageForwardProxySelection = "forward_proxy_selection"
+	StageRequestBodyRead       = "request_body_read"
+	StageRequestBuild          = "request_build"
+	// StagePipelineOther is derived, not timed: total minus the stages
+	// observed for the same request before total (see WithDecisionTrace).
+	StagePipelineOther = "pipeline_other"
 )
 
+// Vhost label values for ghp_proxy_decision_duration_seconds. The set is
+// closed: pass only these constants to WithVhost.
+const (
+	VhostAPI        = "api"
+	VhostWeb        = "web"
+	VhostCodeload   = "codeload"
+	VhostManagement = "management"
+	VhostCopilot    = "copilot"
+	VhostUnknown    = "unknown"
+)
+
+type vhostKey struct{}
+
+// WithVhost returns a copy of ctx that carries the vhost label value. The host
+// dispatcher calls it once per request; outbound requests built from the
+// inbound context inherit it.
+func WithVhost(ctx context.Context, vhost string) context.Context {
+	return context.WithValue(ctx, vhostKey{}, vhost)
+}
+
+// VhostFromContext returns the vhost label value stored by WithVhost, or
+// VhostUnknown when ctx is nil or carries none.
+func VhostFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return VhostUnknown
+	}
+	if v, ok := ctx.Value(vhostKey{}).(string); ok && v != "" {
+		return v
+	}
+	return VhostUnknown
+}
+
 // ObserveDecision records the duration of a single stage in the proxy
-// decision pipeline. tokenType should be "proxy", "agent", or "" for stages
-// that run before the token type is known (normalised to "unknown").
-func ObserveDecision(stage, tokenType string, dur time.Duration) {
+// decision pipeline. The vhost label is read from ctx (see WithVhost).
+// tokenType should be "proxy", "agent", or "" for stages that run before the
+// token type is known (normalised to "unknown").
+func ObserveDecision(ctx context.Context, stage, tokenType string, dur time.Duration) {
 	if tokenType == "" {
 		tokenType = "unknown"
 	}
-	ProxyDecisionDuration.WithLabelValues(stage, tokenType).Observe(dur.Seconds())
+	vhost := VhostFromContext(ctx)
+	ProxyDecisionDuration.WithLabelValues(stage, tokenType, vhost).Observe(dur.Seconds())
+	if stage == StageTotal {
+		finishDecision(ctx, tokenType, vhost, dur)
+		return
+	}
+	if tr := decisionTraceFrom(ctx); tr != nil {
+		tr.add(stage, dur)
+	}
 }
 
 // ObserveProxyRequest records proxy-level request metrics for a completed request.

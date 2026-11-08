@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/metrics"
 )
@@ -141,8 +142,8 @@ func NewCodeloadHandler(cfg *config.Config, logger *slog.Logger, transport http.
 		// same time series — otherwise clients with inconsistent casing
 		// would split the counter and inflate cardinality. Pattern matches
 		// internal/gitcache/middleware.go.
-		owner := strings.ToLower(m[1])
-		repo := strings.ToLower(m[2])
+		owner := asciiutil.ToLower(m[1])
+		repo := asciiutil.ToLower(m[2])
 		archive := m[3]
 
 		redirectBase := resolveRedirectBase()

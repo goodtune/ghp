@@ -295,6 +295,8 @@ func TestIsReleaseAllowed(t *testing.T) {
 		{name: "org/repo no match different repo", allow: []string{"goodtune/other"}, org: "goodtune", repo: "ghp", allowed: false},
 		{name: "case insensitive org", allow: []string{"GoodTune"}, org: "goodtune", repo: "ghp", allowed: true},
 		{name: "case insensitive org/repo", allow: []string{"GoodTune/GHP"}, org: "goodtune", repo: "ghp", allowed: true},
+		{name: "non-ascii long s does not fold", allow: []string{"users"}, org: "u\u017fers", repo: "ghp", allowed: false},
+		{name: "kelvin sign does not fold", allow: []string{"goodtune/kit"}, org: "goodtune", repo: "\u212ait", allowed: false},
 		{name: "empty allow list", allow: nil, org: "goodtune", repo: "ghp", allowed: false},
 		{name: "multiple entries second matches", allow: []string{"other", "goodtune"}, org: "goodtune", repo: "ghp", allowed: true},
 	}
@@ -406,6 +408,8 @@ func TestIsCodeloadAllowed(t *testing.T) {
 		{name: "org/repo no match different repo", allow: []string{"actions/setup-node"}, org: "actions", repo: "checkout", allowed: false},
 		{name: "case insensitive org", allow: []string{"ACTIONS"}, org: "actions", repo: "checkout", allowed: true},
 		{name: "case insensitive org/repo", allow: []string{"Actions/Checkout"}, org: "actions", repo: "checkout", allowed: true},
+		{name: "non-ascii long s does not fold", allow: []string{"users"}, org: "u\u017fers", repo: "ghp", allowed: false},
+		{name: "kelvin sign does not fold", allow: []string{"goodtune/kit"}, org: "goodtune", repo: "\u212ait", allowed: false},
 		{name: "empty allow list", allow: nil, org: "actions", repo: "checkout", allowed: false},
 		{name: "multiple entries second matches", allow: []string{"other", "actions"}, org: "actions", repo: "checkout", allowed: true},
 	}
@@ -808,5 +812,31 @@ func TestWebhooksValidate_NgrokEnvToken(t *testing.T) {
 	}
 	if w.NgrokAuthtoken() != "from-env" {
 		t.Errorf("NgrokAuthtoken() = %q, want from-env", w.NgrokAuthtoken())
+	}
+}
+
+func TestMetricsSlowDecisionThreshold(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want time.Duration
+	}{
+		{"default", "", 10 * time.Millisecond},
+		{"env override", "25ms", 25 * time.Millisecond},
+		{"env disable", "0s", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.env != "" {
+				t.Setenv("GHP_METRICS_SLOW_DECISION_THRESHOLD", tt.env)
+			}
+			cfg, err := Load("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Metrics.SlowDecisionThreshold != tt.want {
+				t.Errorf("SlowDecisionThreshold = %v, want %v", cfg.Metrics.SlowDecisionThreshold, tt.want)
+			}
+		})
 	}
 }

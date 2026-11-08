@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/backend"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
@@ -131,7 +132,7 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 		if tt, ok := token.TokenTypeFromPrefix(clientTok); ok {
 			extractTokenType = string(tt)
 		}
-		metrics.ObserveDecision(metrics.StageTokenExtraction, extractTokenType, time.Since(extractStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageTokenExtraction, extractTokenType, time.Since(extractStart))
 		if extractTokenType != "" {
 			SetTokenType(r, extractTokenType)
 		}
@@ -174,19 +175,19 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 			// header but no Authorization header before they egress to GitHub.
 			if blockCfg != nil && blockCfg.Block.AnonymousGit && rawCredential == "" && r.Header.Get("Git-Protocol") != "" {
 				metrics.BlockAnonymousGitTotal.Inc()
-				metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
-				metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
+				metrics.ObserveDecision(r.Context(), metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+				metrics.ObserveDecision(r.Context(), metrics.StageTotal, "unknown", time.Since(decisionStart))
 				w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
 				writeError(w, http.StatusUnauthorized, "Anonymous git access is not permitted")
 				return
 			}
 			if blockCfg != nil && blockCfg.IsTokenBlocked(rawCredential) {
-				metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
-				metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
+				metrics.ObserveDecision(r.Context(), metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+				metrics.ObserveDecision(r.Context(), metrics.StageTotal, "unknown", time.Since(decisionStart))
 				writeError(w, http.StatusForbidden, msgBorderPolicy)
 				return
 			}
-			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
 			// Extract the raw GitHub token and trigger an async username
 			// lookup before the upstream roundtrip so the background
 			// goroutine can run concurrently with the upstream request.
@@ -196,11 +197,11 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 				ur.ResolveFromGitHubToken(r.Context(), raw)
 			}
 			applyEnterprise(raw)
-			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(decisionStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, "unknown", time.Since(decisionStart))
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			upstreamStart := time.Now()
 			inner.ServeHTTP(rec, r)
-			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 			// Check the username cache after the roundtrip; the async
 			// lookup may have completed during the upstream wait.
 			if ur != nil && raw != "" && GetUsername(r) == "" {
@@ -224,7 +225,7 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 			// the mapped repository differ from what upstream serves.
 			permission, level = "", ""
 		}
-		metrics.ObserveDecision(metrics.StageScopeEnforcement, extractTokenType, time.Since(mapStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageScopeEnforcement, extractTokenType, time.Since(mapStart))
 
 		start := time.Now()
 
@@ -237,17 +238,17 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 		// Resolve the full proxy token for scope checking.
 		resolveStart := time.Now()
 		pt, err := enforcer.Resolve(r.Context(), clientTok)
-		metrics.ObserveDecision(metrics.StageTokenResolution, resolveTokenType, time.Since(resolveStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageTokenResolution, resolveTokenType, time.Since(resolveStart))
 		if err != nil {
 			if logger != nil {
 				logger.Warn("git scope enforcement: token resolution failed", "error", err)
 			}
-			metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(decisionStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, resolveTokenType, time.Since(decisionStart))
 			writeError(w, http.StatusUnauthorized, "Invalid token")
 			return
 		}
 		if pt == nil {
-			metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(decisionStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, resolveTokenType, time.Since(decisionStart))
 			writeError(w, http.StatusUnauthorized, "Invalid token")
 			return
 		}
@@ -282,12 +283,12 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 		// Parse the token's scope restrictions once; fail-closed on corrupt JSON.
 		scopeParseStart := time.Now()
 		si, err := parseScopeInfo(pt)
-		metrics.ObserveDecision(metrics.StageScopeParsing, tokenType, time.Since(scopeParseStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageScopeParsing, tokenType, time.Since(scopeParseStart))
 		if err != nil {
 			if logger != nil {
 				logger.Error("git scope enforcement: failed to parse token scope", "error", err)
 			}
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusInternalServerError, "Internal error")
 			return
 		}
@@ -296,12 +297,12 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 		if si.isOpenScoped() {
 			ghTokenStart := time.Now()
 			realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
-			metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 			if err != nil {
 				if logger != nil {
 					logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
 				}
-				metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+				metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(decisionStart))
 				writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 				return
 			}
@@ -312,13 +313,13 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 					SetUsername(r, username)
 				}
 			}
-			metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 			r.Header.Set("Authorization", rewriteAuth(realToken))
 			applyEnterprise(realToken)
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(decisionStart))
 			upstreamStart := time.Now()
 			inner.ServeHTTP(rec, r)
-			metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 			username = resolveUsernameAfterRoundtrip(r, realToken, username, ur, pt)
 			return
 		}
@@ -330,16 +331,16 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 			// Deny by default: GHP cannot prove an unmapped path stays inside
 			// the token's repository allowlist or permission set.
 			metrics.PassthroughScopeDeniedTotal.WithLabelValues(vhost, "unmapped").Inc()
-			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusForbidden,
 				fmt.Sprintf("Token is scoped; %s %q on %s is not mapped to a repository permission", r.Method, r.URL.Path, vhost))
 			return
 		}
 		if len(si.Repos) > 0 && !si.repoAllowed(repo) {
 			metrics.PassthroughScopeDeniedTotal.WithLabelValues(vhost, "repo").Inc()
-			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusForbidden,
 				fmt.Sprintf("Token is not scoped to %s", repo))
 			return
@@ -349,23 +350,23 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 		// A token with scopes=null carries no permission restriction (any endpoint allowed).
 		if len(si.Scopes) > 0 && !si.Scopes.HasPermission(permission, level) {
 			metrics.PassthroughScopeDeniedTotal.WithLabelValues(vhost, "permission").Inc()
-			metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusForbidden,
 				fmt.Sprintf("Token does not have permission for %s:%s on %s", permission, level, repo))
 			return
 		}
-		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 
 		// Scope checks passed (or dimension is unrestricted) — forward with resolved token.
 		ghTokenStart := time.Now()
 		realToken, err := resolver.ResolveToGitHubToken(r.Context(), clientTok)
-		metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 		if err != nil {
 			if logger != nil {
 				logger.Warn("git scope enforcement: GitHub token resolution failed", "error", err)
 			}
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(decisionStart))
 			writeError(rec, http.StatusUnauthorized, "Token resolution failed")
 			return
 		}
@@ -376,13 +377,13 @@ func newScopedWebHandler(vhost string, mapScope webScopeMapper, inner http.Handl
 				SetUsername(r, username)
 			}
 		}
-		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 		r.Header.Set("Authorization", rewriteAuth(realToken))
 		applyEnterprise(realToken)
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(decisionStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(decisionStart))
 		upstreamStart := time.Now()
 		inner.ServeHTTP(rec, r)
-		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 		username = resolveUsernameAfterRoundtrip(r, realToken, username, ur, pt)
 	})
 }
@@ -523,10 +524,11 @@ func (si tokenScopeInfo) isOpenScoped() bool {
 }
 
 // repoAllowed returns true if repo is in the token's repository allowlist.
-// Must only be called when len(si.Repos) > 0.
+// Must only be called when len(si.Repos) > 0. The compare folds ASCII
+// case only, so a non-ASCII spelling cannot match an ASCII entry (#317).
 func (si tokenScopeInfo) repoAllowed(repo string) bool {
 	for _, r := range si.Repos {
-		if strings.EqualFold(r, repo) {
+		if asciiutil.EqualFold(r, repo) {
 			return true
 		}
 	}

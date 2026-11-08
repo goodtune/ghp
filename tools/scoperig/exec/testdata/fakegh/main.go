@@ -12,6 +12,10 @@
 //	nottook       the request has no "* Request took" line before gh's error
 //	between       gh prints a message between two requests
 //	gitbranch     print BRANCH=<git symbolic-ref --short HEAD> first
+//	reset <file> <n>       the first n calls (counted in file) log a GraphQL
+//	                       query, get a connection reset and exit 1; later
+//	                       calls answer it with 200 and exit 0
+//	resetwrite <file> <n>  as reset, but the logged request is a mutation
 //
 // Oracle mode: when a directory named "oracle" sits next to the binary, the
 // fake behaves like gh against github.com for scoperig oracle tests instead.
@@ -70,6 +74,41 @@ GraphQL variables: {}
 
 * Request took 5.0ms
 `
+
+const gqlResetQuery = `* Request at 2026-11-05 12:00:02.000000 +1100 AEDT m=+0.030000000
+* Request to https://ghp.example/api/graphql
+> POST /api/graphql HTTP/1.1
+> Host: ghp.example
+
+GraphQL query:
+%s
+GraphQL variables: {}
+
+`
+
+// resetMode simulates a transport reset on the first n calls.
+func resetMode(mode, counter, nStr string) {
+	n := 0
+	_, _ = fmt.Sscan(nStr, &n)
+	calls := 0
+	if b, err := os.ReadFile(counter); err == nil {
+		_, _ = fmt.Sscan(string(b), &calls)
+	}
+	calls++
+	_ = os.WriteFile(counter, []byte(fmt.Sprint(calls)), 0o600)
+	q := "query PullRequestList { viewer { login } }"
+	if mode == "resetwrite" {
+		q = "mutation M { addStar(input: {starrableId: \"x\"}) { clientMutationId } }"
+	}
+	fmt.Fprintf(os.Stderr, gqlResetQuery, q)
+	if calls <= n {
+		fmt.Fprint(os.Stderr, "Post \"https://ghp.example/api/graphql\": read tcp 127.0.0.1:50000->127.0.0.1:10011: read: connection reset by peer\n")
+		os.Exit(1)
+	}
+	fmt.Fprint(os.Stderr, "< HTTP/2.0 200 OK\n< Content-Type: application/json\n\n{\"data\":{\"viewer\":{\"login\":\"x\"}}}\n\n* Request took 5.0ms\n")
+	fmt.Println("ok after", calls)
+	os.Exit(0)
+}
 
 func oracleMode(dir string) {
 	cfg := os.Getenv("GH_CONFIG_DIR")
@@ -130,6 +169,8 @@ func main() {
 		mode = os.Args[1]
 	}
 	switch mode {
+	case "reset", "resetwrite":
+		resetMode(mode, os.Args[2], os.Args[3])
 	case "sleep":
 		time.Sleep(time.Minute)
 	case "spawn":

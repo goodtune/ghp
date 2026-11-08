@@ -14,6 +14,7 @@ import (
 
 	"github.com/goodtune/ghp/internal/auth"
 	"github.com/goodtune/ghp/internal/database"
+	"github.com/goodtune/ghp/internal/permissions"
 )
 
 //go:embed templates/*.html
@@ -121,10 +122,18 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apps := h.getAppSummaries(r)
+	// The token scope editor offers the canonical permission list (#350).
+	permNamesJSON, err := json.Marshal(permissions.Names())
+	if err != nil {
+		h.logger.Error("marshal permission names failed", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
 	data := map[string]interface{}{
-		"Username": session.Username,
-		"Role":     session.Role,
-		"HasApps":  len(apps) > 0,
+		"Username":            session.Username,
+		"Role":                session.Role,
+		"HasApps":             len(apps) > 0,
+		"PermissionNamesJSON": template.JS(permNamesJSON),
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "admin.html", data); err != nil {

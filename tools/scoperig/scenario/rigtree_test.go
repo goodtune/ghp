@@ -21,7 +21,7 @@ func TestRigTree(t *testing.T) {
 	for i := 1; i <= 54; i++ {
 		want[fmt.Sprintf("C%d", i)] = true
 	}
-	for i := 1; i <= 9; i++ {
+	for i := 1; i <= 10; i++ {
 		want[fmt.Sprintf("GAP-A%d", i)] = true
 	}
 	got := make(map[string]string) // normalised key -> claim id
@@ -49,8 +49,13 @@ func TestRigTree(t *testing.T) {
 		t.Errorf("claim set mismatch: missing %v, extra %v", missing, extra)
 	}
 
-	if n := len(tree.Profiles); n != 11 {
-		t.Errorf("profiles: got %d, want 11", n)
+	if n := len(tree.Profiles); n != 17 {
+		t.Errorf("profiles: got %d, want 17", n)
+	}
+	for n, p := range tree.Profiles {
+		if p.Type == "agent" && !strings.HasPrefix(n, "agent-") {
+			t.Errorf("agent profile %q: name must start with agent-", n)
+		}
 	}
 
 	testable := map[string]string{"C42": "never", "C53": "never", "C45": "manual", "C54": "manual"}
@@ -112,8 +117,12 @@ var task18Claims = map[string]int{
 	"REPO-C05": 1, "REPO-C06": 3, "REPO-C07": 2, "REPO-C10": 1,
 	"PERM-C11": 1, "PERM-C12": 1, "PERM-C13": 2, "PERM-C14": 2, "PERM-C15": 2, "PERM-C16": 1,
 	"OPEN-C20": 3, "OPEN-C21": 1,
-	"LIFE-C37": 1, "LIFE-C38": 1, "LIFE-C40": 1,
+	"LIFE-C37": 2, "LIFE-C38": 1, "LIFE-C40": 1,
 	"BORDER-C43": 3, "BORDER-C44": 1, "MISC-C52": 1,
+	// batch 4
+	"PERM-C17": 1, "PERM-C19": 2, "REPO-C09": 2, "TOK-C01": 3, "LIFE-C41": 1, "BORDER-C47": 1,
+	// agent tokens (#306)
+	"AGENT-C49": 8, "TOK-C02": 2, "TOK-C03": 2, "TOK-C04": 1, "REPO-C08": 2, "GAP-A6": 2,
 }
 
 // checkScenarioCoverage asserts that every iteration-1 claim that is not a
@@ -181,6 +190,11 @@ func contains(xs []string, x string) bool {
 var task19Claims = map[string]int{
 	"GQL-C24": 1, "GQL-C25": 2, "GQL-C26": 4, "GQL-C27": 1, "GQL-C28": 2,
 	"GQL-C29": 1, "GQL-C31": 2, "GQL-C32": 1, "GQL-C33": 1,
+	// batch 4. GAP-A9 counts generated scenarios: the gh 2.102.0 corpus has
+	// 19 queries, each replayed for three profiles (57 scenarios); 19 is a
+	// floor of one per query, not the exact generated total.
+	"GQL-C22": 2, "GQL-C23": 2, "GQL-C30": 1, "GQL-C34": 1, "GQL-C35": 3, "GQL-C36": 6,
+	"GAP-A4": 3, "GAP-A9": 19,
 }
 
 // task19Scenarios are scenario IDs that other code refers to by name
@@ -189,6 +203,7 @@ var task19Scenarios = []string{
 	"GQL-C28.mixed-literal-and-variable",
 	"GQL-C31.createissue-ro-denied",
 	"GQL-C31.createissue-rw-allowed",
+	"GQL-C30.unmapped-mutation-denied",
 	"GAP-A1.delete-ref-contents-ro",
 	"GAP-A2.repositories-by-id",
 	"GAP-A3.github-vhost-archive",
@@ -339,8 +354,10 @@ func TestExpectsSuccess(t *testing.T) {
 		{Expect{StatusIn: []int{403, 204}}, true},
 	}
 	for _, tc := range cases {
-		if got := expectsSuccess(&tc.e); got != tc.want {
-			t.Errorf("expectsSuccess(%+v) = %v, want %v", tc.e, got, tc.want)
-		}
+		t.Run(fmt.Sprintf("%+v", tc.e), func(t *testing.T) {
+			if got := expectsSuccess(&tc.e); got != tc.want {
+				t.Errorf("expectsSuccess(%+v) = %v, want %v", tc.e, got, tc.want)
+			}
+		})
 	}
 }

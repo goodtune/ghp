@@ -199,14 +199,9 @@ func (s *SQLiteStore) SyncAdminRoles(ctx context.Context, adminUsernames []strin
 		return err
 	}
 
-	// Promote the configured admins.
-	for _, username := range adminUsernames {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE users SET role = 'admin', updated_at = ? WHERE LOWER(github_username) = LOWER(?)`,
-			now, username,
-		); err != nil {
-			return err
-		}
+	// Promote the configured admins (ASCII case folding, #334).
+	if err := promoteAdminsTx(ctx, tx, adminUsernames, now, func(int) string { return "?" }, sqliteASCIILower); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -1188,3 +1183,7 @@ var (
 	_ Store             = (*SQLiteStore)(nil)
 	_ MigrationExecutor = (*SQLiteStore)(nil)
 )
+
+// sqliteASCIILower is the ASCII-only fold for promoteAdminsTx: SQLite's
+// built-in LOWER() changes ASCII letters only.
+func sqliteASCIILower(expr string) string { return "LOWER(" + expr + ")" }

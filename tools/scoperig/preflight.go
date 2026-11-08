@@ -10,10 +10,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
+	"github.com/goodtune/ghp/tools/scoperig/exec"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
 	"github.com/goodtune/ghp/tools/scoperig/tokens"
 )
@@ -23,7 +26,8 @@ var ErrPreflight = errors.New("preflight failed")
 
 // Capabilities records what the instance and fixtures allow. Missing entries
 // are not errors: they feed scenario `requires:` and become coverage gaps.
-// Keys: repo_w_push, repo_create, github_vhost, agent_installation.
+// Keys: repo_w_push, repo_create, github_vhost, codeload_vhost,
+// agent_installation, non_admin_session, default_app, border_block_*.
 type Capabilities map[string]bool
 
 var versionRe = regexp.MustCompile(`(?i)version\W{0,10}(v?\d+\.\d+[0-9A-Za-z.\-+]*)`)
@@ -78,7 +82,10 @@ func ProbeCapabilities(ctx context.Context, c *Config, hc *http.Client, open tok
 		return nil, fmt.Errorf("%w: instance.host not set in config", ErrPreflight)
 	}
 	api := "https://" + c.Instance.Host + "/api/v3"
-	caps := Capabilities{"repo_w_push": false, "repo_create": false, "github_vhost": false, "agent_installation": false}
+	// non_admin_session is never set: the rig has only the operator's admin
+	// session, so TOK-C02's non-admin half reports GAP.
+	caps := Capabilities{"repo_w_push": false, "repo_create": false, "github_vhost": false, "codeload_vhost": false,
+		"agent_installation": false, "non_admin_session": false, "default_app": false}
 
 	status, body, _, err := get(ctx, hc, api+"/user", open.Authorize)
 	if err != nil {
@@ -119,14 +126,56 @@ func ProbeCapabilities(ctx context.Context, c *Config, hc *http.Client, open tok
 		caps[k] = v
 	}
 
-	caps["github_vhost"] = probeVHost(ctx, c.Instance.Host, rootCAs(hc))
+	caps["github_vhost"] = probeVHost(ctx, c.Instance.Host, rootCAs(hc), exec.UserAgentOf(hc), "github.com")
+	caps["codeload_vhost"] = probeVHost(ctx, c.Instance.Host, rootCAs(hc), exec.UserAgentOf(hc), "codeload.github.com")
 
-	if c.InstallationID > 0 && c.ServerURL != "" {
-		if st, _, _, err := get(ctx, hc, c.ServerURL+"/api/tokens?all=true", c.session); err == nil && st == http.StatusOK {
-			caps["agent_installation"] = true
+	caps["agent_installation"] = ProbeAgentInstallation(ctx, c, hc)
+	caps["default_app"] = probeDefaultApp(ctx, c, hc)
+	return caps, nil
+}
+
+// probeDefaultApp reports the default_app capability: GET /api/apps (admin
+// only) lists exactly one app with is_default true.
+func probeDefaultApp(ctx context.Context, c *Config, hc *http.Client) bool {
+	if c.ServerURL == "" {
+		return false
+	}
+	st, body, _, err := get(ctx, hc, c.ServerURL+"/api/apps", c.session)
+	if err != nil || st != http.StatusOK {
+		return false
+	}
+	var apps []struct {
+		IsDefault bool `json:"is_default"`
+	}
+	if json.Unmarshal(body, &apps) != nil {
+		return false
+	}
+	n := 0
+	for _, a := range apps {
+		if a.IsDefault {
+			n++
 		}
 	}
-	return caps, nil
+	return n == 1
+}
+
+// ProbeAgentInstallation reports the agent_installation capability: both
+// instance.agent_installation values are set and GET /api/apps/{id} (admin
+// only) answers 200 with that id. It does not call GitHub, so it does not
+// prove the installation covers the fixtures. The run calls it before
+// minting profile tokens, so agent profiles are skipped when it is false.
+func ProbeAgentInstallation(ctx context.Context, c *Config, hc *http.Client) bool {
+	if !c.AgentConfigured() || c.ServerURL == "" {
+		return false
+	}
+	st, body, _, err := get(ctx, hc, c.ServerURL+"/api/apps/"+url.PathEscape(c.AgentAppRecordID), c.session)
+	if err != nil || st != http.StatusOK {
+		return false
+	}
+	var app struct {
+		ID string `json:"id"`
+	}
+	return json.Unmarshal(body, &app) == nil && asciiutil.EqualFold(app.ID, c.AgentAppRecordID)
 }
 
 // borderPrefixes maps each border_block_* capability to its token prefix.
@@ -151,16 +200,16 @@ func borderCapabilities(block []string) Capabilities {
 	return caps
 }
 
-// probeVHost dials host (port 443 unless given) with SNI github.com, verifying
+// probeVHost dials host (port 443 unless given) with SNI serverName, verifying
 // against pool, then sends GET /. Any HTTP response means the instance serves
-// the github.com virtual host.
-func probeVHost(ctx context.Context, host string, pool *x509.CertPool) bool {
+// that virtual host (github.com or codeload.github.com).
+func probeVHost(ctx context.Context, host string, pool *x509.CertPool, ua, serverName string) bool {
 	addr := host
 	if _, _, err := net.SplitHostPort(host); err != nil {
 		addr = net.JoinHostPort(host, "443")
 	}
 	cfg := newTLSConfig(pool)
-	cfg.ServerName = "github.com"
+	cfg.ServerName = serverName
 	d := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 10 * time.Second}, Config: cfg}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -171,9 +220,12 @@ func probeVHost(ctx context.Context, host string, pool *x509.CertPool) bool {
 	defer func() { _ = conn.Close() }()
 	tr := &http.Transport{DialTLSContext: func(context.Context, string, string) (net.Conn, error) { return conn, nil }}
 	defer tr.CloseIdleConnections()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://github.com/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+serverName+"/", nil)
 	if err != nil {
 		return false
+	}
+	if ua != "" {
+		req.Header.Set("User-Agent", ua)
 	}
 	resp, err := tr.RoundTrip(req)
 	if err != nil {
@@ -184,7 +236,7 @@ func probeVHost(ctx context.Context, host string, pool *x509.CertPool) bool {
 }
 
 func rootCAs(hc *http.Client) *x509.CertPool {
-	if tr, ok := hc.Transport.(*http.Transport); ok && tr.TLSClientConfig != nil {
+	if tr, ok := exec.BaseTransport(hc.Transport).(*http.Transport); ok && tr.TLSClientConfig != nil {
 		return tr.TLSClientConfig.RootCAs
 	}
 	return nil

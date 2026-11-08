@@ -30,9 +30,10 @@ func TestGraphQLVerdict(t *testing.T) {
 		{"subscription", issuesRead, `subscription{x}`, reasonSubscription, 403, "subscriptions are not supported", "", true},
 		{"unmapped", issuesRead, `{repository(owner:"o",name:"r"){foo{bar}}}`, reasonUnmapped, 403, "unmapped fields: foo", "", true},
 		// The brief's original input (root `search`) is also an unmapped field,
-		// so it hits deny:unmapped first. Root `nodes` is always-allowed but
-		// cross-repo at root, so it reaches the cross-repo branch.
-		{"cross repo", repoOR, `{nodes(ids:["x"]){id}}`, reasonCrossRepo, 403, "cross-repository fields: nodes", "", true},
+		// so it hits deny:unmapped first. Root `nodes` with a mapped fragment
+		// type condition (#324) is classified but cross-repo at root, so it
+		// reaches the cross-repo branch.
+		{"cross repo", repoOR, `{nodes(ids:["x"]){...on Issue{title}}}`, reasonCrossRepo, 403, "cross-repository fields: nodes", "", true},
 		{"mutation repo", repoOR, `mutation{createIssue(input:{repositoryId:"x",title:"t"}){issue{id}}}`, reasonMutationRepo, 403, "mutations are not supported", "", true},
 		{"unpinned", repoOR, `query($o:String!){repository(owner:$o,name:"r"){name}}`, reasonUnpinned, 403, "literal string arguments", "", true},
 		{"no repo ref", repoOR, `{viewer{login}}`, reasonNoRepoRef, 403, "must reference repository(owner, name)", "", true},

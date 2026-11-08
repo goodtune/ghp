@@ -59,7 +59,7 @@ Grafana or with recording rules if needed.
 |--------|------|-------------|
 | `ghp_proxy_request_duration_seconds` | Histogram | Duration of authenticated requests processed by the proxy (API and git smart-HTTP) (labels: `backend`, `method`, `status`, `token_type`, `type`, `user`, `app`) |
 | `ghp_proxy_request_total` | Counter | Total authenticated requests processed by the proxy (API and git smart-HTTP) (labels: `backend`, `method`, `status`, `token_type`, `type`, `user`, `app`) |
-| `ghp_proxy_decision_duration_seconds` | Histogram | Time spent in each stage of the proxy decision pipeline (labels: `stage`, `token_type`) |
+| `ghp_proxy_decision_duration_seconds` | Histogram | Time spent in each stage of the proxy decision pipeline (labels: `stage`, `token_type`, `vhost`) |
 
 The `type` label distinguishes API traffic from git smart-HTTP traffic (e.g.
 `type="git"` for git operations proxied via the `github.com` backend). The
@@ -79,7 +79,95 @@ The stages are:
 | `github_token_resolution` | Loading, decrypting (or refreshing) the real GitHub credential |
 | `upstream_roundtrip` | Proxying the request to GitHub and streaming the response |
 | `redirect_head_check` | HEAD request to the release redirect target to verify asset availability (releases handler only) |
-| `cache_lookup` | Checking whether a request targets a cache-enabled repository |
+| `graphql_analysis` | Parsing a `/graphql` request body and computing its scope and repository requirements (scoped tokens only; open-scoped tokens record no sample) |
+| `cache_lookup` | Checking whether a git request targets a cache-enabled repository (always `token_type="unknown"`) |
+| `forward_proxy_selection` | Selecting the upstream forward proxy for the outbound request |
+| `enterprise_exception` | Evaluating enterprise access restriction exceptions |
+| `request_body_read` | Reading the client's `/graphql` request body before analysis (scoped tokens only). This includes the time the client takes to upload the body |
+| `request_build` | Building the outbound request: URL, request copy and header copy |
+| `pipeline_other` | Not timed directly: `total` minus the sum of the other stages for the same request. Recorded for `ghx_`/`gha_` and passthrough requests on the API handler |
+
+`pipeline_other` shows time that no stage covers. It should stay near zero.
+If its p99 follows the `total` p99, the time is spent outside any stage, for
+example in a garbage collection pause or while the goroutine waits for a CPU.
+Compare it with `go_gc_duration_seconds` for the same window.
+
+### Slow decision log
+
+When the `total` of one request reaches `metrics.slow_decision_threshold`
+(default `10ms`), ghp writes one `slow_decision` line at warn level. Use it to
+explain a single slow sample. The line has these fields:
+
+| Field | Value |
+|-------|-------|
+| `total_ms` | The `total` sample, in milliseconds |
+| `pipeline_other_ms` | The part of `total` that no stage covers |
+| `<stage>_ms` | One field for each stage that ran before the forward, for example `token_resolution_ms` |
+| `token_type` | `proxy`, `agent` or `unknown` |
+| `vhost` | The `vhost` label value |
+| `method`, `path` | The request method and URL path (no query string) |
+
+The line never contains the token. Set the threshold to `0` to disable the
+log.
+
+Lines from paths outside the proxy API handler (for example `github.com`
+passthrough and management-host rejections) have no stage trace. They carry
+only `total_ms`, `token_type` and `vhost`.
+
+`request_body_read` is client upload time. A slow client can make `total`
+reach the threshold, so the 10ms default can write many lines on a busy
+deployment. Increase the threshold if this occurs.
+
+Likely cause of slow samples (#355): before `request_body_read` existed, the
+wait for a slow `/graphql` request body upload was outside every stage. A
+client that sends the headers first and the body later adds that wait to
+`total`. Deployment data must confirm this. To check it, make sure that the
+`request_body_read` p99 follows the `total` p99 and that `pipeline_other`
+stays near zero.
+
+All hosts emit the same stage names. The `vhost` label tells you which host
+received the request:
+
+| `vhost` | Host |
+|---------|------|
+| `api` | `api.github.com` |
+| `web` | `github.com` |
+| `codeload` | `codeload.github.com` |
+| `management` | The management host (web UI and its `/api/v3/` and `/api/graphql` paths) |
+| `copilot` | `*.githubcopilot.com` (only `forward_proxy_selection` samples) |
+| `unknown` | No inbound request, for example a background control-plane call |
+
+Outbound requests keep the vhost of the inbound request. For example, a
+`forward_proxy_selection` sample for a `git clone` has `vhost="web"`.
+
+Example: 95th percentile of `scope_enforcement` per host:
+
+```promql
+histogram_quantile(0.95,
+  sum by (le, vhost) (rate(ghp_proxy_decision_duration_seconds_bucket{stage="scope_enforcement"}[5m])))
+```
+
+!!! warning "Label change"
+    Releases after 0.24.0 add the `vhost` label. Queries that aggregate with
+    `sum by (...)` are unaffected. Queries, alerts or recording rules that
+    match an exact label set must add `vhost`.
+
+The `vhost` label on `ghp_passthrough_scope_denied_total` uses host names
+(`github.com`, `codeload.github.com`), not these short values.
+
+A stage that does not run on a code path records no sample. The histogram
+never contains hard-coded zero durations.
+
+**Histogram buckets.** The decision histogram uses these upper bounds:
+10µs, 25µs, 50µs, 100µs, 250µs, 500µs, 1ms, 2.5ms, 5ms, 7.5ms, 10ms, 25ms,
+50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s and 10s.
+
+!!! warning "Bucket change"
+    Releases after 0.24.0 add the 10µs, 25µs, 250µs, 2.5ms and 7.5ms buckets.
+    All earlier buckets are kept. Quantile estimates for cheap stages become
+    more accurate. If a dashboard or alert uses a specific `le` value, check
+    it after you upgrade. Panels that compare data from before and after
+    the upgrade can show a step change.
 
 #### Git Cache Metrics
 
@@ -156,6 +244,7 @@ See [Git Cache](../features/git-cache.md) for configuration details.
 |--------|------|-------------|
 | `ghp_github_ratelimit_remaining` | Gauge | Remaining GitHub API rate limit, per user |
 | `ghp_github_ratelimit_limit` | Gauge | GitHub API rate limit ceiling, per user |
+| `ghp_agent_repo_narrowing_failed_total` | Counter | Installation token mints refused because the repositories could not be narrowed to bare names of the installation account (label: `reason` = `owner_mismatch`, `malformed`, `lookup_failed`, `empty_login`). No request is sent to GitHub. |
 | `ghp_github_token_refresh_total` | Counter | OAuth token refresh attempts per user (labels: `user`, `status`; `status` is `success` or `failure`) |
 
 #### Security Metrics

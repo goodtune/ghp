@@ -40,10 +40,11 @@ type ClaimResult struct {
 // Summary holds the claim counts over base and the confidence figure.
 // Pass, Fail, Known, Error and Gap count base claims only (Error counts
 // base claims with at least one ERROR scenario; those claims are also FAIL).
+// Covered counts base claims with at least one runnable scenario result.
 type Summary struct {
-	Pass, Fail, Known, Error, Gap, Base int
-	Confidence                          float64
-	Manual, Untestable, Gaps            []string
+	Pass, Fail, Known, Error, Gap, Base, Covered int
+	Confidence, Coverage                         float64
+	Manual, Untestable, Gaps                     []string
 }
 
 // Report is one rig run.
@@ -55,6 +56,9 @@ type Report struct {
 		Created, Revoked int
 		LeftoverIDs      []string
 	}
+	// Latency is the advisory latency section; nil means not configured.
+	// It never affects ExitCode.
+	Latency *Latency
 }
 
 // ExitCode returns 1 if any scenario is FAIL or KNOWN-CHANGED, else 2 if any

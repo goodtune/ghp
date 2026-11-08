@@ -166,7 +166,7 @@ func TestValidate_Profiles(t *testing.T) {
 	tree.Profiles["lifecycle-default"] = Profile{Name: "lifecycle-default", Type: "proxy"}
 	tree.Profiles["badrepo"] = Profile{Name: "badrepo", Type: "proxy", Duration: "1h", Repositories: []string{"{{.Nope}}"}}
 	errs := Validate(tree, nil)
-	requireErr(t, errs, "agent", "type")
+	requireErr(t, errs, "agent", "type agent", "requires: [agent_installation]")
 	requireErr(t, errs, "long", "2h")
 	requireErr(t, errs, "bad", "duration")
 	requireErr(t, errs, "empty", "duration")
@@ -249,6 +249,50 @@ func TestValidate_GHWrites(t *testing.T) {
 	}
 }
 
+// Positional fixture arguments (issue/PR numbers from discovered fixtures)
+// carry no "/" and are not repository references; slash-bearing
+// positionals are, and must resolve to W for writes.
+func TestValidate_GHPositionalFixtureArgs(t *testing.T) {
+	for _, tc := range []struct {
+		s  *Scenario
+		ok bool
+	}{
+		{ghScenario("PF1", "W", "pr", "comment", "{{.Fixture.W.PRNumber}}", "--body", "x"), true},
+		{ghScenario("PF2", "", "issue", "close", "{{.Fixture.W.IssueNumber}}", "-R", "{{.RepoW}}"), true},
+		{ghScenario("PF3", "A", "issue", "view", "{{.Fixture.A.IssueNumber}}"), true},
+		{ghScenario("PF4", "", "issue", "close", "{{.Fixture.A.IssueNumber}}", "-R", "{{.RepoA}}"), false},
+		{ghScenario("PF5", "W", "repo", "delete", "{{.RepoA}}", "--yes"), false},
+		{ghScenario("PF6", "W", "pr", "comment", "https://{{.Host}}/{{.RepoA}}/pull/{{.Fixture.A.PRNumber}}", "--body", "x"), false},
+	} {
+		t.Run(tc.s.ID, func(t *testing.T) {
+			errs := Validate(withScenarios(tc.s), nil)
+			if tc.ok {
+				requireNoErr(t, errs)
+			} else {
+				requireErr(t, errs, tc.s.ID, "gh:")
+			}
+		})
+	}
+}
+
+// A literal placeholder host passes the host check against PlaceholderVars
+// but is a foreign host at run time; it is rejected outright (#304).
+func TestValidate_GHPlaceholderHostLiteral(t *testing.T) {
+	for _, s := range []*Scenario{
+		ghScenario("PH1", "", "repo", "view", PlaceholderHost+"/{{.RepoA}}"),
+		ghScenario("PH2", "", "pr", "list", "-R", "GHP.Example/{{.RepoA}}"),
+		ghScenario("PH3", "", "issue", "create", "--repo", PlaceholderHost+"/{{.RepoW}}", "--title", "x"),
+		ghScenario("PH4", "", "api", "https://"+PlaceholderHost+"/api/v3/repos/{{.RepoA}}"),
+		ghScenario("PH5", "W", "pr", "comment", "https://"+PlaceholderHost+"/{{.RepoW}}/pull/1", "--body", "x"),
+	} {
+		t.Run(s.ID, func(t *testing.T) {
+			requireErr(t, Validate(withScenarios(s), nil), s.ID, "placeholder host")
+		})
+	}
+	// The templated host is still accepted.
+	requireNoErr(t, Validate(withScenarios(ghScenario("PH-OK", "", "repo", "view", "{{.Host}}/{{.RepoA}}")), nil))
+}
+
 func TestValidate_GraphQLMutationTargets(t *testing.T) {
 	mutVar := `mutation($id: ID!) { createIssue(input:{repositoryId:$id, title:"x"}) { issue { number } } }`
 	cases := []struct {
@@ -327,12 +371,16 @@ func TestValidate_EmptyMethod(t *testing.T) {
 
 func TestValidate_TokenAPIPathExact(t *testing.T) {
 	for _, p := range []string{"/api/tokens", "/api/tokens/abc"} {
-		requireNoErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
-			Request: &Request{Method: "POST", Path: p}}), nil))
+		t.Run("ok "+p, func(t *testing.T) {
+			requireNoErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
+				Request: &Request{Method: "POST", Path: p}}), nil))
+		})
 	}
 	for _, p := range []string{"/api/tokensfoo", "/api/tokens/../x", "/api/tokens?x=1", "/api/tokens/abc?x=1"} {
-		requireErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
-			Request: &Request{Method: "POST", Path: p}}), nil), "T")
+		t.Run("bad "+p, func(t *testing.T) {
+			requireErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
+				Request: &Request{Method: "POST", Path: p}}), nil), "T")
+		})
 	}
 	// Cleanup entries of token_api scenarios follow the same rule.
 	requireErr(t, Validate(withScenarios(&Scenario{ID: "T2", Claim: "C1", Kind: "token_api",
@@ -476,12 +524,19 @@ func TestValidate_Vhost(t *testing.T) {
 	ok := &Scenario{ID: "V1", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "github.com",
 		Requires: []string{"github_vhost"}, Method: "GET", Path: "/{{.RepoB}}/archive/HEAD.tar.gz"}
 	requireNoErr(t, Validate(withScenarios(ok), nil))
+	cl := &Scenario{ID: "V1c", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "codeload.github.com",
+		Requires: []string{"codeload_vhost"}, Method: "GET", Path: "/{{.RepoA}}/tar.gz/main"}
+	requireNoErr(t, Validate(withScenarios(cl), nil))
 
 	cases := []struct {
 		name string
 		s    *Scenario
 		want string
 	}{
+		{"codeload needs its own capability", &Scenario{ID: "V8", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "codeload.github.com",
+			Requires: []string{"github_vhost"}, Path: "/x"}, "codeload_vhost"},
+		{"github.com does not accept codeload capability", &Scenario{ID: "V9", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "github.com",
+			Requires: []string{"codeload_vhost"}, Path: "/x"}, "github_vhost"},
 		{"other host", &Scenario{ID: "V2", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "evil.example",
 			Requires: []string{"github_vhost"}, Path: "/x"}, "vhost"},
 		{"no capability", &Scenario{ID: "V3", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "github.com",
@@ -533,8 +588,10 @@ func TestValidate_VhostWithSteps(t *testing.T) {
 
 func TestValidate_BorderBlockCapabilities(t *testing.T) {
 	for _, c := range []string{"border_block_ghp", "border_block_gho", "border_block_github_pat"} {
-		s := &Scenario{ID: "B1", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user", Requires: []string{c}}
-		requireNoErr(t, Validate(withScenarios(s), nil))
+		t.Run(c, func(t *testing.T) {
+			s := &Scenario{ID: "B1", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user", Requires: []string{c}}
+			requireNoErr(t, Validate(withScenarios(s), nil))
+		})
 	}
 	s := &Scenario{ID: "B2", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user", Requires: []string{"bogus"}}
 	requireErr(t, Validate(withScenarios(s), nil), "B2", "border_block_github_pat")
@@ -741,4 +798,118 @@ func TestValidate_GraphQLNeedsQueryOrSteps(t *testing.T) {
 	if errs := Validate(r4Tree(s), nil); !errsContain(errs, "graphql scenario needs a query or steps") {
 		t.Fatalf("want query-or-steps error, got %v", errs)
 	}
+}
+
+func TestValidate_ExpiresWithin(t *testing.T) {
+	mk := func(w *ExpiresWithin) *Scenario {
+		return &Scenario{ID: "EW", Claim: "C1", Kind: "token_api",
+			Request: &Request{Method: "POST", Path: "/api/tokens", Expect: &Expect{ExpiresWithin: w}}}
+	}
+	t.Run("ok, counts as an assertion", func(t *testing.T) {
+		requireNoErr(t, Validate(rawScenarios(mk(&ExpiresWithin{Field: "expires_at",
+			Min: `{{add .Instance.DefaultDuration "-2m"}}`, Max: `{{add .Instance.DefaultDuration "2m"}}`})), nil))
+	})
+	for _, tc := range []struct {
+		name string
+		w    *ExpiresWithin
+		want string
+	}{
+		{"no field", &ExpiresWithin{Min: "1m", Max: "2m"}, "field is required"},
+		{"no min", &ExpiresWithin{Field: "expires_at", Max: "2m"}, "min is required"},
+		{"bad max", &ExpiresWithin{Field: "expires_at", Min: "1m", Max: "2 minutes"}, "not a duration"},
+		{"bad template", &ExpiresWithin{Field: "expires_at", Min: "{{.Nope}}", Max: "2m"}, "min:"},
+		{"negative min", &ExpiresWithin{Field: "expires_at", Min: "-1m", Max: "2m"}, "must not be negative"},
+		{"zero max", &ExpiresWithin{Field: "expires_at", Min: "0s", Max: "0s"}, "must be positive"},
+		{"min over max", &ExpiresWithin{Field: "expires_at", Min: "3m", Max: "2m"}, "greater than max"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requireErr(t, Validate(rawScenarios(mk(tc.w)), nil), "EW", "expires_within", tc.want)
+		})
+	}
+}
+
+func TestGraphQLReadOnly(t *testing.T) {
+	for q, want := range map[string]bool{
+		"query { viewer { login } }":                     true,
+		"{ viewer { login } }":                           true,
+		"query A { a } query B { b }":                    true,
+		"mutation { addStar(input:{}) { x } }":           false,
+		"query A { a } mutation B { b(input:{}) { x } }": false,
+		"subscription { s }":                             false,
+		"not graphql {":                                  false,
+		"":                                               false,
+	} {
+		t.Run(q, func(t *testing.T) {
+			if got := GraphQLReadOnly(q); got != want {
+				t.Errorf("GraphQLReadOnly(%q) = %v, want %v", q, got, want)
+			}
+		})
+	}
+}
+
+func TestValidate_AgentProfiles(t *testing.T) {
+	agentOK := Profile{Name: "ag", Type: "agent", Duration: "1h", Repositories: []string{"{{.RepoA}}"}, Requires: []string{"agent_installation"}}
+	t.Run("agent with requires is accepted", func(t *testing.T) {
+		tree := withScenarios(&Scenario{ID: "S1", Claim: "C1", Profile: "ag", Kind: "rest",
+			Method: "GET", Path: "/repos/{{.RepoA}}", Requires: []string{"agent_installation"}})
+		tree.Profiles["ag"] = agentOK
+		requireNoErr(t, Validate(tree, nil))
+	})
+	t.Run("scenario must list the profile requires", func(t *testing.T) {
+		tree := withScenarios(&Scenario{ID: "S2", Claim: "C1", Profile: "ag", Kind: "rest",
+			Method: "GET", Path: "/repos/{{.RepoA}}"})
+		tree.Profiles["ag"] = agentOK
+		requireErr(t, Validate(tree, nil), "S2", `profile "ag" requires agent_installation`)
+	})
+	t.Run("profile requires must be known before minting", func(t *testing.T) {
+		tree := withScenarios()
+		tree.Profiles["px"] = Profile{Name: "px", Type: "proxy", Duration: "1h", Requires: []string{"repo_w_push"}}
+		requireErr(t, Validate(tree, nil), "px", "requires", "repo_w_push")
+	})
+	t.Run("unknown type", func(t *testing.T) {
+		tree := withScenarios()
+		tree.Profiles["x"] = Profile{Name: "x", Type: "oauth", Duration: "1h"}
+		requireErr(t, Validate(tree, nil), "x", "type")
+	})
+}
+
+func TestValidate_TokenAPIAppsGET(t *testing.T) {
+	for _, p := range []string{"/api/apps", "/api/apps/{{.Agent.AppRecordID}}", "/api/apps/{{.Agent.AppRecordID}}/installations"} {
+		t.Run("ok "+p, func(t *testing.T) {
+			requireNoErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
+				Request: &Request{Method: "GET", Path: p}}), nil))
+		})
+	}
+	for _, tc := range []struct{ method, path string }{
+		{"POST", "/api/apps"}, {"PUT", "/api/apps/x"}, {"DELETE", "/api/apps/x"},
+		{"GET", "/api/appsfoo"}, {"GET", "/api/apps?x=1"}, {"GET", "/api/apps/../tokens/x"},
+		{"GET", "/api/apps/not-a-uuid"}, {"GET", "/api/apps/{{.Agent.AppRecordID}}/installations/1/repositories"},
+	} {
+		t.Run("bad "+tc.method+" "+tc.path, func(t *testing.T) {
+			requireErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
+				Request: &Request{Method: tc.method, Path: tc.path}}), nil), "T")
+		})
+	}
+}
+
+func TestValidate_TokenAPIAgentBody(t *testing.T) {
+	body := func(app, inst any) map[string]any {
+		m := map[string]any{"type": "agent", "duration": "1h"}
+		if app != nil {
+			m["app_record_id"] = app
+		}
+		if inst != nil {
+			m["installation_id"] = inst
+		}
+		return m
+	}
+	mk := func(b map[string]any, req ...string) *Tree {
+		return withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api", Requires: req,
+			Request: &Request{Method: "POST", Path: "/api/tokens", Body: b}})
+	}
+	requireNoErr(t, Validate(mk(body("{{.Agent.AppRecordID}}", "$int:InstallationID"), "agent_installation"), nil))
+	requireErr(t, Validate(mk(body(nil, "$int:InstallationID"), "agent_installation"), nil), "T", "app_record_id")
+	requireErr(t, Validate(mk(body("00000000-0000-4000-8000-0000000000a6", "$int:InstallationID"), "agent_installation"), nil), "T", "app_record_id")
+	requireErr(t, Validate(mk(body("{{.Agent.AppRecordID}}", nil), "agent_installation"), nil), "T", "installation_id")
+	requireErr(t, Validate(mk(body("{{.Agent.AppRecordID}}", "$int:InstallationID")), nil), "T", "requires: [agent_installation]")
 }

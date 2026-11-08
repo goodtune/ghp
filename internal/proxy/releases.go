@@ -295,7 +295,7 @@ func headCheckAndServe404(w http.ResponseWriter, r *http.Request, target string,
 	start := time.Now()
 	resp, err := client.Do(headReq)
 	dur := time.Since(start)
-	metrics.ObserveDecision(metrics.StageRedirectHeadCheck, "unknown", dur)
+	metrics.ObserveDecision(r.Context(), metrics.StageRedirectHeadCheck, "unknown", dur)
 
 	if err != nil {
 		if logger != nil {

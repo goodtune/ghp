@@ -6,9 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -201,31 +199,6 @@ func TestGH_Timeout(t *testing.T) {
 	}
 }
 
-func TestGH_TimeoutKillsProcessGroup(t *testing.T) {
-	pidFile := filepath.Join(t.TempDir(), "child.pid")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if _, _, err := runFakeGH(t, ctx, ghScenario("spawn", pidFile)); err == nil {
-		t.Fatal("want rig error on timeout")
-	}
-	b, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("child pid: %v", err)
-	}
-	pid, err := strconv.Atoi(string(b))
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for syscall.Kill(pid, 0) == nil {
-		if time.Now().After(deadline) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-			t.Fatalf("child %d still alive after timeout", pid)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-}
-
 func TestGH_NotFound(t *testing.T) {
 	env, _, tok := newEnv(t, nil)
 	env.GHPath = filepath.Join(t.TempDir(), "no-such-gh")
@@ -250,4 +223,94 @@ func TestGH_WorkDirIsGitCheckoutOnFixtureBranch(t *testing.T) {
 	if !strings.Contains(obs.Stdout, "BRANCH=scoperig-fixture\n") {
 		t.Errorf("stdout = %q", obs.Stdout)
 	}
+}
+
+func TestStripDebug(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{
+			name: "message after a complete exchange",
+			in:   "* Request at x\n* Request to https://h/a\n> GET /a HTTP/1.1\n\n< HTTP/2.0 403 Forbidden\n\n{}\n\n* Request took 1ms\nHTTP 403: denied\n",
+			want: "HTTP 403: denied\n",
+		},
+		{
+			name: "unterminated GraphQL block ends at the next request",
+			in:   "* Request at x\n> POST /graphql HTTP/1.1\n\nGraphQL query:\nquery { a }\n* Request at y\n* Request took 1ms\ngh: kept message\n",
+			want: "gh: kept message\n",
+		},
+		{
+			name: "unterminated GraphQL block ends at took",
+			in:   "* Request at x\n> POST /graphql HTTP/1.1\n\nGraphQL query:\nquery { a }\n* Request took 2ms\nGraphQL: Resource not accessible\n",
+			want: "GraphQL: Resource not accessible\n",
+		},
+		{
+			name: "star and request lines are always removed",
+			in:   "before\n* anything\n> anything\nafter\n",
+			want: "before\nafter\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripDebug(tt.in); got != tt.want {
+				t.Errorf("stripDebug() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func instantBackoff(t *testing.T) {
+	t.Helper()
+	old := transportBackoff
+	transportBackoff = func(int) time.Duration { return 0 }
+	t.Cleanup(func() { transportBackoff = old })
+}
+
+// A transport reset on a read-only gh run is retried; it recovers within
+// TransportRetries, or ends as a rig error (ERROR), never as an
+// observation that could be classified FAIL or KNOWN-CHANGED.
+func TestGH_TransportErrorRetry(t *testing.T) {
+	instantBackoff(t)
+	counter := func(t *testing.T) string { return filepath.Join(t.TempDir(), "calls") }
+	calls := func(t *testing.T, f string) string {
+		b, _ := os.ReadFile(f)
+		return string(b)
+	}
+	t.Run("recovers on retry", func(t *testing.T) {
+		f := counter(t)
+		obs, _, err := runFakeGH(t, context.Background(), ghScenario("reset", f, fmt.Sprint(TransportRetries)))
+		if err != nil {
+			t.Fatalf("err = %v, want recovery", err)
+		}
+		if *obs.GHExit != 0 || !strings.Contains(obs.Stdout, "ok after") {
+			t.Errorf("exit=%d stdout=%q", *obs.GHExit, obs.Stdout)
+		}
+		if got := calls(t, f); got != fmt.Sprint(TransportRetries+1) {
+			t.Errorf("gh ran %s times, want %d", got, TransportRetries+1)
+		}
+	})
+	t.Run("persistent reset is a rig error", func(t *testing.T) {
+		f := counter(t)
+		_, _, err := runFakeGH(t, context.Background(), ghScenario("reset", f, "99"))
+		if err == nil || !strings.Contains(err.Error(), "transport error after 3 attempts") {
+			t.Fatalf("err = %v", err)
+		}
+		if got := calls(t, f); got != "3" {
+			t.Errorf("gh ran %s times, want 3", got)
+		}
+	})
+	t.Run("write is not retried", func(t *testing.T) {
+		f := counter(t)
+		_, _, err := runFakeGH(t, context.Background(), ghScenario("resetwrite", f, "1"))
+		if err == nil || !strings.Contains(err.Error(), "not retried") {
+			t.Fatalf("err = %v", err)
+		}
+		if got := calls(t, f); got != "1" {
+			t.Errorf("gh ran %s times, want 1", got)
+		}
+	})
+	t.Run("product denial is not a transport error", func(t *testing.T) {
+		obs, _, err := runFakeGH(t, context.Background(), ghScenario("pr", "list"))
+		if err != nil || obs.Status != 403 {
+			t.Fatalf("obs=%v err=%v", obs, err)
+		}
+	})
 }

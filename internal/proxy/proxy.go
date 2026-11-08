@@ -162,6 +162,9 @@ func (h *Handler) SetTransport(rt http.RoundTripper) {
 // ServeHTTP handles proxied requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	// Per-request stage trace: lets ObserveDecision derive pipeline_other
+	// and log slow decisions with their stage breakdown (#355).
+	r = r.WithContext(metrics.WithDecisionTrace(r.Context(), r.Method, r.URL.Path))
 
 	// Determine the actual API path.
 	// Requests come in as /api/v3/... or /api/graphql (GHE-style),
@@ -188,7 +191,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if tt, ok := token.TokenTypeFromPrefix(clientToken); ok {
 		extractTokenType = string(tt)
 	}
-	metrics.ObserveDecision(metrics.StageTokenExtraction, extractTokenType, time.Since(extractStart))
+	metrics.ObserveDecision(r.Context(), metrics.StageTokenExtraction, extractTokenType, time.Since(extractStart))
 	if extractTokenType != "" {
 		SetTokenType(r, extractTokenType)
 	}
@@ -199,19 +202,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// header but no Authorization header before they egress to GitHub.
 		if h.cfg.Block.AnonymousGit && rawCredential == "" && r.Header.Get("Git-Protocol") != "" {
 			metrics.BlockAnonymousGitTotal.Inc()
-			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
-			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
+			metrics.ObserveDecision(r.Context(), metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, "unknown", time.Since(start))
 			w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
 			writeError(w, http.StatusUnauthorized, "Anonymous git access is not permitted")
 			return
 		}
 		if h.cfg.IsTokenBlocked(rawCredential) {
-			metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
-			metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
+			metrics.ObserveDecision(r.Context(), metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, "unknown", time.Since(start))
 			writeError(w, http.StatusForbidden, msgBorderPolicy)
 			return
 		}
-		metrics.ObserveDecision(metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageBorderPolicyCheck, "", time.Since(borderStart))
 		// forwardPassthrough records StageTotal (after enterprise exception
 		// evaluation) and StageUpstreamRoundtrip (around the actual roundtrip
 		// and response streaming) itself.
@@ -230,9 +233,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// checks see (for example /repos/A/x/../../B/y/contents).
 	unsafeCheckStart := time.Now()
 	if hasUnsafePathSegment(apiPath) {
-		metrics.ObserveDecision(metrics.StageScopeEnforcement, resolveTokenType, time.Since(unsafeCheckStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageScopeEnforcement, resolveTokenType, time.Since(unsafeCheckStart))
 		h.logger.Info("proxy_unsafe_path_denied", "method", r.Method, "path", r.URL.EscapedPath(), "token_type", resolveTokenType)
-		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, resolveTokenType, time.Since(start))
 		writeError(w, http.StatusForbidden, "Request path contains an unsafe segment or character")
 		return
 	}
@@ -240,15 +243,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Resolve the client token.
 	resolveStart := time.Now()
 	pt, err := h.tokenService.Resolve(r.Context(), clientToken)
-	metrics.ObserveDecision(metrics.StageTokenResolution, resolveTokenType, time.Since(resolveStart))
+	metrics.ObserveDecision(r.Context(), metrics.StageTokenResolution, resolveTokenType, time.Since(resolveStart))
 	if err != nil {
 		h.logger.Warn("token resolution failed", "error", err)
-		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, resolveTokenType, time.Since(start))
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 	if pt == nil {
-		metrics.ObserveDecision(metrics.StageTotal, resolveTokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, resolveTokenType, time.Since(start))
 		writeError(w, http.StatusUnauthorized, "Invalid token")
 		return
 	}
@@ -277,10 +280,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// as open-scoped, even on the GraphQL path.
 	scopeParseStart := time.Now()
 	si, err := parseScopeInfo(pt)
-	metrics.ObserveDecision(metrics.StageScopeParsing, tokenType, time.Since(scopeParseStart))
+	metrics.ObserveDecision(r.Context(), metrics.StageScopeParsing, tokenType, time.Since(scopeParseStart))
 	if err != nil {
 		h.logger.Error("failed to parse token scope", "error", err)
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusInternalServerError, "Internal error")
 		return
 	}
@@ -295,17 +298,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if si.isOpenScoped() {
 		ghTokenStart := time.Now()
 		githubToken, err := h.getGitHubToken(r, pt, &si)
-		metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 		if err != nil {
 			h.logger.Error("failed to get GitHub token", "error", err)
 			status, msg := installationTokenErrorResponse(err)
-			metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+			metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 			writeError(w, status, msg)
 			return
 		}
 		usernameStart := time.Now()
 		h.resolveTokenUsername(r, githubToken)
-		metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 		repo := ExtractRepoFromPath(apiPath)
 		authHeader := rewriteAuth(githubToken)
 		// forwardRequest records StageTotal and StageUpstreamRoundtrip.
@@ -327,29 +330,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if decision.unmapped {
 			metrics.ScopeUnmappedDeniedTotal.WithLabelValues(tokenType, metrics.NormalizeMethod(r.Method)).Inc()
 		}
-		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, http.StatusForbidden, decision.message)
 		h.logRequest(pt, r, apiPath, repo, http.StatusForbidden, time.Since(start), "proxy_scope_denied")
 		return
 	}
-	metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
+	metrics.ObserveDecision(r.Context(), metrics.StageScopeEnforcement, tokenType, time.Since(scopeEnforceStart))
 
 	// Get the real GitHub access token.
 	ghTokenStart := time.Now()
 	githubToken, err := h.getGitHubToken(r, pt, &si)
-	metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
+	metrics.ObserveDecision(r.Context(), metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 	if err != nil {
 		h.logger.Error("failed to get GitHub token", "error", err)
 		status, msg := installationTokenErrorResponse(err)
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 		writeError(w, status, msg)
 		return
 	}
 
 	usernameStart := time.Now()
 	h.resolveTokenUsername(r, githubToken)
-	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
+	metrics.ObserveDecision(r.Context(), metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 	// For the root endpoint, synthesize X-OAuth-Scopes from the token's
 	// permission scopes so that tools like "gh auth status" see the token's
@@ -386,7 +389,7 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	// the same upstream rejection at the cost of an extra roundtrip.
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 		writeGraphQLError(w, http.StatusMethodNotAllowed, "GraphQL endpoint only accepts POST")
 		h.logRequest(pt, r, "/graphql", "", http.StatusMethodNotAllowed, time.Since(start), "proxy_request_invalid")
 		return
@@ -394,12 +397,10 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 
 	// Open-scoped tokens skip GraphQL static analysis entirely and forward
 	// to GitHub unchanged. The underlying credential's own permissions act
-	// as the only enforcement layer. Emit zero-duration GraphQL-analysis
-	// and scope-enforcement decisions so the per-request stage timeline
-	// is uniform across paths.
+	// as the only enforcement layer. No graphql_analysis or
+	// scope_enforcement sample is recorded: neither stage runs here, and a
+	// hard-coded zero would skew the histograms low (#322).
 	if si.isOpenScoped() {
-		metrics.ObserveDecision(metrics.StageGraphQLAnalysis, tokenType, 0)
-		metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, 0)
 		h.forwardGraphQL(w, r, pt, &si, rewriteAuth, start, nil)
 		return
 	}
@@ -412,18 +413,20 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	// emitted below. Close the original body once it is drained so the
 	// underlying network connection can be returned to the pool while we
 	// run static analysis.
+	bodyReadStart := time.Now()
 	originalBody := r.Body
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxGraphQLBodyBytes+1))
 	_ = originalBody.Close()
+	metrics.ObserveDecision(r.Context(), metrics.StageRequestBodyRead, tokenType, time.Since(bodyReadStart))
 	if err != nil {
 		h.logger.Warn("graphql: failed to read request body", "error", err)
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 		writeGraphQLError(w, http.StatusBadRequest, "Failed to read GraphQL request body")
 		h.logRequest(pt, r, "/graphql", "", http.StatusBadRequest, time.Since(start), "proxy_request_invalid")
 		return
 	}
 	if int64(len(body)) > maxGraphQLBodyBytes {
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 		writeGraphQLError(w, http.StatusRequestEntityTooLarge,
 			"GraphQL request body exceeds proxy size limit")
 		h.logRequest(pt, r, "/graphql", "", http.StatusRequestEntityTooLarge, time.Since(start), "proxy_request_invalid")
@@ -435,17 +438,17 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	// Static analysis and scope decision (see graphQLVerdict).
 	callStart := time.Now()
 	d := graphQLVerdict(body, si)
-	metrics.ObserveDecision(metrics.StageGraphQLAnalysis, tokenType, d.AnalysisDuration)
+	metrics.ObserveDecision(r.Context(), metrics.StageGraphQLAnalysis, tokenType, d.AnalysisDuration)
 	if d.Reason == reasonParse {
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 		writeGraphQLError(w, http.StatusBadRequest, d.Message)
 		h.logRequest(pt, r, "/graphql", "", http.StatusBadRequest, time.Since(start), "proxy_request_invalid")
 		return
 	}
 
-	metrics.ObserveDecision(metrics.StageScopeEnforcement, tokenType, time.Since(callStart)-d.AnalysisDuration)
+	metrics.ObserveDecision(r.Context(), metrics.StageScopeEnforcement, tokenType, time.Since(callStart)-d.AnalysisDuration)
 	if !d.Allow {
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 		writeGraphQLError(w, d.Status, d.Message)
 		h.logRequest(pt, r, "/graphql", d.Repo, d.Status, time.Since(start), "proxy_scope_denied")
 		return
@@ -464,18 +467,18 @@ func (h *Handler) forwardGraphQL(w http.ResponseWriter, r *http.Request, pt *dat
 
 	ghTokenStart := time.Now()
 	githubToken, err := h.getGitHubToken(r, pt, si)
-	metrics.ObserveDecision(metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
+	metrics.ObserveDecision(r.Context(), metrics.StageGitHubTokenResolution, tokenType, time.Since(ghTokenStart))
 	if err != nil {
 		h.logger.Error("failed to get GitHub token for GraphQL", "error", err)
 		status, msg := installationTokenErrorResponse(err)
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 		writeGraphQLError(w, status, msg)
 		return
 	}
 
 	usernameStart := time.Now()
 	h.resolveTokenUsername(r, githubToken)
-	metrics.ObserveDecision(metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
+	metrics.ObserveDecision(r.Context(), metrics.StageUsernameResolution, tokenType, time.Since(usernameStart))
 
 	authHeader := rewriteAuth(githubToken)
 
@@ -711,7 +714,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
-		metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, "unknown", time.Since(start))
 		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusInternalServerError, time.Since(start), apiType, passthroughTokenType(rawToken), GetUsername(r))
 		writeError(w, http.StatusInternalServerError, "Failed to create upstream request")
 		return
@@ -747,12 +750,12 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	}
 
 	// Pre-forward work (including enterprise evaluation) is complete.
-	metrics.ObserveDecision(metrics.StageTotal, "unknown", time.Since(start))
+	metrics.ObserveDecision(r.Context(), metrics.StageTotal, "unknown", time.Since(start))
 	upstreamStart := time.Now()
 
 	resp, err := h.client.Do(proxyReq)
 	if err != nil {
-		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 		h.logger.Error("upstream passthrough request failed", "error", err)
 		metrics.ObservePassthroughRequest(backend.API, r.Method, http.StatusBadGateway, time.Since(start), apiType, passthroughTokenType(rawToken), GetUsername(r))
 		writeError(w, http.StatusBadGateway, "Upstream request failed")
@@ -760,7 +763,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 	}
 	defer resp.Body.Close()
 	defer func() {
-		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageUpstreamRoundtrip, "unknown", time.Since(upstreamStart))
 	}()
 
 	// Copy response headers, filtering out hop-by-hop headers.
@@ -800,6 +803,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 // round-trip plus response streaming. start is the request arrival time and
 // tokenType the decision-pipeline label ("proxy", "agent", or "").
 func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader string, start time.Time, tokenType string, overrideHeaders ...map[string]string) int {
+	buildStart := time.Now()
 	targetURL := upstreamURL(r, path)
 
 	// Use the GraphQL-flavoured error envelope (with the GraphQL docs
@@ -812,7 +816,7 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
-		metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 		errWriter(w, http.StatusInternalServerError, "Failed to create upstream request")
 		return http.StatusInternalServerError
 	}
@@ -826,29 +830,30 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 
 	// Set the resolved Authorization header (scheme preserved from original request).
 	proxyReq.Header.Set("Authorization", authHeader)
+	owner, repoName := enterpriseTargetFromAPIPath(path)
+	metrics.ObserveDecision(r.Context(), metrics.StageRequestBuild, tokenType, time.Since(buildStart))
 
 	// Enterprise access restriction: inject the header unless an exception
 	// covers the request target, in which case a managed identity may also be
 	// substituted for the resolved credential.
-	owner, repoName := enterpriseTargetFromAPIPath(path)
 	if identityTok := h.enterprise.Apply(r.Context(), proxyReq.Header, owner, repoName, h.enterpriseUsername(r, rawTokenFromAuthValue(authHeader)), tokenType); identityTok != "" {
 		proxyReq.Header.Set("Authorization", substituteAuthHeader(authHeader, identityTok))
 	}
 
 	// Pre-forward work (including enterprise evaluation) is complete.
-	metrics.ObserveDecision(metrics.StageTotal, tokenType, time.Since(start))
+	metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
 	upstreamStart := time.Now()
 
 	resp, err := h.client.Do(proxyReq)
 	if err != nil {
-		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 		h.logger.Error("upstream request failed", "error", err)
 		errWriter(w, http.StatusBadGateway, "Upstream request failed")
 		return http.StatusBadGateway
 	}
 	defer resp.Body.Close()
 	defer func() {
-		metrics.ObserveDecision(metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageUpstreamRoundtrip, tokenType, time.Since(upstreamStart))
 	}()
 
 	// Copy rate limit headers for observability and update Prometheus metrics.

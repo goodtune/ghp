@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"github.com/goodtune/ghp/internal/metrics"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -652,4 +653,33 @@ func TestRoutingTransport_TransportPerProxy(t *testing.T) {
 	}
 
 	rt.CloseIdleConnections()
+}
+
+// TestForwardProxyRouter_ClientChoiceRecordsRealDuration checks that the
+// client-specified proxy path records a measured (non-zero) duration for the
+// forward_proxy_selection stage rather than a hard-coded 0 (#322).
+func TestForwardProxyRouter_ClientChoiceRecordsRealDuration(t *testing.T) {
+	const tokenType = "fp-client-choice-test"
+	fr := reloadedRouter(t)
+
+	r := httptest.NewRequest(http.MethodGet, "https://api.github.com/", nil)
+	r = PrepareForwardProxyInfo(r, "10.0.0.1")
+	SetForwardProxyIdentity(r, "tok-1", "", tokenType)
+	team, _ := url.Parse("http://team-proxy:3128")
+	SetForwardProxyClientChoice(r, team)
+
+	countBefore := decisionStageSampleCount(t, metrics.StageForwardProxySelection, tokenType)
+	sumBefore := decisionStageSampleSum(t, metrics.StageForwardProxySelection, tokenType)
+
+	out, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/user", nil)
+	if u, err := fr.ProxyFunc()(out); err != nil || u == nil || u.Host != "team-proxy:3128" {
+		t.Fatalf("ProxyFunc(client choice) = (%v, %v), want team-proxy:3128", u, err)
+	}
+
+	if got := decisionStageSampleCount(t, metrics.StageForwardProxySelection, tokenType); got != countBefore+1 {
+		t.Fatalf("sample count = %d, want %d", got, countBefore+1)
+	}
+	if got := decisionStageSampleSum(t, metrics.StageForwardProxySelection, tokenType); got <= sumBefore {
+		t.Errorf("sample sum = %v, want > %v (a measured duration, not 0)", got, sumBefore)
+	}
 }

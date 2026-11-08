@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/goodtune/ghp/internal/permissions"
 )
 
 // ErrNotFound is returned by DeleteApp, UpdateApp, UpdateProxyTokenAppID, and
@@ -99,16 +101,12 @@ func ParseScopes(data json.RawMessage) (Scopes, error) {
 }
 
 // HasPermission checks if the scopes include the given permission at the required level.
-// A "write" scope also grants "read" access.
+// A "write" scope also grants "read" access. The enforcement aliases in
+// permissions.Grants apply (workflows:read grants actions:read; the
+// projects enforcement name is satisfied by repository_projects or
+// organization_projects).
 func (s Scopes) HasPermission(permission, level string) bool {
-	granted, ok := s[permission]
-	if !ok {
-		return false
-	}
-	if level == "read" {
-		return granted == "read" || granted == "write"
-	}
-	return granted == level
+	return permissions.Grants(s, permission, level)
 }
 
 // CachedRepository represents a repository whose git clone/fetch operations

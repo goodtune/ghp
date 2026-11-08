@@ -112,8 +112,11 @@ func graphQLVerdict(body []byte, si tokenScopeInfo) graphQLDecision {
 		}
 		// Repository-restricted queries must include at least one pinned
 		// repository(owner, name) reference, and every referenced
-		// repository must be in the allowlist.
-		if len(analysis.referencedRepos) == 0 {
+		// repository must be in the allowlist. Introspection-only
+		// operations (#342; root selections are only __type, __schema or
+		// __typename) select no repository data and are exempt from the
+		// reference requirement.
+		if len(analysis.referencedRepos) == 0 && !analysis.introspectionOnly {
 			return graphQLDeny(d, reasonNoRepoRef,
 				"Token is repository-restricted; GraphQL request must reference repository(owner, name) with literal arguments or String variables")
 		}

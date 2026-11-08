@@ -458,3 +458,82 @@ func TestManager_CreateRawOverwritesSessionID(t *testing.T) {
 		t.Fatal("CreateRaw must not modify the caller's body")
 	}
 }
+
+func TestPace(t *testing.T) {
+	for _, tc := range []struct {
+		rate int
+		want time.Duration
+	}{
+		{20, 4 * time.Second},
+		{60, time.Minute / 45},
+		// Non-positive rates clamp to 1/min; the default rate is config's.
+		{0, 80 * time.Second},
+		{-5, 80 * time.Second},
+	} {
+		t.Run(fmt.Sprint(tc.rate), func(t *testing.T) {
+			if got := Pace(tc.rate); got != tc.want {
+				t.Errorf("Pace(%d) = %v, want %v", tc.rate, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManager_CreateAgentProfile(t *testing.T) {
+	agent := scenario.Profile{Name: "agent-repo-A", Type: "agent", Repositories: []string{"{{.RepoA}}"},
+		Duration: "1h", Requires: []string{"agent_installation"}}
+	t.Run("sends app and installation", func(t *testing.T) {
+		f := newFake()
+		m, _ := setup(t, f, 0)
+		v := vars()
+		v.Agent = scenario.AgentVals{AppRecordID: "00000000-0000-4000-8000-0000000000a6", InstallationID: 900000404}
+		h, err := m.Create(context.Background(), agent, v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.ID() == "" || m.Created() != 1 {
+			t.Fatalf("id=%q created=%d", h.ID(), m.Created())
+		}
+		b := f.posts[0]
+		if b["type"] != "agent" || b["app_record_id"] != "00000000-0000-4000-8000-0000000000a6" || b["session_id"] != "scoperig-run1" {
+			t.Fatalf("body = %v", b)
+		}
+		// JSON numbers decode as float64; the exact value must round-trip.
+		if n, _ := b["installation_id"].(float64); int64(n) != 900000404 {
+			t.Fatalf("installation_id = %v", b["installation_id"])
+		}
+		if fmt.Sprint(b["repositories"]) != "[a-owner/a-repo]" {
+			t.Fatalf("repositories = %v", b["repositories"])
+		}
+		// The token value never appears in the handle's string forms.
+		if s := fmt.Sprintf("%v %+v %#v %s", h, h, h, h); strings.Contains(s, "secret") {
+			t.Fatalf("handle leaks token: %s", s)
+		}
+	})
+	t.Run("proxy profile sends no app fields", func(t *testing.T) {
+		f := newFake()
+		m, _ := setup(t, f, 0)
+		v := vars()
+		if _, err := m.Create(context.Background(), prof, v); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := f.posts[0]["app_record_id"]; ok {
+			t.Fatalf("proxy body has app_record_id: %v", f.posts[0])
+		}
+		if _, ok := f.posts[0]["installation_id"]; ok {
+			t.Fatalf("proxy body has installation_id: %v", f.posts[0])
+		}
+	})
+	t.Run("agent without installation is not posted", func(t *testing.T) {
+		f := newFake()
+		m, _ := setup(t, f, 0)
+		v := vars()
+		v.Agent = scenario.AgentVals{}
+		_, err := m.Create(context.Background(), agent, v)
+		if err == nil || !strings.Contains(err.Error(), "agent_installation") {
+			t.Fatalf("want agent_installation error, got %v", err)
+		}
+		if len(f.posts) != 0 {
+			t.Fatalf("posted %d times", len(f.posts))
+		}
+	})
+}

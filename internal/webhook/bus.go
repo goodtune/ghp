@@ -333,6 +333,14 @@ type SubscribeOptions struct {
 	Durable string
 }
 
+// durablePullWait bounds each durable pull so that cancelling Next (client
+// disconnect, heartbeat deadline, shutdown) takes effect within this long.
+// minDurablePullWait keeps a pull near the caller's deadline valid.
+const (
+	durablePullWait    = time.Second
+	minDurablePullWait = 10 * time.Millisecond
+)
+
 // Subscription iterates stored deliveries for one subscriber.
 //
 // Ephemeral (ordered) subscriptions prefetch through a MessagesContext.
@@ -340,8 +348,8 @@ type SubscribeOptions struct {
 // most one unacknowledged message is ever outstanding per subscriber: a
 // batch of prefetched-but-unacknowledged messages would otherwise sit
 // pending for the full AckWait after a subscriber disconnects. A message
-// that lands in the single in-flight pull exactly as the client goes away
-// still waits AckWait (10 s) before redelivery; webhook volumes are low
+// received as the client goes away is Nak'd for immediate redelivery
+// rather than left pending for AckWait (10 s); webhook volumes are low
 // enough that the extra round trip per message is irrelevant.
 type Subscription struct {
 	msgs    jetstream.MessagesContext // ephemeral
@@ -357,12 +365,29 @@ func (s *Subscription) Next(ctx context.Context) (*Envelope, jetstream.Msg, erro
 	)
 	if s.durable {
 		for {
-			m, err = s.cons.Next(jetstream.FetchContext(ctx))
-			if err == nil {
-				break
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
 			}
-			if ctx.Err() != nil {
-				return nil, nil, ctx.Err()
+			// Bound the pull by a server-side expiry, not by ctx. With
+			// FetchContext a message the server hands out as ctx is
+			// cancelled is dropped client-side and stays pending for
+			// AckWait (#336). A pull that runs to its expiry always ends
+			// with the message or a server timeout, so nothing is lost.
+			wait := durablePullWait
+			if dl, ok := ctx.Deadline(); ok {
+				if r := time.Until(dl); r < wait {
+					wait = max(r, minDurablePullWait)
+				}
+			}
+			m, err = s.cons.Next(jetstream.FetchMaxWait(wait))
+			if err == nil {
+				if cerr := ctx.Err(); cerr != nil {
+					// The caller has gone; hand the message straight
+					// back for immediate redelivery.
+					_ = m.Nak()
+					return nil, nil, cerr
+				}
+				break
 			}
 			if errors.Is(err, jetstream.ErrNoMessages) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, jetstream.ErrNoHeartbeat) {
 				continue

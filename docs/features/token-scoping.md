@@ -39,6 +39,31 @@ The `--app` and `--installation` flags accept human-readable names (app name
 and GitHub account login respectively) and resolve to IDs automatically. The
 numeric `--installation-id` and `--app-id` flags are also available.
 
+Agent-token repositories must be `owner/repo` entries, and every owner must be
+the account the installation belongs to (compared case-insensitively, ASCII
+only). ghp reads the account login from GitHub
+(`GET /app/installations/{id}`) when the token is created or its repositories
+are changed. It returns `400 Bad Request`, naming the repository, when an owner
+does not match. If ghp cannot read the account login, it does not create or
+change the token (`502`, or `503` when no GitHub App is loaded).
+
+GitHub also narrows the installation token. When ghp mints the installation
+token, it sends the bare repository names to GitHub's `access_tokens` API, so
+the installation token itself can reach only those repositories. This is
+defence in depth: ghp still enforces the `owner/repo` allowlist on every
+request. If the owner check fails at mint time (for example, after the
+installation moves to another account), ghp does not mint a token and the
+request fails. The `ghp_agent_repo_narrowing_failed_total` metric counts these
+refusals.
+
+A bare repository name (no owner) already stored on an older agent token is
+still accepted at mint time and sent unchanged, because it can only narrow the
+installation token. The API rejects new bare entries.
+
+Enterprise exception identity substitution with a repository target uses the
+same mint path, so it also reads the installation account (cached for one
+hour). If that lookup fails, ghp keeps the restriction header (fail closed).
+
 ## Repository Restrictions
 
 When a token specifies one or more repositories, ghp enforces that only those
@@ -59,6 +84,13 @@ identity and service endpoints: `GET /`, `/user`, `/rate_limit`, `/meta`,
 because ghp cannot tie it to the allowlist. This includes
 `/repositories/{id}`, `/search/*`, `/user/repos`, `/orgs/*`, `/users/*`,
 `/gists` and package endpoints.
+
+The allowlist compare ignores case for ASCII letters only. A non-ASCII
+spelling that Unicode case rules would map to an allowed name (for example
+`ſ`, U+017F, for `s`, or the Kelvin sign, U+212A, for `k`) does not match.
+GitHub owner and repository names are ASCII. The same rule applies to the
+releases and codeload allow lists, the enterprise exception match list, the git cache, installation and team cache keys, and
+the admin user list.
 
 ghp rejects some request paths with `403 Forbidden` before any scope check.
 This applies to all `ghx_` and `gha_` tokens.
@@ -114,6 +146,7 @@ Rules that differ from the general area of the path:
 
 | Endpoint | Permission |
 |---|---|
+| `actions/workflows/*` (list, get, runs; `PUT enable`/`disable`, `POST dispatches`) | `actions:read` (GET) / `actions:write` |
 | `actions/permissions/*`, `actions/runners/*` | `administration:read` (GET) / `administration:write` |
 | `actions/variables/*` | `variables:read` (GET) / `variables:write` |
 | `PUT`/`DELETE environments/{name}` (create, update or delete the environment) | `administration:write` |
@@ -123,35 +156,85 @@ Rules that differ from the general area of the path:
 | `POST forks` | `administration:write` |
 | repository `labels`, `milestones`, `issues/comments/*` | `issues:read` / `issues:write` |
 | `pulls/comments/*`, `PUT pulls/{n}/update-branch` | `pull_requests:read` / `pull_requests:write` |
+| Reactions: `issues/{n}/reactions`, `issues/comments/{id}/reactions` (GET, `POST`, `DELETE .../reactions/{id}`) | `issues:read` / `issues:write` |
+| Reactions: `pulls/comments/{id}/reactions` (GET, `POST`, `DELETE .../reactions/{id}`) | `pull_requests:read` / `pull_requests:write` |
+| Reactions: commit comment `comments/{id}/reactions` (GET, `POST`, `DELETE .../reactions/{id}`) | `contents:read` / `contents:write` |
+| Classic projects: `projects/*`, `repos/{o}/{r}/projects`, `orgs/{o}/projects` | `projects:read` / `projects:write` (see [Permission aliases](#permission-aliases)) |
 | `PATCH check-runs/{id}`, `check-suites` writes | `checks:write` |
 
 ### Valid permission names
 
-GHP accepts only canonical permission names. These are the GitHub App
-repository and organization permission names that agent tokens pass to
-GitHub, plus the names that scope enforcement uses. One name, `projects`, is
-enforcement-only: the GraphQL Projects v2 tables use it, but it is not a
-GitHub App permission name, so agent tokens should not rely on it.
+GHP accepts only canonical permission names. These are the repository and
+organization permission names of the GitHub App permissions object (the
+`app-permissions` schema in GitHub's REST description, used by
+[Create an installation access token for an app](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app)),
+plus the names that scope enforcement uses. Account (user) permissions such
+as `gpg_keys` are not accepted. GHP also keeps `variables` and
+`team_discussions`, which older tokens use.
 
-`actions`, `administration`, `checks`, `codespaces`, `contents`,
-`dependabot_secrets`, `deployments`, `discussions`, `environments`, `issues`,
-`members`, `metadata`, `organization_administration`,
-`organization_custom_roles`, `organization_hooks`, `organization_packages`,
-`organization_plan`, `organization_projects`, `organization_secrets`,
-`organization_self_hosted_runners`, `organization_user_blocking`, `packages`,
-`pages`, `projects`, `pull_requests`, `repository_custom_properties`,
-`repository_hooks`, `repository_projects`, `secret_scanning_alerts`,
-`secrets`, `security_events`, `single_file`, `statuses`, `team_discussions`,
-`variables`, `vulnerability_alerts`, `workflows`.
+`actions`, `administration`, `artifact_metadata`, `attestations`, `checks`,
+`code_quality`, `codespaces`, `contents`,
+`custom_properties_for_organizations`, `dependabot_secrets`, `deployments`,
+`discussions`, `enterprise_custom_properties_for_organizations`,
+`environments`, `issues`, `members`, `merge_queues`, `metadata`,
+`organization_administration`, `organization_announcement_banners`,
+`organization_copilot_agent_settings`, `organization_copilot_requests`,
+`organization_copilot_seat_management`, `organization_custom_org_roles`,
+`organization_custom_properties`, `organization_custom_roles`,
+`organization_events`, `organization_external_properties_for_repos`,
+`organization_hooks`, `organization_packages`,
+`organization_personal_access_token_requests`,
+`organization_personal_access_tokens`, `organization_plan`,
+`organization_projects`, `organization_secrets`,
+`organization_self_hosted_runners`, `organization_user_blocking`,
+`packages`, `pages`, `projects`, `pull_requests`,
+`repository_custom_properties`, `repository_hooks`, `repository_projects`,
+`secret_scanning_alerts`, `secrets`, `security_events`, `single_file`,
+`statuses`, `team_discussions`, `variables`, `vulnerability_alerts`,
+`workflows`.
 
-The level must be `read` or `write`. GHP does not accept aliases. For example,
+### Permission aliases
+
+Two names have special handling. Both checks run inside the
+`scope_enforcement` decision stage.
+
+- `projects` is an enforcement name. The GraphQL Projects v2 tables and the
+  classic REST project rules (including the repository-level
+  `repos/{o}/{r}/projects` rules) require `projects:<level>`.
+  `projects:<level>`, `repository_projects:<level>` and
+  `organization_projects:<level>` each satisfy that requirement on their own.
+  The levels match as usual: read satisfies read, write satisfies read and
+  write, and read never satisfies write. The alias does not bypass anything
+  else: the repository allowlist still applies, and GitHub still runs its own
+  permission check on the forwarded request.
+- Agent (`gha_`) tokens: GitHub has no `projects` App permission, so GHP
+  mints `projects:<level>` at GitHub as both `repository_projects` and
+  `organization_projects` at that level. When the token also names one of
+  those keys, the higher level wins. This grant is wider than a
+  repository-only need. If a token needs only repository projects, request
+  `repository_projects` directly instead of `projects`.
+- `workflows:read` is **deprecated**. GitHub's `workflows` permission has
+  only a write level, and it controls editing workflow files. GitHub gates
+  the workflow REST endpoints (list, get, enable, disable, dispatch) on
+  `actions`. GHP still accepts `workflows:read` for one release. Creating a
+  token with it logs a warning. Enforcement treats it as `actions:read`, and
+  agent tokens send it to GitHub as `actions:read`. Use `actions:read`
+  instead. `workflows:write` is unchanged and does not grant `actions:read`.
+
+Behaviour change: before this release the workflow endpoints required
+`workflows:read`/`workflows:write`. A token with `workflows:write` and no
+`actions` permission can no longer list, enable, disable or dispatch
+workflows; add `actions:read` or `actions:write`.
+
+The level must be `read` or `write`. Apart from the aliases above, GHP does not accept aliases. For example,
 `pulls:write` is rejected: the GitHub permission is `pull_requests`.
 
 Token creation (`POST /api/tokens`, `ghp token create`) and scope updates
 (`PATCH /api/tokens/{id}`) return HTTP 400 for an unknown name or level. The
 error message lists the valid names. Each rejection increments
 `ghp_token_scope_rejected_total` (label `reason`: `unknown_permission` or
-`invalid_level`).
+`invalid_level`). The admin token edit form applies the same rules before it
+sends a scope update, and offers only canonical names.
 
 Tokens created before this check may still hold an unknown name. GHP does not
 migrate them. They resolve as before, but the unknown entry never satisfies a
@@ -266,6 +349,86 @@ allowlisted lookups are present in the same query. Every pinned
 repository, literal or variable, must be in the allowlist. Tokens with no
 repository restriction (permission-only or open-scoped) are unaffected.
 
+### Cross-repository subtrees
+
+Some fields return an object that can belong to a repository outside the
+allowlist, even when the query starts at a pinned `repository(owner, name)`.
+For repository-restricted tokens ghp applies two rules to them. Each rule
+only adds a cross-repository denial; the scope requirements stay the same,
+so permission-only tokens are not affected.
+
+- **Metadata-only subtrees.** `headRepository`, `headRepositoryOwner`,
+  `parent` (`Repository.parent` and `Issue.parent`), `subIssues`,
+  `blockedBy`, `blocking` and `closedByPullRequestsReferences` can point to a fork, an owner or an issue in
+  another repository. Beneath these fields a query can select only
+  metadata: the always-allowed fields (for example `id`, `name`,
+  `nameWithOwner`, `url`, `owner { login }`, `repository { nameWithOwner }`)
+  and the scalar leaves `number`, `title` and `state`. Any other field, for
+  example `headRepository { issues { ... } }`, `parent { body }` or
+  `headRepository { object(expression: ...) { ... } }`, is a
+  cross-repository field and the request gets a 403 that names it (for
+  example `headRepository.issues`). `gh pr view` and `gh issue view` select
+  only metadata here, so they keep working.
+- **User-level connections.** `issues`, `pullRequests`, `issueComments`
+  and `commitComments` are cross-repository unless their immediate parent
+  is a pinned `repository(owner, name)` lookup. Under `viewer`, `user`,
+  `organization`, `author`, `assignees`, `owner`, a bare
+  `Issue.repository`, a root lookup or a metadata-only subtree they return
+  data from every repository the credential can see, so the request gets a
+  403 that names the parent and the field (for example `viewer.issues` or
+  `author.issues`). Fragments do not change the parent: inside
+  `author { ... on User { issues { ... } } }` the parent of `issues` is
+  `author`.
+
+### Introspection-only queries
+
+A query whose root selections are only `__type`, `__schema` or
+`__typename` reads no repository data. A repository-restricted token does
+not need a `repository(owner, name)` selection for such a query. gh sends
+these probes before some commands (for example
+`query PullRequest_fields2 { WorkflowRun: __type(name: "WorkflowRun") { fields(includeDeprecated: true) { name } } }`).
+All other checks still apply: a field under `__type` or `__schema` that is
+not in the allowlist is denied as unmapped, and a query that adds any other
+root field (for example `viewer`) still needs a pinned repository.
+
+### Root object lookups
+
+The root fields `node(id:)`, `nodes(ids:)`, `resource(url:)` and
+`search(...)` fetch objects of any type by global ID, URL or search query.
+The field name does not tell ghp which type the client reads, so for
+permission-restricted tokens ghp gates these lookups on the type condition
+of each fragment beneath them:
+
+| Type condition | Required scope |
+|---|---|
+| `Issue` | `issues:read` |
+| `PullRequest` | `pull_requests:read` |
+| `Discussion` | `discussions:read` |
+| `Commit`, `Release` | `contents:read` |
+| `CheckRun`, `CheckSuite` | `checks:read` |
+| `StatusContext` | `statuses:read` |
+| `Repository`, `User`, `Organization`, `Bot`, `Team` | `metadata:read` |
+
+Inline fragments (`... on Issue { body }`) and named fragments
+(`...F` with `fragment F on Issue`) are both checked. A fragment with no
+type condition (`... @include(if: $x) { ... }`) is transparent: the
+fragments inside it are checked. For `search`, the fragments under `nodes`
+and `edges { node }` are checked, and scalar fields such as `issueCount`
+can be selected beside them.
+
+ghp rejects the request as unmapped when a lookup has no fragment (for
+example `{ node(id: "...") { id } }`, or a `search` that selects only
+counts), when a fragment names a type that is not in the table (including
+interfaces such as `Node`), or when a field other than `id` or
+`__typename` is selected outside a fragment. The fields inside a fragment
+are then checked as usual. A fragment nested directly in the body of a
+gated fragment must have the same type condition, or it is gated the
+same way and its scope is also required: `... on Bot { ...F }` with
+`fragment F on Issue` needs `issues:read` as well as `metadata:read`. The same field names in nested positions, for
+example `Connection.nodes`, are pagination helpers and are not affected.
+These four lookups are still cross-repository fields, so
+repository-restricted tokens cannot use them.
+
 At a mutation root, `__typename` needs no scope. All other mutation root
 fields still need a mapped write scope, and a mutation that selects only
 `__typename` is still rejected for scoped tokens.
@@ -275,11 +438,47 @@ analysis, so this cap does not apply to them.
 
 Operators reading 403 responses with a "GraphQL request references unmapped
 fields" message can use the named field as a hint for extending
-`fieldScopeRequirements` or `mutationScopeRequirements` in
+`fieldScopeRequirements`, `mutationScopeRequirements` or
+`typeConditionScopeRequirements` in
 `internal/proxy/graphql.go` to cover legitimate use cases.
+
+### gh CLI commands
+
+With a permission-restricted token, each `gh` 2.102.0 command needs these
+scopes (`metadata:read` is implied). The scope regression rig and the
+query corpus in `rig/corpus/gh/` check this table.
+
+| Command | Scopes |
+|---|---|
+| `gh repo view` | `contents:read` (the README is read with REST) |
+| `gh repo list` | `metadata:read` |
+| `gh pr list` | `pull_requests:read` |
+| `gh pr view` | `pull_requests:read`, `issues:read`, `contents:read`, `checks:read`, `statuses:read`, `actions:read`; `projects:read` for project items |
+| `gh pr status` | `pull_requests:read`, `contents:read`, `checks:read`, `statuses:read`, `administration:read` (`baseRef.branchProtectionRule`) |
+| `gh pr checks` | `pull_requests:read`, `contents:read`, `checks:read`, `statuses:read`, `actions:read` |
+| `gh pr create` | `pull_requests:write`, `issues:read` (`Repository.parent` has the same name as `Issue.parent`) |
+| `gh issue list` | `issues:read` |
+| `gh issue view` | `issues:read`; `projects:read` for project items |
+| `gh label list` | `issues:read` |
+| `gh release list` | `contents:read` |
+| `gh search prs` | denied: `GET /search/issues` is denied for every scoped token |
+
+With a repository-restricted token, `gh repo list`, `gh pr status`,
+`gh pr checks` and `gh search prs` are denied because they use
+cross-repository fields. Their introspection probes (for example
+`Release_fields`, `SearchType_enumValues`, `PullRequest_fields2`) are
+allowed (see [Introspection-only queries](#introspection-only-queries)),
+so `gh release list` works.
 
 ### Known limitations
 
+- **Some harmless root lookups are denied for every scoped token.** A
+  `search` that selects only counts (for example `repositoryCount`), a
+  root `node`, `nodes` or `resource` that selects only `id` or
+  `__typename`, and `textMatches` under `search { edges { ... } }` have no
+  fragment type that ghp can gate on, so they are rejected as unmapped.
+  Add a fragment with a mapped type condition (for example
+  `... on Repository { id }`) to send such a query.
 - **Scalar leaves under always-allowed parents are not deny-by-default.**
   Without loading GitHub's full SDL the proxy cannot enumerate every
   scalar field name, so unmapped scalars projected directly under an
@@ -292,9 +491,39 @@ fields" message can use the named field as a hint for extending
   body.** A lookup with variables is checked against the values that the
   request sends, which are the values that GitHub uses. A client that
   sends duplicate keys in `variables`, more than one operation, or a non-string value
-  gets a 403 for a repository-restricted token. gh queries that have
-  object fields with no analyzer table entry are still rejected as
-  unmapped (tracked separately).
+  gets a 403 for a repository-restricted token.
+- **Metadata-only subtrees disclose some data from other repositories.**
+  Under `headRepository`, `headRepositoryOwner`, `parent`, `subIssues`,
+  `blockedBy`, `blocking` and `closedByPullRequestsReferences` a repository-restricted token can read
+  metadata about a fork, owner or linked issue outside its allowlist: the
+  name and owner of the repository, and the `number`, `title` and `state`
+  of a linked issue. This keeps `gh pr view` and `gh issue view` working.
+  Everything else under these fields is denied (see
+  [Cross-repository subtrees](#cross-repository-subtrees)). A query that
+  selects `viewerPermission` under `Repository.parent` (as
+  `gh pr create` does) is denied; repository-restricted tokens cannot send
+  the `createPullRequest` mutation in any case.
+- **Some `timelineItems` children are denied only because they are
+  unmapped.** `CrossReferencedEvent.source`, `ConnectedEvent.subject` and
+  `MarkedAsDuplicateEvent.canonical` can point to another repository. They
+  are denied today because `source`, `subject` and `canonical` are not in
+  any table. If they are mapped, they must also be metadata-only subtrees.
+- **Cross-repository rules match field names and the immediate parent.**
+  ghp does not load GitHub's schema. `issues`, `pullRequests`,
+  `issueComments` and `commitComments` are allowed only directly under a
+  pinned `repository(owner, name)`; any other parent is treated as
+  cross-repository, even where the real type would stay inside the
+  repository.
+- **`contexts` needs only `checks:read`.** A table entry holds one scope.
+  `StatusCheckRollup.contexts` returns check runs and commit statuses, and
+  is mapped to `checks:read`. A `... on StatusContext` fragment inside it
+  also needs `statuses:read`, as does `statusContextCountsByState`.
+- **`projectItems` and `fieldValueByName` need the `projects` scope.**
+  Grant `projects:read` to let `gh issue view` and `gh pr view` read the
+  project items of an issue or pull request.
+- **`labels`, `milestone` and `comments` need `issues:read`.** The names
+  are the same on issues and pull requests, so the stricter meaning is
+  used: a token with only `pull_requests:read` cannot select them.
 - **Repository-restricted GraphQL mutations are not supported.** GitHub
   mutation inputs identify their target by opaque global node ID
   (`repositoryId`), which the proxy cannot statically map to a

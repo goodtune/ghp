@@ -70,7 +70,8 @@ Vault it is shared by all instances and idempotent.
 ## Security Model
 
 - **Token isolation** — agents never see real GitHub credentials; they only hold short-lived ghp tokens
-- **Scope enforcement** — tokens can be restricted to specific repositories and permission levels. For scoped tokens, REST endpoints that ghp cannot classify are denied, not forwarded (see [Token Scoping](features/token-scoping.md#deny-by-default))
+- **Scope enforcement** — tokens can be restricted to specific repositories and permission levels. For scoped tokens, REST endpoints that ghp cannot classify are denied, not forwarded (see [Token Scoping](features/token-scoping.md#deny-by-default)). GraphQL root lookups (`node`, `nodes`, `resource`, `search`) need the scope of each fragment type they read (see [Root object lookups](features/token-scoping.md#root-object-lookups)). For repository-restricted tokens, fields that can reach another repository (`headRepository`, `parent`, `subIssues`, user-level `issues`/`pullRequests`, and similar) allow only metadata or a pinned `repository(owner, name)` parent, and introspection-only queries need no repository reference (see [Cross-repository subtrees](features/token-scoping.md#cross-repository-subtrees)). Repository allowlists compare names with ASCII-only case folding
+- **GitHub-side narrowing for agent tokens** — an agent (`gha_`) token's repositories must belong to the installation's account; ghp checks this when the token is created and again when it mints the installation token, and sends GitHub the bare repository names so the installation token is narrowed to them too. If the check fails, or ghp cannot read the installation account, no installation token is minted
 - **Encryption at rest** — for SQLite and PostgreSQL backends, all stored GitHub credentials are encrypted with AES-256-GCM using a server-managed key. For the Vault backend, Vault provides encryption at rest natively, so no application-level encryption key is required
 - **Audit trail** — all requests produce OpenTelemetry access log records (method, path, status, duration) described using HTTP semantic conventions. API proxy requests additionally produce audit log records under the `github.com/goodtune/ghp/audit` instrumentation scope that include token, user, session, repository details, and request context. Token lifecycle events (creation, revocation, scope updates) also emit audit records but may omit repository and request-related fields. All records are written to the same console stream (and, when configured, exported to an OTLP collector). Capturing and indexing these logs is the responsibility of the deployment environment (e.g. Splunk, Elastic, Datadog). See [Monitoring → Logging](admin/monitoring.md#logging) for the full attribute reference
 - **Expiration** — tokens have a configurable lifetime (default 24 hours, up to a server-configured maximum; default maximum 7 days). Operators can enable `tokens.allow_no_expiry` to permit creating tokens that never expire (`"duration": "never"` in the API). Non-expiring tokens are useful for long-lived automation managed via infrastructure-as-code (e.g. Terraform) where token lifecycle is controlled externally through revocation rather than time-based expiry
@@ -88,7 +89,10 @@ Tokens can be scoped to specific repositories and permission levels, ensuring
 agents only access what they need. Open-scoped tokens (no restrictions) are
 also supported when full access is appropriate. Permission names are checked
 against one canonical list when a token is created; an unknown name (for
-example `pulls` instead of `pull_requests`) is rejected with HTTP 400.
+example `pulls` instead of `pull_requests`) is rejected with HTTP 400. Two
+aliases exist: `projects` is satisfied by `repository_projects` or
+`organization_projects`, and the deprecated `workflows:read` is treated as
+`actions:read`. Agent tokens send GitHub only App permission names.
 
 See [Token Scoping](features/token-scoping.md) for details.
 

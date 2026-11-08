@@ -23,6 +23,9 @@ func (graphqlExecutor) Run(ctx context.Context, s *scenario.Scenario, tok tokens
 			return nil, err
 		}
 		payload := map[string]any{"query": q}
+		if s.OperationName != "" {
+			payload["operationName"] = s.OperationName
+		}
 		if s.Variables != nil {
 			v, err := prepareBody(map[string]any(s.Variables), env)
 			if err != nil {
@@ -63,6 +66,12 @@ func postGraphQL(ctx context.Context, r *scenario.Request, payload any, tok toke
 	h, ok := hdrs.(map[string]string)
 	if !ok && hdrs != nil {
 		return nil, fmt.Errorf("headers: expanded to %T, want map[string]string", hdrs)
+	}
+	// A read-only document may be re-sent after a transport error.
+	if m, ok := payload.(map[string]any); ok {
+		if q, ok := m["query"].(string); ok && scenario.GraphQLReadOnly(q) {
+			ctx = withIdempotent(ctx)
+		}
 	}
 	return send(ctx, env, func(ctx context.Context) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, env.GraphQL, bodyReader(body))

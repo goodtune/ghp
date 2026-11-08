@@ -93,7 +93,9 @@ Set the token as `GH_TOKEN` in the agent's environment:
     export GH_TOKEN=ghx_xxxxxxxxxxxxxxxx
 
 That's it. The agent now uses GitHub through the proxy with scoped permissions.
-Standard `gh` CLI, GitHub SDKs, and raw HTTP all work transparently.
+Standard `gh` CLI, GitHub SDKs, and raw HTTP work through the proxy without
+changes. A scoped token must grant the scopes that each command needs: see
+[gh CLI commands](features/token-scoping.md#gh-cli-commands).
 
 ## Manage Tokens
 

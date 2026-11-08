@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,10 +15,15 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/goodtune/ghp/tools/scoperig/exec"
+	"github.com/goodtune/ghp/tools/scoperig/expect"
 	"github.com/goodtune/ghp/tools/scoperig/report"
+	"github.com/goodtune/ghp/tools/scoperig/scenario"
+	"github.com/goodtune/ghp/tools/scoperig/tokens"
 )
 
 const (
@@ -45,6 +51,9 @@ type fakeGHP struct {
 	pushW      bool
 	deletes    []string          // ids passed to DELETE /api/tokens/{id}, in order
 	onScenario func(path string) // called for scenario (non-fixture) GETs
+	userAgents map[string]int    // User-Agent -> request count
+	posts      []map[string]any  // POST /api/tokens bodies, in order
+	appID      string            // GET /api/apps/{appID} answers 200 when set
 }
 
 type fakeTok struct {
@@ -89,6 +98,10 @@ func (f *fakeGHP) tokenOK(r *http.Request) bool {
 func (f *fakeGHP) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.requests++
+	if f.userAgents == nil {
+		f.userAgents = map[string]int{}
+	}
+	f.userAgents[r.Header.Get("User-Agent")]++
 	if strings.HasPrefix(r.URL.Path, "/api/v3") && r.Method != http.MethodGet {
 		f.apiWrites++
 	}
@@ -99,6 +112,15 @@ func (f *fakeGHP) serve(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	case p == "/login":
 		_, _ = fmt.Fprint(w, "<html>ghp version 0.23.0</html>")
+	case strings.HasPrefix(p, "/api/apps/"):
+		f.mu.Lock()
+		id := f.appID
+		f.mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer "+fakeSession || id == "" || p != "/api/apps/"+id {
+			writeJSONResp(w, 404, map[string]string{"message": "not found"})
+			return
+		}
+		writeJSONResp(w, 200, map[string]any{"id": id, "name": "rig"})
 	case strings.HasPrefix(p, "/api/tokens"):
 		if r.Header.Get("Authorization") != "Bearer "+fakeSession {
 			writeJSONResp(w, 401, map[string]string{"message": "unauthorized"})
@@ -138,6 +160,7 @@ func (f *fakeGHP) serveTokens(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && id == "":
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.posts = append(f.posts, body)
 		f.nextID++
 		f.creates++
 		t := &fakeTok{ID: fmt.Sprintf("tok-%d", f.nextID), Value: fmt.Sprintf("%s%04d", fakeTokPfx, f.nextID)}
@@ -364,6 +387,9 @@ func fakeDeps(f *fakeGHP, paceCalls *[]int) runDeps {
 			}
 			return time.Millisecond
 		},
+		GHVersion:  func(context.Context, string) string { return "2.102.0" },
+		RigCommit:  func() string { return "abc1234" },
+		RigVersion: func() string { return "v9.9.9" },
 	}
 }
 
@@ -436,13 +462,26 @@ func TestRun_EndToEndFake(t *testing.T) {
 		t.Errorf("tokens left live: %v", left)
 	}
 	var doc struct {
-		Tokens struct {
+		GHVersion string `json:"gh_version"`
+		RigCommit string `json:"rig_commit"`
+		Tokens    struct {
 			Created  int      `json:"created"`
 			Revoked  int      `json:"revoked"`
 			Leftover []string `json:"leftover_ids"`
 		} `json:"tokens"`
 	}
 	_ = json.Unmarshal(raw, &doc)
+	// Every request (preflight, management, proxy, fixtures, scenarios)
+	// carries the rig User-Agent with this run's id.
+	f.mu.Lock()
+	uas := f.userAgents
+	f.mu.Unlock()
+	if want := "ghp-scoperig/v9.9.9 (run=20261105T0412Z-7f3a)"; len(uas) != 1 || uas[want] == 0 {
+		t.Errorf("User-Agents = %v, want only %q", uas, want)
+	}
+	if doc.GHVersion != "2.102.0" || doc.RigCommit != "abc1234" {
+		t.Errorf("gh_version=%q rig_commit=%q, want 2.102.0 and abc1234", doc.GHVersion, doc.RigCommit)
+	}
 	if doc.Tokens.Created != 2 || doc.Tokens.Revoked != 2 || len(doc.Tokens.Leftover) != 0 {
 		t.Errorf("tokens = %+v", doc.Tokens)
 	}
@@ -965,4 +1004,320 @@ func TestRun_EndSweepRevokesUntrackedToken(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEscalateOnLeftover(t *testing.T) {
+	cause := errors.New("preflight failed")
+	for _, tc := range []struct {
+		name     string
+		err      error
+		leftover []string
+		want     int // exit code; 0 means nil error
+	}{
+		{"could-not-start with leftover becomes 2", &exitError{code: 3, err: cause}, []string{"t1"}, 2},
+		{"could-not-start without leftover stays 3", &exitError{code: 3, err: cause}, nil, 3},
+		{"exit 2 with leftover stays 2", &exitError{code: 2, err: cause}, []string{"t1"}, 2},
+		{"nil with leftover stays nil", nil, []string{"t1"}, 0},
+		{"nil without leftover stays nil", nil, nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := escalateOnLeftover(tc.err, tc.leftover)
+			if tc.want == 0 {
+				if got != nil {
+					t.Fatalf("err = %v, want nil", got)
+				}
+				return
+			}
+			var ee *exitError
+			if !errors.As(got, &ee) || ee.code != tc.want {
+				t.Fatalf("err = %#v, want exit %d", got, tc.want)
+			}
+			if !errors.Is(got, cause) {
+				t.Errorf("cause lost: %v", got)
+			}
+		})
+	}
+}
+
+func TestWatchSecondSignal(t *testing.T) {
+	revoke := func(context.Context) []string { return []string{"t1", "t2"} }
+	t.Run("second signal revokes and exits 2", func(t *testing.T) {
+		ch := make(chan os.Signal, 2)
+		var out bytes.Buffer
+		code := -1
+		ch <- os.Interrupt
+		ch <- os.Interrupt
+		close(ch)
+		watchSecondSignal(context.Background(), ch, revoke, &out, func(c int) { code = c })
+		if code != 2 || !strings.Contains(out.String(), "t1 t2") {
+			t.Errorf("code=%d out=%q", code, out.String())
+		}
+	})
+	t.Run("first signal alone does nothing", func(t *testing.T) {
+		ch := make(chan os.Signal, 2)
+		code := -1
+		ch <- os.Interrupt
+		close(ch)
+		watchSecondSignal(context.Background(), ch, revoke, io.Discard, func(c int) { code = c })
+		if code != -1 {
+			t.Errorf("exited %d after one signal", code)
+		}
+	})
+	t.Run("signal before subscription counts as first", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		ch := make(chan os.Signal, 2)
+		code := -1
+		ch <- syscall.SIGTERM
+		close(ch)
+		watchSecondSignal(ctx, ch, revoke, io.Discard, func(c int) { code = c })
+		if code != 2 {
+			t.Errorf("code = %d, want 2", code)
+		}
+	})
+}
+
+// Flags override the environment, which overrides the config file.
+func TestLoadWithFlags_Precedence(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfg, []byte("fixtures:\n  repo_a: file/a\n  repo_b: file/b\n  repo_w: file/w\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"GHP_RIG_REPO_A": "env/a", "GHP_RIG_SCENARIOS": "envroot"}
+	getenv := func(k string) string { return env[k] }
+	f := &cliFlags{config: cfg, out: "/tmp/x.json", only: "REPO-*", skipKnown: true, keepGoing: false, verbose: true, createFixtures: true}
+	c, err := loadWithFlags(getenv, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RepoA != "env/a" || c.RepoB != "file/b" || c.Root != "envroot" {
+		t.Errorf("env over file: RepoA=%q RepoB=%q Root=%q", c.RepoA, c.RepoB, c.Root)
+	}
+	if c.ConfigFile != cfg {
+		t.Errorf("explicit --config not used: %q", c.ConfigFile)
+	}
+	if c.Out != "/tmp/x.json" || c.Only != "REPO-*" || !c.SkipKnown || c.KeepGoing || !c.Verbose || !c.CreateFixtures {
+		t.Errorf("flags not applied: %+v", *c)
+	}
+	// Run flags have no environment source: a look-alike variable is ignored.
+	env["GHP_RIG_ONLY"] = "NOPE-*"
+	if c, _ := loadWithFlags(getenv, f); c.Only != "REPO-*" {
+		t.Errorf("Only = %q, want the flag value", c.Only)
+	}
+	if _, err := loadWithFlags(getenv, &cliFlags{config: filepath.Join(t.TempDir(), "missing.yaml")}); err == nil {
+		t.Error("want error for a missing explicit config")
+	}
+}
+
+// A scenario that hardcodes the placeholder W repository passes static
+// validation but targets a non-W repository at run time. runRig re-validates
+// with the configured Vars and stops before any request (#304).
+func TestRun_RevalidatesWithConfiguredVars(t *testing.T) {
+	f := newFakeGHP(t)
+	root, cfg := writeTree(t, f.host(), testScenarios+`
+- id: REPO-C05.literal-placeholder-w
+  claim: REPO-C05
+  profile: open
+  kind: rest
+  method: POST
+  path: /repos/w-owner/w-repo/issues
+  body: {title: x}
+  expect: {status: 403}
+`)
+	env := fakeEnv(f, root)
+	if res := runCLI(t, env, fakeDeps(f, nil), "validate", "--config", cfg); res.code != 0 {
+		t.Fatalf("static validate exit = %d, want 0 (placeholder Vars)\n%s", res.code, res.stdout)
+	}
+	res := runCLI(t, env, fakeDeps(f, nil), "run", "--config", cfg)
+	if res.code != 3 {
+		t.Fatalf("run exit = %d, want 3\nstderr:\n%s", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "configured host and fixtures") || !strings.Contains(res.stderr, "literal-placeholder-w") {
+		t.Errorf("stderr = %s", res.stderr)
+	}
+	f.mu.Lock()
+	n := f.requests
+	f.mu.Unlock()
+	if n != 0 {
+		t.Errorf("%d request(s) reached the instance before re-validation", n)
+	}
+}
+
+func TestConfigVars(t *testing.T) {
+	c := &Config{RepoA: "o/a", RepoB: "o/b", RepoW: "o/w"}
+	c.Instance.Host = "proxy.invalid"
+	c.Instance.MaxDuration = 5 * time.Hour
+	v := configVars(c)
+	if v.Host != "proxy.invalid" || v.Instance.Host != "proxy.invalid" {
+		t.Errorf("host = %q / %q", v.Host, v.Instance.Host)
+	}
+	if v.RepoA.String() != "o/a" || v.RepoB.String() != "o/b" || v.RepoW.String() != "o/w" {
+		t.Errorf("repos = %s %s %s", v.RepoA, v.RepoB, v.RepoW)
+	}
+	if v.Instance.MaxDuration != 5*time.Hour || v.Instance.DefaultDuration == 0 {
+		t.Errorf("durations = %v %v", v.Instance.DefaultDuration, v.Instance.MaxDuration)
+	}
+	if v.RepoW.ID == 0 || v.Login == "" {
+		t.Error("discovery-only values should stay placeholders")
+	}
+}
+
+// The committed rig tree must also validate with configured (non-placeholder)
+// Vars, or every live run would stop at re-validation.
+func TestRigTree_ValidatesWithConfiguredVars(t *testing.T) {
+	tree, err := scenario.Load("../../rig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Config{RepoA: "fixture-owner/ghp-scoperig-a", RepoB: "fixture-owner/ghp-scoperig-b", RepoW: "fixture-owner/ghp-scoperig-w"}
+	c.Instance.Host = "proxy.invalid"
+	for _, e := range scenario.Validate(tree, configVars(c)) {
+		t.Error(e)
+	}
+}
+
+// countingExec records whether Run was called and returns a fixed 403.
+type countingExec struct{ runs int }
+
+func (*countingExec) Kind() string { return "rest" }
+func (c *countingExec) Run(context.Context, *scenario.Scenario, tokens.Handle, *exec.RunEnv) (*expect.Observation, error) {
+	c.runs++
+	return &expect.Observation{Status: 403, Header: http.Header{}, Body: []byte(`{}`)}, nil
+}
+
+// An expectation that cannot expand with the live Vars stops the scenario
+// before any request (#307). Before, the request ran and the expansion
+// error after it turned a classified FAIL into ERROR.
+func TestRunScenario_ExpandsExpectationsBeforeRequest(t *testing.T) {
+	ex := &countingExec{}
+	deps := runDeps{Exec: func(string) (exec.Executor, error) { return ex, nil }}
+	env := &exec.RunEnv{Vars: &scenario.Vars{ProfileIDs: map[string]string{"open": "id-open"}}}
+	handles := map[string]tokens.Handle{"open": {}}
+	mk := func(json string) *scenario.Scenario {
+		s := &scenario.Scenario{ID: "X.y", Claim: "X", Profile: "open", Kind: "rest", Method: "GET", Path: "/user",
+			Expect: &scenario.Expect{Status: 200, JSON: map[string]string{"$.id": json}}}
+		s.Normalise()
+		return s
+	}
+
+	// ProfileIDs only holds the profiles this run created.
+	r := runScenario(context.Background(), mk("{{.ProfileIDs.unused}}"), env, deps, Capabilities{}, handles, nil, nil)
+	if r.Status != report.StatusError || !strings.Contains(r.Detail, "not run") {
+		t.Errorf("status=%s detail=%q, want ERROR not run", r.Status, r.Detail)
+	}
+	if ex.runs != 0 {
+		t.Errorf("executor ran %d time(s) despite the expansion error", ex.runs)
+	}
+
+	// An expectation that expands runs and is classified (403 vs 200: FAIL).
+	r = runScenario(context.Background(), mk("{{.ProfileIDs.open}}"), env, deps, Capabilities{}, handles, nil, nil)
+	if r.Status != report.StatusFail || ex.runs != 1 {
+		t.Errorf("status=%s runs=%d, want FAIL after one run", r.Status, ex.runs)
+	}
+}
+
+const agentTestScenario = `
+- id: REPO-C05.agent
+  claim: REPO-C05
+  profile: agent-repo-A
+  kind: rest
+  requires: [agent_installation]
+  method: GET
+  path: /repos/{{.RepoB}}/commits
+  expect: {status: 200}
+`
+
+// writeAgentTree adds an agent profile (and, if block is set, an
+// instance.agent_installation block) to the test tree.
+func writeAgentTree(t *testing.T, host, block string) (root, cfg string) {
+	t.Helper()
+	root, cfg = writeTree(t, host, agentTestScenario)
+	appendFile := func(p, s string) {
+		f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := f.WriteString(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendFile(filepath.Join(root, "profiles.yaml"), "- {name: agent-repo-A, type: agent, repositories: [\"{{.RepoA}}\"], duration: 1h, requires: [agent_installation]}\n")
+	if block != "" {
+		raw, err := os.ReadFile(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cfg, []byte(strings.Replace(string(raw), "instance:\n", "instance:\n"+block, 1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root, cfg
+}
+
+func agentPosts(f *fakeGHP) []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []map[string]any
+	for _, b := range f.posts {
+		if b["type"] == "agent" {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+func TestRun_AgentProfile(t *testing.T) {
+	const appID = "00000000-0000-4000-8000-0000000000a6"
+	block := "  agent_installation:\n    app_record_id: " + appID + "\n    installation_id: 900000404\n"
+	t.Run("not configured: not minted, GAP", func(t *testing.T) {
+		f := newFakeGHP(t)
+		root, cfg := writeAgentTree(t, f.host(), "")
+		out := filepath.Join(t.TempDir(), "r.json")
+		runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--out", out)
+		raw, _ := os.ReadFile(out)
+		if st := statusesByID(t, raw)["REPO-C05.agent"]["status"]; st != "GAP" {
+			t.Errorf("status = %v, want GAP", st)
+		}
+		if n := len(agentPosts(f)); n != 0 {
+			t.Errorf("%d agent token(s) minted without the capability", n)
+		}
+	})
+	t.Run("app missing on instance: not minted, GAP", func(t *testing.T) {
+		f := newFakeGHP(t)
+		root, cfg := writeAgentTree(t, f.host(), block)
+		out := filepath.Join(t.TempDir(), "r.json")
+		runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--out", out)
+		raw, _ := os.ReadFile(out)
+		if st := statusesByID(t, raw)["REPO-C05.agent"]["status"]; st != "GAP" {
+			t.Errorf("status = %v, want GAP", st)
+		}
+		if n := len(agentPosts(f)); n != 0 {
+			t.Errorf("%d agent token(s) minted for a missing app", n)
+		}
+	})
+	t.Run("configured: minted against the app, revoked", func(t *testing.T) {
+		f := newFakeGHP(t)
+		f.appID = appID
+		root, cfg := writeAgentTree(t, f.host(), block)
+		out := filepath.Join(t.TempDir(), "r.json")
+		res := runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--out", out)
+		raw, _ := os.ReadFile(out)
+		if st := statusesByID(t, raw)["REPO-C05.agent"]["status"]; st != "PASS" {
+			t.Errorf("status = %v, want PASS\n%s", st, res.stderr)
+		}
+		posts := agentPosts(f)
+		if len(posts) != 1 || posts[0]["app_record_id"] != appID {
+			t.Fatalf("agent posts = %v", posts)
+		}
+		if n, _ := posts[0]["installation_id"].(float64); int64(n) != 900000404 {
+			t.Errorf("installation_id = %v", posts[0]["installation_id"])
+		}
+		if left := f.liveRunTokens(); len(left) != 0 {
+			t.Errorf("tokens left live: %v", left)
+		}
+		if strings.Contains(res.stdout+res.stderr+string(raw), fakeTokPfx) {
+			t.Error("a token value reached the output or report")
+		}
+	})
 }

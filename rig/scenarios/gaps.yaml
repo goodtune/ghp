@@ -3,7 +3,8 @@
 # the first live run (20261105T0534Z). GAP-A1 and GAP-A2 are fixed (#290,
 # #291). GAP-A7 passed (GHP denies the dot-segment path for B), so it
 # carries no known_issue; GAP-A6 needs the
-# agent_installation capability and has not run yet.
+# agent_installation capability (#306); its runtime probe is
+# GAP-A6.repo-a-reads-a in agent.yaml.
 #
 # Consensus issue links, for triage: A1 goodtune/ghp#290, A2 #291,
 # A3 #292, A6 #294, A7 #295, A8 #296.
@@ -49,11 +50,16 @@
   expect: {status: 403, ghp_denial: true}
 
 # GAP-A6: an agent (gha_) token for an owner/repo repository. Notes:
-# - Creation does not call GitHub. The installation token is minted lazily
-#   on the first proxied request (AppTokenProvider.GetInstallationToken), so
-#   a 201 shows the request is accepted, not that GitHub accepts owner/repo
-#   names. A probe that sends a request with the new gha_ token is follow-up
-#   work (the executor never sees the raw token).
+# - Creation reads the installation account (GET /app/installations/{id})
+#   and returns 400 when an owner is not that account (#294, fixed by #358;
+#   before #358 creation did not call GitHub). The installation token is
+#   minted lazily on the first proxied request, with bare repository names,
+#   so a 201 does not show that GitHub accepts the names or narrows the
+#   token. GAP-A6.repo-a-reads-a (agent.yaml) sends a request with an
+#   agent-repo-A token: before 0.27.0 (#358) GitHub answered 422 for
+#   owner/repo; it passes on 0.27.0.
+# - app_record_id is always sent: omitting it pins the token to the
+#   instance's default app, which the rig must not use.
 # - Revocation: token.Service.Revoke marks the record revoked and drops the
 #   cache entry; it does not call DELETE /installation/token. A minted
 #   installation token stays valid at GitHub until its natural expiry (up to
@@ -71,6 +77,7 @@
     path: /api/tokens
     body:
       type: agent
+      app_record_id: "{{.Agent.AppRecordID}}"
       repositories: ["{{.RepoA}}"]
       installation_id: "$int:InstallationID"
       duration: 1h
@@ -129,3 +136,74 @@
   path: /user
   headers: {Authorization: "token gho_{{printf \"%.36s\" (print .RunID \"scoperigfakescoperigfakescoperigfake\")}}"}
   expect: {status: 403, ghp_denial: true}
+
+# GAP-A10: root nodes(ids:) with an inline fragment used to pass for any
+# permission-scoped token, because `nodes` is always allowed as a
+# Connection helper (#324). GHP now requires the scope of each fragment
+# type condition, so a metadata:read token is denied issues:read. The
+# denial is static (before any lookup), so the ID is the repository node ID:
+# a metadata:read token cannot read an issue node ID to use instead.
+- id: GAP-A10.nodes-fragment-bypass
+  claim: GAP-A10
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: Root nodes(ids:) with an Issue fragment needs issues:read; a metadata:read token is denied by GHP.
+  profile: perm-metadata-ro
+  kind: graphql
+  query: |
+    { nodes(ids: ["{{.RepoA.NodeID}}"]) { ... on Issue { title body } } }
+  expect: {status: 403, body_contains: ["Token does not grant required GraphQL scopes", "issues:read"], ghp_denial: true}
+
+# GAP-A4: the codeload.github.com virtual host. The unknown token is fake
+# (the run ID padded to the length of a real ghx_ token); GHP must reject it
+# with its own denial and never forward it. The Authorization header
+# overrides the profile token.
+- id: GAP-A4.codeload-unknown-token
+  claim: GAP-A4
+  doc: docs/how-it-works.md#virtualhost-routing
+  description: An unknown ghx_ token on codeload.github.com is rejected by GHP, not forwarded to GitHub.
+  profile: open
+  kind: rest
+  requires: [codeload_vhost]
+  vhost: codeload.github.com
+  method: GET
+  path: /{{.RepoA}}/tar.gz/{{.Fixture.A.Branch}}
+  headers: {Authorization: "token ghx_{{printf \"%.40s\" (print .RunID \"scoperigfakescoperigfakescoperigfakescoperigfake\")}}"}
+  expect: {status: 401, ghp_denial: true}
+
+- id: GAP-A4.codeload-repo-a-archive
+  claim: GAP-A4
+  doc: docs/how-it-works.md#virtualhost-routing
+  description: A token scoped to A fetches A's archive through codeload.github.com (GHP swaps in the real credential).
+  profile: repo-A
+  kind: rest
+  requires: [codeload_vhost]
+  vhost: codeload.github.com
+  method: GET
+  path: /{{.RepoA}}/tar.gz/{{.Fixture.A.Branch}}
+  expect: {status: 200, ghp_denial: false}
+
+- id: GAP-A4.codeload-repo-b-denied
+  claim: GAP-A4
+  doc: docs/how-it-works.md#virtualhost-routing
+  description: A token scoped to A is denied B's archive through codeload.github.com.
+  profile: repo-A
+  kind: rest
+  requires: [codeload_vhost]
+  vhost: codeload.github.com
+  method: GET
+  path: /{{.RepoB}}/tar.gz/{{.Fixture.B.Branch}}
+  expect: {status: 403, ghp_denial: true}
+
+# GAP-A9: replay the gh 2.102.0 corpus live. Load expands this entry into one
+# graphql scenario per corpus query and profile; each asserts the corpus
+# verdict (allow: 200 and no GHP denial; deny: 403 with the reason's GHP
+# message). OWNER, REPO and NODE_ID become fixture A's values. Numbers
+# (pull request and issue 1) are kept: an allowed query may get a GraphQL
+# error from GitHub for them, which is not GHP's verdict.
+- id: GAP-A9.gh-2.102.0
+  claim: GAP-A9
+  doc: docs/getting-started.md#configure-your-agent
+  description: The GraphQL analyzer gives gh 2.102.0's real queries the corpus verdicts live.
+  kind: corpus
+  corpus: corpus/gh/2.102.0
+  corpus_profiles: {open: open, perm-ro: perm-ro, repo: repo-A}

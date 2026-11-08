@@ -91,6 +91,11 @@ func (s *Server) syncBlockMetrics() {
 	}
 }
 
+// syncSlowDecisionLog applies metrics.slow_decision_threshold (#355).
+func (s *Server) syncSlowDecisionLog() {
+	metrics.ConfigureSlowDecisionLog(s.logger, s.cfg.Metrics.SlowDecisionThreshold)
+}
+
 // reloadConfig re-reads the configuration file and updates hot-reloadable
 // fields in-place. All components holding a pointer to the Config struct
 // will see the updated values.
@@ -106,6 +111,7 @@ func (s *Server) reloadConfig() {
 	s.logger.Info("config_reloaded", "path", s.configPath)
 
 	s.syncBlockMetrics()
+	s.syncSlowDecisionLog()
 
 	// Sync admin roles from the updated config.
 	if s.store != nil {
@@ -265,6 +271,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Initialise the anonymous git blocking gauge to reflect the startup config.
 	s.syncBlockMetrics()
+	s.syncSlowDecisionLog()
 
 	// Set up encryption. Vault provides encryption at rest, so a
 	// passthrough encryptor is used when the backend is Vault.
@@ -954,19 +961,26 @@ func newHostDispatch(cfg hostDispatchConfig) http.Handler {
 
 		switch {
 		case host == backend.API:
-			cfg.apiHandler.ServeHTTP(w, r)
+			serveVhost(cfg.apiHandler, metrics.VhostAPI, w, r)
 		case host == backend.GitHub:
-			cfg.githubHandler.ServeHTTP(w, r)
+			serveVhost(cfg.githubHandler, metrics.VhostWeb, w, r)
 		case host == backend.Codeload:
-			cfg.codeloadHandler.ServeHTTP(w, r)
+			serveVhost(cfg.codeloadHandler, metrics.VhostCodeload, w, r)
 		case host == "githubcopilot.com" || strings.HasSuffix(host, ".githubcopilot.com"):
-			cfg.copilotHandler.ServeHTTP(w, r)
+			serveVhost(cfg.copilotHandler, metrics.VhostCopilot, w, r)
 		case cfg.managementHost == "" || strings.EqualFold(host, cfg.managementHost):
-			cfg.mgmtHandler.ServeHTTP(w, r)
+			serveVhost(cfg.mgmtHandler, metrics.VhostManagement, w, r)
 		default:
 			http.NotFound(w, r)
 		}
 	})
+}
+
+// serveVhost tags the request context with the decision histogram vhost label
+// (#330) and serves it with h. Every ObserveDecision call downstream, and every
+// outbound request built from this context, reads the label from it.
+func serveVhost(h http.Handler, vhost string, w http.ResponseWriter, r *http.Request) {
+	h.ServeHTTP(w, r.WithContext(metrics.WithVhost(r.Context(), vhost)))
 }
 
 func notifySystemd(state string) {

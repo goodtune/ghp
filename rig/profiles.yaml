@@ -14,6 +14,10 @@
   type: proxy
   scopes: "issues:read"
   duration: 2h
+- name: perm-metadata-ro
+  type: proxy
+  scopes: "metadata:read"
+  duration: 2h
 - name: repo-A
   type: proxy
   repositories: ["{{.RepoA}}"]
@@ -41,3 +45,29 @@
 - name: lifecycle-revoke
   type: proxy
   duration: 2h
+- name: lifecycle-expire
+  type: proxy
+  duration: 1m
+# Agent (gha_) profiles (#306). Minted against instance.agent_installation
+# (app_record_id and installation_id in rig/config.yaml); never the
+# instance's default app. Skipped, and their scenarios report GAP, unless
+# the agent_installation capability is true.
+- name: agent-open
+  type: agent
+  duration: 1h
+  requires: [agent_installation]
+- name: agent-repo-A
+  type: agent
+  repositories: ["{{.RepoA}}"]
+  duration: 1h
+  requires: [agent_installation]
+- name: agent-repo-W
+  type: agent
+  repositories: ["{{.RepoW}}"]
+  duration: 1h
+  requires: [agent_installation]
+- name: agent-perm-ro
+  type: agent
+  scopes: "contents:read,issues:read,pull_requests:read,metadata:read,actions:read"
+  duration: 1h
+  requires: [agent_installation]

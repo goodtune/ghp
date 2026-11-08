@@ -154,3 +154,75 @@
   method: GET
   path: /repos/{{.RepoW}}/contents/
   expect: {status: 200}
+
+# Reactions (#315): issue reactions follow the issues permission.
+- id: PERM-C14.issue-reactions-read-allowed
+  claim: PERM-C14
+  doc: docs/features/token-scoping.md#deny-by-default
+  description: issues:read allows listing the reactions on an issue.
+  profile: perm-issues-ro
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}/issues/{{.Fixture.A.IssueNumber}}/reactions
+  expect: {status: 200}
+
+- id: PERM-C14.issue-reactions-write-denied
+  claim: PERM-C14
+  doc: docs/features/token-scoping.md#deny-by-default
+  description: issues:read blocks adding a reaction to an issue on W; GHP denies before GitHub.
+  profile: perm-issues-ro
+  kind: rest
+  requires: [repo_w_push]
+  # No cleanup: GHP must deny this write before it reaches GitHub, so no
+  # reaction is created. If GHP wrongly forwards it the scenario FAILs and
+  # the reaction left on the W fixture issue is the residue to remove by hand.
+  method: POST
+  path: /repos/{{.RepoW}}/issues/{{.Fixture.W.IssueNumber}}/reactions
+  body: {content: "eyes"}
+  expect: {status: 403, body_contains: ["Token does not have permission", "issues:write"], ghp_denial: true}
+
+# PERM-C17: repo-W has a repository restriction but no permission scopes, so
+# GHP applies no permission check and the request uses the credential's full
+# access: it can write contents on W.
+- id: PERM-C17.no-scopes-full-credential
+  claim: PERM-C17
+  doc: docs/features/token-scoping.md#permission-restrictions
+  description: A token with no scopes writes a file on W with the credential's own access; the file is deleted in cleanup.
+  profile: repo-W
+  kind: rest
+  requires: [repo_w_push]
+  steps:
+    - name: put
+      method: PUT
+      path: /repos/{{.RepoW}}/contents/scoperig-{{.RunID}}-c17.txt
+      body: {message: "scoperig {{.RunID}} C17", content: "c2NvcGVyaWcK"}
+      expect: {status: 201}
+      capture: {sha: "$.content.sha"}
+  cleanup:
+    - method: DELETE
+      path: /repos/{{.RepoW}}/contents/scoperig-{{.RunID}}-c17.txt
+      body: {message: "scoperig cleanup", sha: "{{.Step.put.sha}}"}
+
+# PERM-C19: a read level does not grant the write level of the same
+# permission. No cleanup: GHP must deny the write before GitHub.
+- id: PERM-C19.read-level-denies-write
+  claim: PERM-C19
+  doc: docs/how-it-works.md#security-model
+  description: issues:read is denied creating an issue on W; the permission level is enforced by GHP before GitHub.
+  profile: perm-issues-ro
+  kind: rest
+  requires: [repo_w_push]
+  method: POST
+  path: /repos/{{.RepoW}}/issues
+  body: {title: "scoperig {{.RunID}} C19", body: "automated; must be denied"}
+  expect: {status: 403, body_contains: ["Token does not have permission", "issues:write"], ghp_denial: true}
+
+- id: PERM-C19.read-level-allows-read
+  claim: PERM-C19
+  doc: docs/how-it-works.md#security-model
+  description: Control - issues:read can list issues on A.
+  profile: perm-issues-ro
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoA}}/issues
+  expect: {status: 200}

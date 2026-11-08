@@ -1107,6 +1107,46 @@ func testSyncAdminRoles(t *testing.T, store Store) {
 	if got3.Role != "user" {
 		t.Errorf("syncalice role after demotion = %q, want user", got3.Role)
 	}
+
+	// Matching folds ASCII case only (#334). A Kelvin sign (U+212A)
+	// lowercases to "k" under Unicode rules (Postgres LOWER()), but it must
+	// not match an ASCII "k" in either direction.
+	ascii := &User{GitHubID: 99103, GitHubUsername: "SyncKate", Role: "user"}
+	kelvin := &User{GitHubID: 99104, GitHubUsername: "sync\u212Aen", Role: "user"}
+	for _, u := range []*User{ascii, kelvin} {
+		if err := store.UpsertUser(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		name     string
+		admins   []string
+		githubID int64
+		want     string
+	}{
+		{"ascii case-insensitive match", []string{"synckate"}, 99103, "admin"},
+		{"ascii upper-case entry matches", []string{"SYNCKATE"}, 99103, "admin"},
+		{"kelvin entry does not match ascii login", []string{"sync\u212Aate"}, 99103, "user"},
+		{"ascii entry does not match kelvin login", []string{"syncken"}, 99104, "user"},
+		{"exact kelvin entry matches kelvin login", []string{"sync\u212Aen"}, 99104, "admin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := store.SyncAdminRoles(ctx, tt.admins); err != nil {
+				t.Fatalf("SyncAdminRoles: %v", err)
+			}
+			got, err := store.GetUserByGitHubID(ctx, tt.githubID)
+			if err != nil {
+				t.Fatalf("GetUserByGitHubID: %v", err)
+			}
+			if got.Role != tt.want {
+				t.Errorf("role = %q, want %q", got.Role, tt.want)
+			}
+		})
+	}
+	if err := store.SyncAdminRoles(ctx, []string{}); err != nil {
+		t.Fatalf("SyncAdminRoles (reset): %v", err)
+	}
 }
 
 func testDeleteExpiredProxyTokens(t *testing.T, store Store) {

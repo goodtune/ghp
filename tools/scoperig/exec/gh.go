@@ -99,6 +99,40 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 		args[i] = e
 	}
 
+	// A transport error (no HTTP response for some request) is retried with
+	// a fresh gh run when every logged request is idempotent; one left
+	// after TransportRetries is a rig error (ERROR), never FAIL or
+	// KNOWN-CHANGED, because gh's output then describes the connection,
+	// not the product.
+	for attempt := 0; ; attempt++ {
+		obs, err := runGHOnce(ctx, s, args, host, repo, tok, env)
+		if err != nil {
+			return nil, err
+		}
+		line := ""
+		if *obs.GHExit != 0 {
+			line = ghTransportFailure(obs.Stderr)
+		}
+		if line == "" {
+			return obs, nil
+		}
+		if !ghRetryable(obs) {
+			return nil, fmt.Errorf("scenario %s: gh transport error during a write (not retried: the write may have been applied): %s", s.ID, line)
+		}
+		if attempt >= TransportRetries {
+			return nil, fmt.Errorf("scenario %s: gh transport error after %d attempts: %s", s.ID, attempt+1, line)
+		}
+		if env.Verbose != nil {
+			_, _ = fmt.Fprintf(env.Verbose, "gh transport error, retrying (%d/%d): %s\n", attempt+1, TransportRetries, line)
+		}
+		if !sleepCtx(ctx, transportBackoff(attempt+1)) {
+			return nil, fmt.Errorf("scenario %s: gh transport error: %s (%w)", s.ID, line, ctx.Err())
+		}
+	}
+}
+
+// runGHOnce runs gh once in a fresh temporary home and work directory.
+func runGHOnce(ctx context.Context, s *scenario.Scenario, args []string, host, repo string, tok tokens.Handle, env *RunEnv) (*expect.Observation, error) {
 	tmp, err := os.MkdirTemp("", "scoperig-gh-")
 	if err != nil {
 		return nil, fmt.Errorf("gh temp dir: %w", err)
@@ -153,6 +187,9 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 		Stdout:    string(redact.Bytes(stdout.buf.Bytes())),
 		Stderr:    capString(redact.String(stripDebug(stderr.buf.String())), MaxBody),
 		Exchanges: exchanges,
+		// Exchanges past the cap are missing, so the run cannot be shown
+		// to be idempotent.
+		GHStderrTruncated: stderr.truncated,
 	}
 	if d := ghdebug.FirstDenied(exchanges); d != nil {
 		obs.Status = d.Status
@@ -171,6 +208,12 @@ func (GH) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env 
 // response body. Each block ends at its blank line (gh prints one after
 // headers and after each body; pretty-printed JSON has none), so a message
 // that follows a response body without a "took" line is kept.
+//
+// "* " and "> " lines are always removed, in every state: gh never starts
+// one of its own messages with either prefix. "* Request at" and
+// "* Request took" end any open block, including an unterminated
+// "GraphQL query:" block, so a capture cut short cannot swallow the rest
+// of stderr.
 func stripDebug(s string) string {
 	const (
 		out      = iota // not inside an exchange block
@@ -186,7 +229,7 @@ func stripDebug(s string) string {
 	for _, l := range strings.SplitAfter(s, "\n") {
 		line := strings.TrimRight(l, "\r\n")
 		switch {
-		case state == gql:
+		case state == gql && !strings.HasPrefix(line, "* Request at ") && !strings.HasPrefix(line, "* Request took "):
 			if strings.HasPrefix(line, "GraphQL variables:") {
 				state, inBody = reqBody, true
 			}
@@ -235,17 +278,21 @@ func capString(s string, n int) string {
 
 // capWriter keeps the first max bytes and discards the rest.
 type capWriter struct {
-	buf bytes.Buffer
-	max int
+	buf       bytes.Buffer
+	max       int
+	truncated bool
 }
 
 func (w *capWriter) Write(p []byte) (int, error) {
-	if room := w.max - w.buf.Len(); room > 0 {
-		if len(p) > room {
-			w.buf.Write(p[:room])
-		} else {
-			w.buf.Write(p)
-		}
+	room := w.max - w.buf.Len()
+	switch {
+	case len(p) <= room:
+		w.buf.Write(p)
+	case room > 0:
+		w.buf.Write(p[:room])
+		w.truncated = true
+	case len(p) > 0:
+		w.truncated = true
 	}
 	return len(p), nil
 }

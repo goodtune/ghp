@@ -88,14 +88,74 @@ func TestRollUp(t *testing.T) {
 func TestSummarise(t *testing.T) {
 	tree := testTree()
 	s := Summarise(tree, RollUp(tree, testResults()))
-	// base excludes GAP-A1, C-MAN, C-NEV: 9 claims.
-	want := Summary{Pass: 2, Fail: 3, Known: 2, Error: 1, Gap: 2, Base: 9,
-		Confidence: 2.0 / 7.0, Manual: []string{"C-MAN"}, Untestable: []string{"C-NEV"}, Gaps: []string{"C-NONE"}}
+	// base excludes C-MAN, C-NEV but counts the periodic GAP-A1 probe: 10 claims.
+	// Covered: every base claim with a non-GAP scenario (not C-GAPREQ, C-NONE).
+	want := Summary{Pass: 2, Fail: 3, Known: 3, Error: 1, Gap: 2, Base: 10, Covered: 8,
+		Confidence: 2.0 / 7.0, Coverage: 0.8, Manual: []string{"C-MAN"}, Untestable: []string{"C-NEV"}, Gaps: []string{"C-NONE"}}
 	if !reflect.DeepEqual(s, want) {
 		t.Errorf("summary = %+v\nwant %+v", s, want)
 	}
-	if fmt.Sprint(s.ConfidenceText()) != "2/(9-2) = 28.6%" {
+	if fmt.Sprint(s.ConfidenceText()) != "2/(10-3) = 28.6%" {
 		t.Errorf("text = %s", s.ConfidenceText())
+	}
+	if s.CoverageText() != "8/10 = 80.0%" {
+		t.Errorf("coverage text = %s", s.CoverageText())
+	}
+}
+
+// TestSummarise_GapProbe checks that a periodic GAP probe moves confidence:
+// PASS raises it, FAIL lowers it, and manual or never GAP claims stay out.
+func TestSummarise_GapProbe(t *testing.T) {
+	tests := []struct {
+		name     string
+		testable string
+		status   Status
+		wantText string
+	}{
+		{"periodic pass", "periodic", StatusPass, "2/(2-0) = 100.0%"},
+		{"periodic fail", "periodic", StatusFail, "1/(2-0) = 50.0%"},
+		{"manual excluded", "manual", StatusFail, "1/(1-0) = 100.0%"},
+		{"never excluded", "never", StatusFail, "1/(1-0) = 100.0%"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tree := &scenario.Tree{Claims: map[string]scenario.Claim{
+				"C-PASS": {ID: "C-PASS", Testable: "periodic"},
+				"GAP-A2": {ID: "GAP-A2", Testable: tt.testable},
+			}}
+			res := []ScenarioResult{
+				{ID: "C-PASS.a", Claim: "C-PASS", Status: StatusPass},
+				{ID: "GAP-A2.a", Claim: "GAP-A2", Status: tt.status},
+			}
+			s := Summarise(tree, RollUp(tree, res))
+			if got := s.ConfidenceText(); got != tt.wantText {
+				t.Errorf("confidence = %s, want %s", got, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestCoverage(t *testing.T) {
+	tests := []struct {
+		covered, base int
+		want          float64
+		text          string
+	}{
+		{8, 10, 0.8, "8/10 = 80.0%"},
+		{0, 0, 0, "0/0 = 0.0%"},
+		{3, 3, 1, "3/3 = 100.0%"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			got := Coverage(tt.covered, tt.base)
+			if got != tt.want {
+				t.Errorf("Coverage = %v, want %v", got, tt.want)
+			}
+			s := Summary{Covered: tt.covered, Base: tt.base, Coverage: got}
+			if txt := s.CoverageText(); txt != tt.text {
+				t.Errorf("text = %q, want %q", txt, tt.text)
+			}
+		})
 	}
 }
 

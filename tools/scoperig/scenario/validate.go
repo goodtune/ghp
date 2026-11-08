@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -12,8 +13,8 @@ import (
 
 var (
 	validKinds        = map[string]bool{"rest": true, "graphql": true, "gh": true, "token_api": true}
-	validCapabilities = map[string]bool{"repo_w_push": true, "repo_create": true, "github_vhost": true, "agent_installation": true,
-		"border_block_ghp": true, "border_block_gho": true, "border_block_github_pat": true}
+	validCapabilities = map[string]bool{"repo_w_push": true, "repo_create": true, "github_vhost": true, "codeload_vhost": true, "agent_installation": true,
+		"non_admin_session": true, "default_app": true, "border_block_ghp": true, "border_block_gho": true, "border_block_github_pat": true}
 	knownIssueRE = regexp.MustCompile(`^https://github\.com/goodtune/ghp/issues/\d+$`)
 )
 
@@ -22,11 +23,29 @@ var (
 // the repository allowlist.
 const gapA7ProbeID = "GAP-A7.dotdot-path"
 
-// validVhosts are the virtual hosts a rest request may target.
-var validVhosts = map[string]bool{"github.com": true}
+// validVhosts maps each virtual host a rest request may target to the
+// capability the scenario must require for it.
+var validVhosts = map[string]string{"github.com": "github_vhost", "codeload.github.com": "codeload_vhost"}
+
+// agentAppTemplate and agentInstallationRef are the only values a token_api
+// agent token body may give for app_record_id and installation_id.
+const (
+	agentAppTemplate     = "{{.Agent.AppRecordID}}"
+	agentInstallationRef = "$int:InstallationID"
+)
+
+// appsReadRE is the token_api read allowance for app records: the list, one
+// app, or one app's installations (the CLI's --app/--installation lookups).
+var appsReadRE = regexp.MustCompile(`^/api/apps(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(/installations)?)?$`)
 
 // maxProfileDuration bounds every profile so leaked tokens expire quickly.
 const maxProfileDuration = 2 * time.Hour
+
+// PlaceholderHost is the instance host in PlaceholderVars. A scenario must
+// reach the instance through {{.Host}}; a literal copy of this host passes
+// static validation but becomes a foreign host at run time, so the gh
+// checks reject it outright.
+const PlaceholderHost = "ghp.example"
 
 // PlaceholderVars returns Vars filled with fixed fake values. Validate uses
 // it when called with nil Vars, so static validation never needs live
@@ -36,14 +55,15 @@ func PlaceholderVars() *Vars {
 	f := FixtureVals{IssueNumber: 1, PRNumber: 2, ReleaseID: 3, Branch: "branch", Label: "label",
 		PRTitle: "pr", IssueTitle: "issue", ReleaseTag: "v0"}
 	return &Vars{
-		RunID: "run", Host: "ghp.example", Login: "login",
+		RunID: "run", Host: PlaceholderHost, Login: "login",
 		RepoA:   RepoRef{Owner: "a-owner", Name: "a-repo", ID: 900000101, NodeID: "R_placeholderA"},
 		RepoB:   RepoRef{Owner: "b-owner", Name: "b-repo", ID: 900000202, NodeID: "R_placeholderB"},
 		RepoW:   RepoRef{Owner: "w-owner", Name: "w-repo", ID: 900000303, NodeID: "R_placeholderW"},
 		Fixture: map[string]FixtureVals{"A": f, "B": f, "W": f},
-		Instance: InstanceVals{Host: "ghp.example",
+		Instance: InstanceVals{Host: PlaceholderHost,
 			DefaultDuration: time.Hour, MaxDuration: 168 * time.Hour},
-		Step: map[string]map[string]string{},
+		Agent: AgentVals{AppRecordID: "00000000-0000-4000-8000-0000000000a6", InstallationID: 900000404},
+		Step:  map[string]map[string]string{},
 	}
 }
 
@@ -75,8 +95,19 @@ func Validate(t *Tree, v *Vars) []error {
 		perr := func(format string, a ...any) {
 			errs = append(errs, fmt.Errorf("profiles.yaml: profile %q: %s", n, fmt.Sprintf(format, a...)))
 		}
-		if p.Type != "proxy" {
-			perr("type %q not supported (only proxy)", p.Type)
+		switch p.Type {
+		case "proxy":
+		case "agent":
+			if !slices.Contains(p.Requires, "agent_installation") {
+				perr("type agent needs requires: [agent_installation]")
+			}
+		default:
+			perr("type %q not supported (proxy or agent)", p.Type)
+		}
+		for _, r := range p.Requires {
+			if !PreMintCapabilities[r] {
+				perr("requires %q: a profile may require only agent_installation (known before tokens are minted)", r)
+			}
 		}
 		if p.Duration == "" {
 			if n != "lifecycle-default" {
@@ -110,33 +141,15 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	add := func(format string, a ...any) { msgs = append(msgs, fmt.Sprintf(format, a...)) }
 
 	// Copy vars and pre-populate Step from capture names.
+	v := CaptureVars(s, &Vars{})
 	vv := *base
-	v := &vv
-	v.Step = map[string]map[string]string{}
+	vv.Step = v.Step
+	v = &vv
 	// Profile IDs are placeholders for every known profile; an unknown
 	// name expands to "" (text/template's index ignores missingkey).
 	v.ProfileIDs = make(map[string]string, len(t.Profiles))
 	for n := range t.Profiles {
 		v.ProfileIDs[n] = "00000000-0000-4000-8000-000000000000"
-	}
-	for _, r := range append(append([]Request{}, s.Steps...), s.Cleanup...) {
-		if len(r.Capture) == 0 {
-			continue
-		}
-		if v.Step[r.Name] == nil {
-			v.Step[r.Name] = map[string]string{}
-		}
-		for c := range r.Capture {
-			v.Step[r.Name][c] = "0"
-		}
-	}
-	if s.Request != nil && len(s.Request.Capture) > 0 {
-		if v.Step[s.Request.Name] == nil {
-			v.Step[s.Request.Name] = map[string]string{}
-		}
-		for c := range s.Request.Capture {
-			v.Step[s.Request.Name][c] = "0"
-		}
 	}
 
 	// Rule 1: references and kind.
@@ -153,8 +166,19 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			prof = &p
 		}
 	} else if s.Profile != "" {
-		if _, ok := t.Profiles[s.Profile]; !ok {
+		if p, ok := t.Profiles[s.Profile]; !ok {
 			add("profile %q not found in profiles.yaml", s.Profile)
+		} else {
+			prof = &p
+		}
+	}
+	// A profile that is not minted without a capability must not be used by
+	// a scenario that would then run (and ERROR) without it.
+	if prof != nil {
+		for _, r := range prof.Requires {
+			if !slices.Contains(s.Requires, r) {
+				add("profile %q requires %s; add it to the scenario's requires", s.Profile, r)
+			}
 		}
 	}
 	if !validKinds[s.Kind] {
@@ -173,6 +197,9 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			}
 		}
 	}
+	if s.OperationName != "" && (s.Kind != "graphql" || len(s.Steps) > 0) {
+		add("operation_name is only valid for a kind graphql scenario with a query (not steps)")
+	}
 	if s.Kind == "graphql" && strings.TrimSpace(s.Query) == "" && len(s.Steps) == 0 {
 		add("graphql scenario needs a query or steps")
 	}
@@ -185,10 +212,38 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		add("known_issue %q must match https://github.com/goodtune/ghp/issues/<n>", s.KnownIssue)
 	}
 
+	// Rule 3b: an agent token created through token_api must name the
+	// configured app and installation by template, so it can never be
+	// pinned to the instance's default app (or a literal app).
+	if s.Kind == "token_api" {
+		reqs := make([]*Request, 0, len(s.Steps)+1)
+		for i := range s.Steps {
+			reqs = append(reqs, &s.Steps[i])
+		}
+		if s.Request != nil {
+			reqs = append(reqs, s.Request)
+		}
+		for _, r := range reqs {
+			m, ok := r.Body.(map[string]any)
+			if !ok || m["type"] != "agent" {
+				continue
+			}
+			if m["app_record_id"] != agentAppTemplate {
+				add("agent token body must set app_record_id: %q", agentAppTemplate)
+			}
+			if m["installation_id"] != agentInstallationRef {
+				add("agent token body must set installation_id: %q", agentInstallationRef)
+			}
+			if !slices.Contains(s.Requires, "agent_installation") {
+				add("agent token body needs requires: [agent_installation]")
+			}
+		}
+	}
+
 	// Rule 3: capabilities.
 	for _, r := range s.Requires {
 		if !validCapabilities[r] {
-			add("requires %q is not one of repo_w_push, repo_create, github_vhost, agent_installation, border_block_ghp, border_block_gho, border_block_github_pat", r)
+			add("requires %q is not one of repo_w_push, repo_create, github_vhost, codeload_vhost, agent_installation, non_admin_session, default_app, border_block_ghp, border_block_gho, border_block_github_pat", r)
 		}
 	}
 
@@ -226,12 +281,12 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			switch {
 			case s.Kind != "rest":
 				add("%s: vhost is only valid for kind rest", where)
-			case !validVhosts[r.Vhost]:
-				add("%s: vhost %q must be github.com", where, r.Vhost)
+			case validVhosts[r.Vhost] == "":
+				add("%s: vhost %q must be github.com or codeload.github.com", where, r.Vhost)
 			case method != "GET" && method != "HEAD":
 				add("%s: vhost requests must be GET or HEAD, not %s", where, method)
-			case !hasString(s.Requires, "github_vhost"):
-				add("%s: vhost requests need requires: [github_vhost]", where)
+			case !hasString(s.Requires, validVhosts[r.Vhost]):
+				add("%s: vhost %s requests need requires: [%s]", where, r.Vhost, validVhosts[r.Vhost])
 			}
 		}
 		// The traversal probe (a rest GET, sent verbatim by design) skips
@@ -282,8 +337,14 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			if (method == "GET" || method == "HEAD") && strings.HasPrefix(clean, "/api/v3/") {
 				return
 			}
+			// Read-only GETs of the app records and installations, the
+			// endpoints the CLI resolves --app and --installation with
+			// (TOK-C03, TOK-C04). Sent with the session token.
+			if (method == "GET" || method == "HEAD") && appsReadRE.MatchString(path) {
+				return
+			}
 			if clean != "/api/tokens" && !strings.HasPrefix(clean, "/api/tokens/") {
-				add("%s: token_api path %q must be /api/tokens or start with /api/tokens/ (or be a GET under /api/v3/)", where, path)
+				add("%s: token_api path %q must be /api/tokens or start with /api/tokens/ (or be a GET under /api/v3/ or /api/apps)", where, path)
 				return
 			}
 			if strings.Contains(path, "?") {
@@ -359,11 +420,9 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	} else if s.Kind == "token_api" && len(s.Steps) == 0 {
 		add("token_api scenario needs a request or steps")
 	}
-	// Normalise copies the rest shorthand Expect into Steps[0]; Steps are
-	// the source of truth, so do not report the same problem twice.
-	if len(s.Steps) == 0 || s.Steps[0].Expect != s.Expect {
-		checkExpect("expect", s.Expect, v, add)
-	}
+	// Normalise moves the rest shorthand Expect into Steps[0] (checked with
+	// the steps above) and clears it here.
+	checkExpect("expect", s.Expect, v, add)
 	checkExpect("observed", s.Observed, v, add)
 	// An empty observed matches every response, so a known issue would
 	// stay KNOWN forever and never report KNOWN-CHANGED.
@@ -436,22 +495,72 @@ func hasAssertion(e *Expect) bool {
 		return false
 	}
 	return e.Status != 0 || len(e.StatusIn) > 0 || len(e.BodyContains) > 0 ||
-		len(e.BodyNotContains) > 0 || len(e.Header) > 0 || len(e.JSON) > 0 ||
+		len(e.BodyNotContains) > 0 || len(e.Header) > 0 || len(e.HeaderNotContains) > 0 || len(e.JSON) > 0 ||
 		e.GHPDenial != nil || e.ExitCode != nil || len(e.ExitCodeIn) > 0 ||
-		len(e.StdoutContains) > 0 || len(e.StderrContains) > 0
+		len(e.StdoutContains) > 0 || len(e.StderrContains) > 0 ||
+		e.ExpiresWithin != nil
 }
 
 func checkExpect(where string, e *Expect, v *Vars, add func(string, ...any)) {
 	if e == nil {
 		return
 	}
+	if len(e.HeaderNotContainsExcept) > 0 && len(e.HeaderNotContains) == 0 {
+		add("%s: header_not_contains_except needs header_not_contains", where)
+	}
+	for _, h := range e.HeaderNotContainsExcept {
+		if !strings.EqualFold(h, "Set-Cookie") {
+			add("%s: header_not_contains_except may only name Set-Cookie, not %q", where, h)
+		}
+	}
 	if e.ExitCode != nil && len(e.ExitCodeIn) > 0 {
 		add("%s: exit_code and exit_code_in are mutually exclusive", where)
 	}
-	for _, x := range []any{e.BodyContains, e.BodyNotContains, e.Header, e.JSON, e.StdoutContains, e.StderrContains} {
+	for _, x := range []any{e.BodyContains, e.BodyNotContains, e.Header, e.HeaderNotContains, e.JSON, e.StdoutContains, e.StderrContains} {
 		if _, err := ExpandAny(x, v); err != nil {
 			add("%s: %v", where, err)
 		}
+	}
+	if w := e.ExpiresWithin; w != nil {
+		checkExpiresWithin(where, w, v, add)
+	}
+}
+
+// checkExpiresWithin requires a field and min/max durations that expand
+// and parse, with 0 <= min <= max and max > 0.
+func checkExpiresWithin(where string, w *ExpiresWithin, v *Vars, add func(string, ...any)) {
+	if strings.TrimSpace(w.Field) == "" || w.FieldPath() == "$" || w.FieldPath() == "$." {
+		add("%s: expires_within: field is required", where)
+	}
+	parse := func(name, raw string) (time.Duration, bool) {
+		if strings.TrimSpace(raw) == "" {
+			add("%s: expires_within: %s is required", where, name)
+			return 0, false
+		}
+		x, err := Expand(raw, v)
+		if err != nil {
+			add("%s: expires_within: %s: %v", where, name, err)
+			return 0, false
+		}
+		d, err := time.ParseDuration(x)
+		if err != nil {
+			add("%s: expires_within: %s %q is not a duration: %v", where, name, x, err)
+			return 0, false
+		}
+		return d, true
+	}
+	lo, okLo := parse("min", w.Min)
+	hi, okHi := parse("max", w.Max)
+	if !okLo || !okHi {
+		return
+	}
+	switch {
+	case lo < 0:
+		add("%s: expires_within: min %s must not be negative", where, lo)
+	case hi <= 0:
+		add("%s: expires_within: max %s must be positive", where, hi)
+	case lo > hi:
+		add("%s: expires_within: min %s is greater than max %s", where, lo, hi)
 	}
 }
 

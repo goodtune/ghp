@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/goodtune/ghp/tools/scoperig/exec"
 	"github.com/goodtune/ghp/tools/scoperig/fixtures"
 	"github.com/goodtune/ghp/tools/scoperig/redact"
 	"github.com/goodtune/ghp/tools/scoperig/report"
@@ -39,15 +40,36 @@ func main() {
 // secondSignal returns an OnManager hook: once the first signal has
 // cancelled ctx, a further SIGINT/SIGTERM revokes what it can, prints the
 // remaining token ids and exits 2 (the next run's sweep finishes the job).
+//
+// The hook subscribes to the signals as soon as the manager exists, not
+// after ctx is done, so there is no window in which a second signal is
+// swallowed by signal.NotifyContext and lost.
 func secondSignal(ctx context.Context, out io.Writer) func(*tokens.Manager) {
 	return func(m *tokens.Manager) {
-		go func() {
-			<-ctx.Done()
-			m.RevokeOnSignal(func(left []string) {
-				_, _ = fmt.Fprintf(out, "interrupted again; leftover token ids: %s\n", strings.Join(left, " "))
-				osExit(2)
-			}, os.Interrupt, syscall.SIGTERM)
-		}()
+		ch := make(chan os.Signal, 2)
+		signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+		go watchSecondSignal(ctx, ch, m.RevokeAll, out, osExit)
+	}
+}
+
+// watchSecondSignal counts signals on ch. The first one is the signal that
+// cancels ctx (NotifyContext receives the same delivery); the second
+// revokes and exits 2. A signal that arrived before ch was subscribed
+// already cancelled ctx, so it counts as the first.
+func watchSecondSignal(ctx context.Context, ch <-chan os.Signal, revoke func(context.Context) []string, out io.Writer, exit func(int)) {
+	seen := 0
+	if ctx.Err() != nil {
+		seen = 1
+	}
+	for range ch {
+		seen++
+		if seen < 2 {
+			continue
+		}
+		left := revoke(context.Background())
+		_, _ = fmt.Fprintf(out, "interrupted again; leftover token ids: %s\n", strings.Join(left, " "))
+		exit(2)
+		return
 	}
 }
 
@@ -86,16 +108,7 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 	root.PersistentFlags().BoolVar(&f.verbose, "verbose", false, "print redacted exchanges")
 
 	// load resolves flags over env over the config file.
-	load := func() (*Config, error) {
-		c, err := LoadConfig(getenv, resolveConfigFile(f.config))
-		if err != nil {
-			return nil, &exitError{code: 3, err: err}
-		}
-		c.Out, c.Only = f.out, f.only
-		c.SkipKnown, c.KeepGoing, c.Verbose = f.skipKnown, f.keepGoing, f.verbose
-		c.CreateFixtures = f.createFixtures
-		return c, nil
-	}
+	load := func() (*Config, error) { return loadWithFlags(getenv, f) }
 	withOut := func(d runDeps) runDeps {
 		if d.Out == nil {
 			d.Out = stderr
@@ -138,6 +151,8 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 			if err != nil {
 				return err
 			}
+			// After revocation: the scrape wait must not keep tokens live.
+			rep.Latency = collectLatency(cmd.Context(), c, withOut(deps), rep)
 			if err := rep.WriteTable(stdout); err != nil {
 				return &exitError{code: 2, err: err}
 			}
@@ -170,13 +185,20 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 			if err != nil {
 				return err
 			}
-			defer mgr.RevokeAll(context.WithoutCancel(cmd.Context()))
 			ids, err := mgr.Sweep(cmd.Context())
 			_, _ = fmt.Fprintf(stdout, "swept %d token(s): %s\n", len(ids), strings.Join(ids, " "))
 			if err != nil {
-				return &exitError{code: 2, err: err}
+				err = &exitError{code: 2, err: err}
 			}
-			return nil
+			// The sweep creates no tokens, but revoke anything the manager
+			// holds and report it rather than dropping the result.
+			if left := mgr.RevokeAll(context.WithoutCancel(cmd.Context())); len(left) > 0 {
+				_, _ = fmt.Fprintf(stdout, "leftover token ids: %s\n", strings.Join(left, " "))
+				if err == nil {
+					err = &exitError{code: 2, err: errors.New("token revocation failed")}
+				}
+			}
+			return err
 		},
 	}
 
@@ -200,6 +222,20 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 
 	root.AddCommand(validate, run, sweep, fx, newOracleCmd(stdout, stderr, getenv))
 	return root
+}
+
+// loadWithFlags resolves the config: flags over environment over the config
+// file. The environment overrides the file inside LoadConfig; run flags are
+// applied last and are never read from the environment.
+func loadWithFlags(getenv func(string) string, f *cliFlags) (*Config, error) {
+	c, err := LoadConfig(getenv, resolveConfigFile(f.config))
+	if err != nil {
+		return nil, &exitError{code: 3, err: err}
+	}
+	c.Out, c.Only = f.out, f.only
+	c.SkipKnown, c.KeepGoing, c.Verbose = f.skipKnown, f.keepGoing, f.verbose
+	c.CreateFixtures = f.createFixtures
+	return c, nil
 }
 
 const (
@@ -255,11 +291,13 @@ func connect(ctx context.Context, c *Config, deps runDeps) (*http.Client, *token
 			return nil, nil, &exitError{code: 3, err: err}
 		}
 	}
+	runID := deps.RunID()
+	hc = exec.WithUserAgent(hc, exec.UserAgent(deps.RigVersion(), runID))
 	if _, err := Preflight(ctx, c, hc); err != nil {
 		return nil, nil, &exitError{code: 3, err: err}
 	}
 	pace := deps.Pace(c.TokenCreateRate)
-	mgr := tokens.NewManager(c.ServerURL, c.UserToken, deps.RunID(), hc, pace)
+	mgr := tokens.NewManager(c.ServerURL, c.UserToken, runID, hc, pace)
 	if deps.OnManager != nil {
 		deps.OnManager(mgr)
 	}

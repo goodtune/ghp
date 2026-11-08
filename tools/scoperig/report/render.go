@@ -62,13 +62,82 @@ func (r *Report) WriteTable(w io.Writer) error {
 	ew.printf("\nclaims: %d PASS, %d FAIL (of which %d ERROR), %d KNOWN, %d GAP   manual: %s   untestable: %s\n",
 		sm.Pass, sm.Fail, sm.Error, sm.Known, sm.Gap, list(sm.Manual), list(sm.Untestable))
 	ew.printf("confidence: %s   (PASS / (base - KNOWN))\n", sm.ConfidenceText())
+	ew.printf("coverage: %s   (base claims with a runnable scenario / base)\n", sm.CoverageText())
 	ew.printf("coverage gaps (%d): %s\n", len(sm.Gaps), list(sm.Gaps))
 	ew.printf("tokens: %d created, %d revoked, %d leftover", r.Tokens.Created, r.Tokens.Revoked, len(r.Tokens.LeftoverIDs))
 	if len(r.Tokens.LeftoverIDs) > 0 {
 		ew.printf(" (%s)", list(r.Tokens.LeftoverIDs))
 	}
 	ew.printf("\n")
+	if ew.err != nil {
+		return ew.err
+	}
+	return r.writeLatency(ew)
+}
+
+// writeLatency writes the advisory Latency section.
+func (r *Report) writeLatency(ew *errWriter) error {
+	l := r.Latency
+	switch {
+	case l == nil || l.Status == LatencyNotConfigured:
+		ew.printf("\nlatency: not configured (metrics.prometheus_url)\n")
+		return ew.err
+	case l.Status != LatencyOK:
+		ew.printf("\nlatency: unavailable (%s)\n", clean(redact.String(l.Error)))
+		return ew.err
+	}
+	ver := clean(l.Version)
+	if ver == "" {
+		ver = "unknown"
+	}
+	if l.Revision != "" {
+		ver += " " + clean(l.Revision)
+	}
+	ew.printf("\nlatency (advisory, does not change the exit code; ghp %s; window %ds):\n", ver, l.WindowSeconds)
+	tw := tabwriter.NewWriter(ew, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "STAGE\tTOKEN_TYPE\tSAMPLES\tMEAN\tP50\tP95\tP99\tP99 BUDGET\tFLAGS")
+	over, low := 0, 0
+	for _, s := range l.Stages {
+		budget, flags := "-", "-"
+		if s.BudgetP99 > 0 {
+			budget = "< " + seconds(s.BudgetP99)
+		}
+		if len(s.Flags) > 0 {
+			flags = "WARN " + strings.Join(s.Flags, ",")
+		}
+		for _, f := range s.Flags {
+			switch f {
+			case FlagOverBudget:
+				over++
+			case FlagLowSamples:
+				low++
+			}
+		}
+		mean, p50, p95, p99 := "n/a", "n/a", "n/a", "n/a"
+		if s.Samples > 0 {
+			mean, p50, p95, p99 = seconds(s.Mean), seconds(s.P50), seconds(s.P95), seconds(s.P99)
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n", clean(s.Stage), clean(s.TokenType), s.Samples,
+			mean, p50, p95, p99, budget, flags)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	ew.printf("latency warnings: %d over budget, %d low samples (< 100)\n", over, low)
 	return ew.err
+}
+
+// seconds formats a duration in seconds as µs, ms or s.
+func seconds(v float64) string {
+	switch {
+	case v == 0:
+		return "0"
+	case v < 0.001:
+		return fmt.Sprintf("%.0fµs", v*1e6)
+	case v < 1:
+		return fmt.Sprintf("%.2fms", v*1e3)
+	}
+	return fmt.Sprintf("%.2fs", v)
 }
 
 func clean(s string) string { return oneLine(s) }
@@ -139,6 +208,8 @@ type jsonReport struct {
 		Gap        int      `json:"gap"`
 		Base       int      `json:"base"`
 		Confidence float64  `json:"confidence"`
+		Covered    int      `json:"covered"`
+		Coverage   float64  `json:"coverage"`
 		Manual     []string `json:"manual"`
 		Untestable []string `json:"untestable"`
 	} `json:"summary"`
@@ -149,6 +220,43 @@ type jsonReport struct {
 		Revoked     int      `json:"revoked"`
 		LeftoverIDs []string `json:"leftover_ids"`
 	} `json:"tokens"`
+	Latency jsonLatency `json:"latency"`
+}
+
+type jsonStageLatency struct {
+	Stage            string   `json:"stage"`
+	TokenType        string   `json:"token_type"`
+	Samples          int      `json:"samples"`
+	MeanSeconds      float64  `json:"mean_seconds"`
+	P50Seconds       float64  `json:"p50_seconds"`
+	P95Seconds       float64  `json:"p95_seconds"`
+	P99Seconds       float64  `json:"p99_seconds"`
+	BudgetP99Seconds float64  `json:"budget_p99_seconds"`
+	Flags            []string `json:"flags"`
+}
+
+type jsonLatency struct {
+	Status        string             `json:"status"`
+	Error         string             `json:"error"`
+	Version       string             `json:"version"`
+	Revision      string             `json:"revision"`
+	WindowSeconds int                `json:"window_seconds"`
+	Stages        []jsonStageLatency `json:"stages"`
+}
+
+func latencyJSON(l *Latency) jsonLatency {
+	j := jsonLatency{Status: LatencyNotConfigured, Stages: make([]jsonStageLatency, 0)}
+	if l == nil {
+		return j
+	}
+	j.Status, j.Error = redact.String(l.Status), redact.String(l.Error)
+	j.Version, j.Revision, j.WindowSeconds = redact.String(l.Version), redact.String(l.Revision), l.WindowSeconds
+	for _, s := range l.Stages {
+		j.Stages = append(j.Stages, jsonStageLatency{Stage: redact.String(s.Stage), TokenType: redact.String(s.TokenType),
+			Samples: s.Samples, MeanSeconds: s.Mean, P50Seconds: s.P50, P95Seconds: s.P95, P99Seconds: s.P99,
+			BudgetP99Seconds: s.BudgetP99, Flags: cleanList(s.Flags)})
+	}
+	return j
 }
 
 func cleanList(xs []string) []string {
@@ -168,6 +276,7 @@ func (r *Report) WriteJSON(w io.Writer) error {
 	sm := r.Summary
 	j.Summary.Pass, j.Summary.Fail, j.Summary.Known, j.Summary.Error = sm.Pass, sm.Fail, sm.Known, sm.Error
 	j.Summary.Gap, j.Summary.Base, j.Summary.Confidence = sm.Gap, sm.Base, sm.Confidence
+	j.Summary.Covered, j.Summary.Coverage = sm.Covered, sm.Coverage
 	j.Summary.Manual, j.Summary.Untestable = cleanList(sm.Manual), cleanList(sm.Untestable)
 	j.CoverageGaps = cleanList(sm.Gaps)
 	j.Claims = make([]jsonClaim, 0, len(r.Claims))
@@ -185,6 +294,7 @@ func (r *Report) WriteJSON(w io.Writer) error {
 		j.Claims = append(j.Claims, jc)
 	}
 	j.Tokens.Created, j.Tokens.Revoked, j.Tokens.LeftoverIDs = r.Tokens.Created, r.Tokens.Revoked, cleanList(r.Tokens.LeftoverIDs)
+	j.Latency = latencyJSON(r.Latency)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(j)

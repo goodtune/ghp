@@ -22,6 +22,7 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/netutil"
 )
 
@@ -148,7 +149,7 @@ type ReleasesConfig struct {
 	RedirectNotFoundTemplate string `koanf:"redirect_not_found_template"`
 	// Allow is a list of org or org/repo entries that are exempt from the policy.
 	// Entries may be bare org names (e.g. "goodtune") or org/repo pairs
-	// (e.g. "goodtune/ghp"). Matching is case-insensitive.
+	// (e.g. "goodtune/ghp"). Matching is ASCII case-insensitive (#317).
 	Allow []string `koanf:"allow"`
 }
 
@@ -314,6 +315,9 @@ type LogFileConfig struct {
 type MetricsConfig struct {
 	Enabled bool   `koanf:"enabled"`
 	Listen  string `koanf:"listen"`
+	// SlowDecisionThreshold logs a slow_decision warn line with the per-stage
+	// breakdown when a request's decision total reaches it. 0 disables.
+	SlowDecisionThreshold time.Duration `koanf:"slow_decision_threshold"`
 }
 
 type OTELConfig struct {
@@ -502,8 +506,9 @@ func Defaults() *Config {
 			Level:  "info",
 		},
 		Metrics: MetricsConfig{
-			Enabled: true,
-			Listen:  ":9136",
+			Enabled:               true,
+			Listen:                ":9136",
+			SlowDecisionThreshold: 10 * time.Millisecond,
 		},
 		OTEL: OTELConfig{
 			Protocol: "grpc",
@@ -721,7 +726,7 @@ func (c *Config) IsAdmin(username string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, admin := range c.Admins {
-		if strings.EqualFold(admin, username) {
+		if asciiutil.EqualFold(admin, username) {
 			return true
 		}
 	}
@@ -755,7 +760,7 @@ func (c *Config) IsTokenBlocked(token string) bool {
 
 // IsReleaseAllowed returns true when the given org or org/repo combination
 // appears in the releases allow list, meaning it is exempt from the releases
-// policy (block or redirect). Matching is case-insensitive. An org-only entry
+// policy (block or redirect). Matching is ASCII case-insensitive (#317). An org-only entry
 // (e.g. "goodtune") permits any repository under that org.
 //
 // Safe to call concurrently with ReloadFrom.
@@ -764,7 +769,7 @@ func (c *Config) IsReleaseAllowed(org, repo string) bool {
 	defer c.mu.RUnlock()
 	orgRepo := org + "/" + repo
 	for _, entry := range c.Releases.Allow {
-		if strings.EqualFold(entry, org) || strings.EqualFold(entry, orgRepo) {
+		if asciiutil.EqualFold(entry, org) || asciiutil.EqualFold(entry, orgRepo) {
 			return true
 		}
 	}
@@ -774,7 +779,7 @@ func (c *Config) IsReleaseAllowed(org, repo string) bool {
 // IsCodeloadAllowed returns true when the given org or org/repo combination
 // appears in the codeload allow list, meaning archive download requests for it
 // are passed through to upstream rather than redirected to the configured
-// caching mirror. Matching is case-insensitive. An org-only entry (e.g.
+// caching mirror. Matching is ASCII case-insensitive (#317). An org-only entry (e.g.
 // "goodtune") exempts every repository under that org.
 //
 // Safe to call concurrently with ReloadFrom.
@@ -783,7 +788,7 @@ func (c *Config) IsCodeloadAllowed(org, repo string) bool {
 	defer c.mu.RUnlock()
 	orgRepo := org + "/" + repo
 	for _, entry := range c.Codeload.Allow {
-		if strings.EqualFold(entry, org) || strings.EqualFold(entry, orgRepo) {
+		if asciiutil.EqualFold(entry, org) || asciiutil.EqualFold(entry, orgRepo) {
 			return true
 		}
 	}

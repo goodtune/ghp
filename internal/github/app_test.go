@@ -14,6 +14,9 @@ import (
 
 func TestAppTokenProvider_GetInstallationToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveInstallationAccount(w, r, "org") {
+			return
+		}
 		if r.URL.Path == "/app/installations/123/access_tokens" && r.Method == "POST" {
 			auth := r.Header.Get("Authorization")
 			if auth == "" {
@@ -48,9 +51,25 @@ func TestAppTokenProvider_GetInstallationToken(t *testing.T) {
 	}
 }
 
+// serveInstallationAccount answers GET /app/installations/{id} with the given
+// account login, so tests that mint narrowed tokens pass the owner check
+// (#294). It reports whether it handled the request.
+func serveInstallationAccount(w http.ResponseWriter, r *http.Request, login string) bool {
+	if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/app/installations/") ||
+		strings.Count(r.URL.Path, "/") != 3 {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"account": map[string]string{"login": login}})
+	return true
+}
+
 func TestAppTokenProvider_CachesToken(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveInstallationAccount(w, r, "org") {
+			return
+		}
 		callCount++
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -70,8 +89,8 @@ func TestAppTokenProvider_CachesToken(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, _ = provider.GetInstallationToken(ctx, 456, []string{"org/repo"}, map[string]string{"contents": "read"})
-	_, _ = provider.GetInstallationToken(ctx, 456, []string{"org/repo"}, map[string]string{"contents": "read"})
+	_, _ = provider.GetInstallationToken(ctx, 456, []string{"repo"}, map[string]string{"contents": "read"})
+	_, _ = provider.GetInstallationToken(ctx, 456, []string{"repo"}, map[string]string{"contents": "read"})
 
 	if callCount != 1 {
 		t.Errorf("expected 1 API call (cached), got %d", callCount)
@@ -161,6 +180,9 @@ func TestAppTokenProvider_GetInstallationIDForOwner(t *testing.T) {
 func TestAppTokenProvider_GetInstallationIDForOwner_Cached(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveInstallationAccount(w, r, "org") {
+			return
+		}
 		callCount++
 		json.NewEncoder(w).Encode(map[string]int64{"id": 55})
 	}))
@@ -187,8 +209,8 @@ func TestAppTokenProvider_GetInstallationIDForOwner_Cached(t *testing.T) {
 
 func TestInstallationCacheKey(t *testing.T) {
 	// Same inputs → same key.
-	k1 := installationCacheKey(1, []string{"org/repo"}, map[string]string{"contents": "read"})
-	k2 := installationCacheKey(1, []string{"org/repo"}, map[string]string{"contents": "read"})
+	k1 := installationCacheKey(1, []string{"repo"}, map[string]string{"contents": "read"})
+	k2 := installationCacheKey(1, []string{"repo"}, map[string]string{"contents": "read"})
 	if k1 != k2 {
 		t.Error("same inputs should produce same key")
 	}
@@ -208,15 +230,15 @@ func TestInstallationCacheKey(t *testing.T) {
 	}
 
 	// Different permissions → different keys.
-	k7 := installationCacheKey(1, []string{"org/repo"}, map[string]string{"contents": "read"})
-	k8 := installationCacheKey(1, []string{"org/repo"}, map[string]string{"contents": "write"})
+	k7 := installationCacheKey(1, []string{"repo"}, map[string]string{"contents": "read"})
+	k8 := installationCacheKey(1, []string{"repo"}, map[string]string{"contents": "write"})
 	if k7 == k8 {
 		t.Error("different permissions should produce different keys")
 	}
 
 	// Different installation IDs → different keys.
-	k9 := installationCacheKey(1, []string{"org/repo"}, map[string]string{"contents": "read"})
-	k10 := installationCacheKey(2, []string{"org/repo"}, map[string]string{"contents": "read"})
+	k9 := installationCacheKey(1, []string{"repo"}, map[string]string{"contents": "read"})
+	k10 := installationCacheKey(2, []string{"repo"}, map[string]string{"contents": "read"})
 	if k9 == k10 {
 		t.Error("different installation IDs should produce different keys")
 	}
@@ -225,6 +247,9 @@ func TestInstallationCacheKey(t *testing.T) {
 func TestAppTokenProvider_CacheMissDifferentScope(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveInstallationAccount(w, r, "org") {
+			return
+		}
 		callCount++
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -247,8 +272,8 @@ func TestAppTokenProvider_CacheMissDifferentScope(t *testing.T) {
 
 	// Same repos, different permissions → different cache keys → 2 API calls.
 	callCount = 0
-	_, _ = provider.GetInstallationToken(ctx, 100, []string{"org/repo"}, map[string]string{"contents": "read"})
-	_, _ = provider.GetInstallationToken(ctx, 100, []string{"org/repo"}, map[string]string{"contents": "write"})
+	_, _ = provider.GetInstallationToken(ctx, 100, []string{"repo"}, map[string]string{"contents": "read"})
+	_, _ = provider.GetInstallationToken(ctx, 100, []string{"repo"}, map[string]string{"contents": "write"})
 	if callCount != 2 {
 		t.Errorf("different permissions: expected 2 API calls, got %d", callCount)
 	}
@@ -282,6 +307,7 @@ func TestAppTokenProvider_422ReturnsInstallationTokenError(t *testing.T) {
 		case "/app/installations/789":
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
+				"account": map[string]string{"login": "org"},
 				"permissions": map[string]string{
 					"contents": "read",
 					"metadata": "read",
@@ -306,7 +332,7 @@ func TestAppTokenProvider_422ReturnsInstallationTokenError(t *testing.T) {
 		"contents": "write",
 		"issues":   "read",
 	}
-	_, err = provider.GetInstallationToken(context.Background(), 789, []string{"org/repo"}, requested)
+	_, err = provider.GetInstallationToken(context.Background(), 789, []string{"repo"}, requested)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -571,3 +597,84 @@ BFoqyQKBgAJC8ejath862GxPQB9mpkuxwYR+Odp/Uz46xfyrSJrKb0BQrn9v6Kyd
 lEYYwchE0C7L13qVoxEJN9U5XtgNERUpCQi3NCHwD8ADwpyAzQP57UBLS8Bb5ByC
 xARUAV0AcnOf8WgFfswT1z7K4sJABdSBhP1URlo9YBW41+FAzQbm
 -----END RSA PRIVATE KEY-----`
+
+// TestAppTokenProvider_GetInstallationIDForOwner_ASCIIOnlyCacheKey covers
+// #317: a Kelvin-sign owner must not hit the cache entry for the ASCII owner.
+func TestAppTokenProvider_GetInstallationIDForOwner_ASCIIOnlyCacheKey(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveInstallationAccount(w, r, "org") {
+			return
+		}
+		callCount++
+		if err := json.NewEncoder(w).Encode(map[string]int64{"id": 55}); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{AppID: 1, PrivateKey: testRSAKey, BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, owner := range []string{"kit", "Kit"} {
+		if _, err := provider.GetInstallationIDForOwner(ctx, owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls (Kelvin sign is a distinct key), got %d", callCount)
+	}
+}
+
+// TestAppTokenProvider_TranslatesEnforcementOnlyNames checks that the
+// access_tokens body never carries GHP's enforcement-only names (#316, #318).
+func TestAppTokenProvider_TranslatesEnforcementOnlyNames(t *testing.T) {
+	var got map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/123/access_tokens" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var body struct {
+			Permissions map[string]string `json:"permissions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		got = body.Permissions
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"token":      "ghs_x",
+			"expires_at": time.Now().Add(time.Hour).Format(time.RFC3339),
+		}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := NewAppTokenProvider(AppConfig{AppID: 1, PrivateKey: testRSAKey, BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := map[string]string{"projects": "write", "workflows": "read", "contents": "read"}
+	if _, err := provider.GetInstallationToken(context.Background(), 123, nil, in); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"repository_projects": "write", "organization_projects": "write", "actions": "read", "contents": "read"}
+	if len(got) != len(want) {
+		t.Fatalf("permissions = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("permissions[%q] = %q, want %q (all: %v)", k, got[k], v, got)
+		}
+	}
+	if _, ok := got["projects"]; ok {
+		t.Error("access_tokens body carries a projects key")
+	}
+	if in["projects"] != "write" || len(in) != 3 {
+		t.Errorf("caller's map was modified: %v", in)
+	}
+}

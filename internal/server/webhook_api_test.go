@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -269,8 +270,29 @@ func TestWebhookStream_SSE(t *testing.T) {
 	postDelivery(t, h, secret, "push", "d-1", `{"repository":{"name":"r","owner":{"login":"o"}}}`)
 	postDelivery(t, h, secret, "pull_request", "d-2", `{"action":"opened","repository":{"name":"r","owner":{"login":"o"}}}`)
 
-	srv := httptest.NewServer(http.HandlerFunc(a.handleWebhookStream))
+	// active counts stream handlers still running. A client closing its
+	// body does not stop the handler at once: the server notices the
+	// disconnect asynchronously, and until then the handler can take the
+	// next delivery, write it into the dead connection's buffers and ack it
+	// (or lose it in flight until AckWait). Subtests that reconnect a durable
+	// wait for the previous handler to exit before publishing (#336).
+	var active atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		active.Add(1)
+		defer active.Add(-1)
+		a.handleWebhookStream(w, r)
+	}))
 	defer srv.Close()
+	waitHandlersExited := func(t *testing.T) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for active.Load() != 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d stream handler(s) still running after client disconnect", active.Load())
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 
 	t.Run("replay from start with filter", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -373,7 +395,7 @@ func TestWebhookStream_SSE(t *testing.T) {
 		// retained before the client closed, so publish a fresh delivery
 		// the resumed durable must receive; and it must never replay
 		// sequence 1.
-		time.Sleep(200 * time.Millisecond)
+		waitHandlersExited(t)
 		postDelivery(t, h, secret, "star", "d-durable", `{"action":"created"}`)
 		second := get(1)
 		if len(second) != 1 || second[0]["sequence"].(float64) <= 1 {
@@ -383,6 +405,7 @@ func TestWebhookStream_SSE(t *testing.T) {
 		// A reconnecting client sends Last-Event-ID; for a durable that
 		// must not be an error (JetStream forbids changing the start
 		// position) and must continue from the consumer's own position.
+		waitHandlersExited(t)
 		postDelivery(t, h, secret, "star", "d-durable-2", `{"action":"deleted"}`)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()

@@ -6,6 +6,16 @@
  *       Set the available permissions and their max granted level.
  *   .value
  *       Get the selected permissions as { permission: level } (excludes "No access").
+ *   .setValue({ permission: level, ... })
+ *       Select the given levels. Returns the entries that could not be applied
+ *       (name not offered, or level not offered for that name). Set
+ *       .permissions first; a later .permissions assignment re-applies the
+ *       last value.
+ *
+ * Attributes:
+ *   optional-metadata
+ *       Render "metadata" as an ordinary No access / Read control instead of
+ *       a fixed Read (used by the admin token edit form).
  *   .clear()
  *       Reset all permissions to "No access".
  *
@@ -17,6 +27,7 @@ class GhpPermissionSelect extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this._permissions = {};
+    this._initial = {};
   }
 
   // Human-readable labels.
@@ -52,8 +63,8 @@ class GhpPermissionSelect extends HTMLElement {
     issues:                 'Issues and related comments, assignees, labels, and milestones.',
     statuses:               'Commit statuses.',
     checks:                 'Check runs and check suites.',
-    actions:                'GitHub Actions workflow runs, jobs, artifacts, caches, and runners.',
-    workflows:              'GitHub Actions workflow definitions — enabling, disabling, and dispatching workflows.',
+    actions:                'GitHub Actions workflows, workflow runs, jobs, artifacts and caches.',
+    workflows:              'Edit GitHub Actions workflow files (write only). Listing, enabling, disabling and dispatching workflows needs Actions.',
     metadata:               'Search repositories and access basic repository metadata.',
     administration:         'Repository settings, collaborators, invitations, and branch protection rules.',
     deployments:            'Deployments and deployment statuses.',
@@ -85,6 +96,22 @@ class GhpPermissionSelect extends HTMLElement {
     return result;
   }
 
+  setValue(scopes) {
+    this._initial = Object.assign({}, scopes || {});
+    return this._applyInitial();
+  }
+
+  _applyInitial() {
+    const rejected = {};
+    for (const [perm, level] of Object.entries(this._initial)) {
+      const sel = Array.from(this.shadowRoot.querySelectorAll('select[data-perm]'))
+        .find(s => s.dataset.perm === perm);
+      const ok = sel && Array.from(sel.options).some(o => o.value === level && level !== '');
+      if (ok) sel.value = level; else rejected[perm] = level;
+    }
+    return rejected;
+  }
+
   clear() {
     const selects = this.shadowRoot.querySelectorAll('select[data-perm]');
     for (const sel of selects) sel.value = '';
@@ -111,7 +138,7 @@ class GhpPermissionSelect extends HTMLElement {
       const granted = this._permissions[perm];
       const label = GhpPermissionSelect.labels[perm] || perm.charAt(0).toUpperCase() + perm.slice(1).replace(/_/g, ' ');
       const desc = GhpPermissionSelect.descriptions[perm] || '';
-      const isMetadata = perm === 'metadata';
+      const isMetadata = perm === 'metadata' && !this.hasAttribute('optional-metadata');
 
       rows += `<div class="perm-row">`;
       rows += `  <div class="perm-info">`;
@@ -140,6 +167,8 @@ class GhpPermissionSelect extends HTMLElement {
       <style>${this._styles()}</style>
       <div class="perm-table">${rows}</div>
     `;
+
+    this._applyInitial();
 
     // Attach change listeners.
     for (const sel of this.shadowRoot.querySelectorAll('select[data-perm]')) {
@@ -190,7 +219,7 @@ class GhpPermissionSelect extends HTMLElement {
   _esc(s) {
     const d = document.createElement('div');
     d.textContent = s;
-    return d.innerHTML;
+    return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 }
 

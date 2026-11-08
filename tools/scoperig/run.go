@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	osexec "os/exec"
 	"path"
 	"sort"
 	"strings"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/goodtune/ghp/tools/scoperig/exec"
 	"github.com/goodtune/ghp/tools/scoperig/fixtures"
+	"github.com/goodtune/ghp/tools/scoperig/latency"
 	"github.com/goodtune/ghp/tools/scoperig/redact"
 	"github.com/goodtune/ghp/tools/scoperig/report"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
@@ -53,6 +56,20 @@ type runDeps struct {
 	// OnManager, if set, is called once the token manager exists (the CLI
 	// uses it to wire the second-signal handler).
 	OnManager func(*tokens.Manager)
+	// GHVersion reads the gh version for the report ("" when unknown).
+	// Default: `gh --version` via ghPath.
+	GHVersion func(ctx context.Context, ghPath string) string
+	// RigCommit is the VCS revision the rig binary was built from ("" when
+	// unknown). Default exec.RigCommit.
+	RigCommit func() string
+	// RigVersion is the version in the User-Agent. Default exec.RigVersion.
+	RigVersion func() string
+	// Sleep waits d or until ctx ends (the latency scrape wait). Default
+	// a context-aware timer.
+	Sleep func(ctx context.Context, d time.Duration) error
+	// PromHTTP is the client for metrics.prometheus_url. Default: the
+	// config's client (system roots plus GHP_RIG_CA_FILE).
+	PromHTTP *http.Client
 }
 
 func (d *runDeps) defaults() {
@@ -72,6 +89,91 @@ func (d *runDeps) defaults() {
 	if d.Out == nil {
 		d.Out = io.Discard
 	}
+	if d.GHVersion == nil {
+		d.GHVersion = ghVersion
+	}
+	if d.RigCommit == nil {
+		d.RigCommit = exec.RigCommit
+	}
+	if d.RigVersion == nil {
+		d.RigVersion = exec.RigVersion
+	}
+	if d.Sleep == nil {
+		d.Sleep = sleepCtx
+	}
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// collectLatency fills the report's advisory Latency section from
+// metrics.prometheus_url: it waits metrics.scrape_wait so the run's last
+// observations are scraped, then reads the decision histograms over the
+// window from the run start to now. Any failure is recorded in the section
+// (status unavailable); it never changes the exit code.
+func collectLatency(ctx context.Context, c *Config, deps runDeps, rep *report.Report) *report.Latency {
+	deps.defaults()
+	m := c.Metrics
+	if m.PrometheusURL == "" {
+		return &report.Latency{Status: report.LatencyNotConfigured}
+	}
+	unavailable := func(err error) *report.Latency {
+		return &report.Latency{Status: report.LatencyUnavailable, Error: redact.String(err.Error())}
+	}
+	start, err := time.Parse(time.RFC3339, rep.StartedAt)
+	if err != nil {
+		return unavailable(fmt.Errorf("run start time: %w", err))
+	}
+	hc := deps.PromHTTP
+	if hc == nil {
+		if hc, err = c.HTTPClient(); err != nil {
+			return unavailable(err)
+		}
+	}
+	hc = exec.WithUserAgent(hc, exec.UserAgent(deps.RigVersion(), rep.RunID))
+	if m.ScrapeWait > 0 {
+		_, _ = fmt.Fprintf(deps.Out, "latency: waiting %s for a Prometheus scrape\n", m.ScrapeWait)
+		if err := deps.Sleep(ctx, m.ScrapeWait); err != nil {
+			return unavailable(fmt.Errorf("interrupted during scrape wait: %w", err))
+		}
+	}
+	cl := &latency.Client{BaseURL: m.PrometheusURL, Bearer: m.Bearer, Selector: m.Selector, HTTP: hc}
+	qctx, cancel := context.WithTimeout(ctx, endOfRunTimeout)
+	defer cancel()
+	lat, err := cl.Collect(qctx, start, deps.Now())
+	if err != nil {
+		return unavailable(err)
+	}
+	return lat
+}
+
+// ghVersion runs `gh --version` with a short timeout and returns the
+// MAJOR.MINOR.PATCH version, or "" if gh is missing or unreadable.
+func ghVersion(ctx context.Context, ghPath string) string {
+	if ghPath == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := osexec.CommandContext(ctx, ghPath, "--version")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "GH_NO_UPDATE_NOTIFIER=1"}
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	v, err := parseGHVersion(string(out))
+	if err != nil {
+		return ""
+	}
+	return v
 }
 
 func newRunID(t time.Time) string {
@@ -112,10 +214,43 @@ func selectScenarios(t *scenario.Tree, only string, skipKnown bool) ([]*scenario
 	return out, nil
 }
 
+// configVars is PlaceholderVars with the configured instance host and
+// fixture repositories: the Vars that config load makes known before any
+// request. Values that only discovery provides (login, repository ids,
+// fixture numbers) stay placeholders.
+func configVars(c *Config) *scenario.Vars {
+	v := scenario.PlaceholderVars()
+	if c.Instance.Host != "" {
+		v.Host, v.Instance.Host = c.Instance.Host, c.Instance.Host
+	}
+	if c.Instance.DefaultDuration > 0 {
+		v.Instance.DefaultDuration = c.Instance.DefaultDuration
+	}
+	if c.Instance.MaxDuration > 0 {
+		v.Instance.MaxDuration = c.Instance.MaxDuration
+	}
+	for _, r := range []struct {
+		spec string
+		ref  *scenario.RepoRef
+	}{{c.RepoA, &v.RepoA}, {c.RepoB, &v.RepoB}, {c.RepoW, &v.RepoW}} {
+		if rr := repoRef(r.spec); rr.Owner != "" && rr.Name != "" {
+			r.ref.Owner, r.ref.Name = rr.Owner, rr.Name
+		}
+	}
+	if c.AgentConfigured() {
+		v.Agent = scenario.AgentVals{AppRecordID: c.AgentAppRecordID, InstallationID: c.InstallationID}
+	}
+	return v
+}
+
 func repoRef(s string) scenario.RepoRef {
 	o, n, _ := strings.Cut(s, "/")
 	return scenario.RepoRef{Owner: o, Name: n}
 }
+
+// endOfRunTimeout bounds each end-of-run sweep and verification call; it
+// matches the token manager's revoke timeout.
+const endOfRunTimeout = 60 * time.Second
 
 // runRig executes spec §3.5 steps 1-9 (writing is the caller's job). The
 // returned error is an *exitError (code 3) for validation, config and
@@ -123,10 +258,6 @@ func repoRef(s string) scenario.RepoRef {
 // startup sweep. Tokens created by
 // the run are revoked exactly once, before runRig returns, even on panic or
 // cancellation.
-// endOfRunTimeout bounds each end-of-run sweep and verification call; it
-// matches the token manager's revoke timeout.
-const endOfRunTimeout = 60 * time.Second
-
 func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, err error) {
 	deps.defaults()
 	out := deps.Out
@@ -135,6 +266,12 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	tree, verrs := loadTree(c.Root)
 	if len(verrs) > 0 {
 		return nil, &exitError{code: 3, err: fmt.Errorf("validation failed: %w", errors.Join(verrs...))}
+	}
+	// Validate again with the real host and fixture repositories, before
+	// any request: static validation uses PlaceholderVars, so a rule that
+	// depends on Vars could pass there and differ at run time.
+	if verrs := scenario.Validate(tree, configVars(c)); len(verrs) > 0 {
+		return nil, &exitError{code: 3, err: fmt.Errorf("validation with the configured host and fixtures failed: %w", errors.Join(verrs...))}
 	}
 	selected, err := selectScenarios(tree, c.Only, c.SkipKnown)
 	if err != nil {
@@ -154,12 +291,15 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 			return nil, &exitError{code: 3, err: err}
 		}
 	}
+	// Every rig request, preflight included, carries the run id in its
+	// User-Agent so the run can be isolated in the instance's logs.
+	runID := deps.RunID()
+	hc = exec.WithUserAgent(hc, exec.UserAgent(deps.RigVersion(), runID))
 	version, err := Preflight(ctx, c, hc)
 	if err != nil {
 		return nil, &exitError{code: 3, err: err}
 	}
 
-	runID := deps.RunID()
 	started := deps.Now().UTC()
 	pace := deps.Pace(c.TokenCreateRate)
 	mgr := tokens.NewManager(c.ServerURL, c.UserToken, runID, hc, pace)
@@ -170,6 +310,7 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	rep = &report.Report{
 		RunID: runID, StartedAt: started.Format(time.RFC3339),
 		Instance: c.Instance.Host, GHPVersion: version,
+		GHVersion: deps.GHVersion(ctx, c.GHPath), RigCommit: deps.RigCommit(),
 	}
 	var results []report.ScenarioResult
 
@@ -226,12 +367,8 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 		}
 		if len(leftover) > 0 {
 			_, _ = fmt.Fprintf(out, "leftover token ids (revoke them or let the next sweep): %s\n", strings.Join(leftover, " "))
-			// A live token outranks a could-not-start error.
-			var ee *exitError
-			if errors.As(err, &ee) && ee.code == 3 {
-				err = &exitError{code: 2, err: fmt.Errorf("%w; token revocation failed", ee.err)}
-			}
 		}
+		err = escalateOnLeftover(err, leftover)
 		if rep != nil {
 			created := mgr.Created() + untracked
 			rep.Tokens.Created = created
@@ -284,8 +421,15 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	vars.ProfileIDs = map[string]string{"open": open.ID()}
 	handles := map[string]tokens.Handle{"open": open}
 	profErr := map[string]string{}
+	// Capabilities a profile may require are probed before minting, so a
+	// profile whose capability is false is never minted (its scenarios
+	// require the same capability and report GAP).
+	preCaps := Capabilities{"agent_installation": ProbeAgentInstallation(ctx, c, hc)}
+	if preCaps["agent_installation"] {
+		vars.Agent = scenario.AgentVals{AppRecordID: c.AgentAppRecordID, InstallationID: c.InstallationID}
+	}
 	for _, name := range profilesUsed(selected) {
-		if name == "open" {
+		if name == "open" || !satisfied(tree.Profiles[name].Requires, preCaps) {
 			continue
 		}
 		h, err := mgr.Create(ctx, tree.Profiles[name], vars)
@@ -302,6 +446,11 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	if err != nil {
 		rep = nil
 		return nil, &exitError{code: 3, err: err}
+	}
+	// Keep the pre-mint answer so a scenario never runs with a capability
+	// whose profiles were not minted.
+	for k, v := range preCaps {
+		caps[k] = v
 	}
 	// Repo W receives every write; apply the fixtures safety guard to it
 	// now that the login is known, before any scenario runs.
@@ -366,6 +515,21 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	return rep, nil
 }
 
+// escalateOnLeftover turns a could-not-start error (exit 3) into exit 2 when
+// tokens were left live: a live token outranks a could-not-start error.
+// Other errors, and a nil error, pass through unchanged (a nil error with
+// leftovers is reported through the report's LeftoverIDs and ExitCode).
+func escalateOnLeftover(err error, leftover []string) error {
+	if len(leftover) == 0 {
+		return err
+	}
+	var ee *exitError
+	if errors.As(err, &ee) && ee.code == 3 {
+		return &exitError{code: 2, err: fmt.Errorf("%w; token revocation failed", ee.err)}
+	}
+	return err
+}
+
 func errResult(s *scenario.Scenario, msg string) report.ScenarioResult {
 	msg = redact.String(msg)
 	return report.ScenarioResult{ID: s.ID, Claim: s.Claim, KnownIssue: s.KnownIssue,
@@ -402,17 +566,28 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 		return errResult(s, err.Error())
 	}
 	env.Vars.Step = map[string]map[string]string{}
+	// Expand every expectation with the live Vars before any request: a
+	// template that cannot expand is a scenario error found before the
+	// request, not an ERROR that hides a classified result after it.
+	if err := scenario.CheckExpands(s, env.Vars); err != nil {
+		return errResult(s, "not run: expand expectations: "+err.Error())
+	}
 	obs, rerr := ex.Run(ctx, s, tok, env)
 
-	// Expand templated matchers (e.g. json: {"$.login": "{{.Login}}"}) after
-	// the run, so step captures are available, and classify against a copy.
+	// Expand templated matchers (e.g. json: {"$.login": "{{.Login}}"}) again
+	// after the run, so step captures are available, and classify against a
+	// copy. Captures a stopped run never reached keep their placeholder, so
+	// this cannot fail once CheckExpands passed.
 	sc := *s
+	cv := scenario.CaptureVars(s, env.Vars)
 	var xerr error
-	if sc.Expect, xerr = scenario.ExpandExpect(s.Expect, env.Vars); xerr == nil {
-		sc.Observed, xerr = scenario.ExpandExpect(s.Observed, env.Vars)
+	if sc.Expect, xerr = scenario.ExpandExpect(s.VerdictExpect(), cv); xerr == nil {
+		sc.Observed, xerr = scenario.ExpandExpect(s.Observed, cv)
 	}
 	if xerr != nil {
-		return errResult(s, "expand expectations: "+xerr.Error())
+		r := errResult(s, "expand expectations: "+xerr.Error())
+		r.Residue = exec.RunCleanup(ctx, s, env)
+		return r
 	}
 	s = &sc
 
@@ -455,6 +630,16 @@ func fixtureKeys(s *scenario.Scenario) []string {
 		}
 	}
 	return keys
+}
+
+// satisfied reports whether every capability in reqs is true in caps.
+func satisfied(reqs []string, caps Capabilities) bool {
+	for _, r := range reqs {
+		if !caps[r] {
+			return false
+		}
+	}
+	return true
 }
 
 func profilesUsed(ss []*scenario.Scenario) []string {

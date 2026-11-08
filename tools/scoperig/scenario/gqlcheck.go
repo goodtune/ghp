@@ -20,6 +20,8 @@ import (
 var mutationWriteAllowlist = map[string]bool{
 	"GQL-C31.createissue-ro-denied":  true,
 	"GQL-C31.createissue-rw-allowed": true,
+	// The mutation name does not exist at GitHub and names no repository.
+	"GQL-C30.unmapped-mutation-denied": true,
 }
 
 var (
@@ -33,6 +35,23 @@ type gqlFacts struct {
 	strings  []string    // every string, int and enum literal
 	repoIDs  []*ast.Value
 	varRefs  []string // names of variables referenced in arguments
+}
+
+// GraphQLReadOnly reports whether q parses and every operation in it is a
+// query (no mutation or subscription). Unparseable documents are not
+// read-only. The runner uses it to decide whether a POST may be re-sent
+// after a transport error.
+func GraphQLReadOnly(q string) bool {
+	doc, err := parser.ParseQuery(&ast.Source{Input: q})
+	if err != nil || len(doc.Operations) == 0 {
+		return false
+	}
+	for _, op := range doc.Operations {
+		if op.Operation != ast.Query {
+			return false
+		}
+	}
+	return true
 }
 
 func parseGraphQL(q string) (*gqlFacts, error) {

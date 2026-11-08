@@ -12,6 +12,26 @@ instance:
   # Leave it empty unless the instance sets block.*; BORDER-C43 then
   # reports GAP.
   border_block: []
+  # Optional: the GitHub App installation agent (gha_) profiles mint
+  # against (issue #306). app_record_id is the GHP app record UUID (GET
+  # /api/apps), not the GitHub App ID; installation_id is the numeric
+  # installation covering the three fixture repositories. Leave both empty
+  # (or delete the block) to skip agent scenarios: they report GAP.
+  # GHP_RIG_INSTALLATION_ID overrides installation_id.
+  agent_installation:
+    app_record_id: ""      # e.g. 00000000-0000-0000-0000-000000000000
+    installation_id:       # e.g. 12345678
+# Optional: advisory per-stage latency from Prometheus (issue #321). Leave
+# prometheus_url empty to skip it (the report says "not configured").
+metrics:
+  # A Prometheus base URL, or a Grafana datasource proxy URL such as
+  # https://grafana.example.com/api/datasources/proxy/uid/<datasource-uid>
+  # (anonymous read). /api/v1/query is appended.
+  prometheus_url: ""
+  bearer_token_env: ""   # name of an env var holding a bearer token; empty = anonymous;
+                         # needs an https URL; never a GitHub/GHP token
+  selector: ""           # extra label matchers without braces, e.g. job="ghp"
+  scrape_wait: 45s       # wait after the run so Prometheus scrapes the last requests (max 5m)
 fixtures:
   repo_a: OWNER/ghp-scoperig-a
   repo_b: OWNER/ghp-scoperig-b

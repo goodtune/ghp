@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/proxy"
@@ -60,8 +61,8 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Normalize to lowercase for case-insensitive matching (GitHub is case-insensitive).
-	owner := strings.ToLower(rawOwner)
-	repo := strings.ToLower(rawRepo)
+	// ASCII-only folding: Unicode rules would map the Kelvin sign to k (#317).
+	owner, repo := normaliseOwnerRepo(rawOwner, rawRepo)
 
 	// Check if this repository has caching enabled.
 	// NOTE: This deliberately queries the database on every request rather than
@@ -72,24 +73,24 @@ func (cl *CacheLookup) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	lookupStart := time.Now()
 	cached, err := cl.store.GetCachedRepositoryByOwnerName(r.Context(), owner, repo)
 	if err != nil {
-		metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageCacheLookup, "", time.Since(lookupStart))
 		cl.logger.Error("cache lookup failed", "error", err, "owner", owner, "repo", repo)
 		cl.inner.ServeHTTP(w, r)
 		return
 	}
 	if cached == nil {
-		metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageCacheLookup, "", time.Since(lookupStart))
 		metrics.CacheRequestTotal.WithLabelValues(owner, repo, "nocache").Inc()
 		cl.inner.ServeHTTP(w, r)
 		return
 	}
 	if !cached.Enabled {
-		metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
+		metrics.ObserveDecision(r.Context(), metrics.StageCacheLookup, "", time.Since(lookupStart))
 		metrics.CacheRequestTotal.WithLabelValues(owner, repo, "bypass").Inc()
 		cl.inner.ServeHTTP(w, r)
 		return
 	}
-	metrics.ObserveDecision(metrics.StageCacheLookup, "", time.Since(lookupStart))
+	metrics.ObserveDecision(r.Context(), metrics.StageCacheLookup, "", time.Since(lookupStart))
 
 	// Inject per-repo upstream timeout into request context if configured.
 	if cached.TimeoutSeconds != nil {
@@ -181,4 +182,10 @@ func SyncCacheReposMetric(ctx context.Context, store database.Store) {
 		}
 	}
 	metrics.CacheReposActive.Set(float64(count))
+}
+
+// normaliseOwnerRepo lowercases owner and repo with ASCII-only folding, for
+// the cache lookup key and the ghp_cache_request_total labels (#317).
+func normaliseOwnerRepo(owner, repo string) (string, string) {
+	return asciiutil.ToLower(owner), asciiutil.ToLower(repo)
 }

@@ -114,6 +114,13 @@ type graphQLAnalysis struct {
 	// with an unresolvable lookup that bypasses the
 	// allowlist.
 	hasUnpinnedRepositoryLookup bool
+	// introspectionOnly is true when the selected operation is a query
+	// whose root selections (fragments expanded) are all `__type`,
+	// `__schema` or `__typename` (#342). Such an operation selects no
+	// repository data, so repository-restricted tokens do not need a
+	// repository(owner, name) reference for it. Every other check still
+	// applies.
+	introspectionOnly bool
 }
 
 // scopeRequirement is a single (permission, level) entry.
@@ -192,6 +199,9 @@ var alwaysAllowedFields = map[string]struct{}{
 	"endCursor":       {},
 	"startCursor":     {},
 	"cursor":          {},
+	// Edge.node. Root node(id:) is a lookup handled by rootLookupFields
+	// before this table is consulted, and stays cross-repository.
+	"node": {},
 
 	// Root fields that are themselves harmless without further selection;
 	// the children determine the actual scope requirement.
@@ -220,6 +230,22 @@ var alwaysAllowedFields = map[string]struct{}{
 	"websiteUrl":      {},
 	"isViewer":        {},
 	"isSiteAdmin":     {},
+
+	// Actor references on an already-gated parent (#298): the parent field
+	// (issue, pullRequest, reviewRequests, autoMergeRequest, reactionGroups)
+	// carries the scope; these return only User/Bot/Team/Mannequin identity.
+	"assignees":         {},
+	"author":            {},
+	"enabledBy":         {},
+	"requestedReviewer": {},
+	"users":             {},
+
+	// Introspection shape under __type (#298, gh feature-detection probes).
+	// The name `fields` also exists on ProjectV2, whose parent is gated by
+	// projects:read. `args`, `type` and `ofType` are deliberately absent
+	// until gh is seen sending them (`type` collides with object fields).
+	"enumValues": {},
+	"fields":     {},
 }
 
 // fieldScopeRequirements maps GraphQL field names to the GitHub App
@@ -240,6 +266,22 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"timelineItems":                  {"issues", "read"},
 	"reactions":                      {"issues", "read"},
 	"reactionGroups":                 {"issues", "read"},
+	// #298. Issue-graph fields that can point outside the repository
+	// (blockedBy, blocking, parent, subIssues) are also in
+	// metadataOnlySubtreeFields (#339).
+	// `parent` is also Repository.parent (fork source): issues:read is the
+	// stricter of the two meanings. `comments` is also on PullRequest,
+	// Commit and PullRequestReview: PR comments are issue comments.
+	// `labels` and `milestone` have no gated parent under repository{}.
+	"blockedBy":        {"issues", "read"},
+	"blocking":         {"issues", "read"},
+	"comments":         {"issues", "read"},
+	"issueType":        {"issues", "read"},
+	"labels":           {"issues", "read"},
+	"milestone":        {"issues", "read"},
+	"parent":           {"issues", "read"},
+	"subIssues":        {"issues", "read"},
+	"subIssuesSummary": {"issues", "read"},
 
 	// Pull requests
 	"pullRequest":              {"pull_requests", "read"},
@@ -251,6 +293,11 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"latestOpinionatedReviews": {"pull_requests", "read"},
 	"mergeQueue":               {"pull_requests", "read"},
 	"mergeQueueEntry":          {"pull_requests", "read"},
+	// #298. headRepository/headRepositoryOwner can name a fork outside the
+	// allowlist; also in metadataOnlySubtreeFields (#339).
+	"autoMergeRequest":    {"pull_requests", "read"},
+	"headRepository":      {"pull_requests", "read"},
+	"headRepositoryOwner": {"pull_requests", "read"},
 
 	// Discussions
 	"discussion":           {"discussions", "read"},
@@ -276,6 +323,8 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"commit":                {"contents", "read"},
 	"commitComments":        {"contents", "read"},
 	"history":               {"contents", "read"},
+	"baseRef":               {"contents", "read"}, // #298, like ref/refs
+	"commits":               {"contents", "read"}, // #298
 
 	// Deployments / environments
 	"deployment":   {"deployments", "read"},
@@ -287,7 +336,8 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"workflowRun":       {"actions", "read"},
 	"workflowRuns":      {"actions", "read"},
 	"actionsCacheUsage": {"actions", "read"},
-	"workflowFile":      {"workflows", "read"},
+	"workflowFile":      {"actions", "read"},
+	"workflow":          {"actions", "read"}, // #298, like workflowRun
 
 	// Statuses & checks
 	"status":            {"statuses", "read"},
@@ -297,6 +347,12 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"checkSuites":       {"checks", "read"},
 	"checkRun":          {"checks", "read"},
 	"checkRuns":         {"checks", "read"},
+	// #298. StatusCheckRollup.contexts mixes CheckRun and StatusContext
+	// items; one entry holds one scope, so checks:read (same as
+	// statusCheckRollup) is required and StatusContext data rides on it.
+	"checkRunCountsByState":      {"checks", "read"},
+	"contexts":                   {"checks", "read"},
+	"statusContextCountsByState": {"statuses", "read"},
 
 	// Security
 	"vulnerabilityAlerts":    {"vulnerability_alerts", "read"},
@@ -305,6 +361,10 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	// Repository administration
 	"collaborators": {"administration", "read"},
 	"invitations":   {"administration", "read"},
+
+	// Repository lists (#298, gh repo list). Also in
+	// crossRepoAnywhereFields, so repository-restricted tokens stay denied.
+	"repositories": {"metadata", "read"},
 
 	// Organization members
 	"membersWithRole": {"members", "read"},
@@ -316,6 +376,9 @@ var fieldScopeRequirements = map[string]scopeRequirement{
 	"projects":   {"projects", "read"},
 	"projectsV2": {"projects", "read"},
 	"projectV2":  {"projects", "read"},
+	// #298. gh issue/pr view project item probes.
+	"fieldValueByName": {"projects", "read"},
+	"projectItems":     {"projects", "read"},
 
 	// Webhooks (no GraphQL surface for webhook config today, but reserve the
 	// field name in case GitHub adds one).
@@ -333,6 +396,44 @@ var crossRepoRootOnlyFields = map[string]struct{}{
 	"resource": {},
 }
 
+// rootLookupFields names the root fields that fetch arbitrary objects by
+// global ID, URL or search query (#324). Their result type is an interface
+// or union, so the field name alone says nothing about what is read. At the
+// operation root they never pass through alwaysAllowedFields: each fragment
+// at the result position must name a type condition in
+// typeConditionScopeRequirements, and that scope is required. A result
+// position with no fragment, or a fragment with an unmapped type condition,
+// is unknown (denied). Nested uses (e.g. `Connection.nodes`) are not
+// affected. These names also stay in crossRepoRootOnlyFields or
+// crossRepoAnywhereFields, so repository-restricted tokens still deny them.
+var rootLookupFields = map[string]struct{}{
+	"node":     {},
+	"nodes":    {},
+	"resource": {},
+	"search":   {},
+}
+
+// typeConditionScopeRequirements maps an inline or named fragment type
+// condition beneath a root lookup (see rootLookupFields) to the scope that
+// reading that object type requires. Any type condition not listed here is
+// denied. Interface type conditions (e.g. `Node`, `Comment`) are
+// deliberately absent: they do not pin a concrete type.
+var typeConditionScopeRequirements = map[string]scopeRequirement{
+	"Bot":           {"metadata", "read"},
+	"CheckRun":      {"checks", "read"},
+	"CheckSuite":    {"checks", "read"},
+	"Commit":        {"contents", "read"},
+	"Discussion":    {"discussions", "read"},
+	"Issue":         {"issues", "read"},
+	"Organization":  {"metadata", "read"},
+	"PullRequest":   {"pull_requests", "read"},
+	"Release":       {"contents", "read"},
+	"Repository":    {"metadata", "read"},
+	"StatusContext": {"statuses", "read"},
+	"Team":          {"metadata", "read"},
+	"User":          {"metadata", "read"},
+}
+
 // crossRepoAnywhereFields lists fields that can leak data from
 // repositories other than those addressed by the request's
 // `repository(owner, name)` selections. Repository-scoped tokens cannot
@@ -348,6 +449,67 @@ var crossRepoAnywhereFields = map[string]struct{}{
 	"contributedRepositories": {},
 	"pinnedRepositories":      {},
 	"recentProjects":          {},
+}
+
+// metadataOnlySubtreeFields names fields that can return an object from a
+// repository outside the request's pinned `repository(owner, name)`
+// selections (#339): a pull request's head fork or its owner, a fork's
+// parent repository, or a linked issue. The field itself keeps its scope
+// from fieldScopeRequirements. Beneath it, every selection must be in
+// alwaysAllowedFields or be a scalar leaf in metadataSubtreeLeaves;
+// anything else is recorded as the cross-repository field
+// `<subtree>.<field>`, so repository-restricted tokens are denied. Scope and
+// unmapped classification still run, so permission-only tokens see no
+// change.
+//
+// closedByPullRequestsReferences can name pull requests in other
+// repositories and is treated the same way. timelineItems children that
+// point at other repositories (CrossReferencedEvent.source,
+// ConnectedEvent.subject, MarkedAsDuplicateEvent.canonical) are denied
+// today only because `source`, `subject` and `canonical` are unmapped; if
+// they are ever mapped they must be added here as metadata-only.
+var metadataOnlySubtreeFields = map[string]struct{}{
+	"blockedBy":                      {},
+	"blocking":                       {},
+	"closedByPullRequestsReferences": {},
+	"headRepository":                 {},
+	"headRepositoryOwner":            {},
+	"parent":                         {},
+	"subIssues":                      {},
+}
+
+// metadataSubtreeLeaves are scalar leaves permitted beneath a
+// metadataOnlySubtreeFields entry in addition to alwaysAllowedFields.
+// `gh issue view` selects `parent{id,number,title,url,state,...}` and the
+// same shape under subIssues, blockedBy and blocking, so a linked issue's
+// number, title and state in another repository are disclosed (documented
+// trade-off). They are accepted only as leaves, never with a selection set.
+var metadataSubtreeLeaves = map[string]struct{}{
+	"number": {},
+	"state":  {},
+	"title":  {},
+}
+
+// crossRepoParentAwareFields are connections that span repositories unless
+// they hang directly off a pinned `repository(owner, name)` lookup (#340).
+// `User.issues`, `Viewer.pullRequests`, `User.issueComments` and the like
+// return objects from every repository the credential can see. They are
+// cross-repository unless the immediate parent field (fragments are
+// transparent) is a pinned repository lookup. A bare `repository` with no
+// arguments (e.g. `Issue.repository`) is not pinned.
+var crossRepoParentAwareFields = map[string]struct{}{
+	"commitComments": {},
+	"issueComments":  {},
+	"issues":         {},
+	"pullRequests":   {},
+}
+
+// introspectionRootFields are the root selections that leave an operation
+// introspection-only (see graphQLAnalysis.introspectionOnly).
+var introspectionRootFields = map[string]struct{}{
+	"__schema":   {},
+	"__type":     {},
+	"__typename": {},
 }
 
 // mutationScopeRequirements maps GitHub GraphQL mutation field names to the
@@ -505,7 +667,8 @@ func analyzeGraphQLRequest(body []byte) (graphQLAnalysis, error) {
 	// Walk the selection set. Top-level selections are special only in
 	// that mutations also carry a per-field scope requirement; otherwise
 	// the walk treats every selection identically.
-	a.walkSelectionSet(op.SelectionSet, op.Operation == ast.Mutation, true, 1)
+	a.walkSelectionSet(op.SelectionSet, op.Operation == ast.Mutation, true, 1, walkCtx{})
+	a.result.introspectionOnly = op.Operation == ast.Query && a.sawRootField && !a.sawNonIntrospectionRoot
 	if a.tooDeep {
 		return graphQLAnalysis{}, fmt.Errorf("graphql: query exceeds maximum analysis depth (%d)", maxAnalysisDepth)
 	}
@@ -591,6 +754,24 @@ type gqlAnalyzer struct {
 	// surfaces this as a 400 instead of forwarding the request, since a
 	// query the analyzer cannot fully traverse cannot be safely scoped.
 	tooDeep bool
+	// sawRootField and sawNonIntrospectionRoot track the operation's root
+	// selections for graphQLAnalysis.introspectionOnly.
+	sawRootField            bool
+	sawNonIntrospectionRoot bool
+}
+
+// walkCtx is the parent context passed down the walk. Fragments pass it
+// through unchanged, so a field inside `... on User { }` sees the field
+// that holds the fragment as its parent.
+type walkCtx struct {
+	// parent is the immediate enclosing field name ("" at the root).
+	parent string
+	// pinnedRepo is true when parent is a `repository(owner, name)`
+	// lookup whose arguments resolved (see crossRepoParentAwareFields).
+	pinnedRepo bool
+	// metadataOnly names the enclosing metadataOnlySubtreeFields entry, or
+	// "" outside such a subtree.
+	metadataOnly string
 }
 
 // maxAnalysisDepth caps the depth of the AST walk so that a malicious
@@ -600,7 +781,7 @@ type gqlAnalyzer struct {
 // connections and fragments without enabling unbounded recursion.
 const maxAnalysisDepth = 100
 
-func (a *gqlAnalyzer) walkSelectionSet(set ast.SelectionSet, inMutation, atRoot bool, depth int) {
+func (a *gqlAnalyzer) walkSelectionSet(set ast.SelectionSet, inMutation, atRoot bool, depth int, ctx walkCtx) {
 	if depth > maxAnalysisDepth {
 		a.tooDeep = true
 		return
@@ -608,11 +789,11 @@ func (a *gqlAnalyzer) walkSelectionSet(set ast.SelectionSet, inMutation, atRoot 
 	for _, sel := range set {
 		switch s := sel.(type) {
 		case *ast.Field:
-			a.walkField(s, inMutation, atRoot, depth)
+			a.walkField(s, inMutation, atRoot, depth, ctx)
 		case *ast.InlineFragment:
 			// Inline fragments are an in-place type narrowing; they
 			// preserve the surrounding selection's root-ness.
-			a.walkSelectionSet(s.SelectionSet, inMutation, atRoot, depth+1)
+			a.walkSelectionSet(s.SelectionSet, inMutation, atRoot, depth+1, ctx)
 		case *ast.FragmentSpread:
 			// A fragment spread that refers to a fragment we are already
 			// inside is a recursion: skip it. A spread that names a
@@ -632,14 +813,21 @@ func (a *gqlAnalyzer) walkSelectionSet(set ast.SelectionSet, inMutation, atRoot 
 				continue
 			}
 			a.fragmentStack[s.Name] = true
-			a.walkSelectionSet(frag.SelectionSet, inMutation, atRoot, depth+1)
+			a.walkSelectionSet(frag.SelectionSet, inMutation, atRoot, depth+1, ctx)
 			delete(a.fragmentStack, s.Name)
 		}
 	}
 }
 
-func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int) {
+func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int, ctx walkCtx) {
 	name := f.Name
+
+	if atRoot {
+		a.sawRootField = true
+		if _, ok := introspectionRootFields[name]; !ok {
+			a.sawNonIntrospectionRoot = true
+		}
+	}
 
 	// Capture repository(owner, name) arguments when the field is invoked
 	// as a lookup (i.e. has arguments). Nested `Repository` accessors with
@@ -652,9 +840,11 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int
 	// type), record it as "unpinned" so repo-restricted tokens fail closed:
 	// otherwise an attacker could mix one literal allowlisted lookup with a
 	// variable-driven lookup and bypass the allowlist.
+	pinned := false
 	if name == "repository" && len(f.Arguments) > 0 {
 		if owner, repo := a.repositoryArgs(f); owner != "" && repo != "" {
 			a.seenRepos[owner+"/"+repo] = struct{}{}
+			pinned = true
 		} else {
 			a.result.hasUnpinnedRepositoryLookup = true
 		}
@@ -669,6 +859,19 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int
 	} else if atRoot {
 		if _, ok := crossRepoRootOnlyFields[name]; ok {
 			a.seenCrossRepo[name] = struct{}{}
+		}
+	}
+	flagged := a.checkCrossRepoContext(f, ctx)
+
+	// Root object lookups are gated on fragment type conditions (#324).
+	if atRoot && !inMutation {
+		if _, ok := rootLookupFields[name]; ok {
+			if name == "search" {
+				a.walkSearchResult(f.SelectionSet, depth+1)
+			} else {
+				a.walkLookupResult(name, f.SelectionSet, depth+1)
+			}
+			return
 		}
 	}
 
@@ -732,7 +935,214 @@ func (a *gqlAnalyzer) walkField(f *ast.Field, inMutation, atRoot bool, depth int
 	// field are not themselves "root" — their permission is implied by the
 	// mutation's required scope.
 	if len(f.SelectionSet) > 0 {
-		a.walkSelectionSet(f.SelectionSet, false, false, depth+1)
+		child := walkCtx{parent: name, pinnedRepo: pinned, metadataOnly: ctx.metadataOnly}
+		if flagged {
+			// The request is already cross-repository; flagging every
+			// descendant as well only adds noise to the denial message.
+			child.metadataOnly = ""
+		}
+		if child.metadataOnly == "" {
+			if _, ok := metadataOnlySubtreeFields[name]; ok {
+				child.metadataOnly = name
+			}
+		}
+		a.walkSelectionSet(f.SelectionSet, false, false, depth+1, child)
+	}
+}
+
+// checkCrossRepoContext applies the parent-aware cross-repository rules:
+// inside a metadata-only subtree (#339) only metadata may be selected, and
+// crossRepoParentAwareFields (#340) must hang directly off a pinned
+// repository lookup. It returns true when the field was flagged by the
+// metadata-only rule.
+func (a *gqlAnalyzer) checkCrossRepoContext(f *ast.Field, ctx walkCtx) bool {
+	name := f.Name
+	flagged := false
+	if ctx.metadataOnly != "" {
+		_, meta := alwaysAllowedFields[name]
+		if !meta && len(f.SelectionSet) == 0 {
+			_, meta = metadataSubtreeLeaves[name]
+		}
+		if !meta {
+			a.seenCrossRepo[ctx.metadataOnly+"."+name] = struct{}{}
+			flagged = true
+		}
+	}
+	if _, ok := crossRepoParentAwareFields[name]; ok && !ctx.pinnedRepo {
+		if ctx.parent == "" {
+			a.seenCrossRepo[name] = struct{}{}
+		} else {
+			a.seenCrossRepo[ctx.parent+"."+name] = struct{}{}
+		}
+	}
+	return flagged
+}
+
+// walkLookupResult checks the result position of a root lookup (see
+// rootLookupFields). Only `__typename` and `id` may be selected directly;
+// every other selection must sit inside a fragment whose type condition is
+// in typeConditionScopeRequirements. Fragments without a type condition
+// (e.g. `... @include(if: $x) { ... }`) are transparent. The fragment body
+// is then walked by walkGatedBody, which also gates fragments nested
+// directly in it. A result position with no
+// mapped fragment is recorded as unknown under the lookup name.
+func (a *gqlAnalyzer) walkLookupResult(lookup string, set ast.SelectionSet, depth int) {
+	if !a.walkLookupSelections(lookup, set, depth) {
+		a.seenUnknown[lookup] = struct{}{}
+	}
+}
+
+// walkLookupSelections returns true when at least one mapped fragment was
+// found in set.
+func (a *gqlAnalyzer) walkLookupSelections(lookup string, set ast.SelectionSet, depth int) bool {
+	if depth > maxAnalysisDepth {
+		a.tooDeep = true
+		return false
+	}
+	found := false
+	for _, sel := range set {
+		switch s := sel.(type) {
+		case *ast.Field:
+			if s.Name != "__typename" && s.Name != "id" {
+				a.seenUnknown[lookup+"."+s.Name] = struct{}{}
+			}
+		case *ast.InlineFragment:
+			if s.TypeCondition == "" {
+				if a.walkLookupSelections(lookup, s.SelectionSet, depth+1) {
+					found = true
+				}
+				continue
+			}
+			if a.gateTypeCondition(lookup, s.TypeCondition) {
+				found = true
+			}
+			a.walkGatedBody(lookup, s.TypeCondition, s.SelectionSet, depth+1)
+		case *ast.FragmentSpread:
+			if a.fragmentStack[s.Name] {
+				continue
+			}
+			frag, ok := a.fragments[s.Name]
+			if !ok {
+				a.seenUnknown["fragment:"+s.Name] = struct{}{}
+				continue
+			}
+			if a.gateTypeCondition(lookup, frag.TypeCondition) {
+				found = true
+			}
+			a.fragmentStack[s.Name] = true
+			a.walkGatedBody(lookup, frag.TypeCondition, frag.SelectionSet, depth+1)
+			delete(a.fragmentStack, s.Name)
+		}
+	}
+	return found
+}
+
+// walkGatedBody walks the body of a root-lookup fragment whose type
+// condition is enclosing. Fields are walked as ordinary nested selections.
+// A fragment directly in the body (inline or named) with a type condition
+// that differs from enclosing is gated through typeConditionScopeRequirements
+// as well, so `... on Bot { ...F }` with `fragment F on Issue` needs
+// issues:read. Interfaces and unmapped types are unknown. GitHub rejects
+// such non-overlapping spreads today, but the analyzer does not rely on it.
+func (a *gqlAnalyzer) walkGatedBody(lookup, enclosing string, set ast.SelectionSet, depth int) {
+	if depth > maxAnalysisDepth {
+		a.tooDeep = true
+		return
+	}
+	for _, sel := range set {
+		switch s := sel.(type) {
+		case *ast.Field:
+			a.walkField(s, false, false, depth, walkCtx{parent: lookup})
+		case *ast.InlineFragment:
+			inner := enclosing
+			if s.TypeCondition != "" && s.TypeCondition != enclosing {
+				a.gateTypeCondition(lookup, s.TypeCondition)
+				inner = s.TypeCondition
+			}
+			a.walkGatedBody(lookup, inner, s.SelectionSet, depth+1)
+		case *ast.FragmentSpread:
+			if a.fragmentStack[s.Name] {
+				continue
+			}
+			frag, ok := a.fragments[s.Name]
+			if !ok {
+				a.seenUnknown["fragment:"+s.Name] = struct{}{}
+				continue
+			}
+			inner := enclosing
+			if frag.TypeCondition != enclosing {
+				a.gateTypeCondition(lookup, frag.TypeCondition)
+				inner = frag.TypeCondition
+			}
+			a.fragmentStack[s.Name] = true
+			a.walkGatedBody(lookup, inner, frag.SelectionSet, depth+1)
+			delete(a.fragmentStack, s.Name)
+		}
+	}
+}
+
+// gateTypeCondition records the scope for a mapped type condition, or an
+// unknown entry for an unmapped one. It returns true when mapped.
+func (a *gqlAnalyzer) gateTypeCondition(lookup, typeCondition string) bool {
+	req, ok := typeConditionScopeRequirements[typeCondition]
+	if !ok {
+		a.seenUnknown[lookup+"...on "+typeCondition] = struct{}{}
+		return false
+	}
+	a.seenScopes[req] = struct{}{}
+	return true
+}
+
+// walkSearchResult checks the selection set of a root `search` field.
+// `nodes` and `edges { node }` are result positions and are checked with
+// walkLookupResult. Scalar leaves (e.g. `issueCount`), `pageInfo` and
+// `__typename` may sit beside them. Anything else is unknown, and so is a
+// search with no result position.
+func (a *gqlAnalyzer) walkSearchResult(set ast.SelectionSet, depth int) {
+	if depth > maxAnalysisDepth {
+		a.tooDeep = true
+		return
+	}
+	found := false
+	for _, sel := range set {
+		s, ok := sel.(*ast.Field)
+		if !ok {
+			// Fragments on SearchResultItemConnection add nothing a
+			// client needs; deny rather than reason about them.
+			a.seenUnknown["search:fragment"] = struct{}{}
+			continue
+		}
+		switch {
+		case s.Name == "nodes":
+			a.walkLookupResult("search.nodes", s.SelectionSet, depth+1)
+			found = true
+		case s.Name == "edges":
+			for _, esel := range s.SelectionSet {
+				ef, ok := esel.(*ast.Field)
+				switch {
+				case !ok:
+					a.seenUnknown["search.edges:fragment"] = struct{}{}
+				case ef.Name == "node":
+					a.walkLookupResult("search.edges.node", ef.SelectionSet, depth+2)
+					found = true
+				case len(ef.SelectionSet) == 0:
+					// cursor, __typename and other scalar leaves.
+				default:
+					a.seenUnknown["search.edges."+ef.Name] = struct{}{}
+				}
+			}
+		case s.Name == "pageInfo":
+			a.walkSelectionSet(s.SelectionSet, false, false, depth+1, walkCtx{parent: "pageInfo"})
+		case len(s.SelectionSet) == 0:
+			// issueCount, repositoryCount, __typename and similar leaves.
+		default:
+			a.seenUnknown["search."+s.Name] = struct{}{}
+		}
+	}
+	if !found {
+		// A search that selects no result position (counts only) has no
+		// fragment to gate on, so it stays denied like the other lookups.
+		a.seenUnknown["search"] = struct{}{}
 	}
 }
 

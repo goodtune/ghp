@@ -266,11 +266,9 @@ func TestRESTGHCorpus(t *testing.T) {
 	// Endpoints that are denied for every scoped token by design: search is
 	// cross-repository and has no single permission.
 	deniedForScoped := map[string]bool{"GET /search/issues": true}
-	// The rig's perm-ro profile has no workflows permission, so the workflow
-	// list is a permission denial (the endpoint is mapped).
-	deniedForProfile := map[string]map[string]bool{
-		"perm-ro": {"GET /repos/OWNER/REPO/actions/workflows": true},
-	}
+	// No profile-specific denials: perm-ro holds actions:read, which covers
+	// the workflow list since #316.
+	deniedForProfile := map[string]map[string]bool{}
 	seen := 0
 	for _, f := range files {
 		data, err := os.ReadFile(f)
@@ -449,11 +447,12 @@ func TestDecideREST_ActionsAdminRules(t *testing.T) {
 	}
 }
 
-// The unsafe-path denial must record a real scope_enforcement duration.
+// The unsafe-path denial must record a real scope_enforcement duration in the
+// series of the vhost carried on the request context (#330).
 func TestServeHTTP_UnsafePathRecordsScopeEnforcement(t *testing.T) {
 	read := func() (uint64, float64) {
 		m := &dto.Metric{}
-		obs := metrics.ProxyDecisionDuration.WithLabelValues(metrics.StageScopeEnforcement, "proxy")
+		obs := metrics.ProxyDecisionDuration.WithLabelValues(metrics.StageScopeEnforcement, "proxy", metrics.VhostAPI)
 		if err := obs.(prometheus.Metric).Write(m); err != nil {
 			t.Fatal(err)
 		}
@@ -463,6 +462,7 @@ func TestServeHTTP_UnsafePathRecordsScopeEnforcement(t *testing.T) {
 	beforeCount, beforeSum := read()
 	req := httptest.NewRequest("GET", "http://api.github.com/", nil)
 	req.URL.Path = "/repos/owner/a/../../owner/b/contents"
+	req = req.WithContext(metrics.WithVhost(req.Context(), metrics.VhostAPI))
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
@@ -475,5 +475,57 @@ func TestServeHTTP_UnsafePathRecordsScopeEnforcement(t *testing.T) {
 	}
 	if afterSum <= beforeSum {
 		t.Errorf("expected a non-zero scope_enforcement duration, sum delta %g", afterSum-beforeSum)
+	}
+}
+
+// TestDecideREST_ReactionsAndAliases covers the #315 reaction rules and the
+// #316/#318 permission aliases end to end through decideREST.
+func TestDecideREST_ReactionsAndAliases(t *testing.T) {
+	tests := []struct {
+		name   string
+		scopes database.Scopes
+		method string
+		path   string
+		want   bool
+	}{
+		{"issue reactions GET with issues:read", database.Scopes{"issues": "read"}, "GET", "/repos/o/r/issues/1/reactions", true},
+		{"issue reactions POST with issues:read denied", database.Scopes{"issues": "read"}, "POST", "/repos/o/r/issues/1/reactions", false},
+		{"issue reactions POST with issues:write", database.Scopes{"issues": "write"}, "POST", "/repos/o/r/issues/1/reactions", true},
+		{"issue reaction DELETE with issues:read denied", database.Scopes{"issues": "read"}, "DELETE", "/repos/o/r/issues/1/reactions/5", false},
+		{"issue reaction DELETE with issues:write", database.Scopes{"issues": "write"}, "DELETE", "/repos/o/r/issues/1/reactions/5", true},
+		{"issue comment reactions POST with issues:read denied", database.Scopes{"issues": "read"}, "POST", "/repos/o/r/issues/comments/3/reactions", false},
+		{"issue comment reactions POST with issues:write", database.Scopes{"issues": "write"}, "POST", "/repos/o/r/issues/comments/3/reactions", true},
+		{"PR comment reactions POST with issues:write denied", database.Scopes{"issues": "write"}, "POST", "/repos/o/r/pulls/comments/3/reactions", false},
+		{"PR comment reactions POST with pull_requests:write", database.Scopes{"pull_requests": "write"}, "POST", "/repos/o/r/pulls/comments/3/reactions", true},
+		{"PR comment reactions GET with pull_requests:read", database.Scopes{"pull_requests": "read"}, "GET", "/repos/o/r/pulls/comments/3/reactions", true},
+		{"commit comment reactions GET with contents:read", database.Scopes{"contents": "read"}, "GET", "/repos/o/r/comments/3/reactions", true},
+		{"commit comment reactions POST with contents:read denied", database.Scopes{"contents": "read"}, "POST", "/repos/o/r/comments/3/reactions", false},
+		{"commit comment reactions POST with contents:write", database.Scopes{"contents": "write"}, "POST", "/repos/o/r/comments/3/reactions", true},
+		{"commit comment reaction DELETE with contents:write", database.Scopes{"contents": "write"}, "DELETE", "/repos/o/r/comments/3/reactions/4", true},
+
+		{"workflows list with actions:read", database.Scopes{"actions": "read"}, "GET", "/repos/o/r/actions/workflows", true},
+		{"workflows list with deprecated workflows:read alias", database.Scopes{"workflows": "read"}, "GET", "/repos/o/r/actions/workflows", true},
+		{"workflows list with workflows:write denied", database.Scopes{"workflows": "write"}, "GET", "/repos/o/r/actions/workflows", false},
+		{"workflow dispatch with actions:read denied", database.Scopes{"actions": "read"}, "POST", "/repos/o/r/actions/workflows/ci.yml/dispatches", false},
+		{"workflow dispatch with workflows:read alias denied", database.Scopes{"workflows": "read"}, "POST", "/repos/o/r/actions/workflows/ci.yml/dispatches", false},
+		{"workflow dispatch with actions:write", database.Scopes{"actions": "write"}, "POST", "/repos/o/r/actions/workflows/ci.yml/dispatches", true},
+		{"workflow enable with actions:write", database.Scopes{"actions": "write"}, "PUT", "/repos/o/r/actions/workflows/ci.yml/enable", true},
+		{"workflows:read alias does not grant runs write", database.Scopes{"workflows": "read"}, "POST", "/repos/o/r/actions/runs/1/rerun", false},
+
+		{"classic projects GET with repository_projects:read", database.Scopes{"repository_projects": "read"}, "GET", "/repos/o/r/projects", true},
+		{"classic projects GET with organization_projects:read", database.Scopes{"organization_projects": "read"}, "GET", "/orgs/o/projects", true},
+		{"classic projects POST with repository_projects:read denied", database.Scopes{"repository_projects": "read"}, "POST", "/repos/o/r/projects", false},
+		{"classic projects POST with repository_projects:write", database.Scopes{"repository_projects": "write"}, "POST", "/repos/o/r/projects", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := decideREST(tokenScopeInfo{Scopes: tt.scopes}, tt.method, tt.path)
+			if d.allowed != tt.want {
+				t.Errorf("allowed = %v, want %v (%s)", d.allowed, tt.want, d.message)
+			}
+			if d.unmapped {
+				t.Errorf("unexpectedly unmapped: %s", d.message)
+			}
+		})
 	}
 }
