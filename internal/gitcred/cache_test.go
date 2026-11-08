@@ -217,7 +217,7 @@ func TestCacheKey(t *testing.T) {
 		Repository: "goodtune/ghp",
 		Scopes:     "contents:write",
 	}
-	if CacheKey(base) != CacheKey(base) {
+	if k1, k2 := CacheKey(base), CacheKey(base); k1 != k2 {
 		t.Fatal("CacheKey is not stable")
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(CacheKey(base)) {
@@ -639,7 +639,7 @@ func TestCache_AutoRefusesWeakerTier(t *testing.T) {
 	c := newCache(t, dir, "", f)
 	putCommit(t, c, "o/r", freshEntry("a"))
 	assertAbsent(t, filepath.Join(dir, CacheFileName))
-	if want := MessagePrefix + `no cache tier at least as strong as "tpm" is available; token not cached` + "\n"; !strings.Contains(stderrOf(c), want) {
+	if want := MessagePrefix + `no cache tier at least as strong as "tpm" is available; token not cached (use --cache-backend <tier> to accept a weaker tier)` + "\n"; !strings.Contains(stderrOf(c), want) {
 		t.Errorf("stderr = %q, want %q", stderrOf(c), want)
 	}
 	if tier := readTier(t, dir); tier != "tpm" {
@@ -821,7 +821,7 @@ func TestCache_UnwrapFailureNeverRewrites(t *testing.T) {
 	if !bytes.Equal(readFile(t, filepath.Join(dir, CacheFileName)), before) {
 		t.Error("unreadable cache.enc was rewritten")
 	}
-	want := MessagePrefix + "cannot read the credential cache (keychain: locked  in ssh); continuing without it\n"
+	want := MessagePrefix + "cannot read the credential cache (keychain: locked  in ssh); continuing without it (run ghp auth git-credential clear if this persists)\n"
 	if got := stderrOf(c); got != want {
 		t.Errorf("stderr = %q, want %q", got, want)
 	}
@@ -1166,7 +1166,7 @@ func TestCache_ConcurrentWriters(t *testing.T) {
 	f := newFakeTiers()
 	const writers = 8
 	var wg sync.WaitGroup
-	errs := make(chan error, writers)
+	errs := make(chan error, 2*writers) // Commit and Close may each fail
 	for i := range writers {
 		wg.Add(1)
 		go func() {
@@ -1177,7 +1177,11 @@ func TestCache_ConcurrentWriters(t *testing.T) {
 				errs <- err
 				return
 			}
-			defer s.Close()
+			defer func() {
+				if err := s.Close(); err != nil {
+					errs <- err
+				}
+			}()
 			s.Put(in(fmt.Sprint("o/r", i)), freshEntry(fmt.Sprint("t", i)))
 			if err := s.Commit(); err != nil {
 				errs <- err

@@ -49,7 +49,9 @@ type fakeGHP struct {
 	installations []Installation
 	status        map[string]int // mux pattern → status override
 	retryAfter    string
+	message       string // error message of status overrides; "" → the status text
 	nullExpiry    bool
+	emptyToken    bool
 	onMint        func()
 	onRevoke      func()
 
@@ -103,7 +105,7 @@ func (g *fakeGHP) set(fn func(g *fakeGHP)) {
 func (g *fakeGHP) override(w http.ResponseWriter, r *http.Request) bool {
 	g.mu.Lock()
 	code, ok := g.status[r.Pattern]
-	retry := g.retryAfter
+	retry, msg := g.retryAfter, g.message
 	g.mu.Unlock()
 	if !ok {
 		return false
@@ -111,7 +113,10 @@ func (g *fakeGHP) override(w http.ResponseWriter, r *http.Request) bool {
 	if retry != "" {
 		w.Header().Set("Retry-After", retry)
 	}
-	writeJSONBody(g.t, w, code, map[string]string{"message": http.StatusText(code)})
+	if msg == "" {
+		msg = http.StatusText(code)
+	}
+	writeJSONBody(g.t, w, code, map[string]string{"message": msg})
 	return true
 }
 
@@ -157,9 +162,13 @@ func (g *fakeGHP) handleMint(w http.ResponseWriter, r *http.Request) {
 	if !g.nullExpiry {
 		expires = g.now().Add(time.Hour)
 	}
+	token := fakeToken(n)
+	if g.emptyToken {
+		token = ""
+	}
 	g.mu.Unlock()
 	writeJSONBody(g.t, w, http.StatusCreated, map[string]any{
-		"token":        fakeToken(n),
+		"token":        token,
 		"id":           "tok-" + strconv.Itoa(n),
 		"type":         body.Type,
 		"repositories": body.Repositories,
@@ -743,6 +752,45 @@ func TestRun_FailFlattensNewlines(t *testing.T) {
 	}
 }
 
+func TestRun_FailSanitisesServerText(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		check   func(t *testing.T, msg string)
+	}{
+		{"terminal escape", "boom\x1b[2Jbang\x07", func(t *testing.T, msg string) {
+			if !strings.HasSuffix(msg, ": server returned 500: boom?[2Jbang?") {
+				t.Errorf("message = %q, want control characters replaced by ?", msg)
+			}
+		}},
+		{"1 KB message", strings.Repeat("x", 1024), func(t *testing.T, msg string) {
+			const sep = ": server returned 500: "
+			_, text, ok := strings.Cut(msg, sep)
+			if !ok || text != strings.Repeat("x", maxServerTextBytes)+"..." {
+				t.Errorf("message = %q, want the server text cut to %d bytes and ending in ...", msg, maxServerTextBytes)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newFakeGHP(t)
+			g.set(func(g *fakeGHP) {
+				g.status["POST /api/tokens"] = http.StatusInternalServerError
+				g.message = tt.message
+			})
+			opts, _ := baseOptions(t, g)
+			stdout, stderr, code := run(t, opts, "get", stdGet)
+			assertFailure(t, stdout, stderr, code, "server returned 500")
+			for _, r := range stderr[:len(stderr)-1] {
+				if r < 0x20 || r == 0x7f {
+					t.Errorf("stderr = %q contains control character %U", stderr, r)
+				}
+			}
+			tt.check(t, strings.TrimSuffix(strings.TrimPrefix(stderr, MessagePrefix), "\n"))
+		})
+	}
+}
+
 func TestRun_WarningsReemitted(t *testing.T) {
 	g := newFakeGHP(t)
 	opts, l := baseOptions(t, g)
@@ -766,6 +814,23 @@ func TestRun_GetNullExpiry(t *testing.T) {
 	assertFailure(t, stdout, stderr, code, "no expiry")
 	if got := g.revokedIDs(); len(got) != 1 || got[0] != "tok-1" {
 		t.Errorf("revoked = %q, want [tok-1]", got)
+	}
+}
+
+func TestRun_GetEmptyToken(t *testing.T) {
+	g := newFakeGHP(t)
+	g.set(func(g *fakeGHP) { g.emptyToken = true })
+	opts, _ := baseOptions(t, g)
+	stdout, stderr, code := run(t, opts, "get", stdGet)
+	assertFailure(t, stdout, stderr, code, "")
+	if want := MessagePrefix + "server returned an empty token\n"; stderr != want {
+		t.Errorf("stderr = %q, want %q", stderr, want)
+	}
+	if got := g.revokedIDs(); len(got) != 1 || got[0] != "tok-1" {
+		t.Errorf("revoked = %q, want [tok-1]", got)
+	}
+	if _, err := os.Stat(filepath.Join(opts.CacheDir, CacheFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("cache.enc stat err = %v, want not exist (nothing cached)", err)
 	}
 }
 
@@ -875,8 +940,9 @@ func TestRun_GetUnreadableCacheNoticeOnce(t *testing.T) {
 	if !strings.Contains(stdout, "password=") {
 		t.Errorf("stdout = %q, want a credential", stdout)
 	}
-	if strings.Count(stderr, "\n") != 1 || !strings.Contains(stderr, "cannot read the credential cache") {
-		t.Errorf("stderr = %q, want exactly one line containing %q", stderr, "cannot read the credential cache")
+	const remedy = "; continuing without it (run ghp auth git-credential clear if this persists)\n"
+	if strings.Count(stderr, "\n") != 1 || !strings.HasPrefix(stderr, MessagePrefix+"cannot read the credential cache (") || !strings.HasSuffix(stderr, remedy) {
+		t.Errorf("stderr = %q, want exactly one unreadable-cache line ending %q", stderr, remedy)
 	}
 	if !bytes.Equal(readFile(t, encPath), before) {
 		t.Error("unreadable cache.enc was rewritten")

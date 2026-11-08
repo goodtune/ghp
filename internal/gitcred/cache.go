@@ -322,7 +322,7 @@ func (s *Session) readEnvelope() {
 		s.envTier = env.Backend
 		s.readable = false
 		s.readErr = fmt.Errorf("%s: %w", env.Backend, err)
-		s.notice("cannot read the credential cache (%v); continuing without it", s.readErr)
+		s.notice("cannot read the credential cache (%v); continuing without it (run ghp auth git-credential clear if this persists)", s.readErr)
 		return
 	}
 	entries, ok := decryptEntries(env, dek)
@@ -462,7 +462,7 @@ func (s *Session) Commit() error {
 		return err
 	}
 	if tier == "" {
-		s.notice("no cache tier at least as strong as %q is available; token not cached", s.minTier)
+		s.notice("no cache tier at least as strong as %q is available; token not cached (use --cache-backend <tier> to accept a weaker tier)", s.minTier)
 		return nil
 	}
 
@@ -481,7 +481,7 @@ func (s *Session) Commit() error {
 		return err
 	}
 
-	if tier == securestore.TierFile && !(s.dek != nil && s.envTier == securestore.TierFile) {
+	if tier == securestore.TierFile && (s.dek == nil || s.envTier != securestore.TierFile) {
 		s.notice("cache protected by file permissions only; see docs")
 	}
 	if s.mode != BackendAuto {

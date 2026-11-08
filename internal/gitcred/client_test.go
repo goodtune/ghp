@@ -317,3 +317,24 @@ func TestClient_ResponseBodyLimit(t *testing.T) {
 		t.Fatal("ListApps() error = nil for a body over 1 MiB, want error")
 	}
 }
+
+func TestCapServerText(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"short", "boom", "boom"},
+		{"exactly 200", strings.Repeat("a", 200), strings.Repeat("a", 200)},
+		{"201", strings.Repeat("a", 201), strings.Repeat("a", 200) + "..."},
+		// 199 "a" then a 2-byte "é" across byte 200.
+		{"rune boundary", strings.Repeat("a", 199) + "éz", strings.Repeat("a", 199) + "..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := capServerText(tt.in); got != tt.want {
+				t.Errorf("capServerText = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

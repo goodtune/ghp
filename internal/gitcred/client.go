@@ -11,12 +11,16 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	// maxResponseBytes caps every ghp API response body the client reads.
 	maxResponseBytes = 1 << 20
 	defaultTimeout   = 30 * time.Second
+	// maxServerTextBytes caps the server's error message before "..." is
+	// appended, so a hostile server cannot flood git's stderr.
+	maxServerTextBytes = 200
 )
 
 // Sentinel errors matched by *APIError.Is for the statuses the helper
@@ -87,6 +91,19 @@ func (e *APIError) Error() string {
 		msg = http.StatusText(e.Status)
 	}
 	return fmt.Sprintf("%s: server returned %d: %s", e.Op, e.Status, msg)
+}
+
+// capServerText cuts s to at most 200 bytes on a rune boundary and appends
+// "..." when it cut anything.
+func capServerText(s string) string {
+	if len(s) <= maxServerTextBytes {
+		return s
+	}
+	cut := maxServerTextBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 // Is maps 401, 403 and 429 to ErrUnauthorized, ErrForbidden and
@@ -184,7 +201,7 @@ func (c *Client) do(ctx context.Context, op, method, path string, body any, want
 			Message string `json:"message"`
 		}
 		if json.Unmarshal(data, &msg) == nil {
-			apiErr.Message = msg.Message
+			apiErr.Message = capServerText(msg.Message)
 		}
 		return apiErr
 	}

@@ -39,6 +39,7 @@ const (
 	msgNoExpiry       = "server returned a token with no expiry; refusing to use it"
 	msgNoCacheDir     = "no credential cache directory is configured"
 	msgClearedBlind   = "cache could not be read; removed it without revoking tokens"
+	msgEmptyToken     = "server returned an empty token"
 
 	statusLabelWidth = 16
 )
@@ -115,9 +116,12 @@ type helper struct {
 	authedDone bool
 }
 
-// warn writes one prefixed stderr line; CR and LF become spaces.
+// warn writes one prefixed stderr line. CR and LF become spaces and other
+// control characters become "?", so server text cannot drive the terminal.
+// (Server text is also capped at 200 bytes where it is read; see
+// capServerText.)
 func warn(stderr io.Writer, msg string) {
-	msg = strings.NewReplacer("\r", " ", "\n", " ").Replace(msg)
+	msg = printable(strings.NewReplacer("\r", " ", "\n", " ").Replace(msg))
 	_, _ = io.WriteString(stderr, MessagePrefix+msg+"\n")
 }
 
@@ -324,6 +328,12 @@ func (h *helper) get(ctx context.Context, stdin io.Reader, stdout io.Writer) int
 	})
 	if err != nil {
 		return h.fail(mintErrorMessage(err, r.plan.Type))
+	}
+	if tok.Token == "" {
+		if tok.ID != "" {
+			_ = client.RevokeToken(ctx, tok.ID) // best effort
+		}
+		return h.fail(msgEmptyToken)
 	}
 	if tok.ExpiresAt == nil {
 		if tok.ID != "" {
