@@ -49,8 +49,13 @@ func TestRigTree(t *testing.T) {
 		t.Errorf("claim set mismatch: missing %v, extra %v", missing, extra)
 	}
 
-	if n := len(tree.Profiles); n != 13 {
-		t.Errorf("profiles: got %d, want 13", n)
+	if n := len(tree.Profiles); n != 17 {
+		t.Errorf("profiles: got %d, want 17", n)
+	}
+	for n, p := range tree.Profiles {
+		if p.Type == "agent" && !strings.HasPrefix(n, "agent-") {
+			t.Errorf("agent profile %q: name must start with agent-", n)
+		}
 	}
 
 	testable := map[string]string{"C42": "never", "C53": "never", "C45": "manual", "C54": "manual"}
@@ -116,6 +121,8 @@ var task18Claims = map[string]int{
 	"BORDER-C43": 3, "BORDER-C44": 1, "MISC-C52": 1,
 	// batch 4
 	"PERM-C17": 1, "PERM-C19": 2, "REPO-C09": 2, "TOK-C01": 3, "LIFE-C41": 1, "BORDER-C47": 1,
+	// agent tokens (#306)
+	"AGENT-C49": 8, "TOK-C02": 2, "TOK-C03": 2, "TOK-C04": 1, "REPO-C08": 2, "GAP-A6": 2,
 }
 
 // checkScenarioCoverage asserts that every iteration-1 claim that is not a

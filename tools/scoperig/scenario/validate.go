@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -13,7 +14,7 @@ import (
 var (
 	validKinds        = map[string]bool{"rest": true, "graphql": true, "gh": true, "token_api": true}
 	validCapabilities = map[string]bool{"repo_w_push": true, "repo_create": true, "github_vhost": true, "codeload_vhost": true, "agent_installation": true,
-		"border_block_ghp": true, "border_block_gho": true, "border_block_github_pat": true}
+		"non_admin_session": true, "default_app": true, "border_block_ghp": true, "border_block_gho": true, "border_block_github_pat": true}
 	knownIssueRE = regexp.MustCompile(`^https://github\.com/goodtune/ghp/issues/\d+$`)
 )
 
@@ -25,6 +26,17 @@ const gapA7ProbeID = "GAP-A7.dotdot-path"
 // validVhosts maps each virtual host a rest request may target to the
 // capability the scenario must require for it.
 var validVhosts = map[string]string{"github.com": "github_vhost", "codeload.github.com": "codeload_vhost"}
+
+// agentAppTemplate and agentInstallationRef are the only values a token_api
+// agent token body may give for app_record_id and installation_id.
+const (
+	agentAppTemplate     = "{{.Agent.AppRecordID}}"
+	agentInstallationRef = "$int:InstallationID"
+)
+
+// appsReadRE is the token_api read allowance for app records: the list, one
+// app, or one app's installations (the CLI's --app/--installation lookups).
+var appsReadRE = regexp.MustCompile(`^/api/apps(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(/installations)?)?$`)
 
 // maxProfileDuration bounds every profile so leaked tokens expire quickly.
 const maxProfileDuration = 2 * time.Hour
@@ -50,7 +62,8 @@ func PlaceholderVars() *Vars {
 		Fixture: map[string]FixtureVals{"A": f, "B": f, "W": f},
 		Instance: InstanceVals{Host: PlaceholderHost,
 			DefaultDuration: time.Hour, MaxDuration: 168 * time.Hour},
-		Step: map[string]map[string]string{},
+		Agent: AgentVals{AppRecordID: "00000000-0000-4000-8000-0000000000a6", InstallationID: 900000404},
+		Step:  map[string]map[string]string{},
 	}
 }
 
@@ -82,8 +95,19 @@ func Validate(t *Tree, v *Vars) []error {
 		perr := func(format string, a ...any) {
 			errs = append(errs, fmt.Errorf("profiles.yaml: profile %q: %s", n, fmt.Sprintf(format, a...)))
 		}
-		if p.Type != "proxy" {
-			perr("type %q not supported (only proxy)", p.Type)
+		switch p.Type {
+		case "proxy":
+		case "agent":
+			if !slices.Contains(p.Requires, "agent_installation") {
+				perr("type agent needs requires: [agent_installation]")
+			}
+		default:
+			perr("type %q not supported (proxy or agent)", p.Type)
+		}
+		for _, r := range p.Requires {
+			if !PreMintCapabilities[r] {
+				perr("requires %q: a profile may require only agent_installation (known before tokens are minted)", r)
+			}
 		}
 		if p.Duration == "" {
 			if n != "lifecycle-default" {
@@ -142,8 +166,19 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			prof = &p
 		}
 	} else if s.Profile != "" {
-		if _, ok := t.Profiles[s.Profile]; !ok {
+		if p, ok := t.Profiles[s.Profile]; !ok {
 			add("profile %q not found in profiles.yaml", s.Profile)
+		} else {
+			prof = &p
+		}
+	}
+	// A profile that is not minted without a capability must not be used by
+	// a scenario that would then run (and ERROR) without it.
+	if prof != nil {
+		for _, r := range prof.Requires {
+			if !slices.Contains(s.Requires, r) {
+				add("profile %q requires %s; add it to the scenario's requires", s.Profile, r)
+			}
 		}
 	}
 	if !validKinds[s.Kind] {
@@ -177,10 +212,38 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		add("known_issue %q must match https://github.com/goodtune/ghp/issues/<n>", s.KnownIssue)
 	}
 
+	// Rule 3b: an agent token created through token_api must name the
+	// configured app and installation by template, so it can never be
+	// pinned to the instance's default app (or a literal app).
+	if s.Kind == "token_api" {
+		reqs := make([]*Request, 0, len(s.Steps)+1)
+		for i := range s.Steps {
+			reqs = append(reqs, &s.Steps[i])
+		}
+		if s.Request != nil {
+			reqs = append(reqs, s.Request)
+		}
+		for _, r := range reqs {
+			m, ok := r.Body.(map[string]any)
+			if !ok || m["type"] != "agent" {
+				continue
+			}
+			if m["app_record_id"] != agentAppTemplate {
+				add("agent token body must set app_record_id: %q", agentAppTemplate)
+			}
+			if m["installation_id"] != agentInstallationRef {
+				add("agent token body must set installation_id: %q", agentInstallationRef)
+			}
+			if !slices.Contains(s.Requires, "agent_installation") {
+				add("agent token body needs requires: [agent_installation]")
+			}
+		}
+	}
+
 	// Rule 3: capabilities.
 	for _, r := range s.Requires {
 		if !validCapabilities[r] {
-			add("requires %q is not one of repo_w_push, repo_create, github_vhost, codeload_vhost, agent_installation, border_block_ghp, border_block_gho, border_block_github_pat", r)
+			add("requires %q is not one of repo_w_push, repo_create, github_vhost, codeload_vhost, agent_installation, non_admin_session, default_app, border_block_ghp, border_block_gho, border_block_github_pat", r)
 		}
 	}
 
@@ -274,8 +337,14 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			if (method == "GET" || method == "HEAD") && strings.HasPrefix(clean, "/api/v3/") {
 				return
 			}
+			// Read-only GETs of the app records and installations, the
+			// endpoints the CLI resolves --app and --installation with
+			// (TOK-C03, TOK-C04). Sent with the session token.
+			if (method == "GET" || method == "HEAD") && appsReadRE.MatchString(path) {
+				return
+			}
 			if clean != "/api/tokens" && !strings.HasPrefix(clean, "/api/tokens/") {
-				add("%s: token_api path %q must be /api/tokens or start with /api/tokens/ (or be a GET under /api/v3/)", where, path)
+				add("%s: token_api path %q must be /api/tokens or start with /api/tokens/ (or be a GET under /api/v3/ or /api/apps)", where, path)
 				return
 			}
 			if strings.Contains(path, "?") {

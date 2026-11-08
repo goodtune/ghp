@@ -27,9 +27,14 @@ type Config struct {
 	ServerURL, UserToken string // GHP_SERVER_URL, GHP_USER_TOKEN
 	RepoA, RepoB, RepoW  string // env > rig/config.yaml fixtures
 	GHPath, Root, CAFile string // GHP_RIG_GH, GHP_RIG_SCENARIOS (default "rig"), GHP_RIG_CA_FILE
-	InstallationID       int64  // GHP_RIG_INSTALLATION_ID
-	Instance             scenario.InstanceVals
-	TokenCreateRate      int // per minute, from "20/min"
+	// InstallationID is instance.agent_installation.installation_id,
+	// overridden by GHP_RIG_INSTALLATION_ID.
+	InstallationID int64
+	// AgentAppRecordID is instance.agent_installation.app_record_id: the
+	// GHP app record agent profiles are minted against.
+	AgentAppRecordID string
+	Instance         scenario.InstanceVals
+	TokenCreateRate  int // per minute, from "20/min"
 	// BorderBlock is the operator-declared list of token prefixes the
 	// instance's border policy blocks (instance.border_block). The rig does
 	// not probe it; ProbeCapabilities turns it into border_block_* capabilities.
@@ -70,6 +75,12 @@ type fileConfig struct {
 		MaxDuration     string   `yaml:"max_duration"`
 		TokenCreateRate string   `yaml:"token_create_rate"`
 		BorderBlock     []string `yaml:"border_block"`
+		// AgentInstallation is the GitHub App installation agent (gha_)
+		// profiles mint against (issue #306).
+		AgentInstallation struct {
+			AppRecordID    string `yaml:"app_record_id"`
+			InstallationID *int64 `yaml:"installation_id"`
+		} `yaml:"agent_installation"`
 	} `yaml:"instance"`
 	Metrics struct {
 		PrometheusURL  string `yaml:"prometheus_url"`
@@ -131,6 +142,17 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 		if c.Instance.Host == "" {
 			c.Instance.Host = u.Host
 		}
+	}
+	ai := fc.Instance.AgentInstallation
+	c.AgentAppRecordID = strings.TrimSpace(ai.AppRecordID)
+	if c.AgentAppRecordID != "" && !uuidRE.MatchString(c.AgentAppRecordID) {
+		return nil, errors.New("instance.agent_installation.app_record_id must be a UUID (the app's record id from GET /api/apps)")
+	}
+	if ai.InstallationID != nil {
+		if *ai.InstallationID <= 0 {
+			return nil, errors.New("instance.agent_installation.installation_id must be a positive integer")
+		}
+		c.InstallationID = *ai.InstallationID
 	}
 	if s := getenv("GHP_RIG_INSTALLATION_ID"); s != "" {
 		n, err := strconv.ParseInt(s, 10, 64)
@@ -237,6 +259,16 @@ func loadMetrics(getenv func(string) string, fc fileConfig, userToken string) (M
 	return m, nil
 }
 
+// uuidRE matches the canonical 8-4-4-4-12 hex form only (no braces or urn:
+// prefix), the form GHP's API accepts for app_record_id.
+var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// AgentConfigured reports whether both agent installation values are set.
+// The agent_installation capability also needs the app to exist.
+func (c *Config) AgentConfigured() bool {
+	return c.AgentAppRecordID != "" && c.InstallationID > 0
+}
+
 // RequireServer reports, by name, which instance credentials are missing.
 func (c *Config) RequireServer() error {
 	var missing []string
@@ -300,9 +332,9 @@ func (c *Config) String() string {
 	if c.UserToken != "" {
 		tok = "[REDACTED]"
 	}
-	return fmt.Sprintf("Config{server=%s token=%s host=%s repos=%s,%s,%s root=%s gh=%s ca=%s installation=%d rate=%d/min}",
+	return fmt.Sprintf("Config{server=%s token=%s host=%s repos=%s,%s,%s root=%s gh=%s ca=%s app=%s installation=%d rate=%d/min}",
 		c.ServerURL, tok, c.Instance.Host, c.RepoA, c.RepoB, c.RepoW,
-		c.Root, c.GHPath, c.CAFile, c.InstallationID, c.TokenCreateRate)
+		c.Root, c.GHPath, c.CAFile, c.AgentAppRecordID, c.InstallationID, c.TokenCreateRate)
 }
 
 // GoString keeps %#v from dumping the struct fields (and the token).

@@ -32,7 +32,7 @@ Scenarios (`rig/scenarios/*.yaml`) test claims (`rig/claims.yaml`) with token pr
 
 **New scenario**
 1. Find the claim in `rig/claims.yaml`; add it with its doc anchor if missing.
-2. Pick an existing profile; add one only if none fits.
+2. Pick an existing profile; add one only if none fits. An agent (`gha_`) profile (`agent-*`) needs `requires: [agent_installation]`, and every scenario using it must list it too.
 3. Copy the closest scenario. Id is `<claim>.<slug>`, e.g. `PERM-C11.contents-read-blocks-put`. Set `kind` (`rest`, `graphql`, `gh`, `token_api`, or `corpus` to replay a gh corpus directory), `requires`, `expect`.
 4. Writes target `{{.RepoW}}` only, with run-unique names (`scoperig-{{.RunID}}-...`) and a `cleanup:` block.
 5. `gh` writes may use only flags in `ghFlagTable` (`tools/scoperig/scenario/ghcheck.go`); read-only subcommands are in `ghReadOnly`.

@@ -166,7 +166,7 @@ func TestValidate_Profiles(t *testing.T) {
 	tree.Profiles["lifecycle-default"] = Profile{Name: "lifecycle-default", Type: "proxy"}
 	tree.Profiles["badrepo"] = Profile{Name: "badrepo", Type: "proxy", Duration: "1h", Repositories: []string{"{{.Nope}}"}}
 	errs := Validate(tree, nil)
-	requireErr(t, errs, "agent", "type")
+	requireErr(t, errs, "agent", "type agent", "requires: [agent_installation]")
 	requireErr(t, errs, "long", "2h")
 	requireErr(t, errs, "bad", "duration")
 	requireErr(t, errs, "empty", "duration")
@@ -845,4 +845,71 @@ func TestGraphQLReadOnly(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidate_AgentProfiles(t *testing.T) {
+	agentOK := Profile{Name: "ag", Type: "agent", Duration: "1h", Repositories: []string{"{{.RepoA}}"}, Requires: []string{"agent_installation"}}
+	t.Run("agent with requires is accepted", func(t *testing.T) {
+		tree := withScenarios(&Scenario{ID: "S1", Claim: "C1", Profile: "ag", Kind: "rest",
+			Method: "GET", Path: "/repos/{{.RepoA}}", Requires: []string{"agent_installation"}})
+		tree.Profiles["ag"] = agentOK
+		requireNoErr(t, Validate(tree, nil))
+	})
+	t.Run("scenario must list the profile requires", func(t *testing.T) {
+		tree := withScenarios(&Scenario{ID: "S2", Claim: "C1", Profile: "ag", Kind: "rest",
+			Method: "GET", Path: "/repos/{{.RepoA}}"})
+		tree.Profiles["ag"] = agentOK
+		requireErr(t, Validate(tree, nil), "S2", `profile "ag" requires agent_installation`)
+	})
+	t.Run("profile requires must be known before minting", func(t *testing.T) {
+		tree := withScenarios()
+		tree.Profiles["px"] = Profile{Name: "px", Type: "proxy", Duration: "1h", Requires: []string{"repo_w_push"}}
+		requireErr(t, Validate(tree, nil), "px", "requires", "repo_w_push")
+	})
+	t.Run("unknown type", func(t *testing.T) {
+		tree := withScenarios()
+		tree.Profiles["x"] = Profile{Name: "x", Type: "oauth", Duration: "1h"}
+		requireErr(t, Validate(tree, nil), "x", "type")
+	})
+}
+
+func TestValidate_TokenAPIAppsGET(t *testing.T) {
+	for _, p := range []string{"/api/apps", "/api/apps/{{.Agent.AppRecordID}}", "/api/apps/{{.Agent.AppRecordID}}/installations"} {
+		t.Run("ok "+p, func(t *testing.T) {
+			requireNoErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
+				Request: &Request{Method: "GET", Path: p}}), nil))
+		})
+	}
+	for _, tc := range []struct{ method, path string }{
+		{"POST", "/api/apps"}, {"PUT", "/api/apps/x"}, {"DELETE", "/api/apps/x"},
+		{"GET", "/api/appsfoo"}, {"GET", "/api/apps?x=1"}, {"GET", "/api/apps/../tokens/x"},
+		{"GET", "/api/apps/not-a-uuid"}, {"GET", "/api/apps/{{.Agent.AppRecordID}}/installations/1/repositories"},
+	} {
+		t.Run("bad "+tc.method+" "+tc.path, func(t *testing.T) {
+			requireErr(t, Validate(withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api",
+				Request: &Request{Method: tc.method, Path: tc.path}}), nil), "T")
+		})
+	}
+}
+
+func TestValidate_TokenAPIAgentBody(t *testing.T) {
+	body := func(app, inst any) map[string]any {
+		m := map[string]any{"type": "agent", "duration": "1h"}
+		if app != nil {
+			m["app_record_id"] = app
+		}
+		if inst != nil {
+			m["installation_id"] = inst
+		}
+		return m
+	}
+	mk := func(b map[string]any, req ...string) *Tree {
+		return withScenarios(&Scenario{ID: "T", Claim: "C1", Kind: "token_api", Requires: req,
+			Request: &Request{Method: "POST", Path: "/api/tokens", Body: b}})
+	}
+	requireNoErr(t, Validate(mk(body("{{.Agent.AppRecordID}}", "$int:InstallationID"), "agent_installation"), nil))
+	requireErr(t, Validate(mk(body(nil, "$int:InstallationID"), "agent_installation"), nil), "T", "app_record_id")
+	requireErr(t, Validate(mk(body("00000000-0000-4000-8000-0000000000a6", "$int:InstallationID"), "agent_installation"), nil), "T", "app_record_id")
+	requireErr(t, Validate(mk(body("{{.Agent.AppRecordID}}", nil), "agent_installation"), nil), "T", "installation_id")
+	requireErr(t, Validate(mk(body("{{.Agent.AppRecordID}}", "$int:InstallationID")), nil), "T", "requires: [agent_installation]")
 }

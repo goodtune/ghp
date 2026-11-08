@@ -1,0 +1,255 @@
+# Agent (gha_) token scenarios (#306). Every scenario requires the
+# agent_installation capability: instance.agent_installation is set in
+# rig/config.yaml and the app exists on the instance. The installation must
+# cover A, B and W.
+#
+# #294 / #358: GHP sends an agent token's repositories to GitHub's
+# installation access_tokens API. Before #358 it sent "owner/repo", which
+# GitHub rejects with 422 ("There is at least one repository that does not
+# exist or is not accessible to the parent installation"; observed on 0.26.0,
+# run batch4b). #358 sends bare names after checking the owner is the
+# installation account. Scenarios marked known_issue #294 expect the
+# post-#358 behaviour: KNOWN before it is deployed, KNOWN-FIXED after.
+
+# AGENT-C49: the proxy enforces an agent token's repository allowlist.
+- id: AGENT-C49.open-reads-a
+  claim: AGENT-C49
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  description: An agent token with no repository list reads A through the installation.
+  profile: agent-open
+  kind: rest
+  requires: [agent_installation]
+  method: GET
+  path: /repos/{{.RepoA}}
+  expect: {status: 200, ghp_denial: false, json: {"$.full_name": "{{.RepoA}}"}}
+
+- id: AGENT-C49.repo-a-denies-b
+  claim: AGENT-C49
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  description: >-
+    #294 probe (a), second half. An agent token scoped to A is denied B by
+    GHP's own allowlist, before any installation token is minted.
+  profile: agent-repo-A
+  kind: rest
+  requires: [agent_installation]
+  method: GET
+  path: /repos/{{.RepoB}}
+  expect: {status: 403, body_contains: ["Token is not scoped to"], ghp_denial: true}
+
+# #294 probe (b). GitHub-side narrowing needs the raw installation token,
+# which never leaves GHP, so the rig cannot test it. This scenario shows
+# only that GHP denies W to a token scoped to A although the installation
+# covers W. It does not prove the installation token is narrowed.
+- id: AGENT-C49.repo-a-denies-w
+  claim: AGENT-C49
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  description: >-
+    An agent token scoped to A cannot read W, which the installation covers.
+    GHP denies first, so this proves the GHP layer only, not GitHub-side
+    narrowing of the installation token.
+  profile: agent-repo-A
+  kind: rest
+  requires: [agent_installation]
+  method: GET
+  path: /repos/{{.RepoW}}
+  expect: {status: 403, body_contains: ["Token is not scoped to"], ghp_denial: true}
+
+- id: AGENT-C49.repo-w-reads-w
+  claim: AGENT-C49
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  description: An agent token scoped to W reads W (needs the bare-name mint from #358).
+  profile: agent-repo-W
+  kind: rest
+  requires: [agent_installation]
+  method: GET
+  path: /repos/{{.RepoW}}
+  known_issue: https://github.com/goodtune/ghp/issues/294
+  observed: {status: 422, body_contains: ["not accessible to the parent installation"]}
+  expect: {status: 200, ghp_denial: false, json: {"$.full_name": "{{.RepoW}}"}}
+
+- id: AGENT-C49.repo-w-denies-a
+  claim: AGENT-C49
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  description: An agent token scoped to W is denied A by GHP.
+  profile: agent-repo-W
+  kind: rest
+  requires: [agent_installation]
+  method: GET
+  path: /repos/{{.RepoA}}
+  expect: {status: 403, body_contains: ["Token is not scoped to"], ghp_denial: true}
+
+# AGENT-C49: the proxy enforces an agent token's permission levels.
+- id: AGENT-C49.perm-ro-reads-issues
+  claim: AGENT-C49
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  description: An agent token with issues:read lists A's issues.
+  profile: agent-perm-ro
+  kind: rest
+  requires: [agent_installation]
+  method: GET
+  path: /repos/{{.RepoA}}/issues
+  expect: {status: 200, ghp_denial: false}
+
+- id: AGENT-C49.perm-ro-blocks-issue-create
+  claim: AGENT-C49
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  description: An agent token with issues:read cannot create an issue on W; GHP denies before GitHub.
+  profile: agent-perm-ro
+  kind: rest
+  requires: [agent_installation, repo_w_push]
+  # No cleanup: GHP must deny this write before it reaches GitHub, so nothing
+  # is created. If GHP wrongly forwards it the scenario FAILs and the
+  # run-named issue left on W is the residue to close by hand.
+  method: POST
+  path: /repos/{{.RepoW}}/issues
+  body: {title: "scoperig {{.RunID}} agent perm-ro"}
+  expect: {status: 403, body_contains: ["Token does not have permission", "issues:write"], ghp_denial: true}
+
+- id: AGENT-C49.perm-ro-blocks-put
+  claim: AGENT-C49
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  description: An agent token with contents:read cannot create a file on W; GHP denies before GitHub.
+  profile: agent-perm-ro
+  kind: rest
+  requires: [agent_installation, repo_w_push]
+  # No cleanup: denied before GitHub (see above).
+  method: PUT
+  path: /repos/{{.RepoW}}/contents/scoperig-{{.RunID}}-agent.txt
+  body: {message: "scoperig {{.RunID}} agent", content: "c2NvcGVyaWcK"}
+  expect: {status: 403, body_contains: ["Token does not have permission", "contents:write"], ghp_denial: true}
+
+# GAP-A6: an agent token for an owner/repo repository mints at GitHub. The
+# creation (GAP-A6.agent-mint in gaps.yaml) does not call GitHub on 0.26.0;
+# the installation token is minted on the first proxied request. This is
+# #294 probe (a), first half: a 200 from A proves GitHub accepted the mint
+# body.
+- id: GAP-A6.repo-a-reads-a
+  claim: GAP-A6
+  doc: docs/admin/github-app.md#agent-tokens-gha_
+  description: >-
+    An agent token scoped to A reads A, so GitHub accepted the repositories
+    GHP sent to the access_tokens API (bare names after #358).
+  profile: agent-repo-A
+  kind: rest
+  requires: [agent_installation]
+  method: GET
+  path: /repos/{{.RepoA}}
+  known_issue: https://github.com/goodtune/ghp/issues/294
+  observed: {status: 422, body_contains: ["not accessible to the parent installation"]}
+  expect: {status: 200, ghp_denial: false, json: {"$.full_name": "{{.RepoA}}"}}
+
+# TOK-C02: only admins create agent tokens.
+- id: TOK-C02.admin-mints-agent
+  claim: TOK-C02
+  doc: docs/features/token-scoping.md#agent-tokens-gha_
+  description: The admin session creates an agent token for the configured app. The manager revokes it.
+  kind: token_api
+  requires: [agent_installation]
+  request:
+    method: POST
+    path: /api/tokens
+    body:
+      type: agent
+      app_record_id: "{{.Agent.AppRecordID}}"
+      installation_id: "$int:InstallationID"
+      duration: 1h
+  expect: {status: 201, json: {"$.type": "agent"}}
+
+# non_admin_session is never set: the rig has only the operator's admin
+# session (GHP_USER_TOKEN), and token_api requests always use it. This
+# scenario documents the expectation and reports GAP until the rig can
+# hold a second, non-admin session.
+- id: TOK-C02.non-admin-refused
+  claim: TOK-C02
+  doc: docs/features/token-scoping.md#agent-tokens-gha_
+  description: A non-admin session is refused an agent token (403). Needs a non-admin session; reports GAP.
+  kind: token_api
+  requires: [agent_installation, non_admin_session]
+  request:
+    method: POST
+    path: /api/tokens
+    body:
+      type: agent
+      app_record_id: "{{.Agent.AppRecordID}}"
+      installation_id: "$int:InstallationID"
+      duration: 1h
+  expect: {status: 403, body_contains: ["Admin role required for agent tokens"]}
+
+# TOK-C03 / TOK-C04: ghp token create resolves --app by name through
+# GET /api/apps and --installation by account login through
+# GET /api/apps/{id}/installations, and omits --app when there is one app
+# or a default app. The resolution runs in the CLI; these scenarios check
+# the server data it resolves against, not the CLI binary.
+- id: TOK-C03.app-name-listed
+  claim: TOK-C03
+  doc: docs/getting-started.md#cli
+  description: GET /api/apps lists the configured app's record id with its name, which --app matches.
+  kind: token_api
+  requires: [agent_installation]
+  steps:
+    - name: app
+      method: GET
+      path: /api/apps/{{.Agent.AppRecordID}}
+      expect: {status: 200, json: {"$.id": "{{.Agent.AppRecordID}}"}}
+      capture: {name: "$.name"}
+    - name: list
+      method: GET
+      path: /api/apps
+      expect: {status: 200, body_contains: ['"id":"{{.Agent.AppRecordID}}","name":"{{.Step.app.name}}"']}
+
+- id: TOK-C03.installation-login-listed
+  claim: TOK-C03
+  doc: docs/getting-started.md#cli
+  description: GET /api/apps/{id}/installations lists the installation id with the fixture owner's login, which --installation matches.
+  kind: token_api
+  requires: [agent_installation]
+  request:
+    method: GET
+    path: /api/apps/{{.Agent.AppRecordID}}/installations
+  expect: {status: 200, body_contains: ['{"id":{{.Agent.InstallationID}},"account":{"login":"{{.RepoA.Owner}}"']}
+
+# The server-side omission (DefaultOrOnlyID pins a token created without
+# app_record_id to the default app) is not exercised: it would mint against
+# the instance's default app, which the rig must not use. This checks only
+# that the app list marks a default for the CLI to pick. It requires
+# default_app (exactly one app marked default), so an instance with no
+# default app reports GAP.
+- id: TOK-C04.default-app-marked
+  claim: TOK-C04
+  doc: docs/getting-started.md#cli
+  description: GET /api/apps marks a default app, which the CLI uses when --app is omitted.
+  kind: token_api
+  requires: [agent_installation, default_app]
+  request: {method: GET, path: /api/apps}
+  expect: {status: 200, body_contains: ['"is_default":true']}
+
+# REPO-C08: a proxy token takes one repository (--repo, API field
+# "repository"); an agent token takes a list (--repos, "repositories").
+# The manager revokes both tokens.
+- id: REPO-C08.proxy-single-repository
+  claim: REPO-C08
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: A proxy token created with the single "repository" field is restricted to that repository.
+  kind: token_api
+  request:
+    method: POST
+    path: /api/tokens
+    body: {type: proxy, repository: "{{.RepoA}}", duration: 1h}
+  expect: {status: 201, json: {"$.type": "proxy", "$.repositories": '["{{.RepoA}}"]'}}
+
+- id: REPO-C08.agent-repository-list
+  claim: REPO-C08
+  doc: docs/features/token-scoping.md#repository-restrictions
+  description: An agent token created with a "repositories" list keeps every entry.
+  kind: token_api
+  requires: [agent_installation]
+  request:
+    method: POST
+    path: /api/tokens
+    body:
+      type: agent
+      app_record_id: "{{.Agent.AppRecordID}}"
+      installation_id: "$int:InstallationID"
+      repositories: ["{{.RepoA}}", "{{.RepoW}}"]
+      duration: 1h
+  expect: {status: 201, json: {"$.type": "agent", "$.repositories": '["{{.RepoA}}","{{.RepoW}}"]'}}
