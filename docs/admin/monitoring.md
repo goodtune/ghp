@@ -244,6 +244,7 @@ See [Git Cache](../features/git-cache.md) for configuration details.
 |--------|------|-------------|
 | `ghp_github_ratelimit_remaining` | Gauge | Remaining GitHub API rate limit, per user |
 | `ghp_github_ratelimit_limit` | Gauge | GitHub API rate limit ceiling, per user |
+| `ghp_agent_repo_narrowing_failed_total` | Counter | Installation token mints refused because the repositories could not be narrowed to bare names of the installation account (label: `reason` = `owner_mismatch`, `malformed`, `lookup_failed`, `empty_login`). No request is sent to GitHub. |
 | `ghp_github_token_refresh_total` | Counter | OAuth token refresh attempts per user (labels: `user`, `status`; `status` is `success` or `failure`) |
 
 #### Security Metrics

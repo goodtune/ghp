@@ -62,6 +62,17 @@ installation and reject:
 Proxy-side `owner/repo` allowlist enforcement is unchanged. GitHub-side
 narrowing is defence in depth.
 
+### Enterprise identity substitution
+
+Identity substitution with a repository target mints through the same path,
+so it now also performs the installation account lookup (cached 1h). A failed
+lookup is an identity error and the restriction header is kept (fail closed).
+Legacy stored bare entries are still accepted at mint time (they can only
+narrow); the API rejects new bare entries.
+
+Refused mints are counted by `ghp_agent_repo_narrowing_failed_total{reason}`
+(`owner_mismatch`, `malformed`, `lookup_failed`, `empty_login`).
+
 ## Tests
 
 - `internal/github`: httptest fake GitHub records the exact `access_tokens`

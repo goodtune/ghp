@@ -134,6 +134,7 @@ Never record a hard-coded zero duration. If a stage does not run on a code path,
 - `ghp_token_scope_rejected_total` — token scope entries rejected at creation/update by `reason` (`unknown_permission`, `invalid_level`)
 - `ghp_github_ratelimit_remaining` / `ghp_github_ratelimit_limit` — GitHub rate limit gauges
 - `ghp_github_token_refresh_total` — OAuth token refresh attempts
+- `ghp_agent_repo_narrowing_failed_total` — installation token mints refused because agent-token repositories could not be narrowed to the installation account, by `reason` (`owner_mismatch`, `malformed`, `lookup_failed`, `empty_login`)
 - `ghp_auth_rate_limit_total` — rate limiter rejections
 - `ghp_scope_unmapped_denied_total` — scoped-token REST requests denied because no scope rule matched (`token_type`, `method`)
 - `ghp_enterprise_exception_total` — enterprise restriction exception matches by outcome (`header_omitted`, `identity_substituted`, `team_denied`, `unauthenticated_denied`, `identity_error`)

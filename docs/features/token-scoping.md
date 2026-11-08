@@ -53,7 +53,16 @@ the installation token itself can reach only those repositories. This is
 defence in depth: ghp still enforces the `owner/repo` allowlist on every
 request. If the owner check fails at mint time (for example, after the
 installation moves to another account), ghp does not mint a token and the
-request fails.
+request fails. The `ghp_agent_repo_narrowing_failed_total` metric counts these
+refusals.
+
+A bare repository name (no owner) already stored on an older agent token is
+still accepted at mint time and sent unchanged, because it can only narrow the
+installation token. The API rejects new bare entries.
+
+Enterprise exception identity substitution with a repository target uses the
+same mint path, so it also reads the installation account (cached for one
+hour). If that lookup fails, ghp keeps the restriction header (fail closed).
 
 ## Repository Restrictions
 

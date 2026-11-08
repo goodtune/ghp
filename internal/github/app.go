@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/crypto"
+	"github.com/goodtune/ghp/internal/metrics"
 	ghppermissions "github.com/goodtune/ghp/internal/permissions"
 	ghub "github.com/google/go-github/v93/github"
 	"github.com/hashicorp/golang-lru/v2/expirable"
@@ -211,10 +213,21 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 	if len(repos) > 0 {
 		account, err := p.installationAccountLogin(ctx, signed, installationID)
 		if err != nil {
+			reason := "lookup_failed"
+			if errors.Is(err, errEmptyAccountLogin) {
+				reason = "empty_login"
+			}
+			metrics.AgentRepoNarrowingFailedTotal.WithLabelValues(reason).Inc()
 			return "", err
 		}
 		names, err := NarrowRepositoriesForAccount(account, repos, false)
 		if err != nil {
+			reason := "malformed"
+			var mm *RepositoryOwnerMismatchError
+			if errors.As(err, &mm) {
+				reason = "owner_mismatch"
+			}
+			metrics.AgentRepoNarrowingFailedTotal.WithLabelValues(reason).Inc()
 			return "", err
 		}
 		body["repositories"] = names
@@ -286,6 +299,9 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 
 	return result.Token, nil
 }
+
+// errEmptyAccountLogin reports an installation record with no account login.
+var errEmptyAccountLogin = errors.New("installation has no account login")
 
 // RepositoryOwnerMismatchError reports a repository restriction whose owner
 // is not the account the GitHub App installation belongs to. GitHub cannot
@@ -383,7 +399,7 @@ func (p *AppTokenProvider) installationAccountLogin(ctx context.Context, jwtToke
 		return "", fmt.Errorf("decoding installation account: %w", err)
 	}
 	if result.Account.Login == "" {
-		return "", fmt.Errorf("installation %d has no account login", installationID)
+		return "", fmt.Errorf("installation %d: %w", installationID, errEmptyAccountLogin)
 	}
 	p.accountLoginCache.Add(installationID, result.Account.Login)
 	return result.Account.Login, nil

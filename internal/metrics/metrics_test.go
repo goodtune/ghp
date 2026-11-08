@@ -270,6 +270,19 @@ func TestEnterpriseExceptionTotal(t *testing.T) {
 	}
 }
 
+func TestAgentRepoNarrowingFailedTotal(t *testing.T) {
+	for _, reason := range []string{"owner_mismatch", "malformed", "lookup_failed", "empty_login"} {
+		t.Run(reason, func(t *testing.T) {
+			labels := prometheus.Labels{"reason": reason}
+			before := getCounterValue(t, AgentRepoNarrowingFailedTotal, labels)
+			AgentRepoNarrowingFailedTotal.WithLabelValues(reason).Inc()
+			if after := getCounterValue(t, AgentRepoNarrowingFailedTotal, labels); after-before != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", after-before)
+			}
+		})
+	}
+}
+
 func TestCodeloadRedirectTotal(t *testing.T) {
 	tests := []struct {
 		name    string
