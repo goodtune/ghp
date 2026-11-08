@@ -24,7 +24,8 @@ var ErrPreflight = errors.New("preflight failed")
 
 // Capabilities records what the instance and fixtures allow. Missing entries
 // are not errors: they feed scenario `requires:` and become coverage gaps.
-// Keys: repo_w_push, repo_create, github_vhost, agent_installation.
+// Keys: repo_w_push, repo_create, github_vhost, codeload_vhost,
+// agent_installation, border_block_*.
 type Capabilities map[string]bool
 
 var versionRe = regexp.MustCompile(`(?i)version\W{0,10}(v?\d+\.\d+[0-9A-Za-z.\-+]*)`)
@@ -79,7 +80,7 @@ func ProbeCapabilities(ctx context.Context, c *Config, hc *http.Client, open tok
 		return nil, fmt.Errorf("%w: instance.host not set in config", ErrPreflight)
 	}
 	api := "https://" + c.Instance.Host + "/api/v3"
-	caps := Capabilities{"repo_w_push": false, "repo_create": false, "github_vhost": false, "agent_installation": false}
+	caps := Capabilities{"repo_w_push": false, "repo_create": false, "github_vhost": false, "codeload_vhost": false, "agent_installation": false}
 
 	status, body, _, err := get(ctx, hc, api+"/user", open.Authorize)
 	if err != nil {
@@ -120,7 +121,8 @@ func ProbeCapabilities(ctx context.Context, c *Config, hc *http.Client, open tok
 		caps[k] = v
 	}
 
-	caps["github_vhost"] = probeVHost(ctx, c.Instance.Host, rootCAs(hc), exec.UserAgentOf(hc))
+	caps["github_vhost"] = probeVHost(ctx, c.Instance.Host, rootCAs(hc), exec.UserAgentOf(hc), "github.com")
+	caps["codeload_vhost"] = probeVHost(ctx, c.Instance.Host, rootCAs(hc), exec.UserAgentOf(hc), "codeload.github.com")
 
 	if c.InstallationID > 0 && c.ServerURL != "" {
 		if st, _, _, err := get(ctx, hc, c.ServerURL+"/api/tokens?all=true", c.session); err == nil && st == http.StatusOK {
@@ -152,16 +154,16 @@ func borderCapabilities(block []string) Capabilities {
 	return caps
 }
 
-// probeVHost dials host (port 443 unless given) with SNI github.com, verifying
+// probeVHost dials host (port 443 unless given) with SNI serverName, verifying
 // against pool, then sends GET /. Any HTTP response means the instance serves
-// the github.com virtual host.
-func probeVHost(ctx context.Context, host string, pool *x509.CertPool, ua string) bool {
+// that virtual host (github.com or codeload.github.com).
+func probeVHost(ctx context.Context, host string, pool *x509.CertPool, ua, serverName string) bool {
 	addr := host
 	if _, _, err := net.SplitHostPort(host); err != nil {
 		addr = net.JoinHostPort(host, "443")
 	}
 	cfg := newTLSConfig(pool)
-	cfg.ServerName = "github.com"
+	cfg.ServerName = serverName
 	d := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 10 * time.Second}, Config: cfg}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -172,7 +174,7 @@ func probeVHost(ctx context.Context, host string, pool *x509.CertPool, ua string
 	defer func() { _ = conn.Close() }()
 	tr := &http.Transport{DialTLSContext: func(context.Context, string, string) (net.Conn, error) { return conn, nil }}
 	defer tr.CloseIdleConnections()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://github.com/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+serverName+"/", nil)
 	if err != nil {
 		return false
 	}

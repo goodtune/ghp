@@ -43,13 +43,17 @@ type Expect struct {
 	BodyContains    []string          `yaml:"body_contains"`
 	BodyNotContains []string          `yaml:"body_not_contains"`
 	Header          map[string]string `yaml:"header"`
-	JSON            map[string]string `yaml:"json"`
-	GHPDenial       *bool             `yaml:"ghp_denial"`
-	ExitCode        *int              `yaml:"exit_code"`
-	ExitCodeIn      []int             `yaml:"exit_code_in"`
-	StdoutContains  []string          `yaml:"stdout_contains"`
-	StderrContains  []string          `yaml:"stderr_contains"`
-	ExpiresWithin   *ExpiresWithin    `yaml:"expires_within"`
+	// HeaderNotContains holds substrings that must not appear in any
+	// response header line ("Name: value", redacted). A token in a header
+	// shows as "<prefix>[REDACTED]", so "_[REDACTED]" finds one.
+	HeaderNotContains []string          `yaml:"header_not_contains"`
+	JSON              map[string]string `yaml:"json"`
+	GHPDenial         *bool             `yaml:"ghp_denial"`
+	ExitCode          *int              `yaml:"exit_code"`
+	ExitCodeIn        []int             `yaml:"exit_code_in"`
+	StdoutContains    []string          `yaml:"stdout_contains"`
+	StderrContains    []string          `yaml:"stderr_contains"`
+	ExpiresWithin     *ExpiresWithin    `yaml:"expires_within"`
 }
 
 // ExpiresWithin asserts that a JSON timestamp field (RFC 3339) falls inside
@@ -84,19 +88,26 @@ type Scenario struct {
 	Cleanup     []Request `yaml:"cleanup"`
 	Expect      *Expect   `yaml:"expect"`
 	// kind-specific
-	Steps     []Request         `yaml:"steps"`  // rest (single request = one step)
-	Method    string            `yaml:"method"` // rest shorthand
-	Path      string            `yaml:"path"`
-	Vhost     string            `yaml:"vhost"` // rest shorthand; see Request.Vhost
-	Headers   map[string]string `yaml:"headers"`
-	Body      any               `yaml:"body"`
-	Query     string            `yaml:"query"` // graphql
-	Variables map[string]any    `yaml:"variables"`
-	Args      []string          `yaml:"args"`    // gh
-	Repo      string            `yaml:"repo"`    // gh: A | B | W
-	Request   *Request          `yaml:"request"` // token_api
-	Poll      *Poll             `yaml:"poll"`    // LIFE-C40
-	File      string            `yaml:"-"`       // source file for error messages
+	Steps   []Request         `yaml:"steps"`  // rest (single request = one step)
+	Method  string            `yaml:"method"` // rest shorthand
+	Path    string            `yaml:"path"`
+	Vhost   string            `yaml:"vhost"` // rest shorthand; see Request.Vhost
+	Headers map[string]string `yaml:"headers"`
+	Body    any               `yaml:"body"`
+	Query   string            `yaml:"query"` // graphql
+	// OperationName is sent as the GraphQL operationName (graphql only).
+	OperationName string         `yaml:"operation_name"`
+	Variables     map[string]any `yaml:"variables"`
+	Args          []string       `yaml:"args"`    // gh
+	Repo          string         `yaml:"repo"`    // gh: A | B | W
+	Request       *Request       `yaml:"request"` // token_api
+	Poll          *Poll          `yaml:"poll"`    // LIFE-C40
+	// Corpus and CorpusProfiles make a kind "corpus" generator: Load
+	// replaces it with one graphql scenario per corpus entry and profile
+	// (see expandCorpus). Corpus is a directory relative to the rig root.
+	Corpus         string            `yaml:"corpus"`
+	CorpusProfiles map[string]string `yaml:"corpus_profiles"`
+	File           string            `yaml:"-"` // source file for error messages
 	// shorthand is set by Normalise when Steps was built from the rest
 	// shorthand fields (method, path, vhost, ...).
 	shorthand bool

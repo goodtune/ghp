@@ -59,7 +59,10 @@ var adversarialProbes = []probe{
 	{"host/api-absolute-url", ghScenario("P-H10", "", "api", "https://evil.invalid/api/v3/user"), false, "absolute URLs are not allowed"},
 	{"host/placeholder-literal", ghScenario("P-H11", "", "repo", "view", PlaceholderHost+"/{{.RepoA}}"), false, "placeholder host"},
 	{"host/placeholder-literal-mixed-case", ghScenario("P-H12", "", "pr", "list", "-R", "Ghp.Example/{{.RepoA}}"), false, "placeholder host"},
-	{"host/vhost-other", &Scenario{ID: "P-H13", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "evil.invalid", Method: "GET", Path: "/x", Requires: []string{"github_vhost"}}, false, "must be github.com"},
+	{"host/vhost-other", &Scenario{ID: "P-H13", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "evil.invalid", Method: "GET", Path: "/x", Requires: []string{"github_vhost"}}, false, "must be github.com or codeload.github.com"},
+	{"host/vhost-codeload-wrong-capability", &Scenario{ID: "P-H15", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "codeload.github.com", Method: "GET", Path: "/x", Requires: []string{"github_vhost"}}, false, "requires: [codeload_vhost]"},
+	{"host/vhost-codeload-write", &Scenario{ID: "P-H16", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "codeload.github.com", Method: "POST", Path: "/repos/{{.RepoW}}/x", Requires: []string{"codeload_vhost"}}, false, "must be GET or HEAD"},
+	{"gql/operation-name-on-rest", &Scenario{ID: "P-G20", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/x", OperationName: "Op"}, false, "operation_name is only valid"},
 
 	// Path tricks.
 	{"path/dot-segment-write", restProbe("P-P1", "POST", "/repos/{{.RepoW}}/../../{{.RepoA}}/issues"), false, "dot segment"},

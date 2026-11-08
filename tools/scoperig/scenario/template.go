@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"text/template"
@@ -49,6 +50,8 @@ var funcs = template.FuncMap{
 		return d + e, nil
 	},
 	"upper": strings.ToUpper,
+	// base64 encodes s with standard padding, for Basic credentials.
+	"base64": func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) },
 }
 
 // Expand renders s as a text/template with v. Missing keys are errors.

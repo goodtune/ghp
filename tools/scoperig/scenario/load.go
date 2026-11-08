@@ -13,7 +13,8 @@ import (
 )
 
 // Load reads root/claims.yaml, root/profiles.yaml and root/scenarios/*.yaml.
-// Unknown fields and duplicate IDs or names are errors. Scenarios are
+// Unknown fields and duplicate IDs or names are errors. A kind "corpus"
+// entry is replaced by the graphql scenarios it generates (expandCorpus). Scenarios are
 // normalised and returned sorted by ID.
 func Load(root string) (*Tree, error) {
 	var claims []Claim
@@ -66,13 +67,23 @@ func Load(root string) (*Tree, error) {
 			if s.ID == "" {
 				return nil, fmt.Errorf("%s: entry %d has empty id", f, i)
 			}
-			if prev, dup := seen[s.ID]; dup {
-				return nil, fmt.Errorf("%s: duplicate scenario id %q (first in %s)", f, s.ID, prev)
-			}
-			seen[s.ID] = f
 			s.File = f
-			s.Normalise()
-			tree.Scenarios = append(tree.Scenarios, s)
+			gen := []*Scenario{s}
+			if s.Kind == "corpus" {
+				if gen, err = expandCorpus(root, s); err != nil {
+					return nil, err
+				}
+			} else if s.Corpus != "" || s.CorpusProfiles != nil {
+				return nil, fmt.Errorf("%s: scenario %q: corpus and corpus_profiles are only valid for kind corpus", f, s.ID)
+			}
+			for _, g := range gen {
+				if prev, dup := seen[g.ID]; dup {
+					return nil, fmt.Errorf("%s: duplicate scenario id %q (first in %s)", f, g.ID, prev)
+				}
+				seen[g.ID] = f
+				g.Normalise()
+				tree.Scenarios = append(tree.Scenarios, g)
+			}
 		}
 	}
 	sort.Slice(tree.Scenarios, func(i, j int) bool { return tree.Scenarios[i].ID < tree.Scenarios[j].ID })
