@@ -49,8 +49,8 @@ func TestRigTree(t *testing.T) {
 		t.Errorf("claim set mismatch: missing %v, extra %v", missing, extra)
 	}
 
-	if n := len(tree.Profiles); n != 12 {
-		t.Errorf("profiles: got %d, want 12", n)
+	if n := len(tree.Profiles); n != 13 {
+		t.Errorf("profiles: got %d, want 13", n)
 	}
 
 	testable := map[string]string{"C42": "never", "C53": "never", "C45": "manual", "C54": "manual"}
@@ -114,6 +114,8 @@ var task18Claims = map[string]int{
 	"OPEN-C20": 3, "OPEN-C21": 1,
 	"LIFE-C37": 2, "LIFE-C38": 1, "LIFE-C40": 1,
 	"BORDER-C43": 3, "BORDER-C44": 1, "MISC-C52": 1,
+	// batch 4
+	"PERM-C17": 1, "PERM-C19": 2, "REPO-C09": 2, "TOK-C01": 3, "LIFE-C41": 1, "BORDER-C47": 1,
 }
 
 // checkScenarioCoverage asserts that every iteration-1 claim that is not a
@@ -181,6 +183,11 @@ func contains(xs []string, x string) bool {
 var task19Claims = map[string]int{
 	"GQL-C24": 1, "GQL-C25": 2, "GQL-C26": 4, "GQL-C27": 1, "GQL-C28": 2,
 	"GQL-C29": 1, "GQL-C31": 2, "GQL-C32": 1, "GQL-C33": 1,
+	// batch 4. GAP-A9 counts generated scenarios: the gh 2.102.0 corpus has
+	// 19 queries, each replayed for three profiles (57 scenarios); 19 is a
+	// floor of one per query, not the exact generated total.
+	"GQL-C22": 2, "GQL-C23": 2, "GQL-C30": 1, "GQL-C34": 1, "GQL-C35": 3, "GQL-C36": 6,
+	"GAP-A4": 3, "GAP-A9": 19,
 }
 
 // task19Scenarios are scenario IDs that other code refers to by name
@@ -189,6 +196,7 @@ var task19Scenarios = []string{
 	"GQL-C28.mixed-literal-and-variable",
 	"GQL-C31.createissue-ro-denied",
 	"GQL-C31.createissue-rw-allowed",
+	"GQL-C30.unmapped-mutation-denied",
 	"GAP-A1.delete-ref-contents-ro",
 	"GAP-A2.repositories-by-id",
 	"GAP-A3.github-vhost-archive",

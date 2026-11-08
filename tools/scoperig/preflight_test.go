@@ -149,7 +149,7 @@ func TestProbeCapabilities(t *testing.T) {
 		wantErr bool
 	}{
 		{"full", probeOpts{push: true, scopes: "repo, read:org", tokensAll: 200}, "octo/w", 7,
-			Capabilities{"repo_w_push": true, "repo_create": true, "github_vhost": false, "agent_installation": true}, false},
+			Capabilities{"repo_w_push": true, "repo_create": true, "github_vhost": false, "codeload_vhost": false, "agent_installation": true}, false},
 		{"public_repo scope", probeOpts{push: true, scopes: "public_repo", tokensAll: 200}, "octo/w", 0,
 			Capabilities{"repo_w_push": true, "repo_create": true, "github_vhost": false, "agent_installation": false}, false},
 		{"no push no scopes", probeOpts{push: false, tokensAll: 200}, "octo/w", 7,
@@ -191,7 +191,7 @@ func TestProbeCapabilities(t *testing.T) {
 					t.Errorf("%s = %v, want %v", k, got[k], w)
 				}
 			}
-			if len(got) != 7 {
+			if len(got) != 8 {
 				t.Errorf("caps %v", got)
 			}
 		})
@@ -223,8 +223,21 @@ func TestProbeCapabilities(t *testing.T) {
 	t.Run("vhost dial fails", func(t *testing.T) {
 		srv := probeServer(t, probeOpts{tokensAll: 200})
 		srv.Close()
-		if probeVHost(context.Background(), "127.0.0.1:1", nil, "") {
+		if probeVHost(context.Background(), "127.0.0.1:1", nil, "", "github.com") {
 			t.Fatal("want false")
+		}
+	})
+	t.Run("vhost server name", func(t *testing.T) {
+		srv := probeServer(t, probeOpts{tokensAll: 200})
+		defer srv.Close()
+		host := strings.TrimPrefix(srv.URL, "https://")
+		pool := rootCAs(srv.Client())
+		// httptest's certificate is valid for example.com only.
+		if !probeVHost(context.Background(), host, pool, "", "example.com") {
+			t.Error("example.com: want true")
+		}
+		if probeVHost(context.Background(), host, pool, "", "codeload.github.com") {
+			t.Error("codeload.github.com: want false (certificate does not cover it)")
 		}
 	})
 }

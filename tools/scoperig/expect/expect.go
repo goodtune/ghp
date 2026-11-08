@@ -115,6 +115,17 @@ func Match(e *scenario.Expect, o *Observation) []error {
 			add("header %s: want %q, got %q", k, e.Header[k], got)
 		}
 	}
+	if len(e.HeaderNotContains) > 0 {
+		lines := headerLines(o.Header, e.HeaderNotContainsExcept)
+		for _, s := range e.HeaderNotContains {
+			for _, l := range lines {
+				if strings.Contains(l, s) {
+					add("headers: want not contains %q, got %q", s, l)
+					break
+				}
+			}
+		}
+	}
 	for _, k := range sortedKeys(e.JSON) {
 		got, err := JSONPath(o.Body, k)
 		if err != nil {
@@ -339,4 +350,27 @@ func IsGHPDenial(body []byte) bool {
 // 403 status carrying a GHP denial message.
 func IsGHPDenialResponse(status int, body []byte) bool {
 	return (status == 401 || status == 403) && IsGHPDenial(body)
+}
+
+// headerLines returns "Name: value" for every value of h, sorted by name,
+// leaving out the headers named in except (case-insensitive).
+func headerLines(h http.Header, except []string) []string {
+	skip := make(map[string]bool, len(except))
+	for _, x := range except {
+		skip[http.CanonicalHeaderKey(x)] = true
+	}
+	names := make([]string, 0, len(h))
+	for k := range h {
+		if !skip[http.CanonicalHeaderKey(k)] {
+			names = append(names, k)
+		}
+	}
+	sort.Strings(names)
+	var out []string
+	for _, k := range names {
+		for _, v := range h[k] {
+			out = append(out, k+": "+v)
+		}
+	}
+	return out
 }

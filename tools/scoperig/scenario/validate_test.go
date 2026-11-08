@@ -524,12 +524,19 @@ func TestValidate_Vhost(t *testing.T) {
 	ok := &Scenario{ID: "V1", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "github.com",
 		Requires: []string{"github_vhost"}, Method: "GET", Path: "/{{.RepoB}}/archive/HEAD.tar.gz"}
 	requireNoErr(t, Validate(withScenarios(ok), nil))
+	cl := &Scenario{ID: "V1c", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "codeload.github.com",
+		Requires: []string{"codeload_vhost"}, Method: "GET", Path: "/{{.RepoA}}/tar.gz/main"}
+	requireNoErr(t, Validate(withScenarios(cl), nil))
 
 	cases := []struct {
 		name string
 		s    *Scenario
 		want string
 	}{
+		{"codeload needs its own capability", &Scenario{ID: "V8", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "codeload.github.com",
+			Requires: []string{"github_vhost"}, Path: "/x"}, "codeload_vhost"},
+		{"github.com does not accept codeload capability", &Scenario{ID: "V9", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "github.com",
+			Requires: []string{"codeload_vhost"}, Path: "/x"}, "github_vhost"},
 		{"other host", &Scenario{ID: "V2", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "evil.example",
 			Requires: []string{"github_vhost"}, Path: "/x"}, "vhost"},
 		{"no capability", &Scenario{ID: "V3", Claim: "C1", Profile: "p", Kind: "rest", Vhost: "github.com",

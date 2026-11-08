@@ -88,3 +88,25 @@
   method: GET
   path: /repos/{{upper .RepoA.Owner}}/{{upper .RepoA.Name}}
   expect: {status: 200}
+
+# REPO-C09: the request flow checks the target repository for every
+# repository path, not only the repository itself.
+- id: REPO-C09.other-repo-issue
+  claim: REPO-C09
+  doc: docs/how-it-works.md#request-flow
+  description: A token scoped to A cannot read an issue on B.
+  profile: repo-A
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoB}}/issues/{{.Fixture.B.IssueNumber}}
+  expect: {status: 403, body_contains: ["Token is not scoped to"], ghp_denial: true}
+
+- id: REPO-C09.other-repo-contents
+  claim: REPO-C09
+  doc: docs/how-it-works.md#request-flow
+  description: A token scoped to A cannot read B's README.
+  profile: repo-A
+  kind: rest
+  method: GET
+  path: /repos/{{.RepoB}}/readme
+  expect: {status: 403, body_contains: ["Token is not scoped to"], ghp_denial: true}

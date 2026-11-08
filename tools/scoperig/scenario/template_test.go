@@ -30,6 +30,7 @@ func TestExpand(t *testing.T) {
 		{"fixture", "{{.Fixture.A.PRNumber}}", "7", false},
 		{"add", `{{add .Instance.MaxDuration "1h"}}`, "169h0m0s", false},
 		{"upper", `{{upper .RepoA.Name}}`, "A", false},
+		{"base64", `{{base64 "x:y"}}`, "eDp5", false},
 		{"step", "{{.Step.create.number}}", "42", false},
 		{"plain", "/user", "/user", false},
 		{"unknown field", "{{.Nope}}", "", true},

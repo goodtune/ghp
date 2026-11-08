@@ -56,3 +56,17 @@
   kind: token_api
   request: {method: POST, path: /api/tokens, body: {type: proxy, scopes: "pulls:write", session_id: "scoperig-{{.RunID}}"}}
   expect: {status: 400, body_contains: ["pull_requests"]}
+
+# LIFE-C41: lifecycle-expire is minted at run start with the shortest useful
+# duration (1m; the API has no minimum). The probe polls until the token is
+# rejected as expired; the timeout covers the 1m lifetime, the 30 s
+# resolution cache and clock skew when the scenario runs first.
+- id: LIFE-C41.expired-rejected
+  claim: LIFE-C41
+  doc: docs/features/token-scoping.md#expiration-and-revocation
+  description: A token is rejected with 401 "token has expired" once its duration passes.
+  profile: lifecycle-expire
+  kind: token_api
+  steps:
+    - {name: probe, method: GET, path: /api/v3/user, expect: {status: 401, body_contains: ["token has expired"], ghp_denial: true}}
+  poll: {interval: 5s, timeout: 150s}

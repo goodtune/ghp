@@ -46,3 +46,17 @@
   method: GET
   path: /user
   expect: {status: 200, ghp_denial: false}
+
+# BORDER-C47: git and some clients send the token as the Basic password. The
+# token is fake (as in BORDER-C43). GAP unless the instance blocks ghp_.
+- id: BORDER-C47.basic-ghp-blocked
+  claim: BORDER-C47
+  doc: docs/features/border-policy.md#how-it-works
+  description: Basic auth with a classic PAT (ghp_) as the password is blocked with 403 before reaching GitHub.
+  profile: open
+  requires: [border_block_ghp]
+  kind: rest
+  method: GET
+  path: /user
+  headers: {Authorization: "Basic {{base64 (print \"x-access-token:ghp_\" (printf \"%.36s\" (print .RunID \"scoperigfakescoperigfakescoperigfake\")))}}"}
+  expect: {status: 403, body_contains: ["Token type is not permitted by the border policy"], ghp_denial: true}

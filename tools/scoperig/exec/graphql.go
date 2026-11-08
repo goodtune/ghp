@@ -23,6 +23,9 @@ func (graphqlExecutor) Run(ctx context.Context, s *scenario.Scenario, tok tokens
 			return nil, err
 		}
 		payload := map[string]any{"query": q}
+		if s.OperationName != "" {
+			payload["operationName"] = s.OperationName
+		}
 		if s.Variables != nil {
 			v, err := prepareBody(map[string]any(s.Variables), env)
 			if err != nil {

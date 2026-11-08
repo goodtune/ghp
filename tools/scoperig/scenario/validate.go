@@ -12,7 +12,7 @@ import (
 
 var (
 	validKinds        = map[string]bool{"rest": true, "graphql": true, "gh": true, "token_api": true}
-	validCapabilities = map[string]bool{"repo_w_push": true, "repo_create": true, "github_vhost": true, "agent_installation": true,
+	validCapabilities = map[string]bool{"repo_w_push": true, "repo_create": true, "github_vhost": true, "codeload_vhost": true, "agent_installation": true,
 		"border_block_ghp": true, "border_block_gho": true, "border_block_github_pat": true}
 	knownIssueRE = regexp.MustCompile(`^https://github\.com/goodtune/ghp/issues/\d+$`)
 )
@@ -22,8 +22,9 @@ var (
 // the repository allowlist.
 const gapA7ProbeID = "GAP-A7.dotdot-path"
 
-// validVhosts are the virtual hosts a rest request may target.
-var validVhosts = map[string]bool{"github.com": true}
+// validVhosts maps each virtual host a rest request may target to the
+// capability the scenario must require for it.
+var validVhosts = map[string]string{"github.com": "github_vhost", "codeload.github.com": "codeload_vhost"}
 
 // maxProfileDuration bounds every profile so leaked tokens expire quickly.
 const maxProfileDuration = 2 * time.Hour
@@ -161,6 +162,9 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			}
 		}
 	}
+	if s.OperationName != "" && (s.Kind != "graphql" || len(s.Steps) > 0) {
+		add("operation_name is only valid for a kind graphql scenario with a query (not steps)")
+	}
 	if s.Kind == "graphql" && strings.TrimSpace(s.Query) == "" && len(s.Steps) == 0 {
 		add("graphql scenario needs a query or steps")
 	}
@@ -176,7 +180,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	// Rule 3: capabilities.
 	for _, r := range s.Requires {
 		if !validCapabilities[r] {
-			add("requires %q is not one of repo_w_push, repo_create, github_vhost, agent_installation, border_block_ghp, border_block_gho, border_block_github_pat", r)
+			add("requires %q is not one of repo_w_push, repo_create, github_vhost, codeload_vhost, agent_installation, border_block_ghp, border_block_gho, border_block_github_pat", r)
 		}
 	}
 
@@ -214,12 +218,12 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			switch {
 			case s.Kind != "rest":
 				add("%s: vhost is only valid for kind rest", where)
-			case !validVhosts[r.Vhost]:
-				add("%s: vhost %q must be github.com", where, r.Vhost)
+			case validVhosts[r.Vhost] == "":
+				add("%s: vhost %q must be github.com or codeload.github.com", where, r.Vhost)
 			case method != "GET" && method != "HEAD":
 				add("%s: vhost requests must be GET or HEAD, not %s", where, method)
-			case !hasString(s.Requires, "github_vhost"):
-				add("%s: vhost requests need requires: [github_vhost]", where)
+			case !hasString(s.Requires, validVhosts[r.Vhost]):
+				add("%s: vhost %s requests need requires: [%s]", where, r.Vhost, validVhosts[r.Vhost])
 			}
 		}
 		// The traversal probe (a rest GET, sent verbatim by design) skips
@@ -422,7 +426,7 @@ func hasAssertion(e *Expect) bool {
 		return false
 	}
 	return e.Status != 0 || len(e.StatusIn) > 0 || len(e.BodyContains) > 0 ||
-		len(e.BodyNotContains) > 0 || len(e.Header) > 0 || len(e.JSON) > 0 ||
+		len(e.BodyNotContains) > 0 || len(e.Header) > 0 || len(e.HeaderNotContains) > 0 || len(e.JSON) > 0 ||
 		e.GHPDenial != nil || e.ExitCode != nil || len(e.ExitCodeIn) > 0 ||
 		len(e.StdoutContains) > 0 || len(e.StderrContains) > 0 ||
 		e.ExpiresWithin != nil
@@ -432,10 +436,18 @@ func checkExpect(where string, e *Expect, v *Vars, add func(string, ...any)) {
 	if e == nil {
 		return
 	}
+	if len(e.HeaderNotContainsExcept) > 0 && len(e.HeaderNotContains) == 0 {
+		add("%s: header_not_contains_except needs header_not_contains", where)
+	}
+	for _, h := range e.HeaderNotContainsExcept {
+		if !strings.EqualFold(h, "Set-Cookie") {
+			add("%s: header_not_contains_except may only name Set-Cookie, not %q", where, h)
+		}
+	}
 	if e.ExitCode != nil && len(e.ExitCodeIn) > 0 {
 		add("%s: exit_code and exit_code_in are mutually exclusive", where)
 	}
-	for _, x := range []any{e.BodyContains, e.BodyNotContains, e.Header, e.JSON, e.StdoutContains, e.StderrContains} {
+	for _, x := range []any{e.BodyContains, e.BodyNotContains, e.Header, e.HeaderNotContains, e.JSON, e.StdoutContains, e.StderrContains} {
 		if _, err := ExpandAny(x, v); err != nil {
 			add("%s: %v", where, err)
 		}

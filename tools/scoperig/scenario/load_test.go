@@ -159,3 +159,112 @@ func TestDecodeFile_EmptyAndMultiDocument(t *testing.T) {
 		})
 	}
 }
+
+func writeCorpusTree(t *testing.T, gen, corpusJSON string) string {
+	t.Helper()
+	dir := writeTree(t, gen)
+	if err := os.WriteFile(filepath.Join(dir, "profiles.yaml"), []byte(
+		"- {name: open, type: proxy, duration: 2h}\n- {name: repo-A, type: proxy, repositories: [\"{{.RepoA}}\"], duration: 2h}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cdir := filepath.Join(dir, "corpus", "gh", "9.9.9")
+	if err := os.MkdirAll(cdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cdir, "pr_view.json"), []byte(corpusJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+const corpusGen = `- id: X-C1.gh
+  claim: X-C1
+  doc: d
+  description: replay
+  kind: corpus
+  corpus: corpus/gh/9.9.9
+  corpus_profiles: {open: open, repo: repo-A}
+`
+
+const corpusOneEntry = `{"gh_version": "9.9.9", "command": "pr view", "rest": [], "graphql": [
+ {"operation": "PullRequestByNumber",
+  "body": {"query": "query PullRequestByNumber($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { name } }",
+           "variables": {"owner": "OWNER", "repo": "REPO", "q": "repo:OWNER/REPO is:pr", "id": "NODE_ID", "n": 1},
+           "operationName": "PullRequestByNumber"},
+  "expect": {"open": {"verdict": "allow"}, "repo": {"verdict": "deny:cross_repo"}}},
+ {"operation": "(anonymous)",
+  "body": {"query": "{ viewer { login } }", "variables": {}},
+  "expect": {"open": {"verdict": "allow"},
+             "repo": {"verdict": "allow", "known_issue": "https://github.com/goodtune/ghp/issues/1", "current": "deny:no_repo_ref"}}}
+]}`
+
+func TestLoad_CorpusGenerator(t *testing.T) {
+	tree, err := Load(writeCorpusTree(t, corpusGen, corpusOneEntry))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	byID := map[string]*Scenario{}
+	for _, s := range tree.Scenarios {
+		byID[s.ID] = s
+	}
+	if len(byID) != 4 {
+		t.Fatalf("scenarios = %v, want 4 generated", keysOf(byID))
+	}
+	if _, ok := byID["X-C1.gh"]; ok {
+		t.Fatal("generator entry must not remain in the tree")
+	}
+	allow := byID["X-C1.gh.pr_view.PullRequestByNumber.open"]
+	if allow == nil {
+		t.Fatalf("missing allow scenario; have %v", keysOf(byID))
+	}
+	if allow.Kind != "graphql" || allow.Profile != "open" || allow.Claim != "X-C1" || allow.OperationName != "PullRequestByNumber" {
+		t.Errorf("allow = %+v", allow)
+	}
+	if allow.Expect == nil || allow.Expect.Status != 200 || allow.Expect.GHPDenial == nil || *allow.Expect.GHPDenial {
+		t.Errorf("allow expect = %+v", allow.Expect)
+	}
+	v := allow.Variables
+	if v["owner"] != "{{.RepoA.Owner}}" || v["repo"] != "{{.RepoA.Name}}" || v["q"] != "repo:{{.RepoA.Owner}}/{{.RepoA.Name}} is:pr" ||
+		v["id"] != "{{.RepoA.NodeID}}" || v["n"] != float64(1) {
+		t.Errorf("variables = %v", v)
+	}
+	deny := byID["X-C1.gh.pr_view.PullRequestByNumber.repo"]
+	if deny == nil || deny.Profile != "repo-A" || deny.Expect.Status != 403 || deny.Expect.GHPDenial == nil || !*deny.Expect.GHPDenial ||
+		len(deny.Expect.BodyContains) != 1 || deny.Expect.BodyContains[0] != "uses cross-repository fields" {
+		t.Errorf("deny = %+v", deny)
+	}
+	known := byID["X-C1.gh.pr_view.anonymous.repo"]
+	if known == nil || known.KnownIssue != "https://github.com/goodtune/ghp/issues/1" || known.Observed == nil ||
+		known.Observed.Status != 403 || known.Expect.Status != 200 {
+		t.Errorf("known = %+v", known)
+	}
+	if errs := Validate(tree, nil); len(errs) != 0 {
+		t.Errorf("generated scenarios must validate: %v", errs)
+	}
+}
+
+func TestLoad_CorpusGeneratorErrors(t *testing.T) {
+	cases := []struct{ name, gen, corpus, want string }{
+		{"unmapped profile", strings.Replace(corpusGen, "{open: open, repo: repo-A}", "{open: open}", 1), corpusOneEntry, `profile "repo"`},
+		{"escaping path", strings.Replace(corpusGen, "corpus/gh/9.9.9", "../outside", 1), corpusOneEntry, "corpus"},
+		{"empty corpus dir", strings.Replace(corpusGen, "corpus/gh/9.9.9", "corpus/gh", 1), corpusOneEntry, "no corpus files"},
+		{"unknown verdict", corpusGen, strings.Replace(corpusOneEntry, `"deny:cross_repo"`, `"deny:bogus"`, 1), "deny:bogus"},
+		{"generator with query", corpusGen + "  query: \"{ viewer { login } }\"\n", corpusOneEntry, "kind corpus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeCorpusTree(t, tc.gen, tc.corpus))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func keysOf(m map[string]*Scenario) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

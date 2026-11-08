@@ -66,3 +66,27 @@ func TestGraphQL_StepRejectsNonGraphQLPath(t *testing.T) {
 		}
 	}
 }
+
+func TestGraphQL_PostsOperationName(t *testing.T) {
+	var got map[string]any
+	env, _, tok := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+	}))
+	s := &scenario.Scenario{ID: "x", Kind: "graphql", OperationName: "Good",
+		Query: `query Good { viewer { login } } query Bad { viewer { id } }`}
+	if _, err := (graphqlExecutor{}).Run(context.Background(), s, tok, env); err != nil {
+		t.Fatal(err)
+	}
+	if got["operationName"] != "Good" {
+		t.Errorf("operationName = %v, want Good", got["operationName"])
+	}
+	// Without operation_name the key is absent, as before.
+	got = nil
+	s = &scenario.Scenario{ID: "y", Kind: "graphql", Query: `{ viewer { login } }`}
+	if _, err := (graphqlExecutor{}).Run(context.Background(), s, tok, env); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["operationName"]; ok {
+		t.Errorf("operationName sent without operation_name: %v", got)
+	}
+}
