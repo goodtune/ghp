@@ -2,6 +2,7 @@ package gitcred
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +85,20 @@ func TestParseRequest(t *testing.T) {
 			input:      "path=secretvalue\x00\n",
 			wantErr:    true,
 			errMessage: `invalid value for key "path"`,
+			secret:     "secretvalue",
+		},
+		{
+			name:       "bare carriage return in value",
+			input:      "host=github.com\rpath=x\n",
+			wantErr:    true,
+			errMessage: `invalid value for key "host"`,
+			secret:     "github.com",
+		},
+		{
+			name:       "carriage return before crlf",
+			input:      "password=secretvalue\r\r\n",
+			wantErr:    true,
+			errMessage: `invalid value for key "password"`,
 			secret:     "secretvalue",
 		},
 		{
@@ -216,6 +231,39 @@ func TestWriteCredential(t *testing.T) {
 			}
 			if strings.Contains(b.String(), "quit") {
 				t.Errorf("WriteCredential() output %q contains quit", b.String())
+			}
+		})
+	}
+}
+
+func TestFormatRedactsPassword(t *testing.T) {
+	const secret = "ghx_supersecretvalue"
+	req := Request{Protocol: "https", Host: "github.com", Path: "goodtune/ghp.git", Username: "x-access-token", Password: secret}
+	cred := Credential{Username: "x-access-token", Password: secret, Expiry: time.Unix(1767225600, 0).UTC()}
+	tests := []struct {
+		name  string
+		value any
+		want  []string
+	}{
+		{name: "Request", value: req, want: []string{"https", "github.com", "goodtune/ghp.git", "x-access-token"}},
+		{name: "Request pointer", value: &req, want: []string{"https", "github.com", "goodtune/ghp.git", "x-access-token"}},
+		{name: "Credential", value: cred, want: []string{"x-access-token", "2026"}},
+		{name: "Credential pointer", value: &cred, want: []string{"x-access-token", "2026"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := tt.value
+			out := fmt.Sprintf("%v|%+v|%#v|%s", v, v, v, v)
+			if strings.Contains(out, "supersecret") {
+				t.Errorf("formatted output %q contains the password", out)
+			}
+			if strings.Count(out, "<redacted>") != 4 {
+				t.Errorf("formatted output %q does not show <redacted> for every verb", out)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("formatted output %q is missing field value %q", out, w)
+				}
 			}
 		})
 	}

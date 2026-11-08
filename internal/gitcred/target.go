@@ -27,7 +27,7 @@ var nameRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // ParseTarget extracts owner/repo from the path git sent with the request.
 // It needs git's credential.useHttpPath (or the equivalent helper config) so
 // that git sends a path at all. Extra trailing segments (e.g. "info/refs")
-// are ignored and one trailing ".git" is stripped from the repository name.
+// are ignored unless one is ".", ".." or empty, and one trailing ".git" is stripped from the repository name.
 func ParseTarget(req Request) (Target, error) {
 	if req.Protocol != "https" {
 		return Target{}, ErrNotHTTPS
@@ -41,6 +41,19 @@ func ParseTarget(req Request) (Target, error) {
 	repo := strings.TrimSuffix(segs[1], ".git")
 	if !validName(owner) || !validName(repo) {
 		return Target{}, ErrBadPath
+	}
+	// The remaining segments are not used, but a "..", "." or empty segment
+	// means the path does not plainly name this repository (for example
+	// "o/r.git/../../evil/x.git"), so it is refused. One trailing empty
+	// segment from a trailing "/" is allowed.
+	rest := segs[2:]
+	if n := len(rest); n > 0 && rest[n-1] == "" {
+		rest = rest[:n-1]
+	}
+	for _, seg := range rest {
+		if seg == "" || seg == "." || seg == ".." {
+			return Target{}, ErrBadPath
+		}
 	}
 	return Target{Owner: owner, Repo: repo}, nil
 }

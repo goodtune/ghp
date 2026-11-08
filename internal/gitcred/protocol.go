@@ -30,9 +30,43 @@ type Credential struct {
 	Expiry   time.Time // zero → no password_expiry_utc line
 }
 
+// redacted stands in for a non-empty password whenever a value is formatted.
+const redacted = "<redacted>"
+
+func redact(s string) string {
+	if s == "" {
+		return ""
+	}
+	return redacted
+}
+
+// String renders r with the password redacted, so %v and %+v never print it.
+func (r Request) String() string {
+	return fmt.Sprintf("{Protocol:%s Host:%s Path:%s Username:%s Password:%s}",
+		r.Protocol, r.Host, r.Path, r.Username, redact(r.Password))
+}
+
+// GoString renders r with the password redacted, so %#v never prints it.
+func (r Request) GoString() string {
+	return fmt.Sprintf("gitcred.Request{Protocol:%q, Host:%q, Path:%q, Username:%q, Password:%q}",
+		r.Protocol, r.Host, r.Path, r.Username, redact(r.Password))
+}
+
+// String renders c with the password redacted, so %v and %+v never print it.
+func (c Credential) String() string {
+	return fmt.Sprintf("{Username:%s Password:%s Expiry:%s}",
+		c.Username, redact(c.Password), c.Expiry)
+}
+
+// GoString renders c with the password redacted, so %#v never prints it.
+func (c Credential) GoString() string {
+	return fmt.Sprintf("gitcred.Credential{Username:%q, Password:%q, Expiry:%#v}",
+		c.Username, redact(c.Password), c.Expiry)
+}
+
 // ParseRequest reads a git credential request: key=value lines up to the
 // first blank line or EOF, at most 64 KiB. A trailing "\r" is stripped from
-// each line. Keys ending in "[]" and unknown keys are ignored; for repeated
+// each line; a value still containing "\r" or NUL is rejected. Keys ending in "[]" and unknown keys are ignored; for repeated
 // keys the last value wins. Error texts name keys only, never values.
 func ParseRequest(r io.Reader) (Request, error) {
 	var req Request
@@ -66,7 +100,9 @@ func ParseRequest(r io.Reader) (Request, error) {
 		if strings.IndexByte(key, 0) >= 0 {
 			return Request{}, errNULInKey
 		}
-		if strings.IndexByte(value, 0) >= 0 {
+		// Only one trailing "\r" is stripped above; any "\r" left in the
+		// value is rejected, as is NUL.
+		if strings.ContainsAny(value, "\x00\r") {
 			return Request{}, fmt.Errorf("invalid value for key %q", key)
 		}
 		switch key {
