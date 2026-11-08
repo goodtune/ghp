@@ -40,6 +40,8 @@ var (
 	ErrLockTimeout = errors.New("timed out waiting for the credential cache lock")
 	// ErrInvalidBackend means the cache backend selector is not known.
 	ErrInvalidBackend = errors.New("unknown cache backend")
+	// ErrSessionClosed means Commit was called after Close released the lock.
+	ErrSessionClosed = errors.New("gitcred: session closed")
 )
 
 const (
@@ -427,10 +429,14 @@ func (s *Session) Clear() {
 // Commit drops expired entries and writes the rest to cache.enc under the
 // chosen tier, raising the tier file first. It does nothing for
 // BackendNone, an unmodified session or an unreadable cache (which is never
-// rewritten); after Clear it removes cache.enc instead.
+// rewritten); after Clear it removes cache.enc instead. After Close it
+// returns ErrSessionClosed.
 func (s *Session) Commit() error {
 	if s.mode == BackendNone {
 		return nil
+	}
+	if s.lock == nil {
+		return ErrSessionClosed
 	}
 	if s.cleared {
 		if err := os.Remove(s.Path()); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -478,10 +484,12 @@ func (s *Session) Commit() error {
 	if tier == securestore.TierFile && !(s.dek != nil && s.envTier == securestore.TierFile) {
 		s.notice("cache protected by file permissions only; see docs")
 	}
-	if s.mode != BackendAuto && !(s.dek != nil && s.envTier == tier) {
-		old := s.discarded
-		if old == "" {
-			old = oldTier
+	if s.mode != BackendAuto {
+		// Any downgrade is announced, naming the stronger of the discarded
+		// envelope's tier and the previous tier file.
+		old := oldTier
+		if securestore.Strength(s.discarded) > securestore.Strength(old) {
+			old = s.discarded
 		}
 		if securestore.Strength(tier) < securestore.Strength(old) {
 			s.notice("cache tier lowered from %q to %q at your request", old, tier)

@@ -1200,3 +1200,153 @@ func TestCache_ConcurrentWriters(t *testing.T) {
 		}
 	}
 }
+
+func TestCache_NonceFreshPerCommit(t *testing.T) {
+	tests := []struct {
+		name    string
+		backend string
+		avail   string
+	}{
+		{"explicit keychain reuses the DEK", "keychain", "keychain"},
+		{"auto keeps the file envelope", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			f := newFakeTiers()
+			if tt.avail != "" {
+				f.avail[tt.avail] = true
+			}
+			putCommit(t, newCache(t, dir, tt.backend, f), "o/a", freshEntry("a"))
+			first := readEnvelope(t, dir)
+			putCommit(t, newCache(t, dir, tt.backend, f), "o/b", freshEntry("b"))
+			second := readEnvelope(t, dir)
+
+			if !bytes.Equal(first.WrappedKey, second.WrappedKey) {
+				t.Fatal("DEK was not reused; the test does not exercise nonce reuse")
+			}
+			if len(first.Nonce) != 12 || len(second.Nonce) != 12 {
+				t.Errorf("nonce lengths = %d, %d; want 12", len(first.Nonce), len(second.Nonce))
+			}
+			if bytes.Equal(first.Nonce, second.Nonce) {
+				t.Error("two commits under one DEK reused the nonce")
+			}
+		})
+	}
+}
+
+func TestCache_DEKFreshPerWrap(t *testing.T) {
+	// The fake tiers XOR the DEK, so xorBytes(wrapped_key) is the DEK.
+	dekOf := func(t *testing.T, dir string) []byte {
+		t.Helper()
+		dek := xorBytes(readEnvelope(t, dir).WrappedKey)
+		if len(dek) != 32 {
+			t.Fatalf("DEK length = %d, want 32", len(dek))
+		}
+		if bytes.Equal(dek, make([]byte, 32)) {
+			t.Error("DEK is all zeros")
+		}
+		return dek
+	}
+	f := newFakeTiers()
+	dir1, dir2 := t.TempDir(), t.TempDir()
+	putCommit(t, newCache(t, dir1, "", f), "o/r", freshEntry("a"))
+	putCommit(t, newCache(t, dir2, "", f), "o/r", freshEntry("a"))
+	first, other := dekOf(t, dir1), dekOf(t, dir2)
+	if bytes.Equal(first, other) {
+		t.Error("two independent caches got the same DEK")
+	}
+
+	f.set(func(f *fakeTiers) { f.avail["keychain"] = true })
+	putCommit(t, newCache(t, dir1, "", f), "o/r2", freshEntry("b"))
+	if env := readEnvelope(t, dir1); env.Backend != "keychain" {
+		t.Fatalf("envelope backend = %q, want keychain", env.Backend)
+	}
+	if upgraded := dekOf(t, dir1); bytes.Equal(upgraded, first) {
+		t.Error("the upgrade re-wrap reused the old DEK")
+	}
+}
+
+func TestCache_LoweredNoticeWhenReusingEnvelope(t *testing.T) {
+	// An explicit tier reusing a readable envelope of that tier still lowers
+	// a stronger tier file, and says so.
+	dir := t.TempDir()
+	f := newFakeTiers()
+	putCommit(t, newCache(t, dir, "file", f), "o/a", freshEntry("a"))
+	before := readEnvelope(t, dir)
+	writeFile(t, filepath.Join(dir, TierFileName), "keychain")
+
+	c := newCache(t, dir, "file", f)
+	s := mustOpen(t, c)
+	if _, ok := s.Get(in("o/a")); !ok {
+		t.Fatal("explicit file did not read the file envelope")
+	}
+	s.Put(in("o/b"), freshEntry("b"))
+	if err := s.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(readEnvelope(t, dir).WrappedKey, before.WrappedKey) {
+		t.Error("envelope was not reused")
+	}
+	if tier := readTier(t, dir); tier != "file" {
+		t.Errorf("tier = %q, want file", tier)
+	}
+	if want := `cache tier lowered from "keychain" to "file" at your request`; !strings.Contains(stderrOf(c), want) {
+		t.Errorf("stderr = %q, want %q", stderrOf(c), want)
+	}
+}
+
+func TestCache_LoweredNoticeUsesStrongerOld(t *testing.T) {
+	// A discarded keychain envelope next to a tpm tier file: the notice names
+	// the stronger of the two.
+	dir := t.TempDir()
+	f := newFakeTiers()
+	f.avail["keychain"] = true
+	putCommit(t, newCache(t, dir, "keychain", f), "o/a", freshEntry("a"))
+	writeFile(t, filepath.Join(dir, TierFileName), "tpm")
+
+	c := newCache(t, dir, "file", f)
+	putCommit(t, c, "o/b", freshEntry("b"))
+	if want := `cache tier lowered from "tpm" to "file" at your request`; !strings.Contains(stderrOf(c), want) {
+		t.Errorf("stderr = %q, want %q", stderrOf(c), want)
+	}
+}
+
+func TestSession_CommitAfterClose(t *testing.T) {
+	dir := t.TempDir()
+	f := newFakeTiers()
+	s := mustOpen(t, newCache(t, dir, "", f))
+	s.Put(in("o/r"), freshEntry("a"))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Commit(); !errors.Is(err, ErrSessionClosed) {
+		t.Errorf("Commit after Close = %v, want ErrSessionClosed", err)
+	}
+	assertAbsent(t, filepath.Join(dir, CacheFileName))
+
+	t.Run("clear after close", func(t *testing.T) {
+		putCommit(t, newCache(t, dir, "", f), "o/r", freshEntry("a"))
+		s := mustOpen(t, newCache(t, dir, "", f))
+		s.Clear()
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Commit(); !errors.Is(err, ErrSessionClosed) {
+			t.Errorf("Commit after Close = %v, want ErrSessionClosed", err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, CacheFileName)); err != nil {
+			t.Errorf("cache.enc removed by a closed session: %v", err)
+		}
+	})
+
+	t.Run("none stays a no-op", func(t *testing.T) {
+		s := mustOpen(t, newCache(t, dir, BackendNone, f))
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Commit(); err != nil {
+			t.Errorf("Commit on a closed none session = %v, want nil", err)
+		}
+	})
+}
