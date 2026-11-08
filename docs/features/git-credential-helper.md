@@ -157,7 +157,9 @@ installation lookups for proxy tokens.
 `--app` together with `--type proxy` is an error. There is one exception:
 when the helper line says `--type proxy`, a `GHP_GIT_CM_APP` value in the
 environment is ignored. An exported `GHP_GIT_CM_APP` therefore cannot
-break a proxy-configured helper line.
+break a proxy-configured helper line. The exception applies only to
+`--type proxy` on the helper line. `GHP_GIT_CM_TYPE=proxy` together with
+an exported `GHP_GIT_CM_APP` is an error; unset `GHP_GIT_CM_APP`.
 
 ### Scopes and lifetime
 
@@ -182,8 +184,12 @@ under `%USERPROFILE%`). It holds three files:
 | `tier` | The minimum tier for this cache directory |
 
 The directory has mode `0700` and the files have mode `0600`. The helper
-sets these modes each time it opens the cache. It writes each file through
-a temporary file and a rename.
+sets these modes each time it opens the cache. It writes the cache and
+tier files through a temporary file and a rename.
+
+On Windows the mode bits do not apply. The files are protected by the
+access control list they inherit from your profile directory. DPAPI is the
+effective tier there.
 
 Git can run several helpers at once, for example for a parallel submodule
 fetch. The helper holds an exclusive lock on `cache.lock` only while it
@@ -262,8 +268,11 @@ Entries:        2
 ```
 
 For a `file` cache, the protection line reads
-`file permissions only (0600); see docs`. `Cache backend: none` means
-there is no cache file yet.
+`file permissions only (0600); see docs` (on Windows, read this as the
+inherited access control list). `Cache backend: none` means there is no
+usable cache: either no cache file yet, or one the helper ignored (weaker
+than the minimum tier, sealed by another TPM, or corrupt). The next write
+replaces it.
 
 `ghp auth git-credential clear` removes every cached entry, then revokes
 each token on the server (best effort):
@@ -279,7 +288,8 @@ Cleared 2 cached credentials; revoked 2.
 
 - **Protects** tokens at rest against another local user without root,
   against copies of the home directory (TPM, DPAPI and keychain tiers
-  only), and against the long-lived credential sprawl of pasting a `gha_`
+  only; for keychain and DPAPI, as strong as the user's login password),
+  and against the long-lived credential sprawl of pasting a `gha_`
   token into a plaintext store. Tokens are short-lived (1 hour by default)
   and pinned to one repository.
 - **Does not protect** against `root` or an administrator on the same
@@ -290,11 +300,11 @@ Cleared 2 cached credentials; revoked 2.
 - **The `file` tier is file permissions only.** Anyone who can read
   `cache.enc` can read the tokens. `status` says so on its protection
   line.
-- **The keychain tier does not stop same-user processes.**
-  `/usr/bin/security` is the trusted application for the keychain item, so
-  any process running as the same user can read the key without a prompt.
-  The keychain tier protects against copies of the home directory and
-  against other users.
+- **No tier stops processes running as the same user.** On macOS this
+  needs no prompt because `/usr/bin/security` is the trusted application
+  for the keychain item, so any process running as the same user can read
+  the key. The keychain tier protects against copies of the home directory
+  and against other users.
 
 ## Known limitations
 
@@ -352,10 +362,13 @@ Cleared 2 cached credentials; revoked 2.
   `--scopes workflows:read`, the helper logs an unprefixed `WARN` line on
   stderr on every call, and the server logs the same warning. Use
   `actions:read` instead.
-- **Not every failure is exactly one line.** Every helper failure is one
-  stderr line that starts with `ghp git-credential: `. CLI config warnings
-  (insecure permissions, malformed YAML) are printed first, one prefixed
-  line each.
+- **Not every failure is exactly one line.** Every failure of an
+  operation is one stderr line that starts with `ghp git-credential: `.
+  There are two exceptions. Usage errors from a bad helper line (an
+  unknown flag, a missing operation) are printed by the command parser
+  without the prefix, for example `unknown flag: --bogus`. CLI config
+  warnings (insecure permissions, malformed YAML) are printed before a
+  failure, one prefixed line each.
 - **Agent-token repository scopes.** ghp sends GitHub the bare repository
   name of each `owner/repo` entry, as GitHub's installation-token API
   expects. A scope entry whose owner does not match the installation's

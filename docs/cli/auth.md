@@ -104,10 +104,16 @@ Flags:
 A flag beats its environment variable, which beats the default. A
 `GHP_GIT_CM_APP` value is ignored when `--type proxy` is given as a flag.
 
-Every failure is one stderr line that starts with `ghp git-credential: `
-and names the remedy. Stdout stays empty on failure. For example:
+Every failure of an operation is one stderr line that starts with
+`ghp git-credential: ` and names the remedy. Stdout stays empty on failure.
+For example:
 
     ghp git-credential: not logged in: run ghp auth login
+
+There are two exceptions. Usage errors from a bad helper line (an unknown
+flag, a missing operation) are printed without the prefix, for example
+`unknown flag: --bogus`. CLI config warnings (insecure permissions,
+malformed YAML) are printed before a failure, one prefixed line each.
 
 ### ghp auth setup-git
 
