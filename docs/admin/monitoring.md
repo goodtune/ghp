@@ -110,11 +110,20 @@ explain a single slow sample. The line has these fields:
 The line never contains the token. Set the threshold to `0` to disable the
 log.
 
-Known cause of slow samples (#355): before `request_body_read` existed, the
+Lines from paths outside the proxy API handler (for example `github.com`
+passthrough and management-host rejections) have no stage trace. They carry
+only `total_ms`, `token_type` and `vhost`.
+
+`request_body_read` is client upload time. A slow client can make `total`
+reach the threshold, so the 10ms default can write many lines on a busy
+deployment. Increase the threshold if this occurs.
+
+Likely cause of slow samples (#355): before `request_body_read` existed, the
 wait for a slow `/graphql` request body upload was outside every stage. A
 client that sends the headers first and the body later adds that wait to
-`total`. It now shows in `request_body_read`. It is client or network time,
-not ghp processing time.
+`total`. Deployment data must confirm this. To check it, make sure that the
+`request_body_read` p99 follows the `total` p99 and that `pipeline_other`
+stays near zero.
 
 All hosts emit the same stage names. The `vhost` label tells you which host
 received the request:

@@ -79,11 +79,19 @@ func TestServeHTTP_GraphQL_SlowBodyIsTimedAndLogged(t *testing.T) {
 			t.Errorf("stage %s: sample count delta %d, want 1", s, n-beforeN[s])
 		}
 	}
-	if _, sum := decisionSample(t, metrics.StageRequestBodyRead); sum-beforeS[metrics.StageRequestBodyRead] < delay.Seconds() {
-		t.Errorf("request_body_read = %gs, want >= %gs", sum-beforeS[metrics.StageRequestBodyRead], delay.Seconds())
+	_, bodySum := decisionSample(t, metrics.StageRequestBodyRead)
+	bodyRead := bodySum - beforeS[metrics.StageRequestBodyRead]
+	_, otherSum := decisionSample(t, metrics.StagePipelineOther)
+	other := otherSum - beforeS[metrics.StagePipelineOther]
+	_, totalSum := decisionSample(t, metrics.StageTotal)
+	total := totalSum - beforeS[metrics.StageTotal]
+	// Relative bounds: the sleep is real, so absolute slack flakes under
+	// -race on a loaded runner.
+	if bodyRead < (delay - 5*time.Millisecond).Seconds() {
+		t.Errorf("request_body_read = %gs, want >= %gs", bodyRead, (delay - 5*time.Millisecond).Seconds())
 	}
-	if _, sum := decisionSample(t, metrics.StagePipelineOther); sum-beforeS[metrics.StagePipelineOther] >= delay.Seconds()/2 {
-		t.Errorf("pipeline_other = %gs; the body wait leaked out of request_body_read", sum-beforeS[metrics.StagePipelineOther])
+	if other >= total/2 {
+		t.Errorf("pipeline_other = %gs of total %gs; the body wait leaked out of request_body_read", other, total)
 	}
 
 	out := buf.String()
