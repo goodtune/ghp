@@ -35,10 +35,14 @@ normal `https://github.com/owner/repo.git`.
 
 The cache is keyed per ghp session identity, as well as by server, token
 type, app, repository and requested scopes. The identity is a hash of the
-`user_token` from the config files or `GHP_USER_TOKEN`, or the word
-`dotvault` when the token comes from dotvault. Two ghp sessions on one OS
-account (for example an admin session and a non-admin session) never share
-cached tokens.
+`user_token` found in the config files or `GHP_USER_TOKEN`. When the token
+comes only from dotvault, the identity is the word `dotvault`. When a
+dotvault stanza overrides a `user_token` that is also in a config file or
+`GHP_USER_TOKEN`, the identity is still the hash of that file or
+environment token, not of the dotvault token. Two ghp sessions on one OS
+account with different file or environment tokens (for example an admin
+session and a non-admin session) never share cached tokens. Sessions that
+differ only in their dotvault token do share them.
 
 Each token carries the session ID `git-credential:<hostname>`, so you can
 find it in the SESSION column of `ghp token list` and in the web UI.
@@ -84,6 +88,9 @@ warning: replaced any existing credential helper for github.com (for example gh)
   its `--host` list, so a ghp token never goes to an unrelated https host.
 - `--app NAME` and `--type proxy` are written into the helper line. See
   the next section.
+- If a git command fails after the first one for a host, that host is left
+  with an empty helper chain. The error ends with
+  `; re-run ghp auth setup-git`. Run it again to finish the setup.
 
 Every word in the helper line is shell-quoted, because git runs a helper
 that starts with `!` through the shell. See
@@ -218,13 +225,17 @@ tier that is available now and not weaker than the minimum tier:
   keychain), the helper tries the next tier that is still not weaker than
   the minimum. If no tier qualifies, it gives git the token without caching
   it and prints one line:
-  `no cache tier at least as strong as "tpm" is available; token not cached`.
+  `no cache tier at least as strong as "tpm" is available; token not cached (use --cache-backend <tier> to accept a weaker tier)`.
 - When a stronger tier becomes available, the helper re-encrypts the cache
   under it on its next write and raises the `tier` file.
 - A cache written under a tier weaker than the `tier` file is ignored and
   replaced on the next write.
-- A TPM cache sealed by another TPM (or before the TPM was cleared), or a
-  keychain cache whose keychain item is gone, is dropped and rebuilt.
+- A cache whose key can never be unwrapped is dropped and rebuilt, still
+  at or above the minimum tier. This covers a TPM cache sealed by another
+  TPM (or before the TPM was cleared) or with a corrupt sealed blob, a
+  keychain cache whose keychain item is gone or corrupt, and a DPAPI cache
+  that Windows rejects as invalid data or a bad key state (for example
+  after an administrator reset the user's password, or a copied profile).
 
 Other values of `--cache-backend`:
 
@@ -284,6 +295,11 @@ Cleared 2 cached credentials; revoked 2.
 `clear` keeps the `tier` file. On macOS it also keeps the keychain item
 (one item per cache directory).
 
+`clear` and `erase` revoke with the same credentials that `get` mints
+with: the server URL and user token after dotvault is applied. They fall
+back to the config files and environment only when dotvault fails, and
+then print one line that says so.
+
 ## Threat model
 
 - **Protects** tokens at rest against another local user without root,
@@ -329,13 +345,18 @@ Cleared 2 cached credentials; revoked 2.
 - **Linux TPM access needs the `tss` group.** Without membership of `tss`
   (or without a TPM), the helper uses the `file` tier and prints the
   file-tier notice.
+- **The `/dev/tpm0` fallback has no resource manager.** On kernels without
+  `/dev/tpmrm0`, the helper opens `/dev/tpm0` directly. If the helper is
+  killed in the middle of a TPM operation, a transient handle can stay
+  loaded until reboot. After a few such leaks the TPM has no free
+  transient slots and the `tpm` tier is unavailable until reboot.
 - **There is no Secret Service backend yet.** Linux without a usable TPM
   uses the `file` tier.
 - **The macOS keychain is locked in non-GUI sessions** (SSH, headless).
   Each `/usr/bin/security` call has a 10 second timeout. While the
   keychain is locked, the helper cannot read a keychain cache: it prints
-  `cannot read the credential cache (...); continuing without it` and
-  mints without caching. For a new cache, it uses the next tier that is
+  `cannot read the credential cache (...); continuing without it (run ghp auth git-credential clear if this persists)`
+  and mints without caching. For a new cache, it uses the next tier that is
   not weaker than the minimum tier, or gives git the token without
   caching it.
 - **Windows: the TPM tier is usually unavailable.** Provisioning normally
@@ -353,22 +374,29 @@ Cleared 2 cached credentials; revoked 2.
   (the delay comes from the server's `Retry-After` header).
 - **An unreadable cache stays unreadable.** A cache written under a tier
   this build does not have (for example a DPAPI cache copied to Linux), or
-  a key the protector cannot unwrap, is reported on every call as
-  `cannot read the credential cache (...); continuing without it`. The
-  helper never rewrites it. Run `ghp auth git-credential clear`. If the
-  `tier` file still names a tier this machine cannot provide, also run
-  one command with an explicit `--cache-backend` to accept a weaker tier.
+  a key the protector cannot unwrap for now (for example a locked
+  keychain or a TPM that does not answer), is reported on every call as
+  `cannot read the credential cache (...); continuing without it (run ghp auth git-credential clear if this persists)`.
+  The helper never rewrites it, because the failure can be temporary. If
+  it persists, run `ghp auth git-credential clear`. If the `tier` file
+  still names a tier this machine cannot provide, also run one command
+  with an explicit `--cache-backend` to accept a weaker tier. A key that
+  can never be unwrapped (a corrupt blob or keychain item) is not
+  reported: the cache is dropped and rebuilt.
 - **`workflows:read` logs a deprecation warning.** With
   `--scopes workflows:read`, the helper logs an unprefixed `WARN` line on
   stderr on every call, and the server logs the same warning. Use
   `actions:read` instead.
 - **Not every failure is exactly one line.** Every failure of an
   operation is one stderr line that starts with `ghp git-credential: `.
-  There are two exceptions. Usage errors from a bad helper line (an
+  There are three exceptions. Usage errors from a bad helper line (an
   unknown flag, a missing operation) are printed by the command parser
   without the prefix, for example `unknown flag: --bogus`. CLI config
   warnings (insecure permissions, malformed YAML) are printed before a
-  failure, one prefixed line each.
+  failure, one prefixed line each. A cache warning
+  (`could not use the credential cache (...)` or the
+  `cannot read the credential cache (...)` notice) can come before a
+  failure to mint a token, as one more prefixed line.
 - **Agent-token repository scopes.** ghp sends GitHub the bare repository
   name of each `owner/repo` entry, as GitHub's installation-token API
   expects. A scope entry whose owner does not match the installation's

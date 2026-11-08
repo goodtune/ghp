@@ -110,10 +110,13 @@ For example:
 
     ghp git-credential: not logged in: run ghp auth login
 
-There are two exceptions. Usage errors from a bad helper line (an unknown
+There are three exceptions. Usage errors from a bad helper line (an unknown
 flag, a missing operation) are printed without the prefix, for example
 `unknown flag: --bogus`. CLI config warnings (insecure permissions,
-malformed YAML) are printed before a failure, one prefixed line each.
+malformed YAML) are printed before a failure, one prefixed line each. A
+cache warning (`could not use the credential cache (...)` or the
+`cannot read the credential cache (...)` notice) can come before a failure
+to mint a token, as one more prefixed line.
 
 ### ghp auth setup-git
 
