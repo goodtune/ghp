@@ -39,6 +39,22 @@ The `--app` and `--installation` flags accept human-readable names (app name
 and GitHub account login respectively) and resolve to IDs automatically. The
 numeric `--installation-id` and `--app-id` flags are also available.
 
+Agent-token repositories must be `owner/repo` entries, and every owner must be
+the account the installation belongs to (compared case-insensitively, ASCII
+only). ghp reads the account login from GitHub
+(`GET /app/installations/{id}`) when the token is created or its repositories
+are changed. It returns `400 Bad Request`, naming the repository, when an owner
+does not match. If ghp cannot read the account login, it does not create or
+change the token (`502`, or `503` when no GitHub App is loaded).
+
+GitHub also narrows the installation token. When ghp mints the installation
+token, it sends the bare repository names to GitHub's `access_tokens` API, so
+the installation token itself can reach only those repositories. This is
+defence in depth: ghp still enforces the `owner/repo` allowlist on every
+request. If the owner check fails at mint time (for example, after the
+installation moves to another account), ghp does not mint a token and the
+request fails.
+
 ## Repository Restrictions
 
 When a token specifies one or more repositories, ghp enforces that only those

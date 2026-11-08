@@ -49,11 +49,12 @@
   expect: {status: 403, ghp_denial: true}
 
 # GAP-A6: an agent (gha_) token for an owner/repo repository. Notes:
-# - Creation does not call GitHub. The installation token is minted lazily
-#   on the first proxied request (AppTokenProvider.GetInstallationToken), so
-#   a 201 shows the request is accepted, not that GitHub accepts owner/repo
-#   names. A probe that sends a request with the new gha_ token is follow-up
-#   work (the executor never sees the raw token).
+# - Creation reads the installation account (GET /app/installations/{id})
+#   and returns 400 when an owner is not that account (#294). The
+#   installation token is minted lazily on the first proxied request, with
+#   bare repository names, so a 201 does not show that GitHub narrows the
+#   token. A probe that sends a request with the new gha_ token is follow-up
+#   work (#306; the executor never sees the raw token).
 # - Revocation: token.Service.Revoke marks the record revoked and drops the
 #   cache entry; it does not call DELETE /installation/token. A minted
 #   installation token stays valid at GitHub until its natural expiry (up to
