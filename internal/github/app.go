@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/crypto"
+	"github.com/goodtune/ghp/internal/metrics"
 	ghppermissions "github.com/goodtune/ghp/internal/permissions"
 	ghub "github.com/google/go-github/v93/github"
 	"github.com/hashicorp/golang-lru/v2/expirable"
@@ -119,6 +121,10 @@ type AppTokenProvider struct {
 	// of this app on that account. Entries are evicted after
 	// installationIDCacheTTL.
 	installationIDCache *expirable.LRU[string, int64]
+	// accountLoginCache maps an installation ID to the login of the account
+	// the installation belongs to. Entries are evicted after
+	// installationIDCacheTTL.
+	accountLoginCache *expirable.LRU[int64, string]
 }
 
 // NewAppTokenProvider creates a provider from the given config.
@@ -139,6 +145,7 @@ func NewAppTokenProvider(cfg AppConfig) (*AppTokenProvider, error) {
 		client:              &http.Client{Timeout: 30 * time.Second},
 		cache:               expirable.NewLRU[string, string](maxCachedInstallationTokens, nil, installationTokenTTL),
 		installationIDCache: expirable.NewLRU[string, int64](maxCachedInstallationIDs, nil, installationIDCacheTTL),
+		accountLoginCache:   expirable.NewLRU[int64, string](maxCachedInstallationIDs, nil, installationIDCacheTTL),
 	}, nil
 }
 
@@ -199,9 +206,31 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 	// Request installation token.
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", p.baseURL, installationID)
 
+	// GitHub's repositories field takes bare names of repositories owned by
+	// the installation's account (#294). Check every owner against that
+	// account and strip it; on any failure send nothing (fail closed).
 	body := map[string]interface{}{}
-	if repos != nil {
-		body["repositories"] = repos
+	if len(repos) > 0 {
+		account, err := p.installationAccountLogin(ctx, signed, installationID)
+		if err != nil {
+			reason := "lookup_failed"
+			if errors.Is(err, errEmptyAccountLogin) {
+				reason = "empty_login"
+			}
+			metrics.AgentRepoNarrowingFailedTotal.WithLabelValues(reason).Inc()
+			return "", err
+		}
+		names, err := NarrowRepositoriesForAccount(account, repos, false)
+		if err != nil {
+			reason := "malformed"
+			var mm *RepositoryOwnerMismatchError
+			if errors.As(err, &mm) {
+				reason = "owner_mismatch"
+			}
+			metrics.AgentRepoNarrowingFailedTotal.WithLabelValues(reason).Inc()
+			return "", err
+		}
+		body["repositories"] = names
 	}
 	if permissions != nil {
 		body["permissions"] = permissions
@@ -269,6 +298,111 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 	p.cache.Add(cacheKey, result.Token)
 
 	return result.Token, nil
+}
+
+// errEmptyAccountLogin reports an installation record with no account login.
+var errEmptyAccountLogin = errors.New("installation has no account login")
+
+// RepositoryOwnerMismatchError reports a repository restriction whose owner
+// is not the account the GitHub App installation belongs to. GitHub cannot
+// narrow an installation token to such a repository.
+type RepositoryOwnerMismatchError struct {
+	Repository string
+	Account    string
+}
+
+func (e *RepositoryOwnerMismatchError) Error() string {
+	return fmt.Sprintf("repository %q does not belong to the installation account %q", e.Repository, e.Account)
+}
+
+// InvalidRepositoryError reports a malformed repository restriction entry.
+type InvalidRepositoryError struct {
+	Repository string
+}
+
+func (e *InvalidRepositoryError) Error() string {
+	return fmt.Sprintf("invalid repository %q: expected owner/repo", e.Repository)
+}
+
+// NarrowRepositoriesForAccount converts repository restrictions into the bare
+// names GitHub's access_tokens API expects. An "owner/repo" entry must have
+// an owner equal to account (ASCII case-insensitive, #317). A bare "repo"
+// entry is accepted as-is unless requireFullName is set. Any invalid entry
+// fails the whole list, so a partly rejected list is never sent.
+func NarrowRepositoriesForAccount(account string, repos []string, requireFullName bool) ([]string, error) {
+	if account == "" {
+		return nil, fmt.Errorf("installation account login is unknown")
+	}
+	names := make([]string, 0, len(repos))
+	for _, r := range repos {
+		owner, name, hasOwner := strings.Cut(r, "/")
+		if !hasOwner {
+			if requireFullName || r == "" {
+				return nil, &InvalidRepositoryError{Repository: r}
+			}
+			names = append(names, r)
+			continue
+		}
+		if owner == "" || name == "" || strings.Contains(name, "/") {
+			return nil, &InvalidRepositoryError{Repository: r}
+		}
+		if !asciiutil.EqualFold(owner, account) {
+			return nil, &RepositoryOwnerMismatchError{Repository: r, Account: account}
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// InstallationAccountLogin returns the login of the account (user or
+// organization) the given installation belongs to. Results are cached per
+// installation ID for installationIDCacheTTL.
+func (p *AppTokenProvider) InstallationAccountLogin(ctx context.Context, installationID int64) (string, error) {
+	if login, ok := p.accountLoginCache.Get(installationID); ok {
+		return login, nil
+	}
+	signed, err := p.signJWT()
+	if err != nil {
+		return "", fmt.Errorf("signing JWT: %w", err)
+	}
+	return p.installationAccountLogin(ctx, signed, installationID)
+}
+
+// installationAccountLogin is InstallationAccountLogin with a pre-signed JWT.
+func (p *AppTokenProvider) installationAccountLogin(ctx context.Context, jwtToken string, installationID int64) (string, error) {
+	if login, ok := p.accountLoginCache.Get(installationID); ok {
+		return login, nil
+	}
+	url := fmt.Sprintf("%s/app/installations/%d", p.baseURL, installationID)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("creating installation request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetching installation account: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("installation %d account lookup failed (%d)", installationID, resp.StatusCode)
+	}
+	var result struct {
+		Account struct {
+			Login string `json:"login"`
+		} `json:"account"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding installation account: %w", err)
+	}
+	if result.Account.Login == "" {
+		return "", fmt.Errorf("installation %d: %w", installationID, errEmptyAccountLogin)
+	}
+	p.accountLoginCache.Add(installationID, result.Account.Login)
+	return result.Account.Login, nil
 }
 
 // getInstallationPermissions queries the GitHub API for the permissions

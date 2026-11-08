@@ -85,21 +85,25 @@ const maxSessionIDLength = 128
 
 // API handles the service API endpoints (token management, users).
 type API struct {
-	cfg                *config.Config
-	ctx                context.Context // server lifecycle context; cancelled on shutdown
-	store              database.Store
-	tokenService       *token.Service
-	authHandler        *auth.Handler
-	encryptor          *crypto.Encryptor
-	appTokenProvider   *ghpgithub.AppTokenProvider // nil if GitHub App not configured
-	appRegistry        *ghpgithub.AppRegistry      // nil if no apps loaded
-	proxyTokenResolver *proxy.ProxyTokenResolver   // resolves proxy tokens to GitHub credentials
-	usernameResolver   *proxy.UsernameResolver     // caches GitHub username lookups
-	logger             *slog.Logger
-	httpClient         *http.Client // used for outbound GitHub API calls
-	auditLog           *auditLogWriter
-	forwardProxyRouter *proxy.ForwardProxyRouter // nil when ruleset routing is not wired (tests)
-	webhooks           *webhookService           // nil when the webhook ingress is disabled
+	cfg              *config.Config
+	ctx              context.Context // server lifecycle context; cancelled on shutdown
+	store            database.Store
+	tokenService     *token.Service
+	authHandler      *auth.Handler
+	encryptor        *crypto.Encryptor
+	appTokenProvider *ghpgithub.AppTokenProvider // nil if GitHub App not configured
+	appRegistry      *ghpgithub.AppRegistry      // nil if no apps loaded
+	// installationAccounts overrides how installation account logins are
+	// resolved for agent-token repository checks. Nil uses appRegistry /
+	// appTokenProvider (see resolveInstallationAccount).
+	installationAccounts installationAccountResolver
+	proxyTokenResolver   *proxy.ProxyTokenResolver // resolves proxy tokens to GitHub credentials
+	usernameResolver     *proxy.UsernameResolver   // caches GitHub username lookups
+	logger               *slog.Logger
+	httpClient           *http.Client // used for outbound GitHub API calls
+	auditLog             *auditLogWriter
+	forwardProxyRouter   *proxy.ForwardProxyRouter // nil when ruleset routing is not wired (tests)
+	webhooks             *webhookService           // nil when the webhook ingress is disabled
 
 	tokenCreateLimiter *auth.IPRateLimiter // POST /api/tokens
 }
@@ -180,6 +184,52 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/cached-repos/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleGetCachedRepo)))
 	mux.Handle("PATCH /api/cached-repos/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleUpdateCachedRepo)))
 	mux.Handle("DELETE /api/cached-repos/{id}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleDeleteCachedRepo)))
+}
+
+// installationAccountResolver resolves the login of the account a GitHub App
+// installation belongs to.
+type installationAccountResolver interface {
+	InstallationAccountLogin(ctx context.Context, appRecordID string, installationID int64) (string, error)
+}
+
+var errNoAppProvider = errors.New("no app provider available")
+
+// resolveInstallationAccount returns the account login of the installation,
+// using the app the agent token is pinned to.
+func (a *API) resolveInstallationAccount(ctx context.Context, appRecordID string, installationID int64) (string, error) {
+	switch {
+	case a.installationAccounts != nil:
+		return a.installationAccounts.InstallationAccountLogin(ctx, appRecordID, installationID)
+	case a.appRegistry != nil && a.appRegistry.Count() > 0:
+		return a.appRegistry.InstallationAccountLogin(ctx, appRecordID, installationID)
+	case a.appTokenProvider != nil:
+		return a.appTokenProvider.InstallationAccountLogin(ctx, installationID)
+	default:
+		return "", errNoAppProvider
+	}
+}
+
+// checkAgentRepositories verifies that every agent-token repository is an
+// owner/repo entry owned by the installation's account, so GitHub can narrow
+// the installation token to it (#294). It returns 0 when the list is
+// acceptable, otherwise an HTTP status and message. It fails closed: when the
+// account cannot be resolved the token is not created or changed.
+func (a *API) checkAgentRepositories(ctx context.Context, appRecordID string, installationID int64, repos []string) (int, string) {
+	if len(repos) == 0 {
+		return 0, ""
+	}
+	account, err := a.resolveInstallationAccount(ctx, appRecordID, installationID)
+	if errors.Is(err, errNoAppProvider) {
+		return http.StatusServiceUnavailable, "cannot verify agent token repositories: no app provider available"
+	}
+	if err != nil {
+		a.logger.Error("failed to resolve installation account", "installation_id", installationID, "error", err)
+		return http.StatusBadGateway, "could not resolve the installation account to verify repositories"
+	}
+	if _, err := ghpgithub.NarrowRepositoriesForAccount(account, repos, true); err != nil {
+		return http.StatusBadRequest, err.Error()
+	}
+	return 0, ""
 }
 
 type createTokenRequest struct {
@@ -332,6 +382,13 @@ func (a *API) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	case token.TokenTypeAgent:
 		createReq.InstallationID = req.InstallationID
 		createReq.Repositories = req.Repositories
+		// A missing installation_id is rejected by the token service.
+		if req.InstallationID != 0 {
+			if code, msg := a.checkAgentRepositories(r.Context(), appRecordID, req.InstallationID, req.Repositories); code != 0 {
+				writeJSON(w, code, map[string]string{"message": msg})
+				return
+			}
+		}
 	}
 
 	result, err := a.tokenService.Create(r.Context(), createReq)
@@ -529,6 +586,20 @@ func (a *API) handleUpdateTokenScopes(w http.ResponseWriter, r *http.Request) {
 
 	newRepos := pt.Repositories
 	if req.Repositories != nil {
+		if pt.TokenType == string(token.TokenTypeAgent) {
+			if pt.InstallationID == nil {
+				writeJSON(w, http.StatusConflict, map[string]string{"message": "Agent token has no installation"})
+				return
+			}
+			appRecordID := ""
+			if pt.AppID != nil {
+				appRecordID = *pt.AppID
+			}
+			if code, msg := a.checkAgentRepositories(r.Context(), appRecordID, *pt.InstallationID, *req.Repositories); code != 0 {
+				writeJSON(w, code, map[string]string{"message": msg})
+				return
+			}
+		}
 		enc, err := json.Marshal(*req.Repositories)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid repositories"})
