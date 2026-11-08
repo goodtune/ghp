@@ -780,3 +780,54 @@ func TestSetupGit_RejectsBadInput(t *testing.T) {
 		})
 	}
 }
+
+func TestSetupGit_FailureAfterReplaceAllNamesRemedy(t *testing.T) {
+	const remedy = "; re-run ghp auth setup-git"
+	tests := []struct {
+		name       string
+		failCall   int // 1-based runGit call that fails
+		wantRemedy bool
+	}{
+		{"replace-all fails", 1, false},
+		{"add fails", 2, true},
+		{"useHttpPath fails", 3, true},
+		{"second host replace-all fails", 4, false},
+		{"second host add fails", 5, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			swapOSExecutable(t, "/usr/local/bin/ghp")
+			t.Setenv("PATH", t.TempDir())
+			orig := runGit
+			t.Cleanup(func() { runGit = orig })
+			calls := 0
+			runGit = func(ctx context.Context, args ...string) error {
+				calls++
+				if calls == tt.failCall {
+					return errors.New("git config: could not lock config file")
+				}
+				return nil
+			}
+			_, _, err := runSetupGit(t, "--host", "github.com", "--host", "ghe.example.com")
+			if err == nil {
+				t.Fatal("setup-git succeeded, want error")
+			}
+			if got := strings.HasSuffix(err.Error(), remedy); got != tt.wantRemedy {
+				t.Errorf("err = %q; ends with %q = %v, want %v", err, remedy, got, tt.wantRemedy)
+			}
+			if calls != tt.failCall {
+				t.Errorf("runGit calls = %d, want %d (stop at the first failure)", calls, tt.failCall)
+			}
+		})
+	}
+}
+
+func TestSetupGit_HelpNamesGlobalConfig(t *testing.T) {
+	long := newAuthSetupGitCmd().Long
+	if !strings.Contains(long, "the global git config (git config --global)") {
+		t.Errorf("help = %q, want it to name the global git config (git config --global)", long)
+	}
+	if strings.Contains(long, "~/.gitconfig") {
+		t.Errorf("help = %q, must not name ~/.gitconfig", long)
+	}
+}

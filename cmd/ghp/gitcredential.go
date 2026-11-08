@@ -259,7 +259,7 @@ func newAuthSetupGitCmd() *cobra.Command {
 		Use:   "setup-git",
 		Short: "Configure git to use ghp as its credential helper",
 		Long: `Configure git to use 'ghp auth git-credential' as the credential helper for
-each host, in the global git config (~/.gitconfig).
+each host, in the global git config (git config --global).
 
 For every host this runs:
   git config --global --replace-all credential.https://HOST.helper ""
@@ -319,8 +319,13 @@ func setupGit(cmd *cobra.Command, hosts []string, app, tokenType string) error {
 			{"config", "--global", "--add", section + ".helper", lines[i]},
 			{"config", "--global", section + ".useHttpPath", "true"},
 		}
-		for _, step := range steps {
+		for j, step := range steps {
 			if err := runGit(ctx, step...); err != nil {
+				if j > 0 {
+					// The --replace-all step has emptied this host's helper
+					// chain; only a complete run restores it.
+					return fmt.Errorf("%w; re-run ghp auth setup-git", err)
+				}
 				return err
 			}
 		}
