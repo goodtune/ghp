@@ -397,8 +397,11 @@ then print one line that says so.
   (`could not use the credential cache (...)` or the
   `cannot read the credential cache (...)` notice) can come before a
   failure to mint a token, as one more prefixed line.
-- **Agent-token repository scopes.** ghp sends GitHub the bare repository
-  name of each `owner/repo` entry, as GitHub's installation-token API
-  expects. A scope entry whose owner does not match the installation's
-  account is not rejected at mint time, but ghp's own per-request scope
-  check still denies it.
+- **Agent-token repositories must belong to the installation account.**
+  With `--type agent`, every repository must be owned by the account the
+  chosen installation belongs to (compared case-insensitively, ASCII only).
+  Otherwise ghp refuses to create the token with `400 Bad Request`, naming
+  the repository, and the helper prints that server message. If ghp cannot
+  read the installation's account login, it does not create the token
+  (`502`, or `503` when no GitHub App is loaded). See
+  [Token Scoping](token-scoping.md#agent-tokens-gha_).

@@ -4,7 +4,7 @@
 
 **Goal:** Add `ghp auth git-credential` (a git credential helper that mints short-lived, single-repository `gha_`/`ghx_` tokens and caches them under the strongest local key protector) and `ghp auth setup-git`, plus the server fix that makes repo-scoped agent tokens usable.
 
-**Architecture:** `internal/securestore` wraps a random data-encryption key (DEK) with one of four protector tiers (tpm > dpapi > keychain > file). `internal/gitcred` holds everything else that is testable without cobra: the git credential protocol, path parsing, the encrypted, file-locked cache, a small ghp API client, app/installation/scope resolution, and `Run`, which executes one helper operation and returns an exit code. `cmd/ghp/gitcredential.go` only resolves flags/env, wires the two-phase CLI config loading (non-interactive dotvault), and calls `gitcred.Run`. A separate one-function server fix sends GitHub bare repository names.
+**Architecture:** `internal/securestore` wraps a random data-encryption key (DEK) with one of four protector tiers (tpm > dpapi > keychain > file). `internal/gitcred` holds everything else that is testable without cobra: the git credential protocol, path parsing, the encrypted, file-locked cache, a small ghp API client, app/installation/scope resolution, and `Run`, which executes one helper operation and returns an exit code. `cmd/ghp/gitcredential.go` only resolves flags/env, wires the two-phase CLI config loading (non-interactive dotvault), and calls `gitcred.Run`. Task 7 (the server-side bare-name fix) was superseded by #358 on main.
 
 **Tech Stack:** Go (go.mod `go 1.26.0`), cobra, `github.com/google/go-tpm` v0.9.8 (`tpm2`, `tpm2/transport/{linuxtpm,windowstpm,linuxudstpm}`), `golang.org/x/sys` v0.49.0 (`unix.Flock`, `windows.LockFileEx`, `windows.CryptProtectData`), `crypto/aes` + `crypto/cipher` (GCM), `/usr/bin/security` on macOS, `swtpm` in CI.
 
@@ -81,7 +81,7 @@ cmd/ghp/
   auth.go               warning writer threaded through config loading; register the two subcommands
   main.go               exitCodeError handling
   token.go, apptoken.go asciiutil.EqualFold at three sites
-internal/github/app.go  bareRepoNames before the access_tokens request
+(Task 7, internal/github/app.go, was superseded by #358 on main)
 Makefile, .github/workflows/test.yml, docs/features/git-credential-helper.md,
 docs/cli/auth.md, docs/cli/index.md, mkdocs.yml, CLAUDE.md
 ```
@@ -823,6 +823,8 @@ git commit -m "feat(gitcred): status and clear operations"
 ---
 
 ### Task 7: send GitHub bare repository names for installation tokens (§7)
+
+> Superseded by #358 on main; the task's change was removed in Task 14.
 
 **Files:**
 - Modify: `internal/github/app.go` (`GetInstallationToken`, around lines 184-210)

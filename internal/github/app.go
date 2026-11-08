@@ -184,24 +184,6 @@ func installationCacheKey(installationID int64, repos []string, permissions map[
 	return hex.EncodeToString(sum[:])
 }
 
-// bareRepoNames returns repos with any "owner/" prefix removed. GitHub's
-// access_tokens endpoint takes bare repository names, while GHP scopes hold
-// owner/repo. Entries without a "/" are unchanged. It returns a new slice
-// and never modifies repos; nil stays nil.
-func bareRepoNames(repos []string) []string {
-	if repos == nil {
-		return nil
-	}
-	out := make([]string, len(repos))
-	for i, r := range repos {
-		if strings.Contains(r, "/") {
-			r = strings.SplitN(r, "/", 2)[1]
-		}
-		out[i] = r
-	}
-	return out
-}
-
 // GetInstallationToken returns a GitHub installation token for the given
 // installation, scoped to the specified repositories and permissions.
 // Results are cached, keyed by installation ID plus the requested repos and
@@ -210,8 +192,6 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, installatio
 	// GitHub rejects GHP's enforcement-only names (projects, workflows:read);
 	// translate them to App permission names first.
 	permissions = ghppermissions.ForGitHubApp(permissions)
-	// GitHub takes bare repository names; GHP scopes hold owner/repo.
-	repos = bareRepoNames(repos)
 	cacheKey := installationCacheKey(installationID, repos, permissions)
 	if tok, ok := p.cache.Get(cacheKey); ok {
 		return tok, nil

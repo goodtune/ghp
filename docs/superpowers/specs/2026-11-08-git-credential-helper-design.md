@@ -91,11 +91,11 @@ shared machine. Use of the helper is optional; each user makes that call.
   and **fails that git command**; the next git command calls `get` again. A
   revoked or stale cached token therefore costs exactly one failed operation.
 - GitHub's `POST /app/installations/{id}/access_tokens` takes `repositories`
-  as **bare repository names**. ghp's `AppTokenProvider.GetInstallationToken`
-  forwards the token's `owner/repo` entries unchanged, and nothing in the
-  tests or the rig exercises a repo-scoped `gha_` token through to GitHub. The
-  default path of this feature depends on repo-scoped agent tokens working at
-  use time, so decision 7 fixes this.
+  as **bare repository names**. When this design was written, ghp's
+  `AppTokenProvider.GetInstallationToken` forwarded the token's `owner/repo`
+  entries unchanged. The default path of this feature depends on repo-scoped
+  agent tokens working at use time. That server fix landed separately on main
+  in #358 (see decision 7); this branch carries no server change.
 - go-tpm v0.9.8 (`tpm2`, `tpm2/transport/linuxtpm`, `tpm2/transport/windowstpm`)
   is cgo-free and is already an indirect dependency. `golang.org/x/sys/windows`
   exposes DPAPI (`CryptProtectData`/`CryptUnprotectData`) without cgo.
@@ -351,13 +351,15 @@ message. A per-user or configurable limit is a follow-up.
 
 ### 7. Server fix: bare repository names for installation tokens
 
-`AppTokenProvider.GetInstallationToken` (and the multi-app variant) must send
-GitHub the repository *name* for each `owner/repo` entry (`strings.SplitN`
-on the first `/`, last segment; entries without a `/` are passed unchanged).
-A unit test asserts the request body sent to the fake GitHub. This is the
-smallest change that makes repo-scoped `gha_` tokens usable through the
-`github.com` vhost, which the helper's default path relies on. The scope rig
-should gain a live clone with a repo-scoped agent token as a follow-up.
+The server fix landed separately on main in #358; this branch carries no
+server change. #358 reads the installation's account login from GitHub and
+requires every agent-token `owner/repo` entry's owner to equal it (ASCII case
+fold). It sends GitHub the bare names. It fails closed: an owner mismatch, a
+malformed entry or a failed account lookup means no installation token is
+minted. `POST /api/tokens` (and `PATCH` of an agent token's repositories)
+returns 400 naming the repository when its owner is not the installation
+account. The helper prints that server message. The scope rig should gain a
+live clone with a repo-scoped agent token as a follow-up.
 
 ### 8. Documentation
 
