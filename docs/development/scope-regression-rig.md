@@ -234,7 +234,7 @@ Limitations: the histograms are instance-wide, so other traffic in the window (i
 - **coverage = covered / base**, where covered is the number of base claims with at least one runnable (not GAP) scenario result. Coverage tells you how much of base the run exercised; confidence tells you how much of that holds. The text report prints both lines; the JSON report has `summary.covered` and `summary.coverage`.
 - The coverage-gap list names every base claim with no scenario at all.
 
-Iteration 1 covered 28 claims (27 PASS and 22 GAP predicted, about 55%). Base is now 60 periodic claims. After batch 4 (gaps the rig could test with no new fixtures or operator setup: GraphQL claims C22, C23, C30 and C34 to C36, PERM-C17, PERM-C19, REPO-C09, TOK-C01, LIFE-C41, BORDER-C47, the codeload probe GAP-A4 and the live corpus replay GAP-A9), 48 base claims have a scenario. The remaining 12 need agent tokens, git smart-HTTP, enterprise or anonymous-git setup, or token API checks that are not written yet. Planned iterations:
+Iteration 1 covered 28 claims (27 PASS and 22 GAP predicted, about 55%). Base is now 60 periodic claims. After batch 4 (gaps the rig could test with no new fixtures or operator setup: GraphQL claims C22, C23, C30 and C34 to C36, PERM-C17, PERM-C19, REPO-C09, TOK-C01, LIFE-C41, BORDER-C47, the codeload probe GAP-A4 and the live corpus replay GAP-A9), 50 base claims have a scenario. On an instance with no border block and no agent installation, 47 of them run (BORDER-C43, BORDER-C47 and GAP-A6 are GAP), so coverage is 47/60, about 78%. The other 10 need agent tokens, git smart-HTTP, enterprise or anonymous-git setup, or token API checks that are not written yet. Planned iterations:
 
 | Iteration | Adds | Target |
 |---|---|---|
