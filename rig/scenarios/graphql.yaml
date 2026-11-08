@@ -349,3 +349,214 @@
   query: |
     { repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { foo { bar } } }
   expect: {status: 403, body_contains: ["unmapped fields: foo"], ghp_denial: true}
+
+# GQL-C22: an open-scoped token skips static analysis, so an unmapped field
+# reaches GitHub, which names it in its own error. The perm-ro control shows
+# the same query is denied by GHP for a scoped token.
+- id: GQL-C22.open-unmapped-forwarded
+  claim: GQL-C22
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: An open-scoped token's query with an unmapped field is forwarded to GitHub, not analysed.
+  profile: open
+  kind: graphql
+  query: "{ viewer { login scoperigUnmapped { id } } }"
+  expect:
+    status: 200
+    ghp_denial: false
+    body_contains: ["scoperigUnmapped"]
+    body_not_contains: ["GraphQL request references unmapped fields"]
+
+- id: GQL-C22.scoped-unmapped-denied
+  claim: GQL-C22
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: Control - the same query with a permission-scoped token is analysed and denied by GHP.
+  profile: perm-ro
+  kind: graphql
+  query: "{ viewer { login scoperigUnmapped { id } } }"
+  expect: {status: 403, body_contains: ["unmapped fields: scoperigUnmapped"], ghp_denial: true}
+
+# GQL-C23: the padding is a GraphQL comment of 1,099,999 characters, so the
+# body is over the 1 MiB (1,048,576 byte) cap. fmt caps a width at 1e6, so
+# the comment is two printf runs.
+- id: GQL-C23.scoped-over-cap
+  claim: GQL-C23
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A scoped token's GraphQL body over 1 MiB is rejected by GHP with 413.
+  profile: perm-ro
+  kind: graphql
+  query: |
+    # {{printf "%0999999d" 0}}{{printf "%0100000d" 0}}
+    { viewer { login } }
+  expect: {status: 413, body_contains: ["GraphQL request body exceeds proxy size limit"]}
+
+- id: GQL-C23.open-not-capped
+  claim: GQL-C23
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: An open-scoped token's GraphQL body over 1 MiB is not capped by GHP; it is forwarded and GitHub answers.
+  profile: open
+  kind: graphql
+  query: |
+    # {{printf "%0999999d" 0}}{{printf "%0100000d" 0}}
+    { viewer { login } }
+  expect:
+    body_not_contains: ["GraphQL request body exceeds proxy size limit"]
+    ghp_denial: false
+
+# GQL-C30: the mutation name does not exist, so a forwarded request would do
+# nothing at GitHub. It is in mutationWriteAllowlist (gqlcheck.go) because
+# the profile has no repository restriction; it names no repository.
+- id: GQL-C30.unmapped-mutation-denied
+  claim: GQL-C30
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A mutation that is not in the curated mutation map is rejected for a permission-scoped token, even with write scopes.
+  profile: perm-rw
+  kind: graphql
+  query: |
+    mutation { scoperigNoSuchMutation(input: {clientMutationId: "scoperig-{{.RunID}}"}) { clientMutationId } }
+  expect: {status: 403, body_contains: ["unmapped fields: scoperigNoSuchMutation"], ghp_denial: true}
+
+# GQL-C34: a documented limitation. The scalar name is not real, so GHP
+# passes it (scalar leaf under the always-allowed repository) and GitHub
+# rejects it in its own error.
+- id: GQL-C34.scalar-leaf-passes
+  claim: GQL-C34
+  doc: docs/features/token-scoping.md#known-limitations
+  description: An unmapped scalar leaf under an always-allowed parent passes static analysis and reaches GitHub.
+  profile: perm-ro
+  kind: graphql
+  query: |
+    { repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { name scoperigUnknownScalar } }
+  expect:
+    status: 200
+    ghp_denial: false
+    body_contains: ["scoperigUnknownScalar"]
+    body_not_contains: ["GraphQL request references unmapped fields"]
+
+# GQL-C35: no variable pins a lookup when the document has more than one
+# operation (resolveVariables), so a repository-restricted token is denied
+# (the repo-A control). Tokens with no repository restriction are
+# unaffected: GitHub runs the operation that operationName selects.
+- id: GQL-C35.perm-only-multi-op-variables
+  claim: GQL-C35
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A permission-only token may send a variable-driven repository lookup that the variable rule would not pin.
+  profile: perm-ro
+  kind: graphql
+  operation_name: Lookup
+  query: |
+    query Lookup($o: String!, $n: String!) { repository(owner: $o, name: $n) { name } }
+    query Other { viewer { login } }
+  variables: {o: "{{.RepoA.Owner}}", n: "{{.RepoA.Name}}"}
+  expect:
+    status: 200
+    body_not_contains: ['"errors"']
+    json: {"$.data.repository.name": "{{.RepoA.Name}}"}
+
+- id: GQL-C35.open-multi-op-variables
+  claim: GQL-C35
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: An open-scoped token may send a variable-driven repository lookup that the variable rule would not pin.
+  profile: open
+  kind: graphql
+  operation_name: Lookup
+  query: |
+    query Lookup($o: String!, $n: String!) { repository(owner: $o, name: $n) { name } }
+    query Other { viewer { login } }
+  variables: {o: "{{.RepoA.Owner}}", n: "{{.RepoA.Name}}"}
+  expect:
+    status: 200
+    body_not_contains: ['"errors"']
+    json: {"$.data.repository.name": "{{.RepoA.Name}}"}
+
+- id: GQL-C35.repo-scoped-multi-op-variables
+  claim: GQL-C35
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: Control - the same request with a token scoped to A is denied, because the variables do not pin the lookup.
+  profile: repo-A
+  kind: graphql
+  operation_name: Lookup
+  query: |
+    query Lookup($o: String!, $n: String!) { repository(owner: $o, name: $n) { name } }
+    query Other { viewer { login } }
+  variables: {o: "{{.RepoA.Owner}}", n: "{{.RepoA.Name}}"}
+  expect: {status: 403, body_contains: ["literal string arguments"], ghp_denial: true}
+
+# GQL-C36: fragments, aliases and multiple operations. The analyzer walks
+# fragment bodies and every operation in the document, whatever
+# operationName selects, and checks field names, not aliases.
+- id: GQL-C36.named-fragment-scope
+  claim: GQL-C36
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A pullRequests selection inside a named fragment still needs pull_requests:read.
+  profile: perm-issues-ro
+  kind: graphql
+  query: |
+    query { repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { ...F } }
+    fragment F on Repository { pullRequests(first: 1) { nodes { number } } }
+  expect: {status: 403, body_contains: ["Token does not grant required GraphQL scopes", "pull_requests:read"], ghp_denial: true}
+
+- id: GQL-C36.named-fragment-allowed
+  claim: GQL-C36
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: Control - a named fragment with metadata only is allowed for a repository-scoped token.
+  profile: repo-A
+  kind: graphql
+  query: |
+    query { repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { ...F } }
+    fragment F on Repository { name }
+  expect:
+    status: 200
+    body_not_contains: ['"errors"']
+    json: {"$.data.repository.name": "{{.RepoA.Name}}"}
+
+- id: GQL-C36.aliased-repository-b
+  claim: GQL-C36
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: An alias on repository(owner, name) does not hide the repository; B is denied for a token scoped to A.
+  profile: repo-A
+  kind: graphql
+  query: |
+    { mine: repository(owner: "{{.RepoB.Owner}}", name: "{{.RepoB.Name}}") { name } }
+  expect: {status: 403, body_contains: ["Token is not scoped to"], ghp_denial: true}
+
+# GitHub runs one operation per request: the one operationName names, or
+# the only one. GHP analyses that operation (selectOperation), so the other
+# operations in the document are not checked; a document with several
+# operations and no operationName is rejected.
+- id: GQL-C36.operation-name-selects-b-denied
+  claim: GQL-C36
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: With several operations, the one operationName selects is analysed; selecting the lookup of B is denied for a token scoped to A.
+  profile: repo-A
+  kind: graphql
+  operation_name: Bad
+  query: |
+    query Good { repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { name } }
+    query Bad { repository(owner: "{{.RepoB.Owner}}", name: "{{.RepoB.Name}}") { name } }
+  expect: {status: 403, body_contains: ["Token is not scoped to"], ghp_denial: true}
+
+- id: GQL-C36.operation-name-selects-a-allowed
+  claim: GQL-C36
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: Control - the same document with operationName selecting the lookup of A is allowed, and GitHub runs only that operation.
+  profile: repo-A
+  kind: graphql
+  operation_name: Good
+  query: |
+    query Good { repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { name } }
+    query Bad { repository(owner: "{{.RepoB.Owner}}", name: "{{.RepoB.Name}}") { name } }
+  expect:
+    status: 200
+    body_not_contains: ['"errors"', "{{.RepoB.Name}}"]
+    json: {"$.data.repository.name": "{{.RepoA.Name}}"}
+
+- id: GQL-C36.multiple-ops-without-name
+  claim: GQL-C36
+  doc: docs/features/token-scoping.md#graphql-scope-enforcement
+  description: A scoped token's document with several operations and no operationName is rejected (it cannot be scoped).
+  profile: repo-A
+  kind: graphql
+  query: |
+    query Good { repository(owner: "{{.RepoA.Owner}}", name: "{{.RepoA.Name}}") { name } }
+    query Bad { repository(owner: "{{.RepoB.Owner}}", name: "{{.RepoB.Name}}") { name } }
+  expect: {status: 400, body_contains: ["operationName is required"]}

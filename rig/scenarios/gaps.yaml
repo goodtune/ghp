@@ -145,3 +145,58 @@
   query: |
     { nodes(ids: ["{{.RepoA.NodeID}}"]) { ... on Issue { title body } } }
   expect: {status: 403, body_contains: ["Token does not grant required GraphQL scopes", "issues:read"], ghp_denial: true}
+
+# GAP-A4: the codeload.github.com virtual host. The unknown token is fake
+# (the run ID padded to the length of a real ghx_ token); GHP must reject it
+# with its own denial and never forward it. The Authorization header
+# overrides the profile token.
+- id: GAP-A4.codeload-unknown-token
+  claim: GAP-A4
+  doc: docs/how-it-works.md#virtualhost-routing
+  description: An unknown ghx_ token on codeload.github.com is rejected by GHP, not forwarded to GitHub.
+  profile: open
+  kind: rest
+  requires: [codeload_vhost]
+  vhost: codeload.github.com
+  method: GET
+  path: /{{.RepoA}}/tar.gz/{{.Fixture.A.Branch}}
+  headers: {Authorization: "token ghx_{{printf \"%.40s\" (print .RunID \"scoperigfakescoperigfakescoperigfakescoperigfake\")}}"}
+  expect: {status: 401, ghp_denial: true}
+
+- id: GAP-A4.codeload-repo-a-archive
+  claim: GAP-A4
+  doc: docs/how-it-works.md#virtualhost-routing
+  description: A token scoped to A fetches A's archive through codeload.github.com (GHP swaps in the real credential).
+  profile: repo-A
+  kind: rest
+  requires: [codeload_vhost]
+  vhost: codeload.github.com
+  method: GET
+  path: /{{.RepoA}}/tar.gz/{{.Fixture.A.Branch}}
+  expect: {status: 200, ghp_denial: false}
+
+- id: GAP-A4.codeload-repo-b-denied
+  claim: GAP-A4
+  doc: docs/how-it-works.md#virtualhost-routing
+  description: A token scoped to A is denied B's archive through codeload.github.com.
+  profile: repo-A
+  kind: rest
+  requires: [codeload_vhost]
+  vhost: codeload.github.com
+  method: GET
+  path: /{{.RepoB}}/tar.gz/{{.Fixture.B.Branch}}
+  expect: {status: 403, ghp_denial: true}
+
+# GAP-A9: replay the gh 2.102.0 corpus live. Load expands this entry into one
+# graphql scenario per corpus query and profile; each asserts the corpus
+# verdict (allow: 200 and no GHP denial; deny: 403 with the reason's GHP
+# message). OWNER, REPO and NODE_ID become fixture A's values. Numbers
+# (pull request and issue 1) are kept: an allowed query may get a GraphQL
+# error from GitHub for them, which is not GHP's verdict.
+- id: GAP-A9.gh-2.102.0
+  claim: GAP-A9
+  doc: docs/getting-started.md#configure-your-agent
+  description: The GraphQL analyzer gives gh 2.102.0's real queries the corpus verdicts live.
+  kind: corpus
+  corpus: corpus/gh/2.102.0
+  corpus_profiles: {open: open, perm-ro: perm-ro, repo: repo-A}

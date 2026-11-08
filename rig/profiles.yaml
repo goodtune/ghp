@@ -45,3 +45,6 @@
 - name: lifecycle-revoke
   type: proxy
   duration: 2h
+- name: lifecycle-expire
+  type: proxy
+  duration: 1m

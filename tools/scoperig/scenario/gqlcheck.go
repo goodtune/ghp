@@ -20,6 +20,8 @@ import (
 var mutationWriteAllowlist = map[string]bool{
 	"GQL-C31.createissue-ro-denied":  true,
 	"GQL-C31.createissue-rw-allowed": true,
+	// The mutation name does not exist at GitHub and names no repository.
+	"GQL-C30.unmapped-mutation-denied": true,
 }
 
 var (

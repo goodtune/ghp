@@ -10,7 +10,7 @@ It is an operator tool. It is not shipped in the `ghp` binary and it does not ru
 
 What iteration 1 does not cover:
 
-- Git smart-HTTP, agent (`gha_`) tokens, enterprise exceptions, border-policy reload, expiry after a wait, anonymous git, audit logs, hard delete.
+- Git smart-HTTP, agent (`gha_`) tokens, enterprise exceptions, border-policy reload, anonymous git, audit logs, hard delete.
 - Load or performance testing. The optional latency section (see [Latency](#latency)) measures the run's own requests only.
 - Fixing product defects. The rig finds them; fixes are separate pull requests.
 
@@ -66,6 +66,7 @@ The preflight step sets these capabilities. A scenario that needs a capability t
 | `repo_w_push` | The user can push to fixture repository W. |
 | `repo_create` | The credential has the `repo` or `public_repo` OAuth scope and W's owner is the probed login. |
 | `github_vhost` | The instance answers a TLS request with SNI `github.com`. |
+| `codeload_vhost` | The instance answers a TLS request with SNI `codeload.github.com`. |
 | `agent_installation` | `GHP_RIG_INSTALLATION_ID` is set and the session can list all tokens. |
 | `border_block_ghp` | `ghp_` is in `instance.border_block`. |
 | `border_block_gho` | `gho_` is in `instance.border_block`. |
@@ -105,6 +106,10 @@ Validate offline first. This needs no network and no environment:
 make scoperig-validate
 ```
 
+A rest request may set `vhost: github.com` (needs `requires: [github_vhost]`) or `vhost: codeload.github.com` (needs `requires: [codeload_vhost]`); the request goes to the instance with that TLS SNI and Host header and no `/api/v3` prefix, and must be a GET or HEAD. A graphql scenario may set `operation_name`, sent as the request's `operationName`. Templates have the functions `add` (duration arithmetic), `upper` and `base64` (standard encoding, for a Basic credential).
+
+A `kind: corpus` entry replays a `gh` query corpus live. `Load` replaces it with one graphql scenario per corpus query and corpus profile, with the ID `<id>.<file>.<operation>.<corpus profile>`; `validate` then checks each generated scenario like any other. `corpus` is the corpus directory relative to the rig root, and `corpus_profiles` maps every corpus profile (`open`, `perm-ro`, `repo`) to a rig profile; an unmapped profile is a load error. The corpus placeholders `OWNER`, `REPO` and `NODE_ID` in variables become fixture A's owner, name and node ID. A `verdict: allow` expects 200 and no GHP denial (GitHub may still report a GraphQL error for the placeholder numbers); a `deny:*` verdict expects 403, a GHP denial and the message for that reason. An entry with `known_issue` gets `observed:` from its `current` verdict. Run one command's queries with `--only 'GAP-A9.gh-2.102.0.pr_view.*'`.
+
 Validation rejects, among other things, any non-GET request whose path does not target `/repos/<W>/...` (the exceptions are the GAP-A1 probe and `token_api` scenarios, which must target `/api/tokens`), and paths with `..`, dot segments or encoded dots. A `gh` argument that contains the literal placeholder host `ghp.example` is rejected; use `{{.Host}}`.
 
 `tools/scoperig/scenario/probe_test.go` holds a standing table of adversarial scenario shapes (host, path, cleanup, empty-matcher and `gh` parser tricks). Each must be rejected by a named rule, and CI runs it with the unit tests. When you find a new way past the validator, add a row there with the fix. A fuzz target (`go test -fuzz FuzzLoadValidate ./tools/scoperig/scenario`) searches for accepted REST writes that leave W.
@@ -140,6 +145,7 @@ A run starts by sweeping: it revokes every unrevoked token whose session id star
 | `status`, `status_in` | The HTTP status equals the value, or is one of the list |
 | `body_contains`, `body_not_contains` | The response body contains (or does not contain) every string |
 | `header` | Each named header's first value equals the string |
+| `header_not_contains` | No response header line (`Name: value`, after redaction) contains any of the strings. A token in a header shows as `<prefix>[REDACTED]`, so `_[REDACTED]` finds one |
 | `json` | Each JSON path (`$.a.b`, `$.items[0].id`) has the string value |
 | `ghp_denial` | The response is (or is not) a GHP denial (403 or 401 with a GHP message) |
 | `exit_code`, `exit_code_in` | The `gh` exit code equals the value, or is one of the list |
@@ -228,13 +234,13 @@ Limitations: the histograms are instance-wide, so other traffic in the window (i
 - **coverage = covered / base**, where covered is the number of base claims with at least one runnable (not GAP) scenario result. Coverage tells you how much of base the run exercised; confidence tells you how much of that holds. The text report prints both lines; the JSON report has `summary.covered` and `summary.coverage`.
 - The coverage-gap list names every base claim with no scenario at all.
 
-Iteration 1 covers 28 claims. The prediction is 27 PASS and 22 GAP, so confidence is 27 / 49 (1 KNOWN), about 55%. Planned iterations:
+Iteration 1 covered 28 claims (27 PASS and 22 GAP predicted, about 55%). Base is now 60 periodic claims. After batch 4 (gaps the rig could test with no new fixtures or operator setup: GraphQL claims C22, C23, C30 and C34 to C36, PERM-C17, PERM-C19, REPO-C09, TOK-C01, LIFE-C41, BORDER-C47, the codeload probe GAP-A4 and the live corpus replay GAP-A9), 48 base claims have a scenario. The remaining 12 need agent tokens, git smart-HTTP, enterprise or anonymous-git setup, or token API checks that are not written yet. Planned iterations:
 
 | Iteration | Adds | Target |
 |---|---|---|
 | 1 | Runner, token lifecycle, REST/GraphQL/`gh`/token API kinds, fixtures, report, corpus test, skills | ~55% |
 | 2 | Git smart-HTTP kind, agent tokens, remaining GraphQL claims, header/body scan on every response | ~70% |
-| 3 | Expiry after a wait, no-expiry config, anonymous git, enterprise exceptions, scheduled runs | ~80% |
+| 3 | No-expiry config, anonymous git, enterprise exceptions, scheduled runs (expiry after a wait was added in batch 4) | ~80% |
 | 4 | Reload and audit-log checks via operator hooks, corpus extended to write commands | 90%+ |
 
 Confidence also rises when a KNOWN issue is fixed: the claim returns to the denominator and must pass.
@@ -310,7 +316,7 @@ Existing expectations in the output directory are kept per operation.
 
 - No git smart-HTTP scenarios.
 - No agent (`gha_`) token scenarios.
-- No expiry-after-wait scenarios.
+- `LIFE-C41.expired-rejected` waits for a 1-minute token to expire, so a run that starts with it polls for up to 150 s.
 - `gh` must run outside a github.com checkout, or it ignores `GH_HOST`. The rig runs it in a fresh temporary directory for this reason.
 - Closed issues and PRs accumulate in W.
 - One run per instance at a time (see the sweep above).
