@@ -332,8 +332,9 @@ message. A per-user or configurable limit is a follow-up.
   if that tier is unavailable the helper fails rather than falling back; if
   it differs from the envelope's tier the envelope is re-created under it
   and `tier` is set to it, with a stderr notice when this is a downgrade.
-- Cache entries are keyed as in section 3; `clear` removes the file after
-  revoking what it can.
+- Cache entries are keyed as in section 3; `clear` snapshots the entries,
+  removes the file, releases the lock, and then revokes what it can (decision
+  4).
 
 ### 6. Threat model (goes in the docs verbatim or near it)
 
