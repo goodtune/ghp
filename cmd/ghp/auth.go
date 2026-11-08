@@ -94,7 +94,7 @@ func userCLIConfigPath() string {
 // warning is printed for permissions looser than 0600. The system file is
 // expected to be world-readable across a fleet and to carry no secrets (the
 // token is sourced per-user via dotvault), so that check is skipped for it.
-// The warning goes to warn.
+// The check is also skipped on Windows (see below). The warning goes to warn.
 func loadCLIConfigFileAt(path string, checkPerms bool, warn io.Writer) (*cliConfig, error) {
 	cfg := &cliConfig{}
 	if path == "" {
@@ -107,7 +107,11 @@ func loadCLIConfigFileAt(path string, checkPerms bool, warn io.Writer) (*cliConf
 		}
 		return nil, fmt.Errorf("stating %s: %w", path, err)
 	}
-	if checkPerms {
+	// Windows file modes carry no owner/group/other bits (Go reports 0666, or
+	// 0444 for a read-only file), so the Unix check is meaningless there and
+	// would warn on every file. The ACL of the per-user profile directory is
+	// the protection on Windows.
+	if checkPerms && runtime.GOOS != "windows" {
 		// 0177 masks owner-execute, group, and other permission bits.
 		const insecurePermsMask = 0177
 		if info.Mode().Perm()&insecurePermsMask != 0 {

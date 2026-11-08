@@ -393,7 +393,9 @@ then print one line that says so.
   unknown flag, a missing operation) are printed by the command parser
   without the prefix, for example `unknown flag: --bogus`. CLI config
   warnings (insecure permissions, malformed YAML) are printed before a
-  failure, one prefixed line each. A cache warning
+  failure, one prefixed line each. The permission check is not done on
+  Windows: file modes there do not carry Unix permission bits, and the
+  user profile ACL protects the file. A cache warning
   (`could not use the credential cache (...)` or the
   `cannot read the credential cache (...)` notice) can come before a
   failure to mint a token, as one more prefixed line.

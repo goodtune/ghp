@@ -113,7 +113,9 @@ For example:
 There are three exceptions. Usage errors from a bad helper line (an unknown
 flag, a missing operation) are printed without the prefix, for example
 `unknown flag: --bogus`. CLI config warnings (insecure permissions,
-malformed YAML) are printed before a failure, one prefixed line each. A
+malformed YAML) are printed before a failure, one prefixed line each. The
+permission check is not done on Windows: file modes there do not carry
+Unix permission bits, and the user profile ACL protects the file. A
 cache warning (`could not use the credential cache (...)` or the
 `cannot read the credential cache (...)` notice) can come before a failure
 to mint a token, as one more prefixed line.

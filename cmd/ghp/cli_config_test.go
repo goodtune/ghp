@@ -37,7 +37,7 @@ func writeUserConfig(t *testing.T, home, contents string) {
 func TestLoadCLIConfig_SystemFileOnly(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir()) // no user config written
+	setTestHome(t, t.TempDir()) // no user config written
 	setSystemConfig(t, "server_url: http://sys-server:8080\n")
 
 	cfg, err := loadCLIConfig()
@@ -53,7 +53,7 @@ func TestLoadCLIConfig_UserOverloadsSystem(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	// System provides server_url; the user overrides server_url and supplies
 	// its own user_token (a session token is never carried in the system file).
 	setSystemConfig(t, "server_url: http://sys-server:8080\n")
@@ -77,7 +77,7 @@ func TestLoadCLIConfig_SystemServerURLFallsThrough(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	setSystemConfig(t, "server_url: http://sys-server:8080\n")
 	writeUserConfig(t, home, "user_token: user-token\n")
 
@@ -97,7 +97,7 @@ func TestLoadCLIConfig_EnvOverridesSystemAndUser(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "http://env-server:7070")
 	t.Setenv("GHP_USER_TOKEN", "env-token")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	setSystemConfig(t, "server_url: http://sys-server:8080\n")
 	writeUserConfig(t, home, "server_url: http://user-server:9090\nuser_token: user-token\n")
 
@@ -119,7 +119,7 @@ func TestLoadCLIConfig_EnvOverridesSystemAndUser(t *testing.T) {
 func TestLoadCLIConfig_DotvaultStanzaFromSystem(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	setSystemConfig(t, `server_url: http://sys-server:8080
 dotvault:
   service: ghp
@@ -146,7 +146,7 @@ func TestLoadCLIConfig_UserDotvaultOverridesSystem(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	setSystemConfig(t, "dotvault:\n  service: sys-service\n  fields:\n    user_token: token\n")
 	writeUserConfig(t, home, "dotvault:\n  service: user-service\n  fields:\n    user_token: token\n")
 
@@ -166,7 +166,7 @@ func TestLoadCLIConfig_NoSystemFile(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	setSystemConfig(t, "") // path set but file absent
 	writeUserConfig(t, home, "server_url: http://user-server:9090\nuser_token: user-token\n")
 
@@ -185,7 +185,7 @@ func TestLoadCLIConfig_NoSystemFile(t *testing.T) {
 func TestLoadCLIConfig_SystemUserTokenRejected(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	setSystemConfig(t, "server_url: http://sys-server:8080\nuser_token: shared-token\n")
 
 	_, err := loadCLIConfig()
@@ -200,7 +200,7 @@ func TestLoadCLIConfig_SystemUserTokenRejected(t *testing.T) {
 func TestLoadCLIConfig_SystemDotvaultAllowed(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	setSystemConfig(t, `server_url: http://sys-server:8080
 dotvault:
   service: ghp

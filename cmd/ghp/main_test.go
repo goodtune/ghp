@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -248,7 +249,7 @@ func TestVersionCmd(t *testing.T) {
 func TestAuthLoginCmd_NoServerURL(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newAuthCmd()
 	buf := &bytes.Buffer{}
@@ -309,7 +310,7 @@ func TestAuthLoginCmd_DeviceFlow(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("GHP_NO_BROWSER", "1")
 
 	cmd := newAuthCmd()
@@ -367,7 +368,7 @@ func TestAuthLoginCmd_DeviceFlowDenied(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	t.Setenv("GHP_NO_BROWSER", "1")
 
 	cmd := newAuthCmd()
@@ -396,7 +397,7 @@ func TestAuthLoginCmd_ServerError(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	t.Setenv("GHP_NO_BROWSER", "1")
 
 	cmd := newAuthCmd()
@@ -435,7 +436,7 @@ func TestAuthLoginCmd_DeviceFlowServerError(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	t.Setenv("GHP_NO_BROWSER", "1")
 
 	cmd := newAuthCmd()
@@ -490,7 +491,7 @@ func TestAuthLoginCmd_DeviceFlowRateLimit(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	t.Setenv("GHP_NO_BROWSER", "1")
 
 	cmd := newAuthCmd()
@@ -552,7 +553,7 @@ func TestParseRetryAfter(t *testing.T) {
 // TestAuthSetTokenCmd_Valid verifies that set-token saves a ghpr_ token to config.
 func TestAuthSetTokenCmd_Valid(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("GHP_SERVER_URL", "http://localhost:8080")
 	t.Setenv("GHP_USER_TOKEN", "")
 
@@ -581,7 +582,7 @@ func TestAuthSetTokenCmd_Valid(t *testing.T) {
 
 // TestAuthSetTokenCmd_InvalidPrefix verifies that set-token rejects tokens without the ghpr_ prefix.
 func TestAuthSetTokenCmd_InvalidPrefix(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newAuthCmd()
 	buf := &bytes.Buffer{}
@@ -603,7 +604,7 @@ func TestAuthStatusCmd_NoToken(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newAuthCmd()
 	buf := &bytes.Buffer{}
@@ -639,7 +640,7 @@ func TestAuthStatusCmd_Authenticated(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newAuthCmd()
 	buf := &bytes.Buffer{}
@@ -663,7 +664,7 @@ func TestAuthStatusCmd_Authenticated(t *testing.T) {
 func TestAuthStatusCmd_NoServerURL(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newAuthCmd()
 	buf := &bytes.Buffer{}
@@ -684,7 +685,7 @@ func TestAuthStatusCmd_NoServerURL(t *testing.T) {
 func TestTokenCreateCmd_NoConfig(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -730,7 +731,7 @@ func TestTokenCreateCmd_ProxyToken(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -756,7 +757,7 @@ func TestTokenCreateCmd_AgentTokenMissingInstallation(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -794,7 +795,7 @@ func TestTokenCreateCmd_AgentToken(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -850,7 +851,7 @@ func TestTokenCreateCmd_AppAndInstallationByName(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -908,7 +909,7 @@ func TestTokenCreateCmd_InstallationOnlyDefaultApp(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -956,7 +957,7 @@ func TestTokenCreateCmd_InstallationOnlySingleApp(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -988,7 +989,7 @@ func TestTokenCreateCmd_AppNotFound(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -1030,7 +1031,7 @@ func TestTokenCreateCmd_InstallationNotFound(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -1059,7 +1060,7 @@ func TestTokenCreateCmd_MutuallyExclusiveFlags(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	tests := []struct {
 		name string
@@ -1133,7 +1134,7 @@ func TestTokenCreateCmd_AppWithDurationNever(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -1183,7 +1184,7 @@ func TestTokenCreateCmd_CaseInsensitiveAppMatch(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -1221,7 +1222,7 @@ func TestTokenListCmd(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -1260,7 +1261,7 @@ func TestTokenListCmd_Empty(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -1289,7 +1290,7 @@ func TestTokenRevokeCmd(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -1316,7 +1317,7 @@ func TestTokenRevokeCmd_ServerError(t *testing.T) {
 
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "testtoken")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newTokenCmd()
 	buf := &bytes.Buffer{}
@@ -1334,7 +1335,7 @@ func TestTokenRevokeCmd_ServerError(t *testing.T) {
 func TestLoadCLIConfig_EnvVars(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "http://env-server:8080")
 	t.Setenv("GHP_USER_TOKEN", "env-token")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cfg, err := loadCLIConfig()
 	if err != nil {
@@ -1352,7 +1353,7 @@ func TestLoadCLIConfig_EnvVars(t *testing.T) {
 func TestLoadCLIConfig_Defaults(t *testing.T) {
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cfg, err := loadCLIConfig()
 	if err != nil {
@@ -1369,7 +1370,7 @@ func TestLoadCLIConfig_Defaults(t *testing.T) {
 // TestLoadCLIConfig_FromFile verifies that values are loaded from the YAML config file when env vars are unset.
 func TestLoadCLIConfig_FromFile(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
 
@@ -1397,7 +1398,7 @@ func TestLoadCLIConfig_FromFile(t *testing.T) {
 // TestLoadCLIConfig_EnvVarsPriorityOverFile verifies that env vars win when both env vars and file are set.
 func TestLoadCLIConfig_EnvVarsPriorityOverFile(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("GHP_SERVER_URL", "http://env-server:8080")
 	t.Setenv("GHP_USER_TOKEN", "env-token")
 
@@ -1643,8 +1644,11 @@ xARUAV0AcnOf8WgFfswT1z7K4sJABdSBhP1URlo9YBW41+FAzQbm
 
 // TestLoadCLIConfig_InsecurePerms verifies that loadCLIConfig still loads config when file has insecure permissions.
 func TestLoadCLIConfig_InsecurePerms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not meaningful on Windows; the check is skipped there")
+	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("GHP_SERVER_URL", "")
 	t.Setenv("GHP_USER_TOKEN", "")
 
@@ -1668,5 +1672,54 @@ func TestLoadCLIConfig_InsecurePerms(t *testing.T) {
 	}
 	if cfg.UserToken != "file-token" {
 		t.Errorf("UserToken: got %q, want %q", cfg.UserToken, "file-token")
+	}
+}
+
+// TestLoadCLIConfigFileAt_InsecurePermsWarns verifies that, on Unix, a user
+// config file with permissions looser than 0600 produces the warning and is
+// still loaded.
+func TestLoadCLIConfigFileAt_InsecurePermsWarns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not meaningful on Windows; the check is skipped there")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server_url: http://file-server:8080\n"), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+	var buf bytes.Buffer
+	cfg, err := loadCLIConfigFileAt(path, true, &buf)
+	if err != nil {
+		t.Fatalf("loadCLIConfigFileAt error: %v", err)
+	}
+	if cfg.ServerURL != "http://file-server:8080" {
+		t.Errorf("ServerURL: got %q, want %q", cfg.ServerURL, "http://file-server:8080")
+	}
+	want := "warning: config file " + path + " has insecure permissions 0644 (expected 0600)\n"
+	if buf.String() != want {
+		t.Errorf("warning: got %q, want %q", buf.String(), want)
+	}
+}
+
+// TestLoadCLIConfigFileAt_WindowsSkipsPermCheck verifies that on Windows,
+// where file modes carry no Unix permission bits, no permission warning is
+// printed for the user config file.
+func TestLoadCLIConfigFileAt_WindowsSkipsPermCheck(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only: the permission check is skipped only on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server_url: http://file-server:8080\n"), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+	var buf bytes.Buffer
+	cfg, err := loadCLIConfigFileAt(path, true, &buf)
+	if err != nil {
+		t.Fatalf("loadCLIConfigFileAt error: %v", err)
+	}
+	if cfg.ServerURL != "http://file-server:8080" {
+		t.Errorf("ServerURL: got %q, want %q", cfg.ServerURL, "http://file-server:8080")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no warning on Windows, got %q", buf.String())
 	}
 }

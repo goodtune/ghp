@@ -119,8 +119,7 @@ func setupGitCredential(t *testing.T) (*fakeCredServer, string) {
 	t.Helper()
 	f := newFakeCredServer(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	setTestHome(t, home)
 	t.Setenv("GHP_SERVER_URL", f.srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "ghpr_test")
 	for _, name := range []string{"GHP_GIT_CM_APP", "GHP_GIT_CM_TYPE", "GHP_GIT_CM_SCOPES", "GHP_GIT_CM_TTL", "GHP_GIT_CM_CACHE_BACKEND"} {
@@ -635,8 +634,7 @@ func setupGitConfig(t *testing.T) string {
 	if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	setTestHome(t, home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
