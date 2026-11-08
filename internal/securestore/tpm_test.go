@@ -143,15 +143,27 @@ func TestTPMProtector_RejectsBadInput(t *testing.T) {
 			t.Fatal("Wrap(16 bytes) = nil error, want an error")
 		}
 	})
-	t.Run("unwrap malformed json", func(t *testing.T) {
-		_, err := p.Unwrap([]byte("{"))
-		if err == nil {
-			t.Fatal("Unwrap(\"{\") = nil error, want an error")
-		}
-		if errors.Is(err, ErrForeignKey) {
-			t.Fatalf("Unwrap(\"{\") = %v, must not be ErrForeignKey", err)
-		}
-	})
+	// Deterministic decode failures are ErrForeignKey (discard and rebuild),
+	// never ErrUnavailable (an unreadable cache reported on every call).
+	undecodable := []struct {
+		name string
+		raw  []byte
+	}{
+		{"malformed json", []byte("{")},
+		{"bad public area", mustJSON(t, tpmBlob{Version: tpmBlobVersion, Template: tpmBlobTemplate, Public: []byte{0x00, 0x05}, Private: []byte{0x00, 0x00}})},
+		{"bad private area", mustJSON(t, tpmBlob{Version: tpmBlobVersion, Template: tpmBlobTemplate, Public: []byte{0x00, 0x00}, Private: []byte{0x00, 0x05}})},
+	}
+	for _, tt := range undecodable {
+		t.Run("unwrap "+tt.name, func(t *testing.T) {
+			_, err := p.Unwrap(tt.raw)
+			if !errors.Is(err, ErrForeignKey) {
+				t.Fatalf("Unwrap(%q) = %v, want errors.Is ErrForeignKey", tt.raw, err)
+			}
+			if errors.Is(err, ErrUnavailable) {
+				t.Fatalf("Unwrap(%q) = %v, must not be ErrUnavailable", tt.raw, err)
+			}
+		})
+	}
 	for _, b := range []tpmBlob{
 		{Version: 2, Template: tpmBlobTemplate},
 		{Version: tpmBlobVersion, Template: "rsa-srk"},
@@ -172,6 +184,42 @@ func TestTPMProtector_RejectsBadInput(t *testing.T) {
 	}
 	if opened {
 		t.Fatal("bad input reached the TPM transport")
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestTPMTier_OpenErrorPrefixedOnce(t *testing.T) {
+	tests := []struct {
+		name    string
+		openErr error
+	}{
+		{"plain error", os.ErrNotExist},
+		{"already unavailable", fmt.Errorf("%w: no TPM transport on this platform", ErrUnavailable)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			open := func() (transport.TPMCloser, error) { return nil, tt.openErr }
+			p := tpmTier(open).Open("")
+			_, wrapErr := p.Wrap(make([]byte, 32))
+			_, unwrapErr := p.Unwrap(mustJSON(t, tpmBlob{Version: tpmBlobVersion, Template: tpmBlobTemplate,
+				Public: tpm2.Marshal(tpm2.New2B(tpm2.ECCSRKTemplate)), Private: tpm2.Marshal(tpm2.TPM2BPrivate{})}))
+			for name, err := range map[string]error{"Probe": tpmTier(open).Probe(), "Wrap": wrapErr, "Unwrap": unwrapErr} {
+				if !errors.Is(err, ErrUnavailable) {
+					t.Errorf("%s = %v, want errors.Is ErrUnavailable", name, err)
+				}
+				if n := strings.Count(err.Error(), ErrUnavailable.Error()); n != 1 {
+					t.Errorf("%s = %q: %q appears %d times, want 1", name, err, ErrUnavailable, n)
+				}
+			}
+		})
 	}
 }
 

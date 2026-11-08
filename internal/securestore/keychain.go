@@ -122,8 +122,9 @@ func (p *keychainProtector) Wrap(dek []byte) ([]byte, error) {
 	return []byte(p.account), nil
 }
 
-// Unwrap reads the DEK stored under the account name wrapped. A missing item
-// is ErrForeignKey: the cache was made elsewhere or the item was deleted.
+// Unwrap reads the DEK stored under the account name wrapped. A missing or
+// corrupt item is ErrForeignKey: the cache was made elsewhere, or the item
+// was deleted or damaged.
 func (p *keychainProtector) Unwrap(wrapped []byte) ([]byte, error) {
 	account := string(wrapped)
 	if !validKeychainAccount(account) {
@@ -137,12 +138,15 @@ func (p *keychainProtector) Unwrap(wrapped []byte) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("keychain: reading data key: %w", err)
 	}
+	// A corrupt item never decodes, so it is ErrForeignKey: the cache is
+	// discarded and rebuilt (replacing the item) instead of being reported
+	// unreadable on every call.
 	dek, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(out)))
 	if err != nil {
-		return nil, errors.New("keychain: stored data key is not base64")
+		return nil, fmt.Errorf("%w: keychain: stored data key is not base64", ErrForeignKey)
 	}
 	if len(dek) != 32 {
-		return nil, fmt.Errorf("keychain: stored data key is %d bytes, want 32", len(dek))
+		return nil, fmt.Errorf("%w: keychain: stored data key is %d bytes, want 32", ErrForeignKey, len(dek))
 	}
 	return dek, nil
 }

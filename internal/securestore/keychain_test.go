@@ -168,8 +168,8 @@ func TestKeychainProtector_UnwrapErrors(t *testing.T) {
 	}{
 		{"keychain locked", nil, &securityError{Subcommand: "find-generic-password", ExitCode: 36, Stderr: "User interaction is not allowed."}, false},
 		{"runner failure", nil, errors.New("boom"), false},
-		{"not base64", []byte("!!!\n"), nil, false},
-		{"wrong length", []byte(base64.StdEncoding.EncodeToString(make([]byte, 16)) + "\n"), nil, false},
+		{"not base64", []byte("!!!\n"), nil, true},
+		{"wrong length", []byte(base64.StdEncoding.EncodeToString(make([]byte, 16)) + "\n"), nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -180,6 +180,9 @@ func TestKeychainProtector_UnwrapErrors(t *testing.T) {
 			}
 			if got := errors.Is(err, ErrForeignKey); got != tt.wantForeign {
 				t.Fatalf("Unwrap() = %v; errors.Is ErrForeignKey = %v, want %v", err, got, tt.wantForeign)
+			}
+			if errors.Is(err, ErrUnavailable) {
+				t.Fatalf("Unwrap() = %v, must not be ErrUnavailable", err)
 			}
 		})
 	}

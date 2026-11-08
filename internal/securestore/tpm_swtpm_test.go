@@ -83,7 +83,7 @@ func swtpmPowerCycle(t *testing.T, ctrl, sock string) {
 	if err != nil {
 		t.Fatalf("dialing swtpm control socket: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if _, err := c.Write([]byte{0, 0, 0, 2, 0, 0, 0, 0}); err != nil {
 		t.Fatalf("writing CMD_INIT: %v", err)
 	}
@@ -98,7 +98,7 @@ func swtpmPowerCycle(t *testing.T, ctrl, sock string) {
 	if err != nil {
 		t.Fatalf("opening swtpm: %v", err)
 	}
-	defer tpm.Close()
+	defer func() { _ = tpm.Close() }()
 	if _, err := (tpm2.Startup{StartupType: tpm2.TPMSUClear}).Execute(tpm); err != nil {
 		t.Fatalf("TPM2_Startup(CLEAR): %v", err)
 	}
@@ -111,7 +111,7 @@ func assertNoTransientHandles(t *testing.T, sock string) {
 	if err != nil {
 		t.Fatalf("opening swtpm: %v", err)
 	}
-	defer tpm.Close()
+	defer func() { _ = tpm.Close() }()
 	rsp, err := tpm2.GetCapability{Capability: tpm2.TPMCapHandles, Property: 0x80000000, PropertyCount: 16}.Execute(tpm)
 	if err != nil {
 		t.Fatalf("GetCapability(handles): %v", err)

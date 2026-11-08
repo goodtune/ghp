@@ -103,7 +103,7 @@ func classifyTPMError(err error) error {
 func withRetry[T any](f func() (T, error)) (T, error) {
 	for attempt := 1; ; attempt++ {
 		v, err := f()
-		if err == nil || attempt == 3 || !(errors.Is(err, tpm2.TPMRCRetry) || errors.Is(err, tpm2.TPMRCYielded)) {
+		if err == nil || attempt == 3 || (!errors.Is(err, tpm2.TPMRCRetry) && !errors.Is(err, tpm2.TPMRCYielded)) {
 			return v, err
 		}
 		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
@@ -138,9 +138,9 @@ func (p *tpmProtector) Wrap(dek []byte) ([]byte, error) {
 	}
 	t, err := p.open()
 	if err != nil {
-		return nil, fmt.Errorf("%w: opening tpm: %v", ErrUnavailable, err)
+		return nil, openError(err)
 	}
-	defer t.Close()
+	defer closeTPM(t)
 	parent, flush, err := createSRK(t)
 	if err != nil {
 		return nil, err
@@ -171,25 +171,27 @@ func (p *tpmProtector) Wrap(dek []byte) ([]byte, error) {
 
 func (p *tpmProtector) Unwrap(wrapped []byte) ([]byte, error) {
 	var b tpmBlob
+	// A blob that does not decode never will, so it is discarded and
+	// rebuilt (ErrForeignKey) rather than reported on every call.
 	if err := json.Unmarshal(wrapped, &b); err != nil {
-		return nil, fmt.Errorf("tpm: decoding wrapped key: %w", err)
+		return nil, fmt.Errorf("%w: tpm: decoding wrapped key: %v", ErrForeignKey, err)
 	}
 	if b.Version != tpmBlobVersion || b.Template != tpmBlobTemplate {
 		return nil, fmt.Errorf("%w: tpm blob version %d template %q is not supported", ErrForeignKey, b.Version, b.Template)
 	}
 	pub, err := tpm2.Unmarshal[tpm2.TPM2BPublic](b.Public)
 	if err != nil {
-		return nil, fmt.Errorf("tpm: decoding public area: %w", err)
+		return nil, fmt.Errorf("%w: tpm: decoding public area: %v", ErrForeignKey, err)
 	}
 	priv, err := tpm2.Unmarshal[tpm2.TPM2BPrivate](b.Private)
 	if err != nil {
-		return nil, fmt.Errorf("tpm: decoding private area: %w", err)
+		return nil, fmt.Errorf("%w: tpm: decoding private area: %v", ErrForeignKey, err)
 	}
 	t, err := p.open()
 	if err != nil {
-		return nil, fmt.Errorf("%w: opening tpm: %v", ErrUnavailable, err)
+		return nil, openError(err)
 	}
-	defer t.Close()
+	defer closeTPM(t)
 	parent, flush, err := createSRK(t)
 	if err != nil {
 		return nil, err
@@ -215,15 +217,29 @@ func (p *tpmProtector) Unwrap(wrapped []byte) ([]byte, error) {
 	return out.OutData.Buffer, nil
 }
 
+// openError marks a failure to open the TPM as ErrUnavailable. An error that
+// already is ErrUnavailable (the stub transport's) is returned as is, so its
+// message does not carry the prefix twice.
+func openError(err error) error {
+	if errors.Is(err, ErrUnavailable) {
+		return err
+	}
+	return fmt.Errorf("%w: opening tpm: %v", ErrUnavailable, err)
+}
+
+// closeTPM closes the transport. A close error is discarded: every result
+// has already been read, and the kernel releases the device either way.
+func closeTPM(t transport.TPMCloser) { _ = t.Close() }
+
 func tpmTier(open func() (transport.TPMCloser, error)) Tier {
 	return Tier{
 		Name: TierTPM,
 		Probe: func() error {
 			t, err := open()
 			if err != nil {
-				return fmt.Errorf("%w: opening tpm: %v", ErrUnavailable, err)
+				return openError(err)
 			}
-			defer t.Close()
+			defer closeTPM(t)
 			return probeTPM(t)
 		},
 		Open: func(string) KeyProtector { return &tpmProtector{open: open} },
