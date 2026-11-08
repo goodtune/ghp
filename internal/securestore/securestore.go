@@ -93,7 +93,7 @@ func NewProtectors(tiers ...Tier) *Protectors {
 
 // Default returns the tiers this build supports on this platform.
 func Default() *Protectors {
-	return NewProtectors(FileTier())
+	return NewProtectors(TPMTier(), FileTier())
 }
 
 // Names returns the tier names, strongest first.
