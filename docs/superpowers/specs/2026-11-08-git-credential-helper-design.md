@@ -116,12 +116,18 @@ shared machine. Use of the helper is optional; each user makes that call.
   configures the global gitconfig exactly as `gh auth setup-git` does: for
   each host, `git config --global --replace-all credential.https://HOST.helper ""`
   to sever the existing chain, then `--add credential.https://HOST.helper
-  "!<abs path to ghp> auth git-credential [--app NAME] [--type proxy]"`, then
-  `git config --global credential.https://HOST.useHttpPath true`. Default host
-  list is `github.com`. The path to `ghp` is `os.Executable()`, resolved
-  through symlinks, quoted as gh does when it contains a space, `$`, or `\`.
-  It prints what it wrote and warns that any previous helper for those hosts
-  (for example `gh`) has been replaced.
+  "!<ghp> auth git-credential [--host HOST]... [--app NAME] [--type proxy]"`,
+  then `git config --global credential.https://HOST.useHttpPath true`.
+  Default host list is `github.com`. `<ghp>` is the bare word `ghp` when
+  `exec.LookPath("ghp")` resolves to the same file as `os.Executable()`
+  (so Homebrew/asdf/nix upgrades do not strand the gitconfig on a versioned
+  path), otherwise the unresolved `os.Executable()` path. Every word in the
+  helper line passes through a strict shell quoter: unchanged only when it
+  matches `^[A-Za-z0-9@%+=:,./_-]+$`, otherwise single-quoted with `'`
+  escaped as `'\''`; values containing a newline, carriage return or NUL
+  are rejected. An app name is chosen by an admin and copied by users, so it
+  must never become shell. It prints what it wrote and warns that any
+  previous helper for those hosts (for example `gh`) has been replaced.
 
 ### 2. Selecting the token type and the app
 
@@ -138,8 +144,10 @@ they can be baked into the gitconfig helper line, and the env vars let a user
 switch per shell or per invocation (`GHP_GIT_CM_APP=other git push`).
 
 - `--app` accepts either the app record UUID or the app `name` as returned by
-  `GET /api/apps` (compared with `asciiutil.EqualFold`). It is an error with
-  `--type proxy`.
+  `GET /api/apps` (compared with `asciiutil.EqualFold`). `--app` given as a
+  flag together with `--type proxy` is an error. An app that arrives only via
+  `GHP_GIT_CM_APP` while `--type proxy` came from the helper line is ignored,
+  so an exported env var cannot break a proxy-configured gitconfig.
 - `--type agent` (default): the helper lists apps, picks the one matching
   `--app` or, when `--app` is absent, the one with `is_default: true`, or the
   only app when exactly one exists. It then lists that app's installations and
@@ -155,8 +163,9 @@ switch per shell or per invocation (`GHP_GIT_CM_APP=other git push`).
   carries `permissions` (for example `{"contents": "read"}`). When the scopes
   were *defaulted*, the helper lowers each requested level to what the
   installation grants (`contents:write` becomes `contents:read` when the
-  installation has only read) and uses the lowered scopes for the cache key
-  and the mint. When the user passed `--scopes`/`GHP_GIT_CM_SCOPES` explicitly
+  installation has only read) and uses the lowered scopes for the mint and
+  stores them on the cache entry. The cache key uses the *requested* scopes
+  (decision 3) so a cache hit needs no API call. When the user passed `--scopes`/`GHP_GIT_CM_SCOPES` explicitly
   and the installation cannot grant them, the helper fails at mint time with a
   one-line message naming the permission and the level the installation has.
   Without this, GitHub returns 422 for the installation token, ghp turns that
@@ -196,17 +205,36 @@ switch per shell or per invocation (`GHP_GIT_CM_APP=other git push`).
      `user_token` is empty, print "not logged in: run ghp auth login",
      exit 1.
 3. Compute the cache key: SHA-256 over `server_url` (from phase A, or phase B
-   when A had none), `type`, the app selector string as given (`--app` value
-   or empty), `owner/repo` lower-cased with `asciiutil.ToLower`, and the
-   normalised requested scopes (before any lowering in decision 2; the
-   lowered scopes are stored on the entry).
-4. Open the cache under a file lock. If an entry exists and `expires_at` is
-   more than `minRemaining = 5m` away, return it.
-5. Otherwise run phase B if it has not run, mint (section 2), store `{token,
-   token_id, type, app_record_id, app_name, owner/repo, scopes (effective),
-   expires_at, minted_at}` under the key, and return it. Tokens with no
-   expiry (`expires_at: null`) are never requested; `--ttl never` is rejected
-   client-side.
+   when A had none; trailing `/` trimmed), an **identity** value, `type`, the
+   app selector string as given (`--app` value or empty), `owner/repo`
+   lower-cased with `asciiutil.ToLower`, and the normalised requested scopes
+   (before any lowering in decision 2; the lowered scopes are stored on the
+   entry). The identity is the hex SHA-256 of phase A's `user_token` when it
+   is non-empty, else the literal `dotvault`. It is also stored on the entry
+   and a hit whose identity differs is a miss. Without it two ghp sessions on
+   one OS account (an admin's dotvault token next to a non-admin's
+   `GHP_USER_TOKEN`) would share cached `gha_` tokens and bypass the server's
+   admin-only rule.
+4. Take the file lock, read the cache, release the lock. If an entry exists
+   for the key and `expires_at` is more than `minRemaining = 5m` away, return
+   it. The lock is never held across a network call: a cold
+   `git clone --recurse-submodules -j8` must not serialise eight mints behind
+   one 10-second lock.
+5. Otherwise run phase B if it has not run, mint (section 2) with no lock
+   held, then take the lock again, re-read, store `{token, token_id, type,
+   app_record_id, app_name, owner/repo, scopes (effective), expires_at,
+   minted_at, identity}` under the key (overwriting whatever another process
+   stored meanwhile; a rare double mint costs one extra short-lived token and
+   is accepted), commit, release, and return the token just minted. If the
+   lock cannot be taken within 10 s at either point, print one stderr line
+   and continue without the cache (exit 0 with the minted token). Tokens with
+   no expiry (`expires_at: null`) are never requested; `--ttl never` is
+   rejected client-side.
+7. The helper also takes a repeatable `--host` flag (default `github.com`).
+   A request whose `host` is not in that list is refused with one stderr
+   line, exit 1, so a helper line placed under a generic `credential.helper`
+   cannot hand a ghp token to an arbitrary https host. `setup-git` bakes
+   `--host X` into the helper line only for non-default hosts.
 6. Output: `username=x-access-token`, `password=<token>`,
    `password_expiry_utc=<unix seconds>` (git ≥ 2.41 skips expired entries on
    its own; older gits ignore the line). Never `quit=true`.
@@ -222,10 +250,14 @@ message. A per-user or configurable limit is a follow-up.
 ### 4. `store` and `erase`
 
 - `store` is a no-op (exit 0). The helper is the source of truth.
-- `erase` computes the same key from the request, deletes the entry if
-  present, and best-effort calls `DELETE /api/tokens/{token_id}`. Failures to
-  revoke are logged to stderr at one line and do not change the exit code
-  (always 0). Git sends `erase` after a 401 and then calls `get` again, which
+- `erase` computes the same key from the request and, under the lock,
+  deletes the entry only when git sent no `password` or the `password`
+  equals the cached token (an erase of a stale token must not delete a
+  fresher one another process just minted). It commits, releases the lock,
+  and then best-effort calls `DELETE /api/tokens/{token_id}` for the deleted
+  entry. `clear` likewise snapshots, deletes, commits, releases, then
+  revokes. Failures to revoke are logged to stderr at one line and do not
+  change the exit code (always 0). Git sends `erase` after a 401 and then calls `get` again, which
   mints a fresh token.
 
 ### 5. The cache
@@ -280,8 +312,14 @@ message. A per-user or configurable limit is a follow-up.
   that is briefly unavailable can never cause an `auto` run to create a
   `file` cache on a machine that has used the TPM before.
 - Under `auto`: on a write with no envelope, probe tiers strongest first and
-  pick the first available one that is **not weaker than `tier`**; if none
-  qualifies, mint without caching and print one stderr line. On a write with
+  pick the first available one that is **not weaker than `tier`**; if its
+  `Wrap` fails (a macOS keychain that is locked in a headless session), move
+  on to the next tier that still satisfies the minimum; if none qualifies,
+  mint without caching and print one stderr line. On read, an envelope whose
+  recorded backend is weaker than `tier` is discarded, never used or
+  rewritten. On every open, existing `cache.enc`, `cache.lock` and `tier`
+  are chmod'ed to 0600. When the tier is raised, the `tier` file is written
+  before the new envelope is renamed into place. On a write with
   an existing envelope, if a tier stronger than the envelope's is available,
   re-create the envelope under it (entries are only a cache; dropping them is
   fine) and raise `tier`. Otherwise keep the envelope's tier.
