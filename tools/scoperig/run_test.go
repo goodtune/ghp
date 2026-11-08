@@ -52,6 +52,8 @@ type fakeGHP struct {
 	deletes    []string          // ids passed to DELETE /api/tokens/{id}, in order
 	onScenario func(path string) // called for scenario (non-fixture) GETs
 	userAgents map[string]int    // User-Agent -> request count
+	posts      []map[string]any  // POST /api/tokens bodies, in order
+	appID      string            // GET /api/apps/{appID} answers 200 when set
 }
 
 type fakeTok struct {
@@ -110,6 +112,15 @@ func (f *fakeGHP) serve(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	case p == "/login":
 		_, _ = fmt.Fprint(w, "<html>ghp version 0.23.0</html>")
+	case strings.HasPrefix(p, "/api/apps/"):
+		f.mu.Lock()
+		id := f.appID
+		f.mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer "+fakeSession || id == "" || p != "/api/apps/"+id {
+			writeJSONResp(w, 404, map[string]string{"message": "not found"})
+			return
+		}
+		writeJSONResp(w, 200, map[string]any{"id": id, "name": "rig"})
 	case strings.HasPrefix(p, "/api/tokens"):
 		if r.Header.Get("Authorization") != "Bearer "+fakeSession {
 			writeJSONResp(w, 401, map[string]string{"message": "unauthorized"})
@@ -149,6 +160,7 @@ func (f *fakeGHP) serveTokens(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && id == "":
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.posts = append(f.posts, body)
 		f.nextID++
 		f.creates++
 		t := &fakeTok{ID: fmt.Sprintf("tok-%d", f.nextID), Value: fmt.Sprintf("%s%04d", fakeTokPfx, f.nextID)}
@@ -1202,4 +1214,110 @@ func TestRunScenario_ExpandsExpectationsBeforeRequest(t *testing.T) {
 	if r.Status != report.StatusFail || ex.runs != 1 {
 		t.Errorf("status=%s runs=%d, want FAIL after one run", r.Status, ex.runs)
 	}
+}
+
+const agentTestScenario = `
+- id: REPO-C05.agent
+  claim: REPO-C05
+  profile: agent-repo-A
+  kind: rest
+  requires: [agent_installation]
+  method: GET
+  path: /repos/{{.RepoB}}/commits
+  expect: {status: 200}
+`
+
+// writeAgentTree adds an agent profile (and, if block is set, an
+// instance.agent_installation block) to the test tree.
+func writeAgentTree(t *testing.T, host, block string) (root, cfg string) {
+	t.Helper()
+	root, cfg = writeTree(t, host, agentTestScenario)
+	appendFile := func(p, s string) {
+		f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = f.Close() }()
+		if _, err := f.WriteString(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendFile(filepath.Join(root, "profiles.yaml"), "- {name: agent-repo-A, type: agent, repositories: [\"{{.RepoA}}\"], duration: 1h, requires: [agent_installation]}\n")
+	if block != "" {
+		raw, err := os.ReadFile(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cfg, []byte(strings.Replace(string(raw), "instance:\n", "instance:\n"+block, 1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root, cfg
+}
+
+func agentPosts(f *fakeGHP) []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []map[string]any
+	for _, b := range f.posts {
+		if b["type"] == "agent" {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+func TestRun_AgentProfile(t *testing.T) {
+	const appID = "00000000-0000-4000-8000-0000000000a6"
+	block := "  agent_installation:\n    app_record_id: " + appID + "\n    installation_id: 900000404\n"
+	t.Run("not configured: not minted, GAP", func(t *testing.T) {
+		f := newFakeGHP(t)
+		root, cfg := writeAgentTree(t, f.host(), "")
+		out := filepath.Join(t.TempDir(), "r.json")
+		runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--out", out)
+		raw, _ := os.ReadFile(out)
+		if st := statusesByID(t, raw)["REPO-C05.agent"]["status"]; st != "GAP" {
+			t.Errorf("status = %v, want GAP", st)
+		}
+		if n := len(agentPosts(f)); n != 0 {
+			t.Errorf("%d agent token(s) minted without the capability", n)
+		}
+	})
+	t.Run("app missing on instance: not minted, GAP", func(t *testing.T) {
+		f := newFakeGHP(t)
+		root, cfg := writeAgentTree(t, f.host(), block)
+		out := filepath.Join(t.TempDir(), "r.json")
+		runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--out", out)
+		raw, _ := os.ReadFile(out)
+		if st := statusesByID(t, raw)["REPO-C05.agent"]["status"]; st != "GAP" {
+			t.Errorf("status = %v, want GAP", st)
+		}
+		if n := len(agentPosts(f)); n != 0 {
+			t.Errorf("%d agent token(s) minted for a missing app", n)
+		}
+	})
+	t.Run("configured: minted against the app, revoked", func(t *testing.T) {
+		f := newFakeGHP(t)
+		f.appID = appID
+		root, cfg := writeAgentTree(t, f.host(), block)
+		out := filepath.Join(t.TempDir(), "r.json")
+		res := runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--out", out)
+		raw, _ := os.ReadFile(out)
+		if st := statusesByID(t, raw)["REPO-C05.agent"]["status"]; st != "PASS" {
+			t.Errorf("status = %v, want PASS\n%s", st, res.stderr)
+		}
+		posts := agentPosts(f)
+		if len(posts) != 1 || posts[0]["app_record_id"] != appID {
+			t.Fatalf("agent posts = %v", posts)
+		}
+		if n, _ := posts[0]["installation_id"].(float64); int64(n) != 900000404 {
+			t.Errorf("installation_id = %v", posts[0]["installation_id"])
+		}
+		if left := f.liveRunTokens(); len(left) != 0 {
+			t.Errorf("tokens left live: %v", left)
+		}
+		if strings.Contains(res.stdout+res.stderr+string(raw), fakeTokPfx) {
+			t.Error("a token value reached the output or report")
+		}
+	})
 }

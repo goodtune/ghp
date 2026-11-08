@@ -89,6 +89,10 @@ var adversarialProbes = []probe{
 		return s
 	}(), false, "dot segment"},
 	{"path/token-api-query", &Scenario{ID: "P-P12", Claim: "C1", Kind: "token_api", Request: &Request{Method: "POST", Path: "/api/tokens?x=1"}}, false, "query string"},
+	{"path/token-api-apps-write", &Scenario{ID: "P-P14", Claim: "C1", Kind: "token_api", Request: &Request{Method: "POST", Path: "/api/apps"}}, false, "/api/tokens"},
+	{"path/token-api-apps-delete", &Scenario{ID: "P-P15", Claim: "C1", Kind: "token_api", Request: &Request{Method: "DELETE", Path: "/api/apps/{{.Agent.AppRecordID}}"}}, false, "/api/tokens"},
+	{"agent/missing-app-record-id", &Scenario{ID: "P-A1", Claim: "C1", Kind: "token_api", Requires: []string{"agent_installation"}, Request: &Request{Method: "POST", Path: "/api/tokens", Body: map[string]any{"type": "agent", "installation_id": "$int:InstallationID"}}}, false, "app_record_id"},
+	{"agent/literal-app-record-id", &Scenario{ID: "P-A2", Claim: "C1", Kind: "token_api", Requires: []string{"agent_installation"}, Request: &Request{Method: "POST", Path: "/api/tokens", Body: map[string]any{"type": "agent", "app_record_id": "00000000-0000-4000-8000-0000000000d1", "installation_id": "$int:InstallationID"}}}, false, "app_record_id"},
 	{"path/token-api-proxy-write", &Scenario{ID: "P-P13", Claim: "C1", Kind: "token_api", Request: &Request{Method: "POST", Path: "/api/v3/repos/{{.RepoW}}/issues"}}, false, "/api/tokens"},
 
 	// Cleanup must never be a GraphQL request, on any kind.

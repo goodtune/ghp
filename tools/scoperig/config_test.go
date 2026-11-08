@@ -270,3 +270,70 @@ func TestLoadConfig_LegacyManagementHostIgnored(t *testing.T) {
 		t.Fatalf("String() still reports a management host: %s", c.String())
 	}
 }
+
+func writeAgentCfg(t *testing.T, block string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	body := "instance:\n  host: ghp.example.test\n" + block + "fixtures:\n  repo_a: o/a\n  repo_b: o/b\n  repo_w: o/w\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestLoadConfig_AgentInstallation(t *testing.T) {
+	const appID = "00000000-0000-4000-8000-0000000000a6"
+	t.Run("both set", func(t *testing.T) {
+		c, err := LoadConfig(envMap(nil), writeAgentCfg(t, "  agent_installation:\n    app_record_id: "+appID+"\n    installation_id: 900000404\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.AgentAppRecordID != appID || c.InstallationID != 900000404 {
+			t.Fatalf("got app %q installation %d", c.AgentAppRecordID, c.InstallationID)
+		}
+		if !c.AgentConfigured() {
+			t.Fatal("AgentConfigured = false, want true")
+		}
+	})
+	t.Run("env overrides installation", func(t *testing.T) {
+		c, err := LoadConfig(envMap(map[string]string{"GHP_RIG_INSTALLATION_ID": "42"}),
+			writeAgentCfg(t, "  agent_installation:\n    app_record_id: "+appID+"\n    installation_id: 7\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.InstallationID != 42 {
+			t.Fatalf("installation %d", c.InstallationID)
+		}
+	})
+	t.Run("absent block", func(t *testing.T) {
+		c, err := LoadConfig(envMap(nil), writeAgentCfg(t, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.AgentConfigured() {
+			t.Fatal("AgentConfigured = true with no block")
+		}
+	})
+	t.Run("installation only is not configured", func(t *testing.T) {
+		c, err := LoadConfig(envMap(map[string]string{"GHP_RIG_INSTALLATION_ID": "42"}), writeAgentCfg(t, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.AgentConfigured() {
+			t.Fatal("AgentConfigured = true without app_record_id")
+		}
+	})
+	for _, tc := range []struct{ name, block, want string }{
+		{"non-UUID app", "  agent_installation:\n    app_record_id: GHPRIG\n    installation_id: 1\n", "app_record_id"},
+		{"UUID with braces", "  agent_installation:\n    app_record_id: \"{" + appID + "}\"\n    installation_id: 1\n", "app_record_id"},
+		{"zero installation", "  agent_installation:\n    app_record_id: " + appID + "\n    installation_id: 0\n", "installation_id"},
+		{"negative installation", "  agent_installation:\n    app_record_id: " + appID + "\n    installation_id: -5\n", "installation_id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadConfig(envMap(nil), writeAgentCfg(t, tc.block))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error naming %s, got %v", tc.want, err)
+			}
+		})
+	}
+}

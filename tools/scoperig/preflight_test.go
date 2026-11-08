@@ -93,9 +93,13 @@ type probeOpts struct {
 	push      bool
 	scopes    string
 	repoCode  int
-	tokensAll int
+	appCode   int // GET /api/apps/{testAppID}
 	userCode  int
+	appBodyID string // id in the app body; testAppID when empty
+	apps      string // GET /api/apps body; 404 when empty
 }
+
+const testAppID = "00000000-0000-4000-8000-0000000000a6"
 
 func probeServer(t *testing.T, o probeOpts) *httptest.Server {
 	return httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,14 +126,27 @@ func probeServer(t *testing.T, o probeOpts) *httptest.Server {
 				w.Header().Set("X-OAuth-Scopes", o.scopes)
 			}
 			_, _ = fmt.Fprint(w, `{}`)
+		case "/api/apps/" + testAppID:
+			if auth != "Bearer ghpr_test0000" {
+				w.WriteHeader(401)
+				return
+			}
+			w.WriteHeader(o.appCode)
+			id := o.appBodyID
+			if id == "" {
+				id = testAppID
+			}
+			_, _ = fmt.Fprintf(w, `{"id":%q,"name":"rig"}`, id)
+		case "/api/apps":
+			if o.apps == "" || auth != "Bearer ghpr_test0000" {
+				w.WriteHeader(404)
+				return
+			}
+			_, _ = fmt.Fprint(w, o.apps)
 		case "/api/tokens":
 			if r.Method == http.MethodPost {
 				w.WriteHeader(201)
 				_, _ = fmt.Fprint(w, `{"id":"t1","token":"ghx_test0000"}`)
-				return
-			}
-			if r.URL.Query().Get("all") == "true" && auth == "Bearer ghpr_test0000" {
-				w.WriteHeader(o.tokensAll)
 				return
 			}
 			w.WriteHeader(400)
@@ -148,17 +165,17 @@ func TestProbeCapabilities(t *testing.T) {
 		want    Capabilities
 		wantErr bool
 	}{
-		{"full", probeOpts{push: true, scopes: "repo, read:org", tokensAll: 200}, "octo/w", 7,
+		{"full", probeOpts{push: true, scopes: "repo, read:org", appCode: 200}, "octo/w", 7,
 			Capabilities{"repo_w_push": true, "repo_create": true, "github_vhost": false, "codeload_vhost": false, "agent_installation": true}, false},
-		{"public_repo scope", probeOpts{push: true, scopes: "public_repo", tokensAll: 200}, "octo/w", 0,
+		{"public_repo scope", probeOpts{push: true, scopes: "public_repo", appCode: 200}, "octo/w", 0,
 			Capabilities{"repo_w_push": true, "repo_create": true, "github_vhost": false, "agent_installation": false}, false},
-		{"no push no scopes", probeOpts{push: false, tokensAll: 200}, "octo/w", 7,
+		{"no push no scopes", probeOpts{push: false, appCode: 200}, "octo/w", 7,
 			Capabilities{"repo_w_push": false, "repo_create": false, "github_vhost": false, "agent_installation": true}, false},
-		{"repo-ish scope not repo", probeOpts{push: true, scopes: "repo:status, read:repo_hook", tokensAll: 200}, "octo/w", 7,
+		{"repo-ish scope not repo", probeOpts{push: true, scopes: "repo:status, read:repo_hook", appCode: 200}, "octo/w", 7,
 			Capabilities{"repo_w_push": true, "repo_create": false, "github_vhost": false, "agent_installation": true}, false},
-		{"W owned by someone else", probeOpts{push: true, scopes: "repo", tokensAll: 200}, "other/w", 7,
+		{"W owned by someone else", probeOpts{push: true, scopes: "repo", appCode: 200}, "other/w", 7,
 			Capabilities{"repo_w_push": false, "repo_create": false, "github_vhost": false, "agent_installation": true}, false},
-		{"repo 404 and tokens 403", probeOpts{repoCode: 404, scopes: "repo", tokensAll: 403}, "octo/w", 7,
+		{"repo 404 and tokens 403", probeOpts{repoCode: 404, scopes: "repo", appCode: 403}, "octo/w", 7,
 			Capabilities{"repo_w_push": false, "repo_create": true, "github_vhost": false, "agent_installation": false}, false},
 		{"user fails", probeOpts{userCode: 500}, "octo/w", 0, nil, true},
 	}
@@ -168,7 +185,7 @@ func TestProbeCapabilities(t *testing.T) {
 			defer srv.Close()
 			host := strings.TrimPrefix(srv.URL, "https://")
 			c := &Config{ServerURL: srv.URL, UserToken: "ghpr_test0000", RepoW: tt.repoW, InstallationID: tt.instID,
-				Instance: scenario.InstanceVals{Host: host}}
+				AgentAppRecordID: testAppID, Instance: scenario.InstanceVals{Host: host}}
 			v := &scenario.Vars{}
 			open := mintOpen(t, srv, v)
 			// github_vhost: the httptest cert is not valid for github.com, so the
@@ -191,13 +208,13 @@ func TestProbeCapabilities(t *testing.T) {
 					t.Errorf("%s = %v, want %v", k, got[k], w)
 				}
 			}
-			if len(got) != 8 {
+			if len(got) != 10 {
 				t.Errorf("caps %v", got)
 			}
 		})
 	}
 	t.Run("border_block declared", func(t *testing.T) {
-		srv := probeServer(t, probeOpts{tokensAll: 200})
+		srv := probeServer(t, probeOpts{appCode: 200})
 		defer srv.Close()
 		host := strings.TrimPrefix(srv.URL, "https://")
 		c := &Config{ServerURL: srv.URL, UserToken: "ghpr_test0000", RepoW: "octo/w",
@@ -221,14 +238,14 @@ func TestProbeCapabilities(t *testing.T) {
 		}
 	})
 	t.Run("vhost dial fails", func(t *testing.T) {
-		srv := probeServer(t, probeOpts{tokensAll: 200})
+		srv := probeServer(t, probeOpts{appCode: 200})
 		srv.Close()
 		if probeVHost(context.Background(), "127.0.0.1:1", nil, "", "github.com") {
 			t.Fatal("want false")
 		}
 	})
 	t.Run("vhost server name", func(t *testing.T) {
-		srv := probeServer(t, probeOpts{tokensAll: 200})
+		srv := probeServer(t, probeOpts{appCode: 200})
 		defer srv.Close()
 		host := strings.TrimPrefix(srv.URL, "https://")
 		pool := rootCAs(srv.Client())
@@ -251,4 +268,53 @@ func mintOpen(t *testing.T, srv *httptest.Server, v *scenario.Vars) tokens.Handl
 		t.Fatal(err)
 	}
 	return h
+}
+
+func TestProbeAgentInstallation(t *testing.T) {
+	tests := []struct {
+		name   string
+		o      probeOpts
+		appID  string
+		instID int64
+		want   bool
+	}{
+		{"app exists", probeOpts{appCode: 200}, testAppID, 7, true},
+		{"app missing", probeOpts{appCode: 404}, testAppID, 7, false},
+		{"session not admin", probeOpts{appCode: 403}, testAppID, 7, false},
+		{"body names another app", probeOpts{appCode: 200, appBodyID: "00000000-0000-4000-8000-0000000000d1"}, testAppID, 7, false},
+		{"no installation", probeOpts{appCode: 200}, testAppID, 0, false},
+		{"no app", probeOpts{appCode: 200}, "", 7, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := probeServer(t, tt.o)
+			defer srv.Close()
+			c := &Config{ServerURL: srv.URL, UserToken: "ghpr_test0000", InstallationID: tt.instID, AgentAppRecordID: tt.appID}
+			if got := ProbeAgentInstallation(context.Background(), c, srv.Client()); got != tt.want {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProbeDefaultApp(t *testing.T) {
+	for _, tc := range []struct {
+		name, apps string
+		want       bool
+	}{
+		{"one default", `[{"is_default":true},{"is_default":false}]`, true},
+		{"no default", `[{"is_default":false}]`, false},
+		{"two defaults", `[{"is_default":true},{"is_default":true}]`, false},
+		{"no apps", `[]`, false},
+		{"not listed", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := probeServer(t, probeOpts{apps: tc.apps})
+			defer srv.Close()
+			c := &Config{ServerURL: srv.URL, UserToken: "ghpr_test0000"}
+			if got := probeDefaultApp(context.Background(), c, srv.Client()); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
