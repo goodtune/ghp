@@ -19,8 +19,29 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install swtpm
+        run: sudo apt-get update && sudo apt-get install -y swtpm
+
+      - name: Start swtpm
+        run: |
+          mkdir -p /tmp/swtpm
+          swtpm socket --tpm2 --tpmstate dir=/tmp/swtpm \
+            --server type=unixio,path=/tmp/swtpm/tpm.sock \
+            --ctrl type=unixio,path=/tmp/swtpm/ctrl.sock \
+            --flags not-need-init,startup-clear --daemon
+
       - name: Run tests
         run: go test ./...
+        env:
+          GHP_TEST_SWTPM: /tmp/swtpm/tpm.sock
+          GHP_TEST_SWTPM_CTRL: /tmp/swtpm/ctrl.sock
+
+      - name: Stop swtpm
+        if: always()
+        run: pkill -x swtpm || true
+
+      - name: Cross-compile vet (windows, darwin)
+        run: make vet-cross
 
       - name: Validate scope regression rig scenarios
         run: make scoperig-validate

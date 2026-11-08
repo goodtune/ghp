@@ -1,4 +1,4 @@
-.PHONY: build test vet lint check clean run migrate man scoperig scoperig-validate
+.PHONY: build test vet vet-cross lint check clean run migrate man scoperig scoperig-validate
 
 # Build configuration
 BINARY  := ghp
@@ -17,12 +17,18 @@ test:
 vet:
 	go vet ./...
 
+## vet-cross: go vet for the non-host targets so build-tagged files cannot rot
+vet-cross:
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+	GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+
 ## lint: run golangci-lint (if installed)
 lint:
 	golangci-lint run ./...
 
 ## check: run tests and vet
-check: test vet
+check: test vet vet-cross
 
 ## clean: remove build artifacts
 clean:
