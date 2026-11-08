@@ -115,6 +115,8 @@ github.com/goodtune/dotvault v0.39.0 h1:1wW3yY2ppVZoPa31+/42A2TLsFEMfUnhqxuxFxdb
 github.com/goodtune/dotvault v0.39.0/go.mod h1:4ZcdBONHUZ9XiotarpVvwVKXiu+/uu8fzkK8OCJodyw=
 github.com/goodtune/dotvault v0.40.0 h1:uMLth6gWKz4xHfLyAFQ5F8307YQwly5d4Zfv8DAA/Fg=
 github.com/goodtune/dotvault v0.40.0/go.mod h1:4ZcdBONHUZ9XiotarpVvwVKXiu+/uu8fzkK8OCJodyw=
+github.com/goodtune/dotvault v0.40.1 h1:X0UmMNRnO4cLJyqcMRKespeZON6NFWCzIWFi5bDrjHU=
+github.com/goodtune/dotvault v0.40.1/go.mod h1:4ZcdBONHUZ9XiotarpVvwVKXiu+/uu8fzkK8OCJodyw=
 github.com/google/certificate-transparency-go v1.1.2 h1:4hE0GEId6NAW28dFpC+LrRGwQX5dtmXQGDbg8+/MZOM=
 github.com/google/certificate-transparency-go v1.1.2/go.mod h1:3OL+HKDqHPUfdKrHVQxO6T8nDLO0HF7LRTlkIWXaWvQ=
 github.com/google/certtostore v1.0.7 h1:pKABCkPG6XcQJ2e2OAW5zM2H/0AVLSWk4TloydAXhlc=
