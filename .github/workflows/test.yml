@@ -19,8 +19,30 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install swtpm
+        run: sudo apt-get update && sudo apt-get install -y swtpm
+
+      - name: Start swtpm
+        run: |
+          mkdir -p /tmp/swtpm
+          swtpm socket --tpm2 --tpmstate dir=/tmp/swtpm \
+            --server type=unixio,path=/tmp/swtpm/tpm.sock \
+            --ctrl type=unixio,path=/tmp/swtpm/ctrl.sock \
+            --flags not-need-init,startup-clear --daemon
+          for i in $(seq 1 50); do [ -S /tmp/swtpm/tpm.sock ] && [ -S /tmp/swtpm/ctrl.sock ] && exit 0; sleep 0.1; done; echo "swtpm sockets did not appear" >&2; exit 1
+
       - name: Run tests
         run: go test ./...
+        env:
+          GHP_TEST_SWTPM: /tmp/swtpm/tpm.sock
+          GHP_TEST_SWTPM_CTRL: /tmp/swtpm/ctrl.sock
+
+      - name: Stop swtpm
+        if: always()
+        run: pkill -x swtpm || true
+
+      - name: Cross-compile vet (windows, darwin)
+        run: make vet-cross
 
       - name: Validate scope regression rig scenarios
         run: make scoperig-validate
@@ -37,6 +59,21 @@ jobs:
           name: ghp-binary
           path: ghp
           retention-days: 1
+
+  windows-tests:
+    name: Go unit tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run git credential helper tests
+        run: go test ./internal/securestore/ ./internal/gitcred/ ./cmd/ghp/
+        env:
+          CGO_ENABLED: "0"
 
   e2e-tests:
     name: Playwright E2E tests

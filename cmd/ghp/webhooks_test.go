@@ -53,7 +53,7 @@ func TestWebhooksStatusCmd(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "ghpr_test")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newWebhooksCmd()
 	buf := &bytes.Buffer{}
@@ -91,7 +91,7 @@ func TestWebhooksStatusCmd_Disabled(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "ghpr_test")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newWebhooksCmd()
 	buf := &bytes.Buffer{}
@@ -124,7 +124,7 @@ func TestWebhooksTailCmd(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "ghpr_test")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	run := func(args ...string) string {
 		cmd := newWebhooksCmd()
@@ -187,7 +187,7 @@ func TestWebhooksTailCmd_Reconnects(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "ghpr_test")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newWebhooksCmd()
 	buf := &bytes.Buffer{}
@@ -218,7 +218,7 @@ func TestWebhooksTailCmd_ServerError(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("GHP_SERVER_URL", srv.URL)
 	t.Setenv("GHP_USER_TOKEN", "ghpr_test")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	cmd := newWebhooksCmd()
 	cmd.SetOut(&bytes.Buffer{})

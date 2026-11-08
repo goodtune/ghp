@@ -3,15 +3,20 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	dvclient "github.com/goodtune/dotvault/client"
 )
 
 // fakeReader is an in-memory dotvaultReader for tests.
 type fakeReader struct {
-	authErr   error
-	authCalls int
-	readErr   error
+	authErr     error
+	authCalls   int
+	cachedErr   error
+	cachedCalls int
+	readErr     error
 	// secrets is keyed by "service/field".
 	secrets map[string]string
 }
@@ -19,6 +24,11 @@ type fakeReader struct {
 func (f *fakeReader) Authenticate(ctx context.Context) error {
 	f.authCalls++
 	return f.authErr
+}
+
+func (f *fakeReader) AuthenticateCached(ctx context.Context) error {
+	f.cachedCalls++
+	return f.cachedErr
 }
 
 func (f *fakeReader) ReadUserSecret(ctx context.Context, service, field string) (string, bool, error) {
@@ -203,5 +213,49 @@ func TestApplyDotvault_FactoryError(t *testing.T) {
 	err := cfg.applyDotvault(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "bad dotvault config") {
 		t.Fatalf("expected factory error, got %v", err)
+	}
+}
+
+func TestApplyDotvaultCached_NeverInteractive(t *testing.T) {
+	reader := &fakeReader{secrets: map[string]string{"ghp/token": "vault-tok"}}
+	withFakeReader(t, reader, nil)
+	cfg := &cliConfig{
+		Dotvault: &dotvaultConfig{
+			Service: "ghp",
+			Fields:  map[string]string{"user_token": "token"},
+		},
+	}
+	if err := cfg.applyDotvaultCached(context.Background()); err != nil {
+		t.Fatalf("applyDotvaultCached: %v", err)
+	}
+	if cfg.UserToken != "vault-tok" {
+		t.Errorf("UserToken = %q, want vault-tok", cfg.UserToken)
+	}
+	if reader.authCalls != 0 {
+		t.Errorf("authCalls = %d, want 0 (the interactive path must not run)", reader.authCalls)
+	}
+	if reader.cachedCalls != 1 {
+		t.Errorf("cachedCalls = %d, want 1", reader.cachedCalls)
+	}
+}
+
+func TestApplyDotvaultCached_LoginRequired(t *testing.T) {
+	reader := &fakeReader{cachedErr: fmt.Errorf("x: %w", dvclient.ErrLoginRequired)}
+	withFakeReader(t, reader, nil)
+	cfg := &cliConfig{
+		Dotvault: &dotvaultConfig{
+			Service: "ghp",
+			Fields:  map[string]string{"user_token": "token"},
+		},
+	}
+	err := cfg.applyDotvaultCached(context.Background())
+	if !errors.Is(err, dvclient.ErrLoginRequired) {
+		t.Fatalf("applyDotvaultCached error = %v, want it to wrap dvclient.ErrLoginRequired", err)
+	}
+	if reader.authCalls != 0 {
+		t.Errorf("authCalls = %d, want 0", reader.authCalls)
+	}
+	if cfg.UserToken != "" {
+		t.Errorf("UserToken = %q, want it left empty", cfg.UserToken)
 	}
 }

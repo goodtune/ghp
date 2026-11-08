@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/github"
 	"github.com/spf13/cobra"
@@ -81,7 +81,7 @@ The token is printed to stdout for easy piping:
 			if len(args) == 1 {
 				name := args[0]
 				for _, inst := range installations {
-					if strings.EqualFold(inst.Account.Login, name) {
+					if asciiutil.EqualFold(inst.Account.Login, name) {
 						installation = inst
 						break
 					}

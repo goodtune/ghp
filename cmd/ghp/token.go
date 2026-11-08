@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/token"
 	"github.com/spf13/cobra"
 )
@@ -357,7 +358,7 @@ func resolveAppByName(cfg *cliConfig, name string) (string, error) {
 	}
 
 	for _, app := range apps {
-		if strings.EqualFold(app.Name, name) {
+		if asciiutil.EqualFold(app.Name, name) {
 			return app.ID, nil
 		}
 	}
@@ -431,7 +432,7 @@ func resolveInstallationByLogin(cfg *cliConfig, appID, login string) (int64, err
 	}
 
 	for _, inst := range installations {
-		if strings.EqualFold(inst.Account.Login, login) {
+		if asciiutil.EqualFold(inst.Account.Login, login) {
 			return inst.ID, nil
 		}
 	}

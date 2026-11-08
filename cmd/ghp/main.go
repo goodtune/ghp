@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -36,10 +37,22 @@ func newRootCmd() *cobra.Command {
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
+		var ec *exitCodeError
+		if errors.As(err, &ec) {
+			// The command has already reported the failure itself.
+			os.Exit(ec.code)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
+
+// exitCodeError makes main exit with code without printing anything: the
+// command has already written its own diagnostics (the git credential
+// helper must leave exactly one prefixed stderr line).
+type exitCodeError struct{ code int }
+
+func (e *exitCodeError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{

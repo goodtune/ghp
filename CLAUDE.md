@@ -75,6 +75,8 @@ internal/
   github/         GitHub App JWT/installation handling
   backend/        Database abstraction interface
   docs/           Embedded MkDocs output
+  gitcred/        git credential helper: protocol, encrypted token cache, ghp API client, app resolution
+  securestore/    key protectors for the git credential cache (TPM, DPAPI, keychain, file)
 e2e/              Playwright end-to-end tests
 tools/scoperig/   Scope regression rig (operator tool, not shipped)
 rig/              Rig claims, profiles, scenarios and gh query corpus
