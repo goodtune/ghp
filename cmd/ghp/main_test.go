@@ -1644,9 +1644,6 @@ xARUAV0AcnOf8WgFfswT1z7K4sJABdSBhP1URlo9YBW41+FAzQbm
 
 // TestLoadCLIConfig_InsecurePerms verifies that loadCLIConfig still loads config when file has insecure permissions.
 func TestLoadCLIConfig_InsecurePerms(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not meaningful on Windows; the check is skipped there")
-	}
 	home := t.TempDir()
 	setTestHome(t, home)
 	t.Setenv("GHP_SERVER_URL", "")
@@ -1685,6 +1682,11 @@ func TestLoadCLIConfigFileAt_InsecurePermsWarns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("server_url: http://file-server:8080\n"), 0644); err != nil {
 		t.Fatalf("failed to write config file: %v", err)
+	}
+	// Set the mode explicitly: os.WriteFile applies the umask, so 0644 could
+	// become 0600 and suppress the warning.
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatalf("failed to chmod config file: %v", err)
 	}
 	var buf bytes.Buffer
 	cfg, err := loadCLIConfigFileAt(path, true, &buf)
