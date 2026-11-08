@@ -370,7 +370,7 @@ func (p *AppTokenProvider) installationAccountLogin(ctx context.Context, jwtToke
 	if err != nil {
 		return "", fmt.Errorf("fetching installation account: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("installation %d account lookup failed (%d)", installationID, resp.StatusCode)
 	}
