@@ -4,12 +4,12 @@
 # cover A, B and W.
 #
 # #294 / #358: GHP sends an agent token's repositories to GitHub's
-# installation access_tokens API. Before #358 it sent "owner/repo", which
-# GitHub rejects with 422 ("There is at least one repository that does not
-# exist or is not accessible to the parent installation"; observed on 0.26.0,
-# run batch4b). #358 sends bare names after checking the owner is the
-# installation account. Scenarios marked known_issue #294 expect the
-# post-#358 behaviour: KNOWN before it is deployed, KNOWN-FIXED after.
+# installation access_tokens API. Before 0.27.0 (#358) it sent "owner/repo",
+# which GitHub rejected with 422 ("There is at least one repository that does
+# not exist or is not accessible to the parent installation"; observed on
+# 0.26.0, run batch4b). Since 0.27.0 GHP sends bare names after checking the
+# owner is the installation account; GAP-A6.repo-a-reads-a and
+# AGENT-C49.repo-w-reads-w passed on 0.27.0.
 
 # AGENT-C49: the proxy enforces an agent token's repository allowlist.
 - id: AGENT-C49.open-reads-a
@@ -57,14 +57,12 @@
 - id: AGENT-C49.repo-w-reads-w
   claim: AGENT-C49
   doc: docs/admin/github-app.md#agent-tokens-gha_
-  description: An agent token scoped to W reads W (needs the bare-name mint from #358).
+  description: An agent token scoped to W reads W (bare-name mint since 0.27.0, #358).
   profile: agent-repo-W
   kind: rest
   requires: [agent_installation]
   method: GET
   path: /repos/{{.RepoW}}
-  known_issue: https://github.com/goodtune/ghp/issues/294
-  observed: {status: 422, body_contains: ["not accessible to the parent installation"]}
   expect: {status: 200, ghp_denial: false, json: {"$.full_name": "{{.RepoW}}"}}
 
 - id: AGENT-C49.repo-w-denies-a
@@ -119,10 +117,10 @@
   expect: {status: 403, body_contains: ["Token does not have permission", "contents:write"], ghp_denial: true}
 
 # GAP-A6: an agent token for an owner/repo repository mints at GitHub. The
-# creation (GAP-A6.agent-mint in gaps.yaml) does not call GitHub on 0.26.0;
-# the installation token is minted on the first proxied request. This is
-# #294 probe (a), first half: a 200 from A proves GitHub accepted the mint
-# body.
+# installation token is minted on the first proxied request (creation,
+# GAP-A6.agent-mint in gaps.yaml, only checks the owner). This is #294
+# probe (a), first half: a 200 from A proves GitHub accepted the mint body.
+# Before 0.27.0 (#358) GitHub answered 422 here.
 - id: GAP-A6.repo-a-reads-a
   claim: GAP-A6
   doc: docs/admin/github-app.md#agent-tokens-gha_
@@ -134,8 +132,6 @@
   requires: [agent_installation]
   method: GET
   path: /repos/{{.RepoA}}
-  known_issue: https://github.com/goodtune/ghp/issues/294
-  observed: {status: 422, body_contains: ["not accessible to the parent installation"]}
   expect: {status: 200, ghp_denial: false, json: {"$.full_name": "{{.RepoA}}"}}
 
 # TOK-C02: only admins create agent tokens.

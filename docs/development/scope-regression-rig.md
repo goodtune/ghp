@@ -87,9 +87,9 @@ What the agent scenarios cover:
 
 #### The #294 probe
 
-GHP sends an agent token's repositories to GitHub's installation `access_tokens` API when it first needs an installation token. Before the fix for #294 (#358), it sent `owner/repo`. On 0.26.0 GitHub rejects that form with 422 ("There is at least one repository that does not exist or is not accessible to the parent installation"), so a repository-scoped agent token fails on every request; it is not widened.
+GHP sends an agent token's repositories to GitHub's installation `access_tokens` API when it first needs an installation token. Before 0.27.0 (#358, the fix for #294) it sent `owner/repo`. GitHub rejected that form with 422 ("There is at least one repository that does not exist or is not accessible to the parent installation"), so a repository-scoped agent token failed on every request; it was not widened. Since 0.27.0 GHP sends bare names.
 
-- `GAP-A6.repo-a-reads-a` and `AGENT-C49.repo-w-reads-w` send a request with a token scoped to one repository. A 200 proves that GitHub accepted the mint body. They carry `known_issue` #294 with the observed 422: KNOWN until #358 is deployed, KNOWN-FIXED after it.
+- `GAP-A6.repo-a-reads-a` and `AGENT-C49.repo-w-reads-w` send a request with a token scoped to one repository. A 200 proves that GitHub accepted the mint body. They carried `known_issue` #294 with the observed 422 until 0.27.0; both pass on 0.27.0.
 - `AGENT-C49.repo-a-denies-b` and `AGENT-C49.repo-a-denies-w` show that GHP denies B and W to a token scoped to A, although the installation covers both.
 
 What the probe does not prove: that GitHub narrows the installation token. That needs the raw installation token, which never leaves GHP, and GHP denies the request before it reaches GitHub. The W probe tests the GHP layer only.

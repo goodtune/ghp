@@ -56,7 +56,8 @@
 #   minted lazily on the first proxied request, with bare repository names,
 #   so a 201 does not show that GitHub accepts the names or narrows the
 #   token. GAP-A6.repo-a-reads-a (agent.yaml) sends a request with an
-#   agent-repo-A token: on 0.26.0 GitHub answered 422 for owner/repo.
+#   agent-repo-A token: before 0.27.0 (#358) GitHub answered 422 for
+#   owner/repo; it passes on 0.27.0.
 # - app_record_id is always sent: omitting it pins the token to the
 #   instance's default app, which the rig must not use.
 # - Revocation: token.Service.Revoke marks the record revoked and drops the
