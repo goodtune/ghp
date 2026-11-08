@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -364,5 +366,46 @@ func TestAppRegistry_Get_SpecificApp(t *testing.T) {
 	}
 	if _, err := r.Get("nonexistent"); err == nil {
 		t.Error("expected error for nonexistent app ID")
+	}
+}
+
+// TestAppRegistry_GetInstallationTokenForApp_SendsBareRepositoryNames checks
+// that tokens minted through the registry send bare repository names.
+func TestAppRegistry_GetInstallationTokenForApp_SendsBareRepositoryNames(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/123/access_tokens" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var body struct {
+			Repositories []string `json:"repositories"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		got = body.Repositories
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"token":      "ghs_x",
+			"expires_at": time.Now().Add(time.Hour).Format(time.RFC3339),
+		}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	app := makeApp("app-1", "A", 1, true)
+	app.BaseURL = srv.URL
+	r := newTestRegistry([]*database.App{app})
+	ctx := context.Background()
+	if err := r.LoadAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.GetInstallationTokenForApp(ctx, "app-1", 123, []string{"goodtune/ghp"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "ghp" {
+		t.Errorf("repositories = %q, want [\"ghp\"]", got)
 	}
 }

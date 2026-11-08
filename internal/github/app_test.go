@@ -649,3 +649,105 @@ func TestAppTokenProvider_TranslatesEnforcementOnlyNames(t *testing.T) {
 		t.Errorf("caller's map was modified: %v", in)
 	}
 }
+
+// TestAppTokenProvider_SendsBareRepositoryNames checks that the access_tokens
+// body carries bare repository names, as GitHub requires, not owner/repo.
+func TestAppTokenProvider_SendsBareRepositoryNames(t *testing.T) {
+	tests := []struct {
+		name  string
+		repos []string
+		want  []string // nil means the body has no repositories key
+	}{
+		{name: "owner/repo entries", repos: []string{"goodtune/ghp", "other/tool", "bare"}, want: []string{"ghp", "tool", "bare"}},
+		{name: "nil repos", repos: nil, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]json.RawMessage
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/app/installations/123/access_tokens" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode body: %v", err)
+				}
+				w.WriteHeader(http.StatusCreated)
+				if err := json.NewEncoder(w).Encode(map[string]interface{}{
+					"token":      "ghs_x",
+					"expires_at": time.Now().Add(time.Hour).Format(time.RFC3339),
+				}); err != nil {
+					t.Errorf("encode response: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			provider, err := NewAppTokenProvider(AppConfig{AppID: 1, PrivateKey: testRSAKey, BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var in []string
+			if tt.repos != nil {
+				in = append([]string(nil), tt.repos...)
+			}
+			if _, err := provider.GetInstallationToken(context.Background(), 123, in, map[string]string{"contents": "read"}); err != nil {
+				t.Fatal(err)
+			}
+
+			raw, ok := body["repositories"]
+			if tt.want == nil {
+				if ok {
+					t.Fatalf("body has repositories key: %s", raw)
+				}
+				return
+			}
+			if !ok {
+				t.Fatal("body has no repositories key")
+			}
+			var got []string
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatalf("decode repositories: %v", err)
+			}
+			if fmt.Sprint(got) != fmt.Sprint(tt.want) {
+				t.Errorf("repositories = %q, want %q", got, tt.want)
+			}
+			if fmt.Sprint(in) != fmt.Sprint(tt.repos) {
+				t.Errorf("caller's slice was modified: %q", in)
+			}
+		})
+	}
+}
+
+func TestBareRepoNames(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{name: "nil", in: nil, want: nil},
+		{name: "owner/repo", in: []string{"a/b"}, want: []string{"b"}},
+		{name: "extra slash", in: []string{"a/b/c"}, want: []string{"b/c"}},
+		{name: "bare", in: []string{"x"}, want: []string{"x"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var in []string
+			if tt.in != nil {
+				in = append([]string(nil), tt.in...)
+			}
+			got := bareRepoNames(in)
+			if tt.want == nil {
+				if got != nil {
+					t.Fatalf("bareRepoNames(nil) = %q, want nil", got)
+				}
+				return
+			}
+			if fmt.Sprint(got) != fmt.Sprint(tt.want) {
+				t.Errorf("bareRepoNames(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if fmt.Sprint(in) != fmt.Sprint(tt.in) {
+				t.Errorf("input slice was modified: %q, want %q", in, tt.in)
+			}
+		})
+	}
+}
