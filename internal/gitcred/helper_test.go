@@ -54,6 +54,7 @@ type fakeGHP struct {
 	onRevoke      func()
 
 	requests   []string // "METHOD path"
+	auths      []string // Authorization header of each request, in step with requests
 	mintBodies []MintRequest
 	revoked    []string
 	mints      int
@@ -83,6 +84,7 @@ func newFakeGHP(t *testing.T) *fakeGHP {
 		}
 		g.mu.Lock()
 		g.requests = append(g.requests, r.Method+" "+r.URL.Path)
+		g.auths = append(g.auths, r.Header.Get("Authorization"))
 		g.mu.Unlock()
 		mux.ServeHTTP(w, r)
 	}))
@@ -205,6 +207,20 @@ func (g *fakeGHP) requestCount(prefix string) int {
 	return n
 }
 
+// authsFor returns the Authorization header of every request whose
+// "METHOD path" starts with prefix.
+func (g *fakeGHP) authsFor(prefix string) []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var out []string
+	for i, r := range g.requests {
+		if strings.HasPrefix(r, prefix) {
+			out = append(out, g.auths[i])
+		}
+	}
+	return out
+}
+
 func (g *fakeGHP) lastMint(t *testing.T) MintRequest {
 	t.Helper()
 	g.mu.Lock()
@@ -219,6 +235,7 @@ func (g *fakeGHP) lastMint(t *testing.T) MintRequest {
 type testLoaders struct {
 	mu          sync.Mutex
 	cfg         Config
+	authedCfg   *Config // phase B's config when set, else cfg
 	staticErr   error
 	authedErr   error
 	authedCalls int
@@ -265,6 +282,9 @@ func baseOptions(t *testing.T, g *fakeGHP) (Options, *testLoaders) {
 			l.authedCalls++
 			if l.authedErr != nil {
 				return Config{}, l.authedErr
+			}
+			if l.authedCfg != nil {
+				return *l.authedCfg, nil
 			}
 			return l.cfg, nil
 		},
@@ -1391,5 +1411,121 @@ func TestRun_ClearUnreadable(t *testing.T) {
 	}
 	if got := string(readFile(t, filepath.Join(opts.CacheDir, TierFileName))); got != securestore.TierKeychain {
 		t.Errorf("tier = %q, want %q", got, securestore.TierKeychain)
+	}
+}
+
+// splitPhases makes phase A return a stale session token and phase B a
+// live one, as when an old `ghp auth login` token sits in config.yaml and
+// dotvault supplies the current one.
+func splitPhases(g *fakeGHP, l *testLoaders, staticURL string) {
+	l.set(func(l *testLoaders) {
+		l.cfg = Config{ServerURL: staticURL, UserToken: "ghpr_stale"}
+		l.authedCfg = &Config{ServerURL: g.srv.URL, UserToken: "ghpr_live"}
+	})
+}
+
+// wantAuths checks that every request matching prefix carried want and
+// that there were n of them.
+func wantAuths(t *testing.T, g *fakeGHP, prefix string, n int, want string) {
+	t.Helper()
+	got := g.authsFor(prefix)
+	if len(got) != n {
+		t.Fatalf("%s requests = %d, want %d", prefix, len(got), n)
+	}
+	for _, a := range got {
+		if a != want {
+			t.Errorf("%s Authorization = %q, want %q", prefix, a, want)
+		}
+	}
+}
+
+func TestRun_GetMintsWithPhaseBCredentials(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, l := baseOptions(t, g)
+	splitPhases(g, l, g.srv.URL)
+	if _, stderr, code := run(t, opts, "get", stdGet); code != 0 {
+		t.Fatalf("get: code %d, stderr %q", code, stderr)
+	}
+	wantAuths(t, g, "POST /api/tokens", 1, "Bearer ghpr_live")
+	wantAuths(t, g, "GET /api/apps", 2, "Bearer ghpr_live")
+}
+
+func TestRun_EraseRevokesWithPhaseBToken(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, l := baseOptions(t, g)
+	splitPhases(g, l, g.srv.URL)
+	if _, stderr, code := run(t, opts, "get", stdGet); code != 0 {
+		t.Fatalf("get: code %d, stderr %q", code, stderr)
+	}
+	stdout, stderr, code := run(t, opts, "erase", eraseWith(fakeToken(1)))
+	if code != 0 || stdout != "" || stderr != "" {
+		t.Errorf("erase: code %d, stdout %q, stderr %q; want 0 and no output", code, stdout, stderr)
+	}
+	if got := g.revokedIDs(); len(got) != 1 || got[0] != "tok-1" {
+		t.Errorf("revoked = %q, want [tok-1]", got)
+	}
+	wantAuths(t, g, "DELETE /api/tokens/", 1, "Bearer ghpr_live")
+}
+
+func TestRun_ClearRevokesWithPhaseBToken(t *testing.T) {
+	tests := []struct {
+		name      string
+		staticURL func(g *fakeGHP) string
+	}{
+		{"phase A has a stale token", func(g *fakeGHP) string { return g.srv.URL }},
+		{"phase A has a token but no server URL", func(*fakeGHP) string { return "" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newFakeGHP(t)
+			opts, l := baseOptions(t, g)
+			splitPhases(g, l, tt.staticURL(g))
+			for _, repo := range []string{"goodtune/ghp", "goodtune/other"} {
+				if _, stderr, code := run(t, opts, "get", getFor(repo)); code != 0 {
+					t.Fatalf("get %s: code %d, stderr %q", repo, code, stderr)
+				}
+			}
+			stdout, stderr, code := run(t, opts, "clear", "")
+			if code != 0 || stderr != "" {
+				t.Fatalf("clear: code %d, stderr %q; want 0 and no stderr", code, stderr)
+			}
+			if want := "Cleared 2 cached credentials; revoked 2.\n"; stdout != want {
+				t.Errorf("stdout = %q, want %q", stdout, want)
+			}
+			wantAuths(t, g, "DELETE /api/tokens/", 2, "Bearer ghpr_live")
+		})
+	}
+}
+
+func TestRun_RevokeFallsBackToPhaseA(t *testing.T) {
+	const phaseBErr = "dotvault login required"
+	tests := []struct {
+		name  string
+		op    string
+		stdin string
+		n     int
+	}{
+		{"erase", "erase", eraseWith(fakeToken(1)), 1},
+		{"clear", "clear", "", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newFakeGHP(t)
+			opts, l := baseOptions(t, g)
+			splitPhases(g, l, g.srv.URL)
+			if _, stderr, code := run(t, opts, "get", stdGet); code != 0 {
+				t.Fatalf("get: code %d, stderr %q", code, stderr)
+			}
+			l.set(func(l *testLoaders) { l.authedErr = errors.New(phaseBErr) })
+			_, stderr, code := run(t, opts, tt.op, tt.stdin)
+			if code != 0 {
+				t.Fatalf("%s: code %d, stderr %q", tt.op, code, stderr)
+			}
+			want := MessagePrefix + phaseBErr + "; revoking with the user token from the config files or environment\n"
+			if stderr != want {
+				t.Errorf("stderr = %q, want %q", stderr, want)
+			}
+			wantAuths(t, g, "DELETE /api/tokens/", tt.n, "Bearer ghpr_stale")
+		})
 	}
 }

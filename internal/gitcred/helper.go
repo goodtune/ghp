@@ -470,20 +470,13 @@ func (h *helper) erase(ctx context.Context, stdin io.Reader) {
 		return
 	}
 
-	// The lock is released; revoke with the phase A token, else phase B's.
-	token, base := h.static.UserToken, serverURL
-	if token == "" {
-		b, err := h.loadAuthed(ctx)
-		if err != nil {
-			h.warn(fmt.Sprintf("could not revoke token %s: %v", tokenPrefix(e.Token), err))
-			return
-		}
-		token = b.UserToken
-		if b.ServerURL != "" {
-			base = b.ServerURL
-		}
+	// The lock is released; revoke with the credentials get mints with.
+	base, token, err := h.revokeCredentials(ctx)
+	if err != nil {
+		h.warn(fmt.Sprintf("could not revoke token %s: %v", tokenPrefix(e.Token), err))
+		return
 	}
-	if token == "" {
+	if token == "" || base == "" {
 		h.warn(fmt.Sprintf("could not revoke token %s: %s", tokenPrefix(e.Token), msgNotLoggedIn))
 		return
 	}
@@ -661,25 +654,33 @@ func (h *helper) clear(ctx context.Context, stdout io.Writer) int {
 	return 0
 }
 
+// revokeCredentials returns the server URL and user token a revoke uses:
+// phase B's, the ones get mints with. Only when phase B fails does it fall
+// back to phase A's, with one warning line; when phase A has no complete
+// credentials either, it returns phase B's error.
+func (h *helper) revokeCredentials(ctx context.Context) (string, string, error) {
+	b, err := h.loadAuthed(ctx)
+	if err == nil {
+		return b.ServerURL, b.UserToken, nil
+	}
+	if h.static.ServerURL == "" || h.static.UserToken == "" {
+		return "", "", err
+	}
+	h.warn(fmt.Sprintf("%v; revoking with the user token from the config files or environment", err))
+	return h.static.ServerURL, h.static.UserToken, nil
+}
+
 // revokeAll revokes each entry's token best effort and returns how many
-// were revoked. It runs phase A, then phase B when phase A has no user
-// token.
+// were revoked. It runs phase A, then revokes with revokeCredentials.
 func (h *helper) revokeAll(ctx context.Context, entries []Entry) int {
 	if err := h.loadStatic(); err != nil {
 		h.warn("tokens not revoked: " + err.Error())
 		return 0
 	}
-	token, base := h.static.UserToken, h.static.ServerURL
-	if token == "" {
-		b, err := h.loadAuthed(ctx)
-		if err != nil {
-			h.warn("tokens not revoked: " + err.Error())
-			return 0
-		}
-		token = b.UserToken
-		if b.ServerURL != "" {
-			base = b.ServerURL
-		}
+	base, token, err := h.revokeCredentials(ctx)
+	if err != nil {
+		h.warn("tokens not revoked: " + err.Error())
+		return 0
 	}
 	if token == "" || base == "" {
 		h.warn("tokens not revoked: " + msgNotLoggedIn)
