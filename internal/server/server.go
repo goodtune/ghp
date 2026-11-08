@@ -91,6 +91,11 @@ func (s *Server) syncBlockMetrics() {
 	}
 }
 
+// syncSlowDecisionLog applies metrics.slow_decision_threshold (#355).
+func (s *Server) syncSlowDecisionLog() {
+	metrics.ConfigureSlowDecisionLog(s.logger, s.cfg.Metrics.SlowDecisionThreshold)
+}
+
 // reloadConfig re-reads the configuration file and updates hot-reloadable
 // fields in-place. All components holding a pointer to the Config struct
 // will see the updated values.
@@ -106,6 +111,7 @@ func (s *Server) reloadConfig() {
 	s.logger.Info("config_reloaded", "path", s.configPath)
 
 	s.syncBlockMetrics()
+	s.syncSlowDecisionLog()
 
 	// Sync admin roles from the updated config.
 	if s.store != nil {
@@ -265,6 +271,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Initialise the anonymous git blocking gauge to reflect the startup config.
 	s.syncBlockMetrics()
+	s.syncSlowDecisionLog()
 
 	// Set up encryption. Vault provides encryption at rest, so a
 	// passthrough encryptor is used when the backend is Vault.

@@ -814,3 +814,29 @@ func TestWebhooksValidate_NgrokEnvToken(t *testing.T) {
 		t.Errorf("NgrokAuthtoken() = %q, want from-env", w.NgrokAuthtoken())
 	}
 }
+
+func TestMetricsSlowDecisionThreshold(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want time.Duration
+	}{
+		{"default", "", 10 * time.Millisecond},
+		{"env override", "25ms", 25 * time.Millisecond},
+		{"env disable", "0s", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.env != "" {
+				t.Setenv("GHP_METRICS_SLOW_DECISION_THRESHOLD", tt.env)
+			}
+			cfg, err := Load("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Metrics.SlowDecisionThreshold != tt.want {
+				t.Errorf("SlowDecisionThreshold = %v, want %v", cfg.Metrics.SlowDecisionThreshold, tt.want)
+			}
+		})
+	}
+}

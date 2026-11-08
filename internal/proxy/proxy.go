@@ -162,6 +162,9 @@ func (h *Handler) SetTransport(rt http.RoundTripper) {
 // ServeHTTP handles proxied requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	// Per-request stage trace: lets ObserveDecision derive pipeline_other
+	// and log slow decisions with their stage breakdown (#355).
+	r = r.WithContext(metrics.WithDecisionTrace(r.Context(), r.Method, r.URL.Path))
 
 	// Determine the actual API path.
 	// Requests come in as /api/v3/... or /api/graphql (GHE-style),
@@ -410,9 +413,11 @@ func (h *Handler) handleGraphQL(w http.ResponseWriter, r *http.Request, pt *data
 	// emitted below. Close the original body once it is drained so the
 	// underlying network connection can be returned to the pool while we
 	// run static analysis.
+	bodyReadStart := time.Now()
 	originalBody := r.Body
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxGraphQLBodyBytes+1))
 	_ = originalBody.Close()
+	metrics.ObserveDecision(r.Context(), metrics.StageRequestBodyRead, tokenType, time.Since(bodyReadStart))
 	if err != nil {
 		h.logger.Warn("graphql: failed to read request body", "error", err)
 		metrics.ObserveDecision(r.Context(), metrics.StageTotal, tokenType, time.Since(start))
@@ -798,6 +803,7 @@ func (h *Handler) forwardPassthrough(w http.ResponseWriter, r *http.Request, pat
 // round-trip plus response streaming. start is the request arrival time and
 // tokenType the decision-pipeline label ("proxy", "agent", or "").
 func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, authHeader string, start time.Time, tokenType string, overrideHeaders ...map[string]string) int {
+	buildStart := time.Now()
 	targetURL := upstreamURL(r, path)
 
 	// Use the GraphQL-flavoured error envelope (with the GraphQL docs
@@ -824,11 +830,12 @@ func (h *Handler) forwardRequest(w http.ResponseWriter, r *http.Request, path, a
 
 	// Set the resolved Authorization header (scheme preserved from original request).
 	proxyReq.Header.Set("Authorization", authHeader)
+	owner, repoName := enterpriseTargetFromAPIPath(path)
+	metrics.ObserveDecision(r.Context(), metrics.StageRequestBuild, tokenType, time.Since(buildStart))
 
 	// Enterprise access restriction: inject the header unless an exception
 	// covers the request target, in which case a managed identity may also be
 	// substituted for the resolved credential.
-	owner, repoName := enterpriseTargetFromAPIPath(path)
 	if identityTok := h.enterprise.Apply(r.Context(), proxyReq.Header, owner, repoName, h.enterpriseUsername(r, rawTokenFromAuthValue(authHeader)), tokenType); identityTok != "" {
 		proxyReq.Header.Set("Authorization", substituteAuthHeader(authHeader, identityTok))
 	}

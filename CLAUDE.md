@@ -106,10 +106,15 @@ The proxy decision pipeline is broken into individually timed stages so that the
 | `redirect_head_check` | HEAD request to the release redirect target to verify asset availability before issuing a 302 (releases handler only) |
 | `graphql_analysis` | Parsing a `/graphql` request body and statically computing its scope and repository requirements (GraphQL handler, scoped tokens only; open-scoped tokens skip analysis and record no sample) |
 | `cache_lookup` | Git cache middleware database lookup of the per-repository cache record, deciding whether a git request is served from the local mirror (labeled `token_type="unknown"`; runs before token resolution) |
+| `request_body_read` | Buffering the client's `/graphql` request body before analysis (GraphQL handler, scoped tokens only); includes waiting for the client to upload the body |
+| `request_build` | Building the outbound request in `forwardRequest` (URL, request clone, header copy), up to the enterprise exception call |
+| `pipeline_other` | Derived, not timed: `total` minus the sum of the stages observed for the same request before `total`. Recorded only for requests that pass through `proxy.Handler.ServeHTTP` (the per-request trace is set there with `metrics.WithDecisionTrace`). A large value means time outside every stage (GC, scheduling, or a new untimed span) |
 
 Labels: `stage`, `token_type` (`proxy` for `ghx_` tokens, `agent` for `gha_` tokens, or `unknown` for pre-resolution stages), `vhost` (`api`, `web` for `github.com`, `codeload`, `management`, `copilot`, or `unknown` when there is no inbound request, e.g. background control-plane calls).
 
 The vhost is set once on the request context by `newHostDispatch` (`metrics.WithVhost`); `ObserveDecision(ctx, stage, tokenType, dur)` reads it. Always pass the inbound request context (or an outbound request built from it) so the sample lands under the right vhost. Adding the label (#330) breaks queries that match an exact label set; `sum by (...)` queries are unaffected.
+
+When `total` reaches `metrics.slow_decision_threshold` (default 10ms, `GHP_METRICS_SLOW_DECISION_THRESHOLD`, `0` disables), `ObserveDecision` logs one `slow_decision` warn line with `total_ms`, `pipeline_other_ms`, a `<stage>_ms` field per traced stage, `token_type`, `vhost`, `method` and `path`. It never logs the token. Any new stage observed before `total` appears in that line and is subtracted from `pipeline_other` automatically.
 
 Never record a hard-coded zero duration. If a stage does not run on a code path, skip the sample; otherwise time it with `time.Since`.
 

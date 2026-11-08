@@ -87,6 +87,7 @@ values from the config file.
 |----------|-------------|---------|
 | `GHP_METRICS_ENABLED` | Enable the dedicated Prometheus metrics server | `true` |
 | `GHP_METRICS_LISTEN` | Listen address for the metrics server | `:9136` |
+| `GHP_METRICS_SLOW_DECISION_THRESHOLD` | Log a `slow_decision` warn line with the per-stage breakdown when a request's decision `total` reaches this duration. `0` disables | `10ms` |
 
 ### OpenTelemetry
 
@@ -273,6 +274,7 @@ logging:
 metrics:
   enabled: true                # set to false to disable
   listen: ":9136"              # dedicated metrics server port
+  slow_decision_threshold: 10ms  # warn with per-stage durations when the decision total reaches this; 0 disables
 
 # otel:                        # Export OpenTelemetry log records to an OTLP collector
 #   enabled: false             # logs are always written to the console regardless

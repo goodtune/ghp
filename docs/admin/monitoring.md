@@ -83,6 +83,47 @@ The stages are:
 | `cache_lookup` | Checking whether a git request targets a cache-enabled repository (always `token_type="unknown"`) |
 | `forward_proxy_selection` | Selecting the upstream forward proxy for the outbound request |
 | `enterprise_exception` | Evaluating enterprise access restriction exceptions |
+| `request_body_read` | Reading the client's `/graphql` request body before analysis (scoped tokens only). This includes the time the client takes to upload the body |
+| `request_build` | Building the outbound request: URL, request copy and header copy |
+| `pipeline_other` | Not timed directly: `total` minus the sum of the other stages for the same request. Recorded for `ghx_`/`gha_` and passthrough requests on the API handler |
+
+`pipeline_other` shows time that no stage covers. It should stay near zero.
+If its p99 follows the `total` p99, the time is spent outside any stage, for
+example in a garbage collection pause or while the goroutine waits for a CPU.
+Compare it with `go_gc_duration_seconds` for the same window.
+
+### Slow decision log
+
+When the `total` of one request reaches `metrics.slow_decision_threshold`
+(default `10ms`), ghp writes one `slow_decision` line at warn level. Use it to
+explain a single slow sample. The line has these fields:
+
+| Field | Value |
+|-------|-------|
+| `total_ms` | The `total` sample, in milliseconds |
+| `pipeline_other_ms` | The part of `total` that no stage covers |
+| `<stage>_ms` | One field for each stage that ran before the forward, for example `token_resolution_ms` |
+| `token_type` | `proxy`, `agent` or `unknown` |
+| `vhost` | The `vhost` label value |
+| `method`, `path` | The request method and URL path (no query string) |
+
+The line never contains the token. Set the threshold to `0` to disable the
+log.
+
+Lines from paths outside the proxy API handler (for example `github.com`
+passthrough and management-host rejections) have no stage trace. They carry
+only `total_ms`, `token_type` and `vhost`.
+
+`request_body_read` is client upload time. A slow client can make `total`
+reach the threshold, so the 10ms default can write many lines on a busy
+deployment. Increase the threshold if this occurs.
+
+Likely cause of slow samples (#355): before `request_body_read` existed, the
+wait for a slow `/graphql` request body upload was outside every stage. A
+client that sends the headers first and the body later adds that wait to
+`total`. Deployment data must confirm this. To check it, make sure that the
+`request_body_read` p99 follows the `total` p99 and that `pipeline_other`
+stays near zero.
 
 All hosts emit the same stage names. The `vhost` label tells you which host
 received the request:
