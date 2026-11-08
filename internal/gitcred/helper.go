@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/goodtune/ghp/internal/asciiutil"
@@ -34,6 +37,10 @@ const (
 	msgNotLoggedIn    = "not logged in: run ghp auth login"
 	msgSessionExpired = "ghp session expired or invalid: run ghp auth login"
 	msgNoExpiry       = "server returned a token with no expiry; refusing to use it"
+	msgNoCacheDir     = "no credential cache directory is configured"
+	msgClearedBlind   = "cache could not be read; removed it without revoking tokens"
+
+	statusLabelWidth = 16
 )
 
 // Config is the part of the CLI config the helper needs.
@@ -86,6 +93,10 @@ func Run(ctx context.Context, opts Options, op string, stdin io.Reader, stdout, 
 	case "erase":
 		h.erase(ctx, stdin)
 		return 0
+	case "status":
+		return h.status(stdout)
+	case "clear":
+		return h.clear(ctx, stdout)
 	default:
 		// git requires unknown operations to be ignored.
 		return 0
@@ -480,4 +491,212 @@ func (h *helper) erase(ctx context.Context, stdin io.Reader) {
 	if err := client.RevokeToken(ctx, e.TokenID); err != nil {
 		h.warn(fmt.Sprintf("could not revoke token %s: %v", tokenPrefix(e.Token), err))
 	}
+}
+
+// protectionText describes what protects a cache written under each tier,
+// keyed by tier name; "none" means there is no cache.
+var protectionText = map[string]string{
+	securestore.TierTPM:      "sealed by this machine's TPM",
+	securestore.TierDPAPI:    "Windows DPAPI (current user)",
+	securestore.TierKeychain: "macOS login keychain",
+	securestore.TierFile:     "file permissions only (0600); see docs",
+	BackendNone:              "no cache",
+}
+
+// openForHumans opens the cache for status and clear: always under auto,
+// whatever --cache-backend says, with the cache's own notices suppressed
+// (status reports ReadError itself; clear prints its own line).
+func (h *helper) openForHumans() (*Session, error) {
+	if h.opts.CacheDir == "" {
+		return nil, errors.New(msgNoCacheDir)
+	}
+	s, err := (&Cache{
+		Dir:         h.opts.CacheDir,
+		Backend:     BackendAuto,
+		Protectors:  h.opts.Protectors,
+		LockTimeout: h.opts.LockTimeout,
+		Stderr:      io.Discard,
+		Now:         h.opts.Now,
+	}).Open()
+	if err != nil {
+		return nil, fmt.Errorf("could not open the credential cache: %w", err)
+	}
+	return s, nil
+}
+
+// sortedEntries returns the entries ordered by repository, then type; ties
+// keep cache-key order so the output is stable.
+func sortedEntries(entries map[string]Entry) []Entry {
+	keys := make([]string, 0, len(entries))
+	for k := range entries {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]Entry, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, entries[k])
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Repository != out[j].Repository {
+			return out[i].Repository < out[j].Repository
+		}
+		return out[i].Type < out[j].Type
+	})
+	return out
+}
+
+// printable replaces control characters so a value read from the cache or
+// the server cannot break a status line or drive the terminal.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, s)
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return BackendNone
+	}
+	return s
+}
+
+// status prints the cache path, tiers and entries. It never contacts the
+// server or loads the CLI config, and never prints more of a token than
+// tokenPrefix.
+func (h *helper) status(stdout io.Writer) int {
+	s, err := h.openForHumans()
+	if err != nil {
+		return h.fail(err.Error())
+	}
+	entries := sortedEntries(s.Entries())
+	readable, readErr := s.Readable(), s.ReadError()
+	backend, minTier, path := orNone(s.Backend()), orNone(s.MinTier()), s.Path()
+	// Nothing was written; closing releases the lock even when unlocking
+	// reports an error.
+	_ = s.Close()
+
+	protectors := h.opts.Protectors
+	if protectors == nil {
+		protectors = securestore.Default()
+	}
+	now := h.now()
+
+	var b strings.Builder
+	line := func(label, value string) {
+		fmt.Fprintf(&b, "%-*s%s\n", statusLabelWidth, label+":", printable(value))
+	}
+	line("Cache path", path)
+	line("Cache backend", backend)
+	line("Minimum tier", minTier)
+	protection, ok := protectionText[backend]
+	if !ok {
+		protection = "unknown tier"
+	}
+	line("Protection", protection)
+	for _, name := range protectors.Names() {
+		avail := "available"
+		if err := protectors.Available(name); err != nil {
+			avail = "unavailable (" + err.Error() + ")"
+		}
+		line("Tier "+name, avail)
+	}
+	if !readable {
+		line("Entries", fmt.Sprintf("unavailable (%v)", readErr))
+	} else {
+		line("Entries", strconv.Itoa(len(entries)))
+	}
+	for _, e := range entries {
+		app := e.AppName
+		if app == "" {
+			app = "-"
+		}
+		left := "expired"
+		if d := e.ExpiresAt.Sub(now); d > 0 {
+			left = fmt.Sprintf("in %dm", int64(math.Round(d.Minutes())))
+		}
+		fmt.Fprintf(&b, "  %s  %s  app=%s  token=%s  expires=%s (%s)\n",
+			printable(e.Repository), printable(e.Type), printable(app),
+			printable(tokenPrefix(e.Token)), e.ExpiresAt.UTC().Format(time.RFC3339), left)
+	}
+	if _, err := io.WriteString(stdout, b.String()); err != nil {
+		return h.fail("writing status: " + err.Error())
+	}
+	return 0
+}
+
+// clear removes every cached entry, keeping the tier file, then revokes
+// each removed token with the lock released. Only opening or rewriting the
+// cache can fail it; revocation problems are reported one line each.
+func (h *helper) clear(ctx context.Context, stdout io.Writer) int {
+	s, err := h.openForHumans()
+	if err != nil {
+		return h.fail(err.Error())
+	}
+	unreadable := !s.Readable()
+	entries := sortedEntries(s.Entries())
+	s.Clear()
+	err = s.Commit()
+	if cerr := s.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		// cache.enc may still be on disk; revoking would leave dead tokens
+		// cached.
+		return h.fail(fmt.Sprintf("could not clear the credential cache: %v", err))
+	}
+	if unreadable {
+		h.warn(msgClearedBlind)
+	}
+
+	revoked := 0
+	if len(entries) > 0 {
+		revoked = h.revokeAll(ctx, entries)
+	}
+	if _, err := fmt.Fprintf(stdout, "Cleared %d cached credentials; revoked %d.\n", len(entries), revoked); err != nil {
+		return h.fail("writing result: " + err.Error())
+	}
+	return 0
+}
+
+// revokeAll revokes each entry's token best effort and returns how many
+// were revoked. It runs phase A, then phase B when phase A has no user
+// token.
+func (h *helper) revokeAll(ctx context.Context, entries []Entry) int {
+	if err := h.loadStatic(); err != nil {
+		h.warn("tokens not revoked: " + err.Error())
+		return 0
+	}
+	token, base := h.static.UserToken, h.static.ServerURL
+	if token == "" {
+		b, err := h.loadAuthed(ctx)
+		if err != nil {
+			h.warn("tokens not revoked: " + err.Error())
+			return 0
+		}
+		token = b.UserToken
+		if b.ServerURL != "" {
+			base = b.ServerURL
+		}
+	}
+	if token == "" || base == "" {
+		h.warn("tokens not revoked: " + msgNotLoggedIn)
+		return 0
+	}
+	client := &Client{BaseURL: base, Token: token, HTTP: h.opts.HTTPClient}
+	revoked := 0
+	for _, e := range entries {
+		if e.TokenID == "" {
+			h.warn(fmt.Sprintf("could not revoke token %s: no token id was cached", tokenPrefix(e.Token)))
+			continue
+		}
+		if err := client.RevokeToken(ctx, e.TokenID); err != nil {
+			h.warn(fmt.Sprintf("could not revoke token %s: %v", tokenPrefix(e.Token), err))
+			continue
+		}
+		revoked++
+	}
+	return revoked
 }

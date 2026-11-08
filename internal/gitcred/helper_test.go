@@ -1030,3 +1030,366 @@ func TestSessionID(t *testing.T) {
 		})
 	}
 }
+
+// getFor returns a get request for owner/repo.
+func getFor(repo string) string {
+	return "protocol=https\nhost=github.com\npath=" + repo + ".git\n\n"
+}
+
+// fatalLoaders makes both config loaders fail the test when called.
+func fatalLoaders(t *testing.T, opts *Options) {
+	t.Helper()
+	opts.LoadStatic = func() (Config, error) {
+		t.Fatal("phase A loader called")
+		return Config{}, nil
+	}
+	opts.LoadAuthed = func(context.Context) (Config, error) {
+		t.Fatal("phase B loader called")
+		return Config{}, nil
+	}
+}
+
+func TestRun_StatusShowsEntriesNotTokens(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, l := baseOptions(t, g)
+	if _, stderr, code := run(t, opts, "get", stdGet); code != 0 {
+		t.Fatalf("get: code %d, stderr %q", code, stderr)
+	}
+
+	tests := []struct {
+		name    string
+		offset  time.Duration
+		backend string
+		want    []string
+	}{
+		{"fresh", 0, "", []string{
+			"Cache path:     " + filepath.Join(opts.CacheDir, CacheFileName) + "\n",
+			"Cache backend:  file\n",
+			"Minimum tier:   file\n",
+			"Protection:     file permissions only (0600); see docs\n",
+			"Tier file:      available\n",
+			"Entries:        1\n",
+			"  goodtune/ghp  agent  app=my-app  token=gha_fake...  expires=2026-11-08T13:00:00Z (in 60m)\n",
+		}},
+		{"rounded minutes", 30*time.Minute + 20*time.Second, "", []string{"(in 30m)\n"}},
+		{"expired", 2 * time.Hour, "", []string{"expires=2026-11-08T13:00:00Z (expired)\n"}},
+		{"cache backend ignored", 0, securestore.TierTPM, []string{"Cache backend:  file\n", "Entries:        1\n"}},
+		{"cache backend none ignored", 0, BackendNone, []string{"Cache backend:  file\n", "Entries:        1\n"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l.set(func(l *testLoaders) { l.now = testNow.Add(tt.offset) })
+			o := opts
+			o.CacheBackend = tt.backend
+			stdout, stderr, code := run(t, o, "status", "")
+			if code != 0 || stderr != "" {
+				t.Fatalf("status: code %d, stderr %q; want 0 and no stderr", code, stderr)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(stdout, w) {
+					t.Errorf("stdout = %q, want it to contain %q", stdout, w)
+				}
+			}
+			if strings.Contains(stdout, fakeToken(1)) || strings.Contains(stdout, "gha_fake0") {
+				t.Errorf("stdout = %q, leaks more than 8 characters of the token", stdout)
+			}
+		})
+	}
+}
+
+func TestRun_StatusSortsEntries(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, _ := baseOptions(t, g)
+	for _, repo := range []string{"goodtune/zeta", "goodtune/alpha"} {
+		if _, stderr, code := run(t, opts, "get", getFor(repo)); code != 0 {
+			t.Fatalf("get %s: code %d, stderr %q", repo, code, stderr)
+		}
+	}
+	stdout, stderr, code := run(t, opts, "status", "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("status: code %d, stderr %q", code, stderr)
+	}
+	a, z := strings.Index(stdout, "  goodtune/alpha  "), strings.Index(stdout, "  goodtune/zeta  ")
+	if a < 0 || z < 0 || a > z {
+		t.Errorf("stdout = %q, want the goodtune/alpha line before goodtune/zeta", stdout)
+	}
+	if !strings.Contains(stdout, "Entries:        2\n") {
+		t.Errorf("stdout = %q, want 2 entries", stdout)
+	}
+}
+
+func TestRun_StatusEmpty(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, _ := baseOptions(t, g)
+	stdout, stderr, code := run(t, opts, "status", "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("status: code %d, stderr %q", code, stderr)
+	}
+	want := "Cache path:     " + filepath.Join(opts.CacheDir, CacheFileName) + "\n" +
+		"Cache backend:  none\n" +
+		"Minimum tier:   none\n" +
+		"Protection:     no cache\n" +
+		"Tier file:      available\n" +
+		"Entries:        0\n"
+	if stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestRun_StatusTiers(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, _ := baseOptions(t, g)
+	f := newFakeTiers()
+	f.avail[securestore.TierKeychain] = true
+	opts.Protectors = f.protectors()
+	if _, stderr, code := run(t, opts, "get", stdGet); code != 0 {
+		t.Fatalf("get: code %d, stderr %q", code, stderr)
+	}
+	stdout, stderr, code := run(t, opts, "status", "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("status: code %d, stderr %q", code, stderr)
+	}
+	want := "Cache backend:  keychain\n" +
+		"Minimum tier:   keychain\n" +
+		"Protection:     macOS login keychain\n" +
+		"Tier tpm:       unavailable (securestore: protector unavailable: tpm: not present)\n" +
+		"Tier keychain:  available\n" +
+		"Tier file:      available\n" +
+		"Entries:        1\n"
+	if !strings.Contains(stdout, want) {
+		t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+	}
+}
+
+func TestRun_StatusNoServer(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, _ := baseOptions(t, g)
+	if _, stderr, code := run(t, opts, "get", stdGet); code != 0 {
+		t.Fatalf("get: code %d, stderr %q", code, stderr)
+	}
+	before := g.requestCount("")
+	fatalLoaders(t, &opts)
+	if _, stderr, code := run(t, opts, "status", ""); code != 0 {
+		t.Fatalf("status: code %d, stderr %q", code, stderr)
+	}
+	if n := g.requestCount(""); n != before {
+		t.Errorf("API requests = %d, want %d (status never contacts the server)", n, before)
+	}
+}
+
+func TestRun_StatusUnreadableQuiet(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, _ := baseOptions(t, g)
+	f := newFakeTiers()
+	f.avail[securestore.TierKeychain] = true
+	putCommit(t, newCache(t, opts.CacheDir, "", f), "o/r", freshEntry("a"))
+	f.set(func(f *fakeTiers) { f.unwrapErr[securestore.TierKeychain] = errors.New("locked") })
+	opts.Protectors = f.protectors()
+
+	stdout, stderr, code := run(t, opts, "status", "")
+	if code != 0 {
+		t.Fatalf("status: code %d, stderr %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want empty (the cache notice is suppressed)", stderr)
+	}
+	for _, w := range []string{"Cache backend:  keychain\n", "Entries:        unavailable (keychain: locked)\n"} {
+		if !strings.Contains(stdout, w) {
+			t.Errorf("stdout = %q, want it to contain %q", stdout, w)
+		}
+	}
+}
+
+func TestRun_StatusOpenFails(t *testing.T) {
+	tests := []struct {
+		name string
+		dir  func(t *testing.T) string
+		want string
+	}{
+		{"no cache directory", func(*testing.T) string { return "" }, "no credential cache directory"},
+		{"directory under a file", func(t *testing.T) string {
+			file := filepath.Join(t.TempDir(), "plain")
+			if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(file, "sub")
+		}, "could not open the credential cache"},
+	}
+	for _, tt := range tests {
+		for _, op := range []string{"status", "clear"} {
+			t.Run(tt.name+"/"+op, func(t *testing.T) {
+				g := newFakeGHP(t)
+				opts, _ := baseOptions(t, g)
+				opts.CacheDir = tt.dir(t)
+				stdout, stderr, code := run(t, opts, op, "")
+				assertFailure(t, stdout, stderr, code, tt.want)
+			})
+		}
+	}
+}
+
+func TestRun_ClearRevokesAndKeepsTier(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, _ := baseOptions(t, g)
+	for _, repo := range []string{"goodtune/ghp", "goodtune/other"} {
+		if _, stderr, code := run(t, opts, "get", getFor(repo)); code != 0 {
+			t.Fatalf("get %s: code %d, stderr %q", repo, code, stderr)
+		}
+	}
+	lockFree := 0
+	g.set(func(g *fakeGHP) {
+		g.onRevoke = func() {
+			s, err := (&Cache{Dir: opts.CacheDir, Protectors: opts.Protectors, LockTimeout: 100 * time.Millisecond}).Open()
+			if err != nil {
+				t.Errorf("Open during revoke: %v", err)
+				return
+			}
+			lockFree++
+			if err := s.Close(); err != nil {
+				t.Errorf("Close: %v", err)
+			}
+		}
+	})
+
+	stdout, stderr, code := run(t, opts, "clear", "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("clear: code %d, stderr %q; want 0 and no stderr", code, stderr)
+	}
+	if want := "Cleared 2 cached credentials; revoked 2.\n"; stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+	if n := g.requestCount("DELETE /api/tokens/"); n != 2 {
+		t.Errorf("DELETE requests = %d, want 2", n)
+	}
+	if got := g.revokedIDs(); len(got) != 2 || got[0] != "tok-1" || got[1] != "tok-2" {
+		t.Errorf("revoked = %q, want [tok-1 tok-2]", got)
+	}
+	if lockFree != 2 {
+		t.Errorf("revoke hook opened the cache %d times, want 2", lockFree)
+	}
+	if _, err := os.Stat(filepath.Join(opts.CacheDir, CacheFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("cache.enc stat err = %v, want not exist", err)
+	}
+	if got := string(readFile(t, filepath.Join(opts.CacheDir, TierFileName))); got != securestore.TierFile {
+		t.Errorf("tier = %q, want %q", got, securestore.TierFile)
+	}
+
+	if _, stderr, code := run(t, opts, "get", stdGet); code != 0 {
+		t.Fatalf("get after clear: code %d, stderr %q", code, stderr)
+	}
+	if n := g.mintCount(); n != 3 {
+		t.Errorf("mints = %d, want 3", n)
+	}
+}
+
+func TestRun_ClearEmpty(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, _ := baseOptions(t, g)
+	fatalLoaders(t, &opts)
+	stdout, stderr, code := run(t, opts, "clear", "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("clear: code %d, stderr %q", code, stderr)
+	}
+	if want := "Cleared 0 cached credentials; revoked 0.\n"; stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+	if n := g.requestCount(""); n != 0 {
+		t.Errorf("API requests = %d, want 0", n)
+	}
+}
+
+func TestRun_ClearWithoutServer(t *testing.T) {
+	tests := []struct {
+		name string
+		set  func(l *testLoaders)
+		want string
+	}{
+		{"empty config", func(l *testLoaders) { l.cfg = Config{} }, "tokens not revoked: " + msgNotLoggedIn},
+		{"phase B error", func(l *testLoaders) {
+			l.cfg = Config{}
+			l.authedErr = errors.New("dotvault login required")
+		}, "tokens not revoked: dotvault login required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newFakeGHP(t)
+			opts, l := baseOptions(t, g)
+			if _, stderr, code := run(t, opts, "get", stdGet); code != 0 {
+				t.Fatalf("get: code %d, stderr %q", code, stderr)
+			}
+			l.set(tt.set)
+
+			stdout, stderr, code := run(t, opts, "clear", "")
+			if code != 0 {
+				t.Fatalf("clear: code %d, stderr %q", code, stderr)
+			}
+			if want := "Cleared 1 cached credentials; revoked 0.\n"; stdout != want {
+				t.Errorf("stdout = %q, want %q", stdout, want)
+			}
+			if stderr != MessagePrefix+tt.want+"\n" {
+				t.Errorf("stderr = %q, want one line %q", stderr, MessagePrefix+tt.want)
+			}
+			if n := g.requestCount("DELETE "); n != 0 {
+				t.Errorf("DELETE requests = %d, want 0", n)
+			}
+			if _, err := os.Stat(filepath.Join(opts.CacheDir, CacheFileName)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("cache.enc stat err = %v, want not exist", err)
+			}
+		})
+	}
+}
+
+func TestRun_ClearRevokeFailure(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, _ := baseOptions(t, g)
+	for _, repo := range []string{"goodtune/ghp", "goodtune/other"} {
+		if _, stderr, code := run(t, opts, "get", getFor(repo)); code != 0 {
+			t.Fatalf("get %s: code %d, stderr %q", repo, code, stderr)
+		}
+	}
+	g.set(func(g *fakeGHP) { g.status["DELETE /api/tokens/{id}"] = http.StatusInternalServerError })
+	stdout, stderr, code := run(t, opts, "clear", "")
+	if code != 0 {
+		t.Fatalf("clear: code %d, stderr %q", code, stderr)
+	}
+	if want := "Cleared 2 cached credentials; revoked 0.\n"; stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+	if strings.Count(stderr, "\n") != 2 || strings.Count(stderr, MessagePrefix+"could not revoke token gha_fake...") != 2 {
+		t.Errorf("stderr = %q, want two prefixed could-not-revoke lines", stderr)
+	}
+	if strings.Contains(stderr, "gha_fake0") {
+		t.Errorf("stderr leaks a token: %q", stderr)
+	}
+}
+
+func TestRun_ClearUnreadable(t *testing.T) {
+	g := newFakeGHP(t)
+	opts, _ := baseOptions(t, g)
+	f := newFakeTiers()
+	f.avail[securestore.TierKeychain] = true
+	putCommit(t, newCache(t, opts.CacheDir, "", f), "o/r", freshEntry("a"))
+	f.set(func(f *fakeTiers) { f.unwrapErr[securestore.TierKeychain] = errors.New("locked") })
+	opts.Protectors = f.protectors()
+	fatalLoaders(t, &opts)
+
+	stdout, stderr, code := run(t, opts, "clear", "")
+	if code != 0 {
+		t.Fatalf("clear: code %d, stderr %q", code, stderr)
+	}
+	if want := "Cleared 0 cached credentials; revoked 0.\n"; stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+	if want := MessagePrefix + "cache could not be read; removed it without revoking tokens\n"; stderr != want {
+		t.Errorf("stderr = %q, want %q", stderr, want)
+	}
+	if n := g.requestCount(""); n != 0 {
+		t.Errorf("API requests = %d, want 0", n)
+	}
+	if _, err := os.Stat(filepath.Join(opts.CacheDir, CacheFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("cache.enc stat err = %v, want not exist", err)
+	}
+	if got := string(readFile(t, filepath.Join(opts.CacheDir, TierFileName))); got != securestore.TierKeychain {
+		t.Errorf("tier = %q, want %q", got, securestore.TierKeychain)
+	}
+}
