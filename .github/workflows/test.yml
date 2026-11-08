@@ -29,6 +29,7 @@ jobs:
             --server type=unixio,path=/tmp/swtpm/tpm.sock \
             --ctrl type=unixio,path=/tmp/swtpm/ctrl.sock \
             --flags not-need-init,startup-clear --daemon
+          for i in $(seq 1 50); do [ -S /tmp/swtpm/tpm.sock ] && [ -S /tmp/swtpm/ctrl.sock ] && exit 0; sleep 0.1; done; echo "swtpm sockets did not appear" >&2; exit 1
 
       - name: Run tests
         run: go test ./...

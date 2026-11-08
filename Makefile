@@ -27,7 +27,7 @@ vet-cross:
 lint:
 	golangci-lint run ./...
 
-## check: run tests and vet
+## check: run tests, vet and cross-compile vet
 check: test vet vet-cross
 
 ## clean: remove build artifacts
