@@ -38,6 +38,7 @@ nav:
     - Forward Proxy Rulesets: features/forward-proxy-rulesets.md
     - OAuth Broker: features/oauth-broker.md
     - Webhooks: features/webhooks.md
+    - Git Credential Helper: features/git-credential-helper.md
   - Administration:
     - Installation: admin/installation.md
     - Configuration: admin/configuration.md

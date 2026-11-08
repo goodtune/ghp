@@ -51,6 +51,15 @@ field by field:
 |----------|-------------|
 | `GHP_SERVER_URL` | URL of the ghp management server |
 | `GHP_USER_TOKEN` | Session token from `ghp auth login` |
+| `GHP_GIT_CM_APP` | GitHub App for `ghp auth git-credential` (default: the server's default app) |
+| `GHP_GIT_CM_TYPE` | Token type for `ghp auth git-credential`: `agent` or `proxy` (default `agent`) |
+| `GHP_GIT_CM_SCOPES` | Scopes for `ghp auth git-credential` tokens (default `contents:write`) |
+| `GHP_GIT_CM_TTL` | Lifetime of `ghp auth git-credential` tokens (default `1h`) |
+| `GHP_GIT_CM_CACHE_BACKEND` | Cache tier for `ghp auth git-credential`: `auto`, `none`, `tpm`, `dpapi`, `keychain` or `file` (default `auto`) |
+
+The `GHP_GIT_CM_*` variables are read only by `ghp auth git-credential`. A
+flag on the helper line beats them. See
+[Git Credential Helper](../features/git-credential-helper.md).
 
 This lets an operator deploy a single system config to a fleet (with
 `server_url` and a `dotvault:` stanza) and have every user inherit it with
