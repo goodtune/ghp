@@ -60,6 +60,21 @@ jobs:
           path: ghp
           retention-days: 1
 
+  windows-tests:
+    name: Go unit tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run git credential helper tests
+        run: go test ./internal/securestore/ ./internal/gitcred/ ./cmd/ghp/
+        env:
+          CGO_ENABLED: "0"
+
   e2e-tests:
     name: Playwright E2E tests
     runs-on: ubuntu-latest
