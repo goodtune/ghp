@@ -286,6 +286,23 @@ func (r *AppRegistry) GetInstallationTokenForApp(ctx context.Context, appID stri
 	return provider.GetInstallationToken(ctx, installationID, repos, permissions)
 }
 
+// InstallationAccountLogin returns the account login of the given
+// installation, looked up with the given app's provider. An empty appRecordID
+// selects the default app.
+func (r *AppRegistry) InstallationAccountLogin(ctx context.Context, appRecordID string, installationID int64) (string, error) {
+	var provider *AppTokenProvider
+	var err error
+	if appRecordID != "" {
+		provider, err = r.Get(appRecordID)
+	} else {
+		provider, err = r.GetDefault()
+	}
+	if err != nil {
+		return "", err
+	}
+	return provider.InstallationAccountLogin(ctx, installationID)
+}
+
 // InstallationTokenForOwner mints an installation token for the given app's
 // installation on the target owner (user or organization), discovering the
 // installation ID via the app JWT. An empty appRecordID selects the default

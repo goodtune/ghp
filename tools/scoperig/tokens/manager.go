@@ -111,6 +111,7 @@ func (m *Manager) Created() int {
 }
 
 // Create mints a token for profile p, expanding repository templates with v.
+// An agent profile is minted against v.Agent (app record and installation).
 func (m *Manager) Create(ctx context.Context, p scenario.Profile, v *scenario.Vars) (Handle, error) {
 	repos := make([]string, 0, len(p.Repositories))
 	for _, r := range p.Repositories {
@@ -128,6 +129,15 @@ func (m *Manager) Create(ctx context.Context, p scenario.Profile, v *scenario.Va
 	}
 	if p.Duration != "" {
 		body["duration"] = p.Duration
+	}
+	if p.Type == "agent" {
+		// Agent tokens always name the configured app: omitting
+		// app_record_id would pin the instance's default app instead.
+		if v.Agent.AppRecordID == "" || v.Agent.InstallationID <= 0 {
+			return Handle{}, fmt.Errorf("profile %s: agent profile needs instance.agent_installation (agent_installation capability)", p.Name)
+		}
+		body["app_record_id"] = v.Agent.AppRecordID
+		body["installation_id"] = v.Agent.InstallationID
 	}
 	status, resp, err := m.create(ctx, body)
 	if err != nil {

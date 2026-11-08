@@ -83,6 +83,11 @@ Admins can then create agent tokens via the CLI:
       --repos owner/repo1,owner/repo2 \
       --scope contents:read,pull_requests:write
 
+The repositories must belong to the installation's account (here `owner`).
+ghp rejects other owners with `400 Bad Request` and sends GitHub the bare
+names, so GitHub narrows the installation token as well. See
+[Token Scoping](../features/token-scoping.md#agent-tokens-gha_).
+
 
 ## Enterprise Restriction
 

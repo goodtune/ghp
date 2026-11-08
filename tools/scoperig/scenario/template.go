@@ -31,12 +31,20 @@ type InstanceVals struct {
 	DefaultDuration, MaxDuration time.Duration
 }
 
+// AgentVals identifies the GitHub App installation agent profiles mint
+// against (instance.agent_installation). Neither value is a secret.
+type AgentVals struct {
+	AppRecordID    string // GHP app record UUID
+	InstallationID int64
+}
+
 // Vars is the data passed to every scenario template.
 type Vars struct {
 	RunID, Host, Login  string
 	RepoA, RepoB, RepoW RepoRef
 	Fixture             map[string]FixtureVals // keys "A", "B", "W"
 	Instance            InstanceVals
+	Agent               AgentVals
 	Step                map[string]map[string]string // step name -> capture name -> value
 	ProfileIDs          map[string]string            // profile name -> minted token id (not the token value)
 }

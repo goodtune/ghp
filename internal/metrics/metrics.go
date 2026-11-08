@@ -189,6 +189,15 @@ var (
 		Help: "Total number of enterprise access restriction exception matches, by outcome.",
 	}, []string{"outcome"})
 
+	// AgentRepoNarrowingFailedTotal counts installation token mints refused
+	// because the repository list could not be narrowed to bare names of the
+	// installation account (#294), by reason: "owner_mismatch", "malformed",
+	// "lookup_failed" or "empty_login".
+	AgentRepoNarrowingFailedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_agent_repo_narrowing_failed_total",
+		Help: "Installation token mints refused because repositories could not be narrowed to the installation account, by reason.",
+	}, []string{"reason"})
+
 	// ScopeUnmappedDeniedTotal counts REST requests from scoped tokens that
 	// were denied because no scope rule matched the method and path
 	// (deny-by-default). The method label is normalised by NormalizeMethod.

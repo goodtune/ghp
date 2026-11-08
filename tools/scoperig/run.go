@@ -237,6 +237,9 @@ func configVars(c *Config) *scenario.Vars {
 			r.ref.Owner, r.ref.Name = rr.Owner, rr.Name
 		}
 	}
+	if c.AgentConfigured() {
+		v.Agent = scenario.AgentVals{AppRecordID: c.AgentAppRecordID, InstallationID: c.InstallationID}
+	}
 	return v
 }
 
@@ -418,8 +421,15 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	vars.ProfileIDs = map[string]string{"open": open.ID()}
 	handles := map[string]tokens.Handle{"open": open}
 	profErr := map[string]string{}
+	// Capabilities a profile may require are probed before minting, so a
+	// profile whose capability is false is never minted (its scenarios
+	// require the same capability and report GAP).
+	preCaps := Capabilities{"agent_installation": ProbeAgentInstallation(ctx, c, hc)}
+	if preCaps["agent_installation"] {
+		vars.Agent = scenario.AgentVals{AppRecordID: c.AgentAppRecordID, InstallationID: c.InstallationID}
+	}
 	for _, name := range profilesUsed(selected) {
-		if name == "open" {
+		if name == "open" || !satisfied(tree.Profiles[name].Requires, preCaps) {
 			continue
 		}
 		h, err := mgr.Create(ctx, tree.Profiles[name], vars)
@@ -436,6 +446,11 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	if err != nil {
 		rep = nil
 		return nil, &exitError{code: 3, err: err}
+	}
+	// Keep the pre-mint answer so a scenario never runs with a capability
+	// whose profiles were not minted.
+	for k, v := range preCaps {
+		caps[k] = v
 	}
 	// Repo W receives every write; apply the fixtures safety guard to it
 	// now that the login is known, before any scenario runs.
@@ -615,6 +630,16 @@ func fixtureKeys(s *scenario.Scenario) []string {
 		}
 	}
 	return keys
+}
+
+// satisfied reports whether every capability in reqs is true in caps.
+func satisfied(reqs []string, caps Capabilities) bool {
+	for _, r := range reqs {
+		if !caps[r] {
+			return false
+		}
+	}
+	return true
 }
 
 func profilesUsed(ss []*scenario.Scenario) []string {

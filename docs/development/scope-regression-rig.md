@@ -10,7 +10,7 @@ It is an operator tool. It is not shipped in the `ghp` binary and it does not ru
 
 What iteration 1 does not cover:
 
-- Git smart-HTTP, agent (`gha_`) tokens, enterprise exceptions, border-policy reload, anonymous git, audit logs, hard delete.
+- Git smart-HTTP, enterprise exceptions, border-policy reload, anonymous git, audit logs, hard delete.
 - Load or performance testing. The optional latency section (see [Latency](#latency)) measures the run's own requests only.
 - Fixing product defects. The rig finds them; fixes are separate pull requests.
 
@@ -37,7 +37,7 @@ What iteration 1 does not cover:
 | `GHP_RIG_REPO_W` | no | `fixtures.repo_w` | Write sandbox; the only repository the rig changes |
 | `GHP_RIG_GH` | no | `gh` on `PATH` | Path to the `gh` binary |
 | `GHP_RIG_SCENARIOS` | no | `rig` | Root of claims, profiles and scenarios |
-| `GHP_RIG_INSTALLATION_ID` | no | none | Positive integer; enables the `agent_installation` capability |
+| `GHP_RIG_INSTALLATION_ID` | no | `instance.agent_installation.installation_id` | Positive integer; overrides the agent installation (see [Agent tokens](#agent-tokens)) |
 | `GHP_RIG_CA_FILE` | no | system pool | Extra PEM CA bundle |
 
 `gh` runs with an environment built from scratch: a fresh `GH_CONFIG_DIR`, a fresh `XDG_CACHE_HOME`, a fresh working directory that is an empty git repository on the fixture branch (no remotes; `GH_REPO` names the base repository), and the token in `GH_ENTERPRISE_TOKEN` only. No inherited `GH_*` or `GITHUB_*` variable reaches it.
@@ -57,6 +57,43 @@ The file holds the proxy API host (`host`), token durations, the token-create ra
 
 `instance.border_block` lists the token prefixes that the instance's border policy blocks, for example `[ghp_, gho_, github_pat_]`. The rig does not probe this value. It must match the border policy of the instance. If a prefix is missing from the list, the BORDER-C43 scenarios for that prefix are GAP.
 
+`instance.agent_installation` names the GitHub App installation that agent (`gha_`) profiles use. See [Agent tokens](#agent-tokens).
+
+### Agent tokens
+
+The agent profiles (`agent-open`, `agent-repo-A`, `agent-repo-W`, `agent-perm-ro`) and the scenarios in `rig/scenarios/agent.yaml` need a GitHub App installation that the rig may use:
+
+1. Create a GitHub App and install it on the three fixture repositories A, B and W (one installation; "Only select repositories" is enough). Give it at least these repository permissions: contents write, issues write, pull requests write, metadata read, actions read, checks read and statuses read.
+2. Register the App in the GHP instance (admin UI or `POST /api/apps`). Do not make it the default app.
+3. Put its app record UUID (the `id` from `GET /api/apps`, not the GitHub App ID) and the installation ID in `rig/config.yaml`:
+
+```yaml
+instance:
+  agent_installation:
+    app_record_id: 00000000-0000-0000-0000-000000000000
+    installation_id: 12345678
+```
+
+The rig rejects an `app_record_id` that is not a UUID and an `installation_id` that is not a positive integer. The `agent_installation` capability is true when both values are set and `GET /api/apps/{app_record_id}` answers 200 with that ID. The rig checks this before it mints profile tokens: when it is false, the agent profiles are not minted and their scenarios are GAP. The check does not call GitHub, so it does not prove that the installation covers the fixtures. Every agent token the rig creates names this app explicitly. A token created without `app_record_id` is pinned to the instance's default app, so the rig never omits it.
+
+A profile may set `requires: [agent_installation]` (`type: agent` must). Every scenario that uses the profile must list the same capability. The token manager mints and revokes agent tokens like proxy tokens and never prints their values.
+
+What the agent scenarios cover:
+
+- AGENT-C49: GHP enforces the repository allowlist (A allowed, B and W denied) and the permission levels (reads allowed, writes denied before GitHub) of an agent token.
+- TOK-C02: the admin session creates an agent token. The non-admin half needs a second, non-admin session. The rig has only the admin session, so that scenario requires `non_admin_session`, which is never set, and reports GAP.
+- TOK-C03 and TOK-C04: `ghp token create` resolves `--app` and `--installation` in the CLI, through `GET /api/apps` and `GET /api/apps/{id}/installations`. The rig checks the data those endpoints return (the app name with its record ID, the installation ID with the account login, a default app marked; that last check requires the `default_app` capability). It does not run the CLI binary. The server-side default for a token created without `app_record_id` is not exercised, because it would use the default app.
+- REPO-C08: the API keeps the single `repository` field of a proxy token and the `repositories` list of an agent token.
+
+#### The #294 probe
+
+GHP sends an agent token's repositories to GitHub's installation `access_tokens` API when it first needs an installation token. Before 0.27.0 (#358, the fix for #294) it sent `owner/repo`. GitHub rejected that form with 422 ("There is at least one repository that does not exist or is not accessible to the parent installation"), so a repository-scoped agent token failed on every request; it was not widened. Since 0.27.0 GHP sends bare names.
+
+- `GAP-A6.repo-a-reads-a` and `AGENT-C49.repo-w-reads-w` send a request with a token scoped to one repository. A 200 proves that GitHub accepted the mint body. They carried `known_issue` #294 with the observed 422 until 0.27.0; both pass on 0.27.0.
+- `AGENT-C49.repo-a-denies-b` and `AGENT-C49.repo-a-denies-w` show that GHP denies B and W to a token scoped to A, although the installation covers both.
+
+What the probe does not prove: that GitHub narrows the installation token. That needs the raw installation token, which never leaves GHP, and GHP denies the request before it reaches GitHub. The W probe tests the GHP layer only.
+
 ### Capabilities
 
 The preflight step sets these capabilities. A scenario that needs a capability that is false is GAP.
@@ -67,7 +104,9 @@ The preflight step sets these capabilities. A scenario that needs a capability t
 | `repo_create` | The credential has the `repo` or `public_repo` OAuth scope and W's owner is the probed login. |
 | `github_vhost` | The instance answers a TLS request with SNI `github.com`. |
 | `codeload_vhost` | The instance answers a TLS request with SNI `codeload.github.com`. |
-| `agent_installation` | `GHP_RIG_INSTALLATION_ID` is set and the session can list all tokens. |
+| `agent_installation` | `instance.agent_installation` is set and `GET /api/apps/{app_record_id}` answers 200 with that ID (checked before profile tokens are minted). |
+| `default_app` | `GET /api/apps` lists exactly one app with `is_default` true (TOK-C04). |
+| `non_admin_session` | Never set. Reserved for the non-admin half of TOK-C02; the rig has only the admin session. |
 | `border_block_ghp` | `ghp_` is in `instance.border_block`. |
 | `border_block_gho` | `gho_` is in `instance.border_block`. |
 | `border_block_github_pat` | `github_pat_` is in `instance.border_block`. |
@@ -106,11 +145,11 @@ Validate offline first. This needs no network and no environment:
 make scoperig-validate
 ```
 
-A rest request may set `vhost: github.com` (needs `requires: [github_vhost]`) or `vhost: codeload.github.com` (needs `requires: [codeload_vhost]`); the request goes to the instance with that TLS SNI and Host header and no `/api/v3` prefix, and must be a GET or HEAD. A graphql scenario may set `operation_name`, sent as the request's `operationName`. Templates have the functions `add` (duration arithmetic), `upper` and `base64` (standard encoding, for a Basic credential).
+A rest request may set `vhost: github.com` (needs `requires: [github_vhost]`) or `vhost: codeload.github.com` (needs `requires: [codeload_vhost]`); the request goes to the instance with that TLS SNI and Host header and no `/api/v3` prefix, and must be a GET or HEAD. A graphql scenario may set `operation_name`, sent as the request's `operationName`. Templates have the functions `add` (duration arithmetic), `upper` and `base64` (standard encoding, for a Basic credential). `{{.Agent.AppRecordID}}` and `{{.Agent.InstallationID}}` hold the configured agent installation; in a request body, `"$int:InstallationID"` sends the installation ID as a JSON number.
 
 A `kind: corpus` entry replays a `gh` query corpus live. `Load` replaces it with one graphql scenario per corpus query and corpus profile, with the ID `<id>.<file>.<operation>.<corpus profile>`; `validate` then checks each generated scenario like any other. `corpus` is the corpus directory relative to the rig root, and `corpus_profiles` maps every corpus profile (`open`, `perm-ro`, `repo`) to a rig profile; an unmapped profile is a load error. The corpus placeholders `OWNER`, `REPO` and `NODE_ID` in variables become fixture A's owner, name and node ID. A `verdict: allow` expects 200 and no GHP denial (GitHub may still report a GraphQL error for the placeholder numbers); a `deny:*` verdict expects 403, a GHP denial and the message for that reason. An entry with `known_issue` gets `observed:` from its `current` verdict. Run one command's queries with `--only 'GAP-A9.gh-2.102.0.pr_view.*'`.
 
-Validation rejects, among other things, any non-GET request whose path does not target `/repos/<W>/...` (the exceptions are the GAP-A1 probe and `token_api` scenarios, which must target `/api/tokens`), and paths with `..`, dot segments or encoded dots. A `gh` argument that contains the literal placeholder host `ghp.example` is rejected; use `{{.Host}}`.
+Validation rejects, among other things, any non-GET request whose path does not target `/repos/<W>/...` (the exceptions are the GAP-A1 probe and `token_api` scenarios, which must target `/api/tokens`; a `token_api` scenario may also GET `/api/apps`, `/api/apps/{uuid}` and `/api/apps/{uuid}/installations`, and GET under `/api/v3/`; a `token_api` agent token body must set `app_record_id: "{{.Agent.AppRecordID}}"` and `installation_id: "$int:InstallationID"` and require `agent_installation`), and paths with `..`, dot segments or encoded dots. A `gh` argument that contains the literal placeholder host `ghp.example` is rejected; use `{{.Host}}`.
 
 `tools/scoperig/scenario/probe_test.go` holds a standing table of adversarial scenario shapes (host, path, cleanup, empty-matcher and `gh` parser tricks). Each must be rejected by a named rule, and CI runs it with the unit tests. When you find a new way past the validator, add a row there with the fix. A fuzz target (`go test -fuzz FuzzLoadValidate ./tools/scoperig/scenario`) searches for accepted REST writes that leave W.
 
@@ -316,7 +355,7 @@ Existing expectations in the output directory are kept per operation.
 ## Known limitations
 
 - No git smart-HTTP scenarios.
-- No agent (`gha_`) token scenarios.
+- Agent (`gha_`) scenarios cannot test GitHub-side narrowing of the installation token or the non-admin refusal (TOK-C02), and check the CLI's `--app` / `--installation` resolution through the API data only (see [Agent tokens](#agent-tokens)).
 - `LIFE-C41.expired-rejected` waits for a 1-minute token to expire, so a run that starts with it polls for up to 150 s.
 - `gh` must run outside a github.com checkout, or it ignores `GH_HOST`. The rig runs it in a fresh temporary directory for this reason.
 - Closed issues and PRs accumulate in W.

@@ -16,11 +16,19 @@ type Claim struct {
 // Profile describes a token the rig mints for scenarios.
 type Profile struct {
 	Name         string   `yaml:"name"`
-	Type         string   `yaml:"type"`         // proxy (agent rejected in iteration 1)
+	Type         string   `yaml:"type"`         // proxy | agent (agent needs requires: [agent_installation])
 	Repositories []string `yaml:"repositories"` // templated
 	Scopes       string   `yaml:"scopes"`
 	Duration     string   `yaml:"duration"` // "" only for lifecycle-default
+	// Requires lists capabilities the token needs before it can be minted.
+	// Only capabilities known before minting are allowed (see
+	// PreMintCapabilities). Every scenario using the profile must list them.
+	Requires []string `yaml:"requires"`
 }
+
+// PreMintCapabilities are the capabilities the rig knows before it mints
+// profile tokens, so a profile may require them.
+var PreMintCapabilities = map[string]bool{"agent_installation": true}
 
 // Request is one HTTP request (a rest step, cleanup entry or token_api call).
 type Request struct {
