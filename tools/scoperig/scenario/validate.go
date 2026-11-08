@@ -436,6 +436,14 @@ func checkExpect(where string, e *Expect, v *Vars, add func(string, ...any)) {
 	if e == nil {
 		return
 	}
+	if len(e.HeaderNotContainsExcept) > 0 && len(e.HeaderNotContains) == 0 {
+		add("%s: header_not_contains_except needs header_not_contains", where)
+	}
+	for _, h := range e.HeaderNotContainsExcept {
+		if !strings.EqualFold(h, "Set-Cookie") {
+			add("%s: header_not_contains_except may only name Set-Cookie, not %q", where, h)
+		}
+	}
 	if e.ExitCode != nil && len(e.ExitCodeIn) > 0 {
 		add("%s: exit_code and exit_code_in are mutually exclusive", where)
 	}

@@ -116,7 +116,7 @@ func Match(e *scenario.Expect, o *Observation) []error {
 		}
 	}
 	if len(e.HeaderNotContains) > 0 {
-		lines := headerLines(o.Header)
+		lines := headerLines(o.Header, e.HeaderNotContainsExcept)
 		for _, s := range e.HeaderNotContains {
 			for _, l := range lines {
 				if strings.Contains(l, s) {
@@ -352,11 +352,18 @@ func IsGHPDenialResponse(status int, body []byte) bool {
 	return (status == 401 || status == 403) && IsGHPDenial(body)
 }
 
-// headerLines returns "Name: value" for every value of h, sorted by name.
-func headerLines(h http.Header) []string {
+// headerLines returns "Name: value" for every value of h, sorted by name,
+// leaving out the headers named in except (case-insensitive).
+func headerLines(h http.Header, except []string) []string {
+	skip := make(map[string]bool, len(except))
+	for _, x := range except {
+		skip[http.CanonicalHeaderKey(x)] = true
+	}
 	names := make([]string, 0, len(h))
 	for k := range h {
-		names = append(names, k)
+		if !skip[http.CanonicalHeaderKey(k)] {
+			names = append(names, k)
+		}
 	}
 	sort.Strings(names)
 	var out []string

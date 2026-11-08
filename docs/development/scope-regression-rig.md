@@ -145,7 +145,8 @@ A run starts by sweeping: it revokes every unrevoked token whose session id star
 | `status`, `status_in` | The HTTP status equals the value, or is one of the list |
 | `body_contains`, `body_not_contains` | The response body contains (or does not contain) every string |
 | `header` | Each named header's first value equals the string |
-| `header_not_contains` | No response header line (`Name: value`, after redaction) contains any of the strings. A token in a header shows as `<prefix>[REDACTED]`, so `_[REDACTED]` finds one |
+| `header_not_contains` | No response header line (`Name: value`, after redaction) contains any of the strings. A token shows as `<prefix>[REDACTED]`; a Basic, bearer or token credential and a wholly masked `Authorization` or `Cookie` header show as `[REDACTED]`, so `[REDACTED]` finds all of them |
+| `header_not_contains_except` | Headers that `header_not_contains` skips. Only `Set-Cookie` is allowed (redaction masks it whole, so its value says nothing) |
 | `json` | Each JSON path (`$.a.b`, `$.items[0].id`) has the string value |
 | `ghp_denial` | The response is (or is not) a GHP denial (403 or 401 with a GHP message) |
 | `exit_code`, `exit_code_in` | The `gh` exit code equals the value, or is one of the list |

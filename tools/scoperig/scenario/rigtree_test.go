@@ -183,7 +183,9 @@ func contains(xs []string, x string) bool {
 var task19Claims = map[string]int{
 	"GQL-C24": 1, "GQL-C25": 2, "GQL-C26": 4, "GQL-C27": 1, "GQL-C28": 2,
 	"GQL-C29": 1, "GQL-C31": 2, "GQL-C32": 1, "GQL-C33": 1,
-	// batch 4; GAP-A9 is generated from the gh corpus (one per query and profile).
+	// batch 4. GAP-A9 counts generated scenarios: the gh 2.102.0 corpus has
+	// 19 queries, each replayed for three profiles (57 scenarios); 19 is a
+	// floor of one per query, not the exact generated total.
 	"GQL-C22": 2, "GQL-C23": 2, "GQL-C30": 1, "GQL-C34": 1, "GQL-C35": 3, "GQL-C36": 6,
 	"GAP-A4": 3, "GAP-A9": 19,
 }

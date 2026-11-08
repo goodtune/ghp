@@ -27,10 +27,12 @@
     header: {X-OAuth-Scopes: "contents:read, metadata:read"}
 
 # TOK-C01: the client never sees the real credential. Observations are
-# redacted, so any token-shaped string in a response shows as
-# "<prefix>[REDACTED]" (ghx_, gho_, ghu_, ghp_, ghs_, ghr_, github_pat_);
-# a Basic credential shows as "[REDACTED]". The body and every header line
-# are checked.
+# redacted, so a token-shaped string in a response shows as
+# "<prefix>[REDACTED]" (ghx_, gho_, ghu_, ghp_, ghs_, ghr_, github_pat_).
+# Other forms show as a bare "[REDACTED]": a base64 Basic credential, a
+# bearer/token value, and a wholly masked Authorization or Cookie header.
+# So the body and every header line must not contain "[REDACTED]" at all.
+# Set-Cookie is exempt: redaction masks it whole whatever it holds.
 - id: TOK-C01.user-no-credential
   claim: TOK-C01
   doc: docs/features/token-scoping.md#proxy-tokens-ghx_
@@ -43,7 +45,8 @@
     status: 200
     json: {"$.login": "{{.Login}}"}
     body_not_contains: ["[REDACTED]"]
-    header_not_contains: ["_[REDACTED]"]
+    header_not_contains: ["[REDACTED]"]
+    header_not_contains_except: [Set-Cookie]
 
 - id: TOK-C01.scoped-repo-no-credential
   claim: TOK-C01
@@ -56,7 +59,8 @@
   expect:
     status: 200
     body_not_contains: ["[REDACTED]"]
-    header_not_contains: ["_[REDACTED]"]
+    header_not_contains: ["[REDACTED]"]
+    header_not_contains_except: [Set-Cookie]
 
 - id: TOK-C01.graphql-no-credential
   claim: TOK-C01
@@ -69,4 +73,5 @@
     status: 200
     json: {"$.data.viewer.login": "{{.Login}}"}
     body_not_contains: ["[REDACTED]"]
-    header_not_contains: ["_[REDACTED]"]
+    header_not_contains: ["[REDACTED]"]
+    header_not_contains_except: [Set-Cookie]

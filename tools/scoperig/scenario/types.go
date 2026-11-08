@@ -46,14 +46,18 @@ type Expect struct {
 	// HeaderNotContains holds substrings that must not appear in any
 	// response header line ("Name: value", redacted). A token in a header
 	// shows as "<prefix>[REDACTED]", so "_[REDACTED]" finds one.
-	HeaderNotContains []string          `yaml:"header_not_contains"`
-	JSON              map[string]string `yaml:"json"`
-	GHPDenial         *bool             `yaml:"ghp_denial"`
-	ExitCode          *int              `yaml:"exit_code"`
-	ExitCodeIn        []int             `yaml:"exit_code_in"`
-	StdoutContains    []string          `yaml:"stdout_contains"`
-	StderrContains    []string          `yaml:"stderr_contains"`
-	ExpiresWithin     *ExpiresWithin    `yaml:"expires_within"`
+	HeaderNotContains []string `yaml:"header_not_contains"`
+	// HeaderNotContainsExcept names headers header_not_contains skips. Only
+	// Set-Cookie is allowed: redaction masks it whole, so "[REDACTED]" there
+	// says nothing about a token.
+	HeaderNotContainsExcept []string          `yaml:"header_not_contains_except"`
+	JSON                    map[string]string `yaml:"json"`
+	GHPDenial               *bool             `yaml:"ghp_denial"`
+	ExitCode                *int              `yaml:"exit_code"`
+	ExitCodeIn              []int             `yaml:"exit_code_in"`
+	StdoutContains          []string          `yaml:"stdout_contains"`
+	StderrContains          []string          `yaml:"stderr_contains"`
+	ExpiresWithin           *ExpiresWithin    `yaml:"expires_within"`
 }
 
 // ExpiresWithin asserts that a JSON timestamp field (RFC 3339) falls inside

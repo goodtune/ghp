@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -124,6 +125,14 @@ func expandCorpus(root string, g *Scenario) ([]*Scenario, error) {
 	return out, nil
 }
 
+// ownerWord and repoWord match the corpus placeholders as whole words only,
+// so values such as REPOSITORY or OWNERSHIP are left alone. Submatch 1 is
+// the preceding character, kept in the replacement.
+var (
+	ownerWord = regexp.MustCompile(`(^|[^A-Za-z0-9_])OWNER\b`)
+	repoWord  = regexp.MustCompile(`(^|[^A-Za-z0-9_])REPO\b`)
+)
+
 // escapeTemplate makes s expand to itself as a text/template.
 func escapeTemplate(s string) string {
 	return strings.ReplaceAll(s, "{{", `{{"{{"}}`)
@@ -135,8 +144,8 @@ func corpusVars(x any) any {
 	case string:
 		t = escapeTemplate(t)
 		t = strings.ReplaceAll(t, corpus.NodeIDPlaceholder, "{{.RepoA.NodeID}}")
-		t = strings.ReplaceAll(t, "OWNER", "{{.RepoA.Owner}}")
-		return strings.ReplaceAll(t, "REPO", "{{.RepoA.Name}}")
+		t = ownerWord.ReplaceAllString(t, "${1}{{.RepoA.Owner}}")
+		return repoWord.ReplaceAllString(t, "${1}{{.RepoA.Name}}")
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for k, v := range t {
