@@ -3,7 +3,8 @@
 # the first live run (20261105T0534Z). GAP-A1 and GAP-A2 are fixed (#290,
 # #291). GAP-A7 passed (GHP denies the dot-segment path for B), so it
 # carries no known_issue; GAP-A6 needs the
-# agent_installation capability and has not run yet.
+# agent_installation capability (#306); its runtime probe is
+# GAP-A6.repo-a-reads-a in agent.yaml.
 #
 # Consensus issue links, for triage: A1 goodtune/ghp#290, A2 #291,
 # A3 #292, A6 #294, A7 #295, A8 #296.
@@ -50,11 +51,14 @@
 
 # GAP-A6: an agent (gha_) token for an owner/repo repository. Notes:
 # - Creation reads the installation account (GET /app/installations/{id})
-#   and returns 400 when an owner is not that account (#294). The
-#   installation token is minted lazily on the first proxied request, with
-#   bare repository names, so a 201 does not show that GitHub narrows the
-#   token. A probe that sends a request with the new gha_ token is follow-up
-#   work (#306; the executor never sees the raw token).
+#   and returns 400 when an owner is not that account (#294, fixed by #358;
+#   before #358 creation did not call GitHub). The installation token is
+#   minted lazily on the first proxied request, with bare repository names,
+#   so a 201 does not show that GitHub accepts the names or narrows the
+#   token. GAP-A6.repo-a-reads-a (agent.yaml) sends a request with an
+#   agent-repo-A token: on 0.26.0 GitHub answered 422 for owner/repo.
+# - app_record_id is always sent: omitting it pins the token to the
+#   instance's default app, which the rig must not use.
 # - Revocation: token.Service.Revoke marks the record revoked and drops the
 #   cache entry; it does not call DELETE /installation/token. A minted
 #   installation token stays valid at GitHub until its natural expiry (up to
@@ -72,6 +76,7 @@
     path: /api/tokens
     body:
       type: agent
+      app_record_id: "{{.Agent.AppRecordID}}"
       repositories: ["{{.RepoA}}"]
       installation_id: "$int:InstallationID"
       duration: 1h
