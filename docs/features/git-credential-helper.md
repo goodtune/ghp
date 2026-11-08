@@ -398,10 +398,15 @@ then print one line that says so.
   `cannot read the credential cache (...)` notice) can come before a
   failure to mint a token, as one more prefixed line.
 - **Agent-token repositories must belong to the installation account.**
-  With `--type agent`, every repository must be owned by the account the
+  With `--type agent`, the repository must be owned by the account the
   chosen installation belongs to (compared case-insensitively, ASCII only).
   Otherwise ghp refuses to create the token with `400 Bad Request`, naming
-  the repository, and the helper prints that server message. If ghp cannot
-  read the installation's account login, it does not create the token
-  (`502`, or `503` when no GitHub App is loaded). See
+  the repository, and the helper prints that server message. The helper
+  already picks the installation whose account login matches the
+  repository owner (see [Agent tokens](#agent-tokens-default)). So in
+  practice you see this `400` only when ghp's cached account login for that
+  installation is stale, for example after a GitHub account rename. ghp
+  keeps that login for one hour, so retry after the cache expires. If ghp
+  cannot read the installation's account login, it does not create the
+  token (`502`, or `503` when no GitHub App is loaded). See
   [Token Scoping](token-scoping.md#agent-tokens-gha_).

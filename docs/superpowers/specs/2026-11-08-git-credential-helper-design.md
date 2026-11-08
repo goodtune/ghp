@@ -94,8 +94,9 @@ shared machine. Use of the helper is optional; each user makes that call.
   as **bare repository names**. When this design was written, ghp's
   `AppTokenProvider.GetInstallationToken` forwarded the token's `owner/repo`
   entries unchanged. The default path of this feature depends on repo-scoped
-  agent tokens working at use time. That server fix landed separately on main
-  in #358 (see decision 7); this branch carries no server change.
+  agent tokens working at use time. ghp has to send bare names for that to
+  work. The fix landed separately on main in #358 (see decision 7); this
+  branch carries no server change.
 - go-tpm v0.9.8 (`tpm2`, `tpm2/transport/linuxtpm`, `tpm2/transport/windowstpm`)
   is cgo-free and is already an indirect dependency. `golang.org/x/sys/windows`
   exposes DPAPI (`CryptProtectData`/`CryptUnprotectData`) without cgo.

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add `ghp auth git-credential` (a git credential helper that mints short-lived, single-repository `gha_`/`ghx_` tokens and caches them under the strongest local key protector) and `ghp auth setup-git`, plus the server fix that makes repo-scoped agent tokens usable.
+**Goal:** Add `ghp auth git-credential` (a git credential helper that mints short-lived, single-repository `gha_`/`ghx_` tokens and caches them under the strongest local key protector) and `ghp auth setup-git` (the server-side bare-name fix it originally included was superseded by #358).
 
 **Architecture:** `internal/securestore` wraps a random data-encryption key (DEK) with one of four protector tiers (tpm > dpapi > keychain > file). `internal/gitcred` holds everything else that is testable without cobra: the git credential protocol, path parsing, the encrypted, file-locked cache, a small ghp API client, app/installation/scope resolution, and `Run`, which executes one helper operation and returns an exit code. `cmd/ghp/gitcredential.go` only resolves flags/env, wires the two-phase CLI config loading (non-interactive dotvault), and calls `gitcred.Run`. Task 7 (the server-side bare-name fix) was superseded by #358 on main.
 

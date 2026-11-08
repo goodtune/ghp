@@ -638,6 +638,43 @@ func TestRun_GetRateLimited(t *testing.T) {
 	}
 }
 
+// TestRun_GetMintRejected pins how other mint errors reach git: the server
+// message is printed as-is and only a 403 suggests --type proxy.
+func TestRun_GetMintRejected(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		message string
+		want    []string
+		notWant string
+	}{
+		{
+			name:    "400 repository not in installation account",
+			status:  http.StatusBadRequest,
+			message: `repository "a/b" does not belong to the installation account "c"`,
+			want:    []string{"server returned 400", `repository "a/b" does not belong to the installation account "c"`},
+			notWant: "--type proxy",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newFakeGHP(t)
+			g.set(func(g *fakeGHP) {
+				g.status["POST /api/tokens"] = tt.status
+				g.message = tt.message
+			})
+			opts, _ := baseOptions(t, g)
+			stdout, stderr, code := run(t, opts, "get", stdGet)
+			for _, w := range tt.want {
+				assertFailure(t, stdout, stderr, code, w)
+			}
+			if strings.Contains(stderr, tt.notWant) {
+				t.Errorf("stderr = %q, want no %q hint", stderr, tt.notWant)
+			}
+		})
+	}
+}
+
 func TestRun_GetInvalidRequest(t *testing.T) {
 	g := newFakeGHP(t)
 	opts, _ := baseOptions(t, g)
