@@ -593,6 +593,6 @@ web UI, but the CLI never sees a github.com URL.`,
 		},
 	}
 
-	cmd.AddCommand(loginCmd, setTokenCmd, statusCmd, newAuthGitCredentialCmd())
+	cmd.AddCommand(loginCmd, setTokenCmd, statusCmd, newAuthGitCredentialCmd(), newAuthSetupGitCmd())
 	return cmd
 }

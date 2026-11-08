@@ -100,7 +100,7 @@ func TestHelpOutput_Auth(t *testing.T) {
 	_ = cmd.Execute()
 
 	output := buf.String()
-	for _, want := range []string{"login", "set-token", "status", "git-credential"} {
+	for _, want := range []string{"login", "set-token", "status", "git-credential", "setup-git"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("auth help: expected %q to appear in output:\n%s", want, output)
 		}

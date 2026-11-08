@@ -2,14 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -495,5 +498,285 @@ func TestGitCredential_UnknownOperation(t *testing.T) {
 	stdout, stderr, code := runGitCredential(t, credGet, "frobnicate")
 	if code != 0 || stdout != "" || stderr != "" {
 		t.Errorf("code = %d, stdout = %q, stderr = %q; want 0 and no output", code, stdout, stderr)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"/usr/local/bin/ghp", "/usr/local/bin/ghp"},
+		{"ghp", "ghp"},
+		{"my-app", "my-app"},
+		{"ghe.example.com:8443", "ghe.example.com:8443"},
+		{"a@b%c+d=e,f", "a@b%c+d=e,f"},
+		{"/opt/my tools/ghp", "'/opt/my tools/ghp'"},
+		{`C:\Program Files\ghp.exe`, `'C:\Program Files\ghp.exe'`},
+		{"prod;rm -rf ~", "'prod;rm -rf ~'"},
+		{"a&b", "'a&b'"},
+		{"a`b", "'a`b'"},
+		{"a|b", "'a|b'"},
+		{`a"b`, `'a"b'`},
+		{"a$b", "'a$b'"},
+		{"it's", `'it'\''s'`},
+		{"", "''"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := shellQuote(tt.in); got != tt.want {
+				t.Errorf("shellQuote(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitCredentialHelperLine(t *testing.T) {
+	tests := []struct {
+		name                string
+		ghp, host, app, typ string
+		want                string
+		wantErr             bool
+	}{
+		{name: "default host", ghp: "ghp", host: "github.com", typ: "agent", want: "!ghp auth git-credential"},
+		{name: "default host any case", ghp: "ghp", host: "GitHub.com", typ: "agent", want: "!ghp auth git-credential"},
+		{name: "other host", ghp: "ghp", host: "ghe.example.com", typ: "agent", want: "!ghp auth git-credential --host ghe.example.com"},
+		{name: "app with space", ghp: "/usr/bin/ghp", host: "github.com", app: "my app", typ: "agent", want: "!/usr/bin/ghp auth git-credential --app 'my app'"},
+		{name: "app with shell metacharacters", ghp: "ghp", host: "github.com", app: "prod;rm -rf ~", typ: "agent", want: "!ghp auth git-credential --app 'prod;rm -rf ~'"},
+		{name: "proxy type", ghp: "ghp", host: "github.com", typ: "proxy", want: "!ghp auth git-credential --type proxy"},
+		{name: "app newline", ghp: "ghp", host: "github.com", app: "a\nb", typ: "agent", wantErr: true},
+		{name: "app carriage return", ghp: "ghp", host: "github.com", app: "a\rb", typ: "agent", wantErr: true},
+		{name: "app NUL", ghp: "ghp", host: "github.com", app: "a\x00b", typ: "agent", wantErr: true},
+		{name: "ghp path newline", ghp: "/x\n/ghp", host: "github.com", typ: "agent", wantErr: true},
+		{name: "host newline", ghp: "ghp", host: "ghe.example.com\nx", typ: "agent", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := gitCredentialHelperLine(tt.ghp, tt.host, tt.app, tt.typ)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("gitCredentialHelperLine = %q, want error", got)
+				}
+				if !strings.Contains(err.Error(), "contains a newline, carriage return or NUL") {
+					t.Errorf("error = %q", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("gitCredentialHelperLine: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("gitCredentialHelperLine = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// swapOSExecutable makes ghpCommand see path as the running executable.
+func swapOSExecutable(t *testing.T, path string) {
+	t.Helper()
+	orig := osExecutable
+	t.Cleanup(func() { osExecutable = orig })
+	osExecutable = func() (string, error) { return path, nil }
+}
+
+func TestGhpCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks and executable bits differ on Windows")
+	}
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real-ghp")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	onPath := t.TempDir()
+	if err := os.Symlink(real, filepath.Join(onPath, "ghp")); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link-ghp")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	emptyPath := t.TempDir()
+
+	tests := []struct {
+		name, exe, path, want string
+	}{
+		{name: "ghp on PATH is the running binary", exe: real, path: onPath, want: "ghp"},
+		{name: "ghp not on PATH", exe: real, path: emptyPath, want: real},
+		{name: "unresolved executable path kept", exe: link, path: emptyPath, want: link},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			swapOSExecutable(t, tt.exe)
+			t.Setenv("PATH", tt.path)
+			got, err := ghpCommand()
+			if err != nil {
+				t.Fatalf("ghpCommand: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("ghpCommand = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// setupGitConfig points git at a temporary global config (seeded with a gh
+// helper for github.com), never the real one, and leaves only the real
+// git's directory on PATH. It returns the config file path.
+func setupGitConfig(t *testing.T) string {
+	t.Helper()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not found on PATH")
+	}
+	home := t.TempDir()
+	cfg := filepath.Join(home, "gitconfig")
+	seed := "[credential \"https://github.com\"]\n\thelper = !gh auth git-credential\n"
+	if err := os.WriteFile(cfg, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("PATH", filepath.Dir(gitPath))
+	swapOSExecutable(t, "/opt/my tools/ghp")
+	return cfg
+}
+
+// gitConfigValues returns every value of key in the global config.
+func gitConfigValues(t *testing.T, key string) []string {
+	t.Helper()
+	out, err := exec.Command("git", "config", "--global", "--get-all", key).Output()
+	if err != nil {
+		t.Fatalf("git config --get-all %s: %v", key, err)
+	}
+	return strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+}
+
+// runSetupGit executes `ghp auth setup-git args...` through the root command.
+func runSetupGit(t *testing.T, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	root := newRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs(append([]string{"auth", "setup-git"}, args...))
+	err = root.Execute()
+	return out.String(), errOut.String(), err
+}
+
+// forbidRunGit fails the test if setup-git runs git.
+func forbidRunGit(t *testing.T) {
+	t.Helper()
+	orig := runGit
+	t.Cleanup(func() { runGit = orig })
+	runGit = func(ctx context.Context, args ...string) error {
+		t.Errorf("runGit called with %q", args)
+		return nil
+	}
+}
+
+func assertSetupGitConfig(t *testing.T) {
+	t.Helper()
+	want := map[string][]string{
+		"credential.https://github.com.helper":           {"", "!'/opt/my tools/ghp' auth git-credential --app my-app"},
+		"credential.https://ghe.example.com.helper":      {"", "!'/opt/my tools/ghp' auth git-credential --host ghe.example.com --app my-app"},
+		"credential.https://github.com.useHttpPath":      {"true"},
+		"credential.https://ghe.example.com.useHttpPath": {"true"},
+	}
+	for key, values := range want {
+		if got := gitConfigValues(t, key); !slices.Equal(got, values) {
+			t.Errorf("%s = %q, want %q", key, got, values)
+		}
+	}
+}
+
+func TestSetupGit_WritesGlobalConfig(t *testing.T) {
+	setupGitConfig(t)
+	stdout, stderr, err := runSetupGit(t, "--host", "github.com", "--host", "ghe.example.com", "--app", "my-app")
+	if err != nil {
+		t.Fatalf("setup-git: %v (stderr %q)", err, stderr)
+	}
+	assertSetupGitConfig(t)
+
+	wantOut := "Configured https://github.com:\n" +
+		"  credential.https://github.com.helper = !'/opt/my tools/ghp' auth git-credential --app my-app\n" +
+		"  credential.https://github.com.useHttpPath = true\n" +
+		"Configured https://ghe.example.com:\n" +
+		"  credential.https://ghe.example.com.helper = !'/opt/my tools/ghp' auth git-credential --host ghe.example.com --app my-app\n" +
+		"  credential.https://ghe.example.com.useHttpPath = true\n"
+	if stdout != wantOut {
+		t.Errorf("stdout = %q, want %q", stdout, wantOut)
+	}
+	wantErr := "warning: replaced any existing credential helper for github.com, ghe.example.com (for example gh)\n"
+	if stderr != wantErr {
+		t.Errorf("stderr = %q, want %q", stderr, wantErr)
+	}
+}
+
+func TestSetupGit_DefaultHostAndProxyType(t *testing.T) {
+	setupGitConfig(t)
+	if _, stderr, err := runSetupGit(t, "--type", "proxy"); err != nil {
+		t.Fatalf("setup-git: %v (stderr %q)", err, stderr)
+	}
+	want := []string{"", "!'/opt/my tools/ghp' auth git-credential --type proxy"}
+	if got := gitConfigValues(t, "credential.https://github.com.helper"); !slices.Equal(got, want) {
+		t.Errorf("helper = %q, want %q", got, want)
+	}
+}
+
+func TestSetupGit_Idempotent(t *testing.T) {
+	setupGitConfig(t)
+	for i := range 2 {
+		if _, stderr, err := runSetupGit(t, "--host", "github.com", "--host", "ghe.example.com", "--app", "my-app"); err != nil {
+			t.Fatalf("setup-git run %d: %v (stderr %q)", i+1, err, stderr)
+		}
+	}
+	assertSetupGitConfig(t)
+}
+
+func TestSetupGit_AppWithProxyRejected(t *testing.T) {
+	forbidRunGit(t)
+	swapOSExecutable(t, "/usr/local/bin/ghp")
+	_, _, err := runSetupGit(t, "--type", "proxy", "--app", "my-app")
+	if err == nil || !strings.Contains(err.Error(), "--app is only valid with --type agent") {
+		t.Fatalf("err = %v, want --app is only valid with --type agent", err)
+	}
+}
+
+func TestSetupGit_RejectsBadInput(t *testing.T) {
+	tests := []struct {
+		name string
+		exe  string
+		args []string
+	}{
+		{name: "host with path", args: []string{"--host", "github.com/evil"}},
+		{name: "host with space", args: []string{"--host", "a b"}},
+		{name: "host with newline", args: []string{"--host", "github.com\nevil"}},
+		{name: "bad host after good host", args: []string{"--host", "github.com", "--host", "a b"}},
+		{name: "app with newline", args: []string{"--app", "x\ny"}},
+		{name: "app with NUL", args: []string{"--app", "x\x00y"}},
+		{name: "unknown type", args: []string{"--type", "admin"}},
+		{name: "executable path with newline", exe: "/x\n/ghp"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			forbidRunGit(t)
+			exe := tt.exe
+			if exe == "" {
+				exe = "/usr/local/bin/ghp"
+			}
+			swapOSExecutable(t, exe)
+			t.Setenv("PATH", t.TempDir())
+			stdout, _, err := runSetupGit(t, tt.args...)
+			if err == nil {
+				t.Fatal("setup-git succeeded, want error")
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty", stdout)
+			}
+		})
 	}
 }

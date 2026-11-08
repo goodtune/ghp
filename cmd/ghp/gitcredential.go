@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	dvclient "github.com/goodtune/dotvault/client"
 	"github.com/spf13/cobra"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/internal/gitcred"
 	"github.com/goodtune/ghp/internal/securestore"
 )
@@ -164,4 +168,164 @@ func gitCredentialLoadAuthed(ctx context.Context) (gitcred.Config, error) {
 		return gitcred.Config{}, err
 	}
 	return gitcred.Config{ServerURL: cfg.ServerURL, UserToken: cfg.UserToken}, nil
+}
+
+// osExecutable reports the running binary's path. Tests swap it.
+var osExecutable = os.Executable
+
+// runGit runs git with args. git's stderr is captured into the error.
+var runGit = func(ctx context.Context, args ...string) error {
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, msg)
+		}
+		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+// shellSafeWord matches the words shellQuote leaves unquoted.
+var shellSafeWord = regexp.MustCompile(`^[A-Za-z0-9@%+=:,./_-]+$`)
+
+// setupGitHost matches a host name with an optional port.
+var setupGitHost = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]+)?$`)
+
+// shellQuote returns s as one POSIX shell word: unchanged when it holds only
+// characters that are never special to the shell, else single-quoted.
+func shellQuote(s string) string {
+	if shellSafeWord.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// gitCredentialHelperLine is the credential.helper value that runs
+// `ghp auth git-credential` for host. git runs a value starting with "!"
+// through the shell, so every word is quoted, and a value holding a line
+// break or NUL (which could end the gitconfig line) is refused.
+func gitCredentialHelperLine(ghp, host, app, tokenType string) (string, error) {
+	for _, field := range []struct{ name, value string }{
+		{"ghp executable path", ghp},
+		{"host", host},
+		{"app", app},
+	} {
+		if strings.ContainsAny(field.value, "\n\r\x00") {
+			return "", fmt.Errorf("%s contains a newline, carriage return or NUL", field.name)
+		}
+	}
+	words := []string{shellQuote(ghp), "auth", "git-credential"}
+	if !asciiutil.EqualFold(host, gitcred.DefaultHost) {
+		words = append(words, "--host", shellQuote(host))
+	}
+	if app != "" {
+		words = append(words, "--app", shellQuote(app))
+	}
+	if tokenType == gitcred.TypeProxy {
+		words = append(words, "--type", gitcred.TypeProxy)
+	}
+	return "!" + strings.Join(words, " "), nil
+}
+
+// ghpCommand is how the helper line names ghp: bare "ghp" when that
+// resolves on PATH to the running binary, else the running binary's path.
+func ghpCommand() (string, error) {
+	exe, err := osExecutable()
+	if err != nil {
+		return "", fmt.Errorf("locating the ghp executable: %w", err)
+	}
+	onPath, err := exec.LookPath("ghp")
+	if err != nil {
+		return exe, nil
+	}
+	resolvedPath, err := filepath.EvalSymlinks(onPath)
+	if err != nil {
+		return exe, nil
+	}
+	resolvedExe, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return exe, nil
+	}
+	if resolvedPath == resolvedExe {
+		return "ghp", nil
+	}
+	return exe, nil
+}
+
+func newAuthSetupGitCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "setup-git",
+		Short: "Configure git to use ghp as its credential helper",
+		Long: `Configure git to use 'ghp auth git-credential' as the credential helper for
+each host, in the global git config (~/.gitconfig).
+
+For every host this runs:
+  git config --global --replace-all credential.https://HOST.helper ""
+  git config --global --add credential.https://HOST.helper "!ghp auth git-credential ..."
+  git config --global credential.https://HOST.useHttpPath true
+
+The empty helper value stops git from asking any helper configured before
+it, so any previous helper for these hosts (for example gh) is replaced.
+useHttpPath gives the helper the repository path, so it can mint a token
+scoped to that repository.`,
+		Args:          cobra.NoArgs,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			hosts, _ := cmd.Flags().GetStringArray("host")
+			app, _ := cmd.Flags().GetString("app")
+			tokenType, _ := cmd.Flags().GetString("type")
+			return setupGit(cmd, hosts, app, tokenType)
+		},
+	}
+	f := cmd.Flags()
+	f.StringArray("host", []string{gitcred.DefaultHost}, "host to configure; repeat for several")
+	f.String("app", "", "GitHub App name or record ID for the helper (default: the server's default app)")
+	f.String("type", gitcred.DefaultType, "token type for the helper: agent or proxy")
+	return cmd
+}
+
+// setupGit validates every input and builds every helper line before it
+// changes any git config, so a bad value leaves the config untouched.
+func setupGit(cmd *cobra.Command, hosts []string, app, tokenType string) error {
+	if tokenType != gitcred.TypeAgent && tokenType != gitcred.TypeProxy {
+		return fmt.Errorf("invalid --type %q: must be agent or proxy", tokenType)
+	}
+	if app != "" && tokenType == gitcred.TypeProxy {
+		return errors.New("--app is only valid with --type agent")
+	}
+	ghp, err := ghpCommand()
+	if err != nil {
+		return err
+	}
+	lines := make([]string, len(hosts))
+	for i, host := range hosts {
+		if !setupGitHost.MatchString(host) {
+			return fmt.Errorf("invalid --host %q: want a host name with an optional :port", host)
+		}
+		if lines[i], err = gitCredentialHelperLine(ghp, host, app, tokenType); err != nil {
+			return err
+		}
+	}
+
+	ctx := cmd.Context()
+	out := cmd.OutOrStdout()
+	for i, host := range hosts {
+		section := "credential.https://" + host
+		steps := [][]string{
+			{"config", "--global", "--replace-all", section + ".helper", ""},
+			{"config", "--global", "--add", section + ".helper", lines[i]},
+			{"config", "--global", section + ".useHttpPath", "true"},
+		}
+		for _, step := range steps {
+			if err := runGit(ctx, step...); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(out, "Configured https://%s:\n  %s.helper = %s\n  %s.useHttpPath = true\n", host, section, lines[i], section)
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "warning: replaced any existing credential helper for %s (for example gh)\n", strings.Join(hosts, ", "))
+	return nil
 }
