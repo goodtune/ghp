@@ -94,7 +94,8 @@ func userCLIConfigPath() string {
 // warning is printed for permissions looser than 0600. The system file is
 // expected to be world-readable across a fleet and to carry no secrets (the
 // token is sourced per-user via dotvault), so that check is skipped for it.
-func loadCLIConfigFileAt(path string, checkPerms bool) (*cliConfig, error) {
+// The warning goes to warn.
+func loadCLIConfigFileAt(path string, checkPerms bool, warn io.Writer) (*cliConfig, error) {
 	cfg := &cliConfig{}
 	if path == "" {
 		return cfg, nil
@@ -110,7 +111,7 @@ func loadCLIConfigFileAt(path string, checkPerms bool) (*cliConfig, error) {
 		// 0177 masks owner-execute, group, and other permission bits.
 		const insecurePermsMask = 0177
 		if info.Mode().Perm()&insecurePermsMask != 0 {
-			fmt.Fprintf(os.Stderr, "warning: config file %s has insecure permissions %04o (expected 0600)\n", path, info.Mode().Perm())
+			fmt.Fprintf(warn, "warning: config file %s has insecure permissions %04o (expected 0600)\n", path, info.Mode().Perm())
 		}
 	}
 	data, err := os.ReadFile(path)
@@ -127,7 +128,12 @@ func loadCLIConfigFileAt(path string, checkPerms bool) (*cliConfig, error) {
 // login, set-token) use it so a transient environment, or the system file, is
 // never written back into the user's config.
 func loadCLIConfigFile() (*cliConfig, error) {
-	return loadCLIConfigFileAt(userCLIConfigPath(), true)
+	return loadCLIConfigFileWith(os.Stderr)
+}
+
+// loadCLIConfigFileWith is loadCLIConfigFile with its warnings sent to warn.
+func loadCLIConfigFileWith(warn io.Writer) (*cliConfig, error) {
+	return loadCLIConfigFileAt(userCLIConfigPath(), true, warn)
 }
 
 // mergeCLIConfig overlays over onto base: any field set in over wins, otherwise
@@ -153,12 +159,18 @@ func mergeCLIConfig(base, over *cliConfig) *cliConfig {
 // environment variables. dotvault-sourced fields override all of these and are
 // resolved separately by loadCLIConfigAuthed.
 func loadCLIConfig() (*cliConfig, error) {
+	return loadCLIConfigWith(os.Stderr)
+}
+
+// loadCLIConfigWith is loadCLIConfig with every warning sent to warn, so the
+// git credential helper can re-emit them with its own prefix.
+func loadCLIConfigWith(warn io.Writer) (*cliConfig, error) {
 	// Swallow file-level errors at both layers: a malformed file shouldn't
 	// stop commands like `auth login` that can still work from env vars
 	// alone. set-token uses loadCLIConfigFile directly and fails fast.
-	sysCfg, err := loadCLIConfigFileAt(systemCLIConfigPath(), false)
+	sysCfg, err := loadCLIConfigFileAt(systemCLIConfigPath(), false, warn)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		fmt.Fprintf(warn, "warning: %v\n", err)
 		sysCfg = &cliConfig{}
 	}
 	// A session token is per-user and the system file is shared and expected to
@@ -169,9 +181,9 @@ func loadCLIConfig() (*cliConfig, error) {
 	if sysCfg.UserToken != "" {
 		return nil, fmt.Errorf("system config %s must not set user_token: a session token is per-user but this file is shared/world-readable; source the token per-user with a dotvault stanza instead", systemCLIConfigPath())
 	}
-	userCfg, err := loadCLIConfigFile()
+	userCfg, err := loadCLIConfigFileWith(warn)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		fmt.Fprintf(warn, "warning: %v\n", err)
 		userCfg = &cliConfig{}
 	}
 	cfg := mergeCLIConfig(sysCfg, userCfg)
@@ -581,6 +593,6 @@ web UI, but the CLI never sees a github.com URL.`,
 		},
 	}
 
-	cmd.AddCommand(loginCmd, setTokenCmd, statusCmd)
+	cmd.AddCommand(loginCmd, setTokenCmd, statusCmd, newAuthGitCredentialCmd())
 	return cmd
 }

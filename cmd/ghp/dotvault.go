@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 
 	dvclient "github.com/goodtune/dotvault/client"
 )
@@ -45,6 +46,11 @@ type dotvaultReader interface {
 	// token borrow when enabled, and finally an interactive login. The
 	// interactive fallback is appropriate for a CLI run by a human.
 	Authenticate(ctx context.Context) error
+	// AuthenticateCached is Authenticate without the interactive fallback:
+	// it never prompts, and returns an error wrapping
+	// dvclient.ErrLoginRequired when no cached token works. Background
+	// callers such as the git credential helper use it.
+	AuthenticateCached(ctx context.Context) error
 	// ReadUserSecret reads kv/users/<identity>/<service> field <field>.
 	ReadUserSecret(ctx context.Context, service, field string) (string, bool, error)
 }
@@ -83,6 +89,21 @@ var supportedDotvaultFields = map[string]bool{
 // authentication error or a missing field is surfaced rather than silently
 // falling back to a (likely absent) file/env value.
 func (cfg *cliConfig) applyDotvault(ctx context.Context) error {
+	return cfg.resolveDotvault(ctx, dotvaultReader.Authenticate)
+}
+
+// applyDotvaultCached is applyDotvault for callers that must never prompt:
+// the same validation and field mapping, authenticated with
+// AuthenticateCached. When no cached token works the error wraps
+// dvclient.ErrLoginRequired.
+func (cfg *cliConfig) applyDotvaultCached(ctx context.Context) error {
+	return cfg.resolveDotvault(ctx, dotvaultReader.AuthenticateCached)
+}
+
+// resolveDotvault is the shared body of applyDotvault and
+// applyDotvaultCached; authenticate is the dotvaultReader method that makes
+// the reader hold a Vault token.
+func (cfg *cliConfig) resolveDotvault(ctx context.Context, authenticate func(dotvaultReader, context.Context) error) error {
 	dv := cfg.Dotvault
 	if dv == nil || (dv.Service == "" && len(dv.Fields) == 0) {
 		return nil
@@ -106,7 +127,7 @@ func (cfg *cliConfig) applyDotvault(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := reader.Authenticate(ctx); err != nil {
+	if err := authenticate(reader, ctx); err != nil {
 		return fmt.Errorf("dotvault authentication failed: %w", err)
 	}
 
@@ -139,6 +160,19 @@ func loadCLIConfigAuthed(ctx context.Context) (*cliConfig, error) {
 		return nil, err
 	}
 	if err := cfg.applyDotvault(ctx); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// loadCLIConfigCached is loadCLIConfigAuthed for callers that must never
+// prompt: warnings go to warn and dotvault uses only a cached token.
+func loadCLIConfigCached(ctx context.Context, warn io.Writer) (*cliConfig, error) {
+	cfg, err := loadCLIConfigWith(warn)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.applyDotvaultCached(ctx); err != nil {
 		return nil, err
 	}
 	return cfg, nil
