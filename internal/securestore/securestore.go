@@ -93,8 +93,29 @@ func NewProtectors(tiers ...Tier) *Protectors {
 
 // Default returns the tiers this build supports on this platform.
 func Default() *Protectors {
-	return NewProtectors(TPMTier(), FileTier())
+	return NewProtectors(TPMTier(), DPAPITier(), KeychainTier(), FileTier())
 }
+
+// unavailableTier returns a tier that this platform does not have: Probe,
+// Wrap and Unwrap all return ErrUnavailable with reason.
+func unavailableTier(name, reason string) Tier {
+	err := fmt.Errorf("%w: %s", ErrUnavailable, reason)
+	return Tier{
+		Name:  name,
+		Probe: func() error { return err },
+		Open:  func(string) KeyProtector { return unavailableProtector{name: name, err: err} },
+	}
+}
+
+// unavailableProtector fails every operation with err.
+type unavailableProtector struct {
+	name string
+	err  error
+}
+
+func (p unavailableProtector) Name() string                  { return p.name }
+func (p unavailableProtector) Wrap([]byte) ([]byte, error)   { return nil, p.err }
+func (p unavailableProtector) Unwrap([]byte) ([]byte, error) { return nil, p.err }
 
 // Names returns the tier names, strongest first.
 func (p *Protectors) Names() []string {

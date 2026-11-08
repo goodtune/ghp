@@ -188,7 +188,7 @@ func TestTPMBlob_JSONFieldNames(t *testing.T) {
 
 func TestDefault_IncludesTPMTier(t *testing.T) {
 	got := Default().Names()
-	want := []string{TierTPM, TierFile}
+	want := []string{TierTPM, TierDPAPI, TierKeychain, TierFile}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("Default().Names() = %v, want %v", got, want)
 	}

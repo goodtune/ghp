@@ -276,3 +276,33 @@ func TestFileProtector_RoundTrip(t *testing.T) {
 		t.Errorf("FileTier().Probe() = %v, want nil", err)
 	}
 }
+
+func TestUnavailableTier(t *testing.T) {
+	tier := unavailableTier(TierDPAPI, "not on this platform")
+	if tier.Name != TierDPAPI {
+		t.Fatalf("Name = %q, want %q", tier.Name, TierDPAPI)
+	}
+	p := tier.Open("scope")
+	if p.Name() != TierDPAPI {
+		t.Fatalf("Open().Name() = %q, want %q", p.Name(), TierDPAPI)
+	}
+	ops := []struct {
+		name string
+		err  func() error
+	}{
+		{"probe", tier.Probe},
+		{"wrap", func() error { _, err := p.Wrap(make([]byte, 32)); return err }},
+		{"unwrap", func() error { _, err := p.Unwrap([]byte("x")); return err }},
+	}
+	for _, op := range ops {
+		t.Run(op.name, func(t *testing.T) {
+			err := op.err()
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("%s = %v, want errors.Is ErrUnavailable", op.name, err)
+			}
+			if !strings.Contains(err.Error(), "not on this platform") {
+				t.Fatalf("%s = %q, want the reason", op.name, err)
+			}
+		})
+	}
+}
