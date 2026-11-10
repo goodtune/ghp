@@ -177,12 +177,10 @@ receive window divided by the round-trip time (4 MiB by default). With
 HTTP/1.1, each concurrent request gets its own connection, and the idle pool
 (32 per host by default) keeps those connections for reuse.
 
-**Behaviour change:** before this release, ghp spoke HTTP/2 to GitHub by
-default (inherited from the Go default transport). It now uses HTTP/1.1 by
-default (`upstream.http2: false`). HTTP/1.1 uses one connection per concurrent
-request (no limit unless `max_conns_per_host` is set); up to
-`max_idle_conns_per_host` stay open idle per host for each egress proxy.
-Set `upstream.http2: true` to restore the old protocol.
+The default is HTTP/1.1 (`upstream.http2: false`). The number of
+connections per host has no limit unless `max_conns_per_host` is set. Up to
+`max_idle_conns_per_host` idle connections stay open per host for each egress
+proxy. To use HTTP/2, set `upstream.http2: true` (`GHP_UPSTREAM_HTTP2=true`).
 
 The transport records bytes sent and received, connections opened and reused,
 and time to first response byte, by negotiated protocol and vhost (see
