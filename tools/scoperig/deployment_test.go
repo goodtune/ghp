@@ -747,12 +747,12 @@ const sentinelScenarios = `
   path: /repos/{{.Enterprise.OmitRepo}}
   expect:
     status: 200
-    body_contains: ["{{.Enterprise.OmitRepo}}"]
+    body_contains: ["{{.Enterprise.RestrictedRepo}}"]
     body_not_contains: ["` + pasteSentinel + `"]
     header: {X-Rig-Echo: "{{.Enterprise.RestrictedRepo}}"}
   metric_delta:
     - {name: ghp_rig_sentinel_total, labels: {repo: "{{.Enterprise.OmitRepo}}"}, min: 1}
-    - {name: ghp_rig_sentinel_total, labels: {repo: "{{.Enterprise.RestrictedRepo}}"}, max: 0}
+    - {name: ghp_rig_sentinel_total, max: 0}
 - id: ENT-C50.gap
   claim: ENT-C50
   profile: open
@@ -764,8 +764,9 @@ const sentinelScenarios = `
 `
 
 // runSentinel runs sentinelScenarios through the real CLI against a fake
-// instance whose every response carries pasteSentinel, and returns the
-// stdout.
+// instance whose every response carries pasteSentinel. Each request moves
+// a counter whose label value is the sentinel; the label-less max: 0 delta
+// sums it, so a metric reason is built from sentinel-labelled samples.
 func runSentinel(t *testing.T, metricsURL func(real string) string) cliResult {
 	t.Helper()
 	f := newFakeGHPVhost(t)
@@ -861,7 +862,7 @@ func TestPasteBack_NoInstanceData(t *testing.T) {
 			"body_not_contains mismatch",
 			"header X-Rig-Echo mismatch",
 			`metric ghp_rig_sentinel_total{repo="<template>"} want_delta>=1 got_delta=0`,
-			`metric ghp_rig_sentinel_total{repo="<template>"} want_delta<=0 got_delta=1`,
+			`metric ghp_rig_sentinel_total{} want_delta<=0 got_delta=1`,
 			"ENT-C50.gap=GAP:capability_missing enterprise_exception_team_denied",
 		} {
 			if !strings.Contains(got, w) {

@@ -111,9 +111,10 @@ instance is quiet.
    with `scoperig-result:`, and the exit code (`echo $?`). The line holds
    only:
     - the run id, the GHP version, the exit code and the token counts. The
-      version is `unknown` if it is not a short semantic version (for
-      example `0.28.0` or `1.2.3-rc.1`) or if it contains a configured
-      host, IP address, repository or owner name;
+      version is shown as `MAJOR.MINOR.PATCH` only (for example `0.28.0`).
+      The rig removes a leading `v` and any pre-release or build suffix,
+      so `v1.2.3-rc.1` is shown as `1.2.3`. If the version does not have
+      this form, it is shown as `unknown`;
     - a status for each claim;
     - for each scenario: its id, its status, and reasons that the rig builds
       from a fixed list. The reasons are `http_status want=... got=...`,

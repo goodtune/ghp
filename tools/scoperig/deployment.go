@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -23,7 +22,6 @@ import (
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
 
-	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/tools/scoperig/exec"
 	"github.com/goodtune/ghp/tools/scoperig/expect"
 	"github.com/goodtune/ghp/tools/scoperig/redact"
@@ -426,139 +424,19 @@ func restrictClaims(claims []report.ClaimResult, ids []string) []report.ClaimRes
 	return out
 }
 
-// pasteBackHosts lists the hosts writePasteBack must hide: the instance
-// host, the GHP_SERVER_URL host and the metrics_url host, each with and
-// without its port.
-func pasteBackHosts(c *Config) []string {
-	out := []string{c.Instance.Host}
-	for _, raw := range []string{c.ServerURL, c.MetricsURL} {
-		if u, err := url.Parse(raw); err == nil {
-			out = append(out, u.Host)
-		}
-	}
-	return withBareHosts(out)
-}
-
-// withBareHosts adds the port-less name of every host:port entry.
-func withBareHosts(hosts []string) []string {
-	var out []string
-	for _, h := range hosts {
-		if h == "" {
-			continue
-		}
-		out = append(out, h)
-		if name, _, err := net.SplitHostPort(h); err == nil && name != "" {
-			out = append(out, name)
-		}
-	}
-	return out
-}
-
-// pasteScrub hides deployment details in the paste-back line: configured
-// hosts become <host>, configured enterprise repositories (and their bare
-// owners) become <repo>, and IP address literals become <addr>. Matching is
-// ASCII case-insensitive. The JSON report keeps the full detail.
-type pasteScrub struct {
-	hosts []string
-	repos []string // owner/name
-}
-
-func newPasteScrub(c *Config) pasteScrub {
-	e := c.Enterprise
-	var repos []string
-	for _, r := range []string{e.RestrictedRepo, e.OmitRepo, e.TeamDeniedRepo, e.IdentityRepo, e.UnauthenticatedRepo, c.RepoA, c.RepoB, c.RepoW} {
-		if r != "" {
-			repos = append(repos, r)
-		}
-	}
-	return pasteScrub{hosts: pasteBackHosts(c), repos: repos}
-}
-
-// ipCandidate finds text that may be an IP literal, with an optional port;
-// net.ParseIP confirms it, so times such as 15:04:25 are left alone.
-var ipCandidate = regexp.MustCompile(`\[[0-9A-Fa-f:.]+\](?::\d+)?|[0-9A-Fa-f]*:[0-9A-Fa-f:.]*:[0-9A-Fa-f.]*|\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?`)
-
-func (p pasteScrub) apply(s string) string {
-	hs := withBareHosts(p.hosts)
-	sort.Slice(hs, func(i, j int) bool { return len(hs[i]) > len(hs[j]) })
-	for _, h := range hs {
-		s = replaceFold(s, h, "<host>", false)
-	}
-	var parts []string
-	for _, r := range p.repos {
-		s = replaceFold(s, r, "<repo>", true)
-		s = replaceFold(s, strings.Replace(r, "/", "%2F", 1), "<repo>", true)
-		if o, n, ok := strings.Cut(r, "/"); ok {
-			parts = append(parts, o, n)
-		}
-	}
-	for _, x := range parts {
-		s = replaceFold(s, x, "<repo>", true)
-	}
-	return ipCandidate.ReplaceAllStringFunc(s, func(m string) string {
-		host := strings.TrimSuffix(strings.TrimPrefix(m, "["), "]")
-		if h, _, err := net.SplitHostPort(m); err == nil {
-			host = h
-		}
-		if net.ParseIP(host) != nil {
-			return "<addr>"
-		}
-		return m
-	})
-}
-
-// replaceFold replaces old in s, ASCII case-insensitively (asciiutil, never
-// Unicode folding). With bounded, a match must not touch a name character
-// (letter, digit, '-' or '_') on either side; '.' is a boundary, so
-// "R.git" and a sentence-ending "R." match.
-func replaceFold(s, old, repl string, bounded bool) string {
-	if old == "" {
-		return s
-	}
-	ls, lo := asciiutil.ToLower(s), asciiutil.ToLower(old)
-	var b strings.Builder
-	i := 0
-	for {
-		j := strings.Index(ls[i:], lo)
-		if j < 0 {
-			break
-		}
-		j += i
-		k := j + len(lo)
-		if bounded && ((j > 0 && isNameByte(s[j-1])) || (k < len(s) && isNameByte(s[k]))) {
-			b.WriteString(s[i : j+1])
-			i = j + 1
-			continue
-		}
-		b.WriteString(s[i:j])
-		b.WriteString(repl)
-		i = k
-	}
-	b.WriteString(s[i:])
-	return b.String()
-}
-
-func isNameByte(c byte) bool {
-	return c == '-' || c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}
-
-// pasteVersionRe is strict semver with a short pre-release and no build
-// metadata.
-var pasteVersionRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-[0-9A-Za-z.]{1,20})?$`)
+// pasteVersionRe matches MAJOR.MINOR.PATCH (each at most 5 digits) with an
+// optional leading "v" and an optional pre-release or build suffix.
+var pasteVersionRe = regexp.MustCompile(`^v?(\d{1,5}\.\d{1,5}\.\d{1,5})(?:[-+][0-9A-Za-z.+-]+)?$`)
 
 // pasteBackVersion is the GHP version as printed in the paste-back line:
-// the version if it is strict semver of at most 32 characters and the scrub
-// leaves it unchanged (no configured host, repository, owner or IP literal
-// in it),
-// otherwise "unknown".
-func pasteBackVersion(v string, scrub pasteScrub) string {
-	// The spaced form also catches a repo or owner name used as a
-	// pre-release identifier ("1.2.3-api"), which the bounded match skips.
-	spaced := strings.NewReplacer("-", " ", ".", " ").Replace(v)
-	if len(v) > 32 || !pasteVersionRe.MatchString(v) || scrub.apply(v) != v || scrub.apply(spaced) != spaced {
+// MAJOR.MINOR.PATCH digits only, otherwise "unknown". A pre-release or
+// build suffix is dropped because the instance chooses it.
+func pasteBackVersion(v string) string {
+	m := pasteVersionRe.FindStringSubmatch(v)
+	if m == nil {
 		return "unknown"
 	}
-	return v
+	return m[1]
 }
 
 // writePasteBack writes the one-line machine-readable result for --claims.
@@ -566,13 +444,12 @@ func pasteBackVersion(v string, scrub pasteScrub) string {
 // scenario only its id, status and rig-generated reasons (Reasons, else
 // "other"). No Detail, Error or other free text.
 //
-// The scrub applies to ghp_version only, never to the encoded line (a repo
-// named "status/api" would otherwise rewrite JSON keys and label values).
-// Reasons need no scrub: they are built only from constants, ints, bools,
-// floats and scenario YAML tokens (yamlToken hides templated values), never
-// from a response, error or config value; TestReasons_NoFreeText holds this.
+// ghp_version is MAJOR.MINOR.PATCH only (pasteBackVersion). Reasons are
+// built only from constants, ints, bools, floats and scenario YAML tokens
+// (yamlToken hides templated values), never from a response, error or
+// config value; TestPasteBack_NoInstanceData holds this.
 // Claim and scenario ids, statuses and the run id are rig or YAML values.
-func writePasteBack(w io.Writer, rep *report.Report, code int, scrub pasteScrub) error {
+func writePasteBack(w io.Writer, rep *report.Report, code int) error {
 	type sc struct {
 		ID      string   `json:"id"`
 		Status  string   `json:"status"`
@@ -586,7 +463,7 @@ func writePasteBack(w io.Writer, rep *report.Report, code int, scrub pasteScrub)
 		Scenarios  []sc              `json:"scenarios"`
 		Tokens     string            `json:"tokens"`
 		Note       string            `json:"note,omitempty"`
-	}{RunID: rep.RunID, GHPVersion: pasteBackVersion(rep.GHPVersion, scrub), ExitCode: code, Claims: map[string]string{}, Scenarios: []sc{},
+	}{RunID: rep.RunID, GHPVersion: pasteBackVersion(rep.GHPVersion), ExitCode: code, Claims: map[string]string{}, Scenarios: []sc{},
 		Tokens: fmt.Sprintf("%d created, %d revoked, %d leftover", rep.Tokens.Created, rep.Tokens.Revoked, len(rep.Tokens.LeftoverIDs))}
 	for _, c := range rep.Claims {
 		out.Claims[c.ID] = string(c.Status)
