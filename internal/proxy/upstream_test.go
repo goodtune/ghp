@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -237,4 +238,67 @@ func counterValue(t *testing.T, c prometheus.Counter) float64 {
 		t.Fatal(err)
 	}
 	return m.GetCounter().GetValue()
+}
+
+func TestConnProtocol(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	tcp, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcp.Close()
+	p1, p2 := net.Pipe()
+	defer p1.Close()
+	defer p2.Close()
+
+	for _, tt := range []struct {
+		name string
+		conn net.Conn
+		want string
+	}{
+		{name: "nil", conn: nil, want: metrics.UpstreamProtocolUnknown},
+		{name: "plain tcp", conn: tcp, want: metrics.UpstreamProtocolHTTP1},
+		{name: "other conn", conn: p1, want: metrics.UpstreamProtocolUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := connProtocol(tt.conn); got != tt.want {
+				t.Errorf("connProtocol() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// A transport retry resends the body from GetBody; those bytes count too.
+func TestRoundTripInstrumented_CountsGetBodyResend(t *testing.T) {
+	vhost := metrics.VhostManagement
+	sent := metrics.UpstreamSentBytesTotal.WithLabelValues(metrics.UpstreamProtocolUnknown, vhost)
+	s0 := counterValue(t, sent)
+
+	ctx := metrics.WithVhost(context.Background(), vhost)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.invalid/", strings.NewReader("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if r.GetBody == nil {
+			t.Fatal("GetBody dropped")
+		}
+		b, err := r.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		_, _ = io.Copy(io.Discard, b)
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	})
+	if _, err := roundTripInstrumented(next, req); err != nil {
+		t.Fatal(err)
+	}
+	if got := counterValue(t, sent) - s0; got != 10 {
+		t.Errorf("sent bytes grew by %v, want 10", got)
+	}
 }
