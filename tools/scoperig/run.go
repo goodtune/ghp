@@ -563,7 +563,7 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 		}
 	}
 	tok, ok := handles[s.Profile]
-	if !ok && s.Kind != "token_api" {
+	if !ok && s.Kind != "token_api" && s.Kind != "git_credential" {
 		return errResult(s, fmt.Sprintf("no token for profile %q", s.Profile))
 	}
 	ex, err := deps.Exec(s.Kind)

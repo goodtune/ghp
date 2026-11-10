@@ -18,7 +18,7 @@ func TestRigTree(t *testing.T) {
 	}
 
 	want := make(map[string]bool)
-	for i := 1; i <= 54; i++ {
+	for i := 1; i <= 55; i++ {
 		want[fmt.Sprintf("C%d", i)] = true
 	}
 	for i := 1; i <= 10; i++ {
@@ -124,7 +124,7 @@ var task18Claims = map[string]int{
 	// agent tokens (#306)
 	"AGENT-C49": 8, "TOK-C02": 2, "TOK-C03": 2, "TOK-C04": 1, "REPO-C08": 2, "GAP-A6": 2,
 	// batch 5
-	"GIT-C48": 4, "PERM-C18": 1, "LIFE-C39": 1,
+	"GIT-C48": 4, "PERM-C18": 1, "LIFE-C39": 1, "CRED-C55": 1,
 }
 
 // checkScenarioCoverage asserts that every iteration-1 claim that is not a

@@ -1,0 +1,37 @@
+# The git credential helper (#363): `ghp auth git-credential` from
+# GHP_RIG_GHP (else ghp on PATH) with a throwaway HOME, the file cache tier,
+# agent tokens from instance.agent_installation's app (never the default
+# app) and the rig's own GHP_SERVER_URL and GHP_USER_TOKEN. The executor
+# runs get, get (cache hit), uses the token on W and A, erase, get, clear,
+# and revokes every token it found. The helper's tokens carry session
+# git-credential:<hostname>, not the rig's session, so the executor finds
+# them by diffing the token list.
+- id: CRED-C55.agent-token-pinned-cached-revoked
+  claim: CRED-C55
+  doc: docs/features/git-credential-helper.md#what-it-does
+  description: >-
+    get mints one gha_ token pinned to W; a second get returns the cached
+    token and mints nothing; the token reads W and is refused on A; erase
+    revokes it; a new get then clear revokes the new token.
+  kind: git_credential
+  repo: W
+  requires: [agent_installation, ghp_cli]
+  expect:
+    status: 200
+    json:
+      "$.get_exit": "0"
+      "$.first_minted": "1"
+      "$.token_prefix": gha_
+      "$.username": x-access-token
+      "$.token_type": agent
+      "$.repositories": '["{{.RepoW}}"]'
+      "$.second_get_exit": "0"
+      "$.second_get_same_token": "true"
+      "$.second_get_minted": "0"
+      "$.w_status": "200"
+      "$.a_status": "403"
+      "$.erase_exit": "0"
+      "$.erase_revoked": "true"
+      "$.third_get_minted": "1"
+      "$.clear_exit": "0"
+      "$.clear_revoked": "true"

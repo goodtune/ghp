@@ -270,6 +270,11 @@
   claim: "Every proxied request produces an audit log record."
   iteration: 4
   testable: manual
+- id: CRED-C55
+  doc: docs/features/git-credential-helper.md#what-it-does
+  claim: "The git credential helper mints a gha_ token pinned to the repository, reuses it from the cache without minting, and erase and clear revoke it on the server."
+  iteration: 4
+  testable: periodic
 - id: GAP-A1
   doc: docs/features/token-scoping.md#permission-restrictions
   claim: "Unmapped REST write endpoints are permission-checked for scoped tokens."

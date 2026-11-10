@@ -162,7 +162,12 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		add("claim %q not found in claims.yaml", s.Claim)
 	}
 	var prof *Profile
-	if s.Kind != "token_api" {
+	if s.Kind == "git_credential" {
+		// The helper mints its own tokens; no profile token is used.
+		if s.Profile != "" {
+			add("profile is not valid for kind git_credential")
+		}
+	} else if s.Kind != "token_api" {
 		if s.Profile == "" {
 			add("profile is required for kind %q", s.Kind)
 		} else if p, ok := t.Profiles[s.Profile]; !ok {
@@ -212,6 +217,9 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	}
 	if s.Kind == "git" {
 		checkGit(s, v, add)
+	}
+	if s.Kind == "git_credential" {
+		checkGitCredential(s, add)
 	}
 	if s.OperationName != "" && (s.Kind != "graphql" || len(s.Steps) > 0) {
 		add("operation_name is only valid for a kind graphql scenario with a query (not steps)")
@@ -656,5 +664,29 @@ func checkGit(s *Scenario, v *Vars, add func(string, ...any)) {
 		}
 	default:
 		add("git_op must be clone or push (got %q)", s.GitOp)
+	}
+}
+
+// checkGitCredential applies the kind git_credential rules (CRED-C55): the
+// executor runs a fixed flow for W with the agent installation app and the
+// ghp CLI, and revokes every token itself, so nothing else may be set.
+func checkGitCredential(s *Scenario, add func(string, ...any)) {
+	if s.Repo != "W" {
+		add("kind git_credential needs repo: W (got %q)", s.Repo)
+	}
+	for _, c := range []string{"agent_installation", "ghp_cli"} {
+		if !hasString(s.Requires, c) {
+			add("kind git_credential needs requires: [%s]", c)
+		}
+	}
+	for _, f := range []struct {
+		name string
+		set  bool
+	}{{"args", len(s.Args) > 0}, {"steps", len(s.Steps) > 0}, {"request", s.Request != nil},
+		{"query", s.Query != ""}, {"poll", s.Poll != nil}, {"headers", len(s.Headers) > 0},
+		{"cleanup", len(s.Cleanup) > 0}} {
+		if f.set {
+			add("%s is not valid for kind git_credential", f.name)
+		}
 	}
 }

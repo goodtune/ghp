@@ -85,6 +85,8 @@ func For(kind string) (Executor, error) {
 		return GH{}, nil
 	case "git":
 		return Git{}, nil
+	case "git_credential":
+		return GitCredential{}, nil
 	}
 	return nil, fmt.Errorf("exec: no executor for kind %q", kind)
 }

@@ -987,3 +987,34 @@ func TestValidate_Git(t *testing.T) {
 		requireErr(t, Validate(withScenarios(s), nil), "G3", "branch")
 	})
 }
+
+func TestValidate_GitCredential(t *testing.T) {
+	ok := func() *Scenario {
+		return &Scenario{ID: "K1", Claim: "C1", Kind: "git_credential", Repo: "W",
+			Requires: []string{"agent_installation", "ghp_cli"}, Expect: &Expect{Status: 200}}
+	}
+	requireNoErr(t, Validate(withScenarios(ok()), nil))
+	tests := []struct {
+		name string
+		mod  func(s *Scenario)
+		want string
+	}{
+		{"repo A", func(s *Scenario) { s.Repo = "A" }, "repo: W"},
+		{"no repo", func(s *Scenario) { s.Repo = "" }, "repo: W"},
+		{"no agent_installation", func(s *Scenario) { s.Requires = []string{"ghp_cli"} }, "agent_installation"},
+		{"no ghp_cli", func(s *Scenario) { s.Requires = []string{"agent_installation"} }, "ghp_cli"},
+		{"profile set", func(s *Scenario) { s.Profile = "p" }, "profile"},
+		{"args set", func(s *Scenario) { s.Args = []string{"x"} }, "args"},
+		{"cleanup set", func(s *Scenario) {
+			s.Cleanup = []Request{{Method: "DELETE", Path: "/repos/{{.RepoW}}/git/refs/heads/x"}}
+			s.Requires = append(s.Requires, "repo_w_push")
+		}, "cleanup"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := ok()
+			tt.mod(s)
+			requireErr(t, Validate(withScenarios(s), nil), "K1", tt.want)
+		})
+	}
+}
