@@ -6,7 +6,10 @@ enterprise restriction and anonymous git blocking turned on:
 - **ENT-C50**: GHP injects the enterprise restriction header, and each
   exception type does what [Enterprise Restriction](../admin/github-app.md#enterprise-restriction) says.
 - **BORDER-C46**: with `block.anonymous_git`, an unauthenticated git request
-  that carries `Git-Protocol` gets `401`.
+  that carries `Git-Protocol` gets `401`. The rig sends anonymous GET
+  requests for the public repository `octocat/Hello-World` through the
+  deployment's `github.com` virtual host. If an egress policy blocks that
+  request to GitHub, the control scenario (without `Git-Protocol`) fails.
 
 The run sends only GET requests to GitHub. It changes nothing on GitHub. On GHP's management API it creates and revokes one rig token (POST and DELETE).
 
@@ -28,7 +31,9 @@ parts. The counters are for the whole instance. The rig narrows the stage
 count to the request's virtual host and token type, and expects each
 counter to rise by exactly one. If a counter rises by more, other traffic
 reached the instance during the request, and the scenario reports ERROR,
-not PASS. Run it when the instance is quiet.
+not PASS. The rig cannot detect a defect that exactly one concurrent
+matching request hides: it catches only rises above one. Run it when the
+instance is quiet.
 
 ## Steps
 
@@ -103,11 +108,18 @@ not PASS. Run it when the instance is quiet.
     The run takes less than one minute.
 
 6. **Send back the result.** Copy the last line of the output, which starts
-   with `scoperig-result:`, and the exit code (`echo $?`). The line holds the
-   run id, the GHP version, a status for each claim and scenario, and the
-   token counts. It holds no token, and the rig replaces the instance and
-   metrics host names with `<host>`. Do not paste the JSON
-   file: it holds response details.
+   with `scoperig-result:`, and the exit code (`echo $?`). The line can
+   contain:
+    - the run id, the GHP version and the exit code;
+    - a status for each claim and scenario, and the token counts;
+    - in each scenario detail: HTTP statuses, GHP and GitHub error text, and
+      metric names with their labels.
+
+    The rig replaces the instance, server and metrics host names with
+    `<host>`, IP addresses with `<addr>`, and the configured
+    `enterprise_restriction` repositories and their owners with `<repo>`.
+    The line holds no token. Do not paste the JSON file: it keeps the full
+    detail.
 
 ## What the run creates and removes
 
@@ -129,5 +141,13 @@ not PASS. Run it when the instance is quiet.
 | ERROR | The rig could not decide, for example `metrics_url` did not answer, or other traffic moved a counter during the request. Rerun when the instance is quiet. |
 | GAP | A field in step 2 or 3 is empty, or the `github.com` virtual host did not answer. The detail names the missing capability. |
 
-Exit code 0 means no FAIL or ERROR, 1 means a FAIL, 2 means an ERROR or a
-token left live, and 3 means the run could not start.
+A FAIL that names an outcome counter that must not move (`want change <=
+0`) can come from other traffic. Rerun once on a quiet instance before you
+treat it as a defect.
+
+Exit codes:
+
+- 0: no FAIL, KNOWN-CHANGED or ERROR.
+- 1: a FAIL or KNOWN-CHANGED.
+- 2: an ERROR, cleanup residue, or a token left live.
+- 3: the run could not start.
