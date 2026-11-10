@@ -319,8 +319,8 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := forwardProxyRouter.Reload(ctx); err != nil {
 		s.logger.Warn("forward proxy ruleset load failed; egress uses ambient environment until reload succeeds", "error", err)
 	}
-	forwardProxyTransport := proxy.NewForwardProxyTransport(forwardProxyRouter)
-	forwardProxyControlTransport := proxy.NewForwardProxyControlTransport(forwardProxyRouter)
+	forwardProxyTransport := proxy.NewForwardProxyTransport(forwardProxyRouter, s.cfg.Upstream)
+	forwardProxyControlTransport := proxy.NewForwardProxyControlTransport(forwardProxyRouter, s.cfg.Upstream)
 
 	// Build the AppRegistry with all apps from the store.
 	appRegistry := github.NewAppRegistry(store, enc, s.logger)
@@ -510,7 +510,7 @@ func (s *Server) Run(ctx context.Context) error {
 		githubInner, tokenSvc, proxyTokenResolver, usernameResolver, enterprisePolicy, s.logger, s.cfg)
 	// Release HEAD probes target the operator's redirect mirror, not GitHub;
 	// they go direct unless a control rule opts them in via include_non_github.
-	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger, proxy.NewForwardProxyNonGitHubControlTransport(forwardProxyRouter))
+	githubPassthrough = proxy.NewReleasesHandler(githubPassthrough, s.cfg, s.logger, proxy.NewForwardProxyNonGitHubControlTransport(forwardProxyRouter, s.cfg.Upstream))
 
 	// Scope enforcement wraps the whole codeload handler (redirect and
 	// passthrough) so client tokens are resolved before any forward and

@@ -169,6 +169,34 @@ never contains hard-coded zero durations.
     it after you upgrade. Panels that compare data from before and after
     the upgrade can show a step change.
 
+#### Upstream Transport Metrics
+
+Recorded for every request ghp sends to GitHub, including its own
+control-plane calls (those have `vhost="unknown"`). `protocol` is `h2`,
+`http/1.1` or `unknown`; `vhost` uses the values listed above. No host, path
+or proxy URL is used as a label.
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `ghp_upstream_sent_bytes_total` | Counter | Request body bytes read from the request body by the transport, including bytes resent on a retry (labels: `protocol`, `vhost`) |
+| `ghp_upstream_received_bytes_total` | Counter | Response body bytes received from upstream, added while the body streams (labels: `protocol`, `vhost`) |
+| `ghp_upstream_connections_total` | Counter | Connection used by each upstream request (labels: `protocol`, `vhost`, `result` = `opened`, `reused`) |
+| `ghp_upstream_first_byte_seconds` | Histogram | Time from the start of the upstream request (after proxy selection) to the first response byte; uses the decision histogram buckets (labels: `protocol`, `vhost`) |
+
+```promql
+# Upstream download throughput in Mbit/s, by protocol
+sum by (protocol) (rate(ghp_upstream_received_bytes_total[5m])) * 8 / 1e6
+
+# Share of upstream requests that had to dial a new connection
+sum(rate(ghp_upstream_connections_total{result="opened"}[5m]))
+  / sum(rate(ghp_upstream_connections_total[5m]))
+```
+
+Byte counters count HTTP body bytes only: no headers, HTTP/2 framing or TLS
+overhead. A request body that the transport replays after a retry is not
+counted again. Response bodies of `101 Switching Protocols` responses are not
+counted.
+
 #### Git Cache Metrics
 
 | Metric | Type | Labels | Description |

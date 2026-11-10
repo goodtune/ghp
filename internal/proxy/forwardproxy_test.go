@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
 )
 
@@ -328,7 +329,7 @@ func TestForwardProxyRouter_ControlTransportAndContext(t *testing.T) {
 	fr.ambient = func(*http.Request) (*url.URL, error) { return nil, nil }
 
 	// The dedicated control transport routes without any context marker.
-	ct := NewForwardProxyControlTransport(fr)
+	ct := NewForwardProxyControlTransport(fr, config.UpstreamConfig{HTTP2: true})
 	bare := httptest.NewRequest(http.MethodGet, "https://api.github.com/app/installations", nil)
 	if u, err := ct.(*routingTransport).selector(bare); err != nil || u == nil || u.Host != "control-proxy:3128" {
 		t.Fatalf("control transport selector = (%v, %v), want control-proxy:3128", u, err)
@@ -397,7 +398,7 @@ func TestForwardProxyRouter_NonGitHubControlOptIn(t *testing.T) {
 	}
 
 	// The transport constructor wires the same behaviour.
-	nt := NewForwardProxyNonGitHubControlTransport(fr)
+	nt := NewForwardProxyNonGitHubControlTransport(fr, config.UpstreamConfig{HTTP2: true})
 	if u, err := nt.(*routingTransport).selector(req); err != nil || u == nil || u.Host != "control-proxy:3128" {
 		t.Fatalf("non-GitHub control transport selector = (%v, %v), want control-proxy:3128", u, err)
 	}
@@ -595,7 +596,7 @@ func TestRoutingTransport_PerRequestSelectionOverHTTP2(t *testing.T) {
 	rt := newRoutingTransport(func(*http.Request) (*url.URL, error) {
 		calls.Add(1)
 		return nil, nil
-	})
+	}, config.UpstreamConfig{HTTP2: true})
 	// Trust the test server's certificate on every pooled transport.
 	rt.transports[""] = srv.Client().Transport.(*http.Transport).Clone()
 
@@ -621,7 +622,7 @@ func TestRoutingTransport_PerRequestSelectionOverHTTP2(t *testing.T) {
 // its own transport (so HTTP/2 pools never straddle egress paths), that the
 // same proxy reuses one transport, and that the cache stays bounded.
 func TestRoutingTransport_TransportPerProxy(t *testing.T) {
-	rt := newRoutingTransport(func(*http.Request) (*url.URL, error) { return nil, nil })
+	rt := newRoutingTransport(func(*http.Request) (*url.URL, error) { return nil, nil }, config.UpstreamConfig{})
 
 	a, _ := url.Parse("http://egress-a:3128")
 	b, _ := url.Parse("http://egress-b:3128")

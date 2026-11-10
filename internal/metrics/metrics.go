@@ -398,6 +398,45 @@ var (
 		Help: "Number of enabled forward proxy rulesets currently active in the route table.",
 	})
 
+	// --- Upstream transport metrics ---
+	//
+	// Recorded by the forward proxy routing transport for every outbound
+	// request (proxied traffic and ghp's own control-plane calls). Labels are
+	// bounded: protocol is one of the UpstreamProtocol* constants and vhost
+	// one of the Vhost* constants; no hosts, paths or proxy URLs.
+
+	// UpstreamSentBytesTotal counts request body bytes sent upstream
+	// (payload only: no headers, framing or TLS overhead).
+	UpstreamSentBytesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_upstream_sent_bytes_total",
+		Help: "Request body bytes sent to upstream GitHub, by negotiated protocol and vhost.",
+	}, []string{"protocol", "vhost"})
+
+	// UpstreamReceivedBytesTotal counts response body bytes received from
+	// upstream (payload only), added as the client reads the body.
+	UpstreamReceivedBytesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_upstream_received_bytes_total",
+		Help: "Response body bytes received from upstream GitHub, by negotiated protocol and vhost.",
+	}, []string{"protocol", "vhost"})
+
+	// UpstreamConnectionsTotal counts the connection each upstream request
+	// used, by result: "opened" (newly dialled) or "reused" (taken from the
+	// pool, or another stream on a live HTTP/2 connection).
+	UpstreamConnectionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_upstream_connections_total",
+		Help: "Upstream connections used by outbound requests, by negotiated protocol, vhost and result (opened, reused).",
+	}, []string{"protocol", "vhost", "result"})
+
+	// UpstreamFirstByteDuration measures from the start of the upstream
+	// round trip, after proxy selection (pool wait or dial, TLS, request write, GitHub
+	// processing) to the first response byte. upstream_roundtrip minus this
+	// is the response transfer time.
+	UpstreamFirstByteDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "ghp_upstream_first_byte_seconds",
+		Help:    "Time from the start of an upstream request to the first response byte, by negotiated protocol and vhost.",
+		Buckets: decisionBuckets,
+	}, []string{"protocol", "vhost"})
+
 	// WebhookReceivedTotal counts GitHub webhook deliveries presented to the
 	// ingress handler, labeled by the X-GitHub-Event name and the outcome:
 	//   "published"         — verified and stored in the JetStream stream
@@ -497,6 +536,32 @@ const (
 	VhostCopilot    = "copilot"
 	VhostUnknown    = "unknown"
 )
+
+// Upstream protocol label values. The set is closed.
+const (
+	UpstreamProtocolH2      = "h2"
+	UpstreamProtocolHTTP1   = "http/1.1"
+	UpstreamProtocolUnknown = "unknown"
+)
+
+// Upstream connection result label values.
+const (
+	UpstreamConnOpened = "opened"
+	UpstreamConnReused = "reused"
+)
+
+// UpstreamProtocol maps a TLS ALPN value to a protocol label. An empty
+// value (no ALPN, or a plain TCP connection) means HTTP/1.1.
+func UpstreamProtocol(alpn string) string {
+	switch alpn {
+	case "h2":
+		return UpstreamProtocolH2
+	case "", "http/1.1":
+		return UpstreamProtocolHTTP1
+	default:
+		return UpstreamProtocolUnknown
+	}
+}
 
 type vhostKey struct{}
 

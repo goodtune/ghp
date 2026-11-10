@@ -2,6 +2,8 @@ package config
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -836,6 +838,108 @@ func TestMetricsSlowDecisionThreshold(t *testing.T) {
 			}
 			if cfg.Metrics.SlowDecisionThreshold != tt.want {
 				t.Errorf("SlowDecisionThreshold = %v, want %v", cfg.Metrics.SlowDecisionThreshold, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpstreamDefaults(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := UpstreamConfig{
+		HTTP2:               false,
+		MaxIdleConnsPerHost: 32,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	if cfg.Upstream != want {
+		t.Errorf("Upstream defaults = %+v, want %+v", cfg.Upstream, want)
+	}
+}
+
+func TestLoadUpstreamFromEnv(t *testing.T) {
+	t.Setenv("GHP_UPSTREAM_HTTP2", "true")
+	t.Setenv("GHP_UPSTREAM_MAX_IDLE_CONNS_PER_HOST", "16")
+	t.Setenv("GHP_UPSTREAM_MAX_CONNS_PER_HOST", "64")
+	t.Setenv("GHP_UPSTREAM_IDLE_CONN_TIMEOUT", "30s")
+	t.Setenv("GHP_UPSTREAM_HTTP2_MAX_READ_FRAME_SIZE", "65536")
+	t.Setenv("GHP_UPSTREAM_HTTP2_MAX_RECEIVE_BUFFER_PER_CONNECTION", "67108864")
+	t.Setenv("GHP_UPSTREAM_HTTP2_MAX_RECEIVE_BUFFER_PER_STREAM", "16777216")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := UpstreamConfig{
+		HTTP2:                              true,
+		MaxIdleConnsPerHost:                16,
+		MaxConnsPerHost:                    64,
+		IdleConnTimeout:                    30 * time.Second,
+		HTTP2MaxReadFrameSize:              65536,
+		HTTP2MaxReceiveBufferPerConnection: 64 << 20,
+		HTTP2MaxReceiveBufferPerStream:     16 << 20,
+	}
+	if cfg.Upstream != want {
+		t.Errorf("Upstream = %+v, want %+v", cfg.Upstream, want)
+	}
+}
+
+func TestLoadUpstreamFromYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ghp.yaml")
+	yamlData := "upstream:\n  http2: true\n  max_idle_conns_per_host: 8\n  idle_conn_timeout: 2m\n  http2_max_receive_buffer_per_stream: 8388608\n"
+	if err := os.WriteFile(path, []byte(yamlData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Upstream.HTTP2 || cfg.Upstream.MaxIdleConnsPerHost != 8 ||
+		cfg.Upstream.IdleConnTimeout != 2*time.Minute || cfg.Upstream.HTTP2MaxReceiveBufferPerStream != 8<<20 {
+		t.Errorf("Upstream = %+v", cfg.Upstream)
+	}
+}
+
+func TestLoadUpstreamInvalid(t *testing.T) {
+	t.Setenv("GHP_UPSTREAM_HTTP2_MAX_READ_FRAME_SIZE", "1024")
+	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "upstream.http2_max_read_frame_size") {
+		t.Fatalf("Load error = %v, want upstream.http2_max_read_frame_size error", err)
+	}
+}
+
+func TestUpstreamValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     UpstreamConfig
+		wantErr string
+	}{
+		{name: "zero values", cfg: UpstreamConfig{}},
+		{name: "defaults", cfg: Defaults().Upstream},
+		{name: "full valid", cfg: UpstreamConfig{HTTP2: true, MaxIdleConnsPerHost: 8, MaxConnsPerHost: 8, IdleConnTimeout: time.Minute, HTTP2MaxReadFrameSize: 16 << 10, HTTP2MaxReceiveBufferPerConnection: 64 << 10, HTTP2MaxReceiveBufferPerStream: 1<<31 - 1}},
+		{name: "max frame", cfg: UpstreamConfig{HTTP2MaxReadFrameSize: 1<<24 - 1}},
+		{name: "negative idle per host", cfg: UpstreamConfig{MaxIdleConnsPerHost: -1}, wantErr: "max_idle_conns_per_host"},
+		{name: "negative conns per host", cfg: UpstreamConfig{MaxConnsPerHost: -1}, wantErr: "max_conns_per_host"},
+		{name: "idle exceeds max conns", cfg: UpstreamConfig{MaxIdleConnsPerHost: 9, MaxConnsPerHost: 8}, wantErr: "must not exceed"},
+		{name: "negative idle timeout", cfg: UpstreamConfig{IdleConnTimeout: -time.Second}, wantErr: "idle_conn_timeout"},
+		{name: "frame too small", cfg: UpstreamConfig{HTTP2MaxReadFrameSize: 16<<10 - 1}, wantErr: "http2_max_read_frame_size"},
+		{name: "frame too large", cfg: UpstreamConfig{HTTP2MaxReadFrameSize: 1 << 24}, wantErr: "http2_max_read_frame_size"},
+		{name: "conn buffer too small", cfg: UpstreamConfig{HTTP2MaxReceiveBufferPerConnection: 64<<10 - 1}, wantErr: "per_connection"},
+		{name: "conn buffer too large", cfg: UpstreamConfig{HTTP2MaxReceiveBufferPerConnection: 1 << 31}, wantErr: "per_connection"},
+		{name: "stream buffer too small", cfg: UpstreamConfig{HTTP2MaxReceiveBufferPerStream: 1}, wantErr: "per_stream"},
+		{name: "stream buffer negative", cfg: UpstreamConfig{HTTP2MaxReceiveBufferPerStream: -1}, wantErr: "per_stream"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() = %v, want error containing %q", err, tt.wantErr)
 			}
 		})
 	}

@@ -70,6 +70,10 @@ type Config struct {
 
 	ForwardProxy ForwardProxyConfig `koanf:"forward_proxy"`
 
+	// Upstream tunes the HTTP transports ghp uses to reach GitHub. Bound at
+	// startup; not hot-reloadable.
+	Upstream UpstreamConfig `koanf:"upstream"`
+
 	// Webhooks configures the GitHub webhook ingress, the embedded NATS
 	// JetStream event bus, and the optional embedded ngrok tunnel. Bound at
 	// startup; not hot-reloadable.
@@ -93,6 +97,71 @@ type ForwardProxyConfig struct {
 	// endpoint, so operators must opt in deliberately. When disabled the
 	// headers are stripped and ignored.
 	AllowRequestHeader bool `koanf:"allow_request_header"`
+}
+
+// UpstreamConfig tunes every http.Transport that the forward proxy routing
+// transport builds (one per selected egress proxy). Zero values for the
+// numeric fields mean "use the Go standard library default".
+type UpstreamConfig struct {
+	// HTTP2 lets the transport negotiate HTTP/2 with GitHub. When false,
+	// upstream requests use HTTP/1.1 only, so concurrent requests spread
+	// over separate TCP connections instead of sharing one.
+	HTTP2 bool `koanf:"http2"`
+	// MaxIdleConnsPerHost is the number of idle connections kept per
+	// upstream host (Go default 2).
+	MaxIdleConnsPerHost int `koanf:"max_idle_conns_per_host"`
+	// MaxConnsPerHost caps the connections per upstream host, including
+	// connections in use. 0 means no limit.
+	MaxConnsPerHost int `koanf:"max_conns_per_host"`
+	// IdleConnTimeout closes idle upstream connections after this long.
+	IdleConnTimeout time.Duration `koanf:"idle_conn_timeout"`
+	// HTTP2MaxReadFrameSize is the largest HTTP/2 frame ghp will accept
+	// from GitHub (16 KiB to 16 MiB; Go default 1 MiB).
+	HTTP2MaxReadFrameSize int `koanf:"http2_max_read_frame_size"`
+	// HTTP2MaxReceiveBufferPerConnection is the HTTP/2 connection-level
+	// receive (flow control) window (64 KiB to 2 GiB-1; Go default 1 GiB).
+	HTTP2MaxReceiveBufferPerConnection int `koanf:"http2_max_receive_buffer_per_connection"`
+	// HTTP2MaxReceiveBufferPerStream is the HTTP/2 per-stream receive
+	// (flow control) window (64 KiB to 2 GiB-1; Go default 4 MiB). One
+	// stream can have at most this much unacknowledged data in flight,
+	// so a single download is capped near this value divided by the RTT.
+	HTTP2MaxReceiveBufferPerStream int `koanf:"http2_max_receive_buffer_per_stream"`
+}
+
+// Upstream configuration bounds. The HTTP/2 bounds follow RFC 9113
+// (frame size) and the int32 flow control window limit.
+const (
+	upstreamMinFrameSize     = 16 << 10
+	upstreamMaxFrameSize     = 16<<20 - 1
+	upstreamMinReceiveBuffer = 64 << 10
+	upstreamMaxReceiveBuffer = 1<<31 - 1
+)
+
+// Validate rejects out-of-range upstream transport settings. Zero is
+// accepted for every numeric field and means the Go default.
+func (u *UpstreamConfig) Validate() error {
+	if u.MaxIdleConnsPerHost < 0 {
+		return fmt.Errorf("upstream.max_idle_conns_per_host must not be negative")
+	}
+	if u.MaxConnsPerHost < 0 {
+		return fmt.Errorf("upstream.max_conns_per_host must not be negative")
+	}
+	if u.MaxConnsPerHost > 0 && u.MaxIdleConnsPerHost > u.MaxConnsPerHost {
+		return fmt.Errorf("upstream.max_idle_conns_per_host (%d) must not exceed upstream.max_conns_per_host (%d)", u.MaxIdleConnsPerHost, u.MaxConnsPerHost)
+	}
+	if u.IdleConnTimeout < 0 {
+		return fmt.Errorf("upstream.idle_conn_timeout must not be negative")
+	}
+	if v := u.HTTP2MaxReadFrameSize; v != 0 && (v < upstreamMinFrameSize || v > upstreamMaxFrameSize) {
+		return fmt.Errorf("upstream.http2_max_read_frame_size must be between %d and %d", upstreamMinFrameSize, upstreamMaxFrameSize)
+	}
+	if v := u.HTTP2MaxReceiveBufferPerConnection; v != 0 && (v < upstreamMinReceiveBuffer || v > upstreamMaxReceiveBuffer) {
+		return fmt.Errorf("upstream.http2_max_receive_buffer_per_connection must be between %d and %d", upstreamMinReceiveBuffer, upstreamMaxReceiveBuffer)
+	}
+	if v := u.HTTP2MaxReceiveBufferPerStream; v != 0 && (v < upstreamMinReceiveBuffer || v > upstreamMaxReceiveBuffer) {
+		return fmt.Errorf("upstream.http2_max_receive_buffer_per_stream must be between %d and %d", upstreamMinReceiveBuffer, upstreamMaxReceiveBuffer)
+	}
+	return nil
 }
 
 // BlockConfig defines which GitHub token prefixes are blocked from
@@ -516,6 +585,15 @@ func Defaults() *Config {
 		Cache: CacheConfig{
 			StoragePath: "cache",
 		},
+		// Upstream defaults come from the transport benchmark recorded in
+		// docs/superpowers/specs/2026-11-10-upstream-transport-design.md:
+		// HTTP/1.1 with a 32-connection idle pool per host outran HTTP/2
+		// for concurrent bulk downloads at every modelled RTT.
+		Upstream: UpstreamConfig{
+			HTTP2:               false,
+			MaxIdleConnsPerHost: 32,
+			IdleConnTimeout:     90 * time.Second,
+		},
 		Webhooks: WebhooksConfig{
 			Path:            "/webhooks/github",
 			MaxPayloadBytes: 25 * 1024 * 1024,
@@ -555,7 +633,7 @@ func Load(path string) (*Config, error) {
 			if i := strings.Index(s, "_"); i > 0 {
 				section, field := s[:i], s[i+1:]
 				switch section {
-				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases", "codeload", "cache", "webhooks":
+				case "github", "database", "server", "tls", "tokens", "logging", "metrics", "otel", "auth", "block", "releases", "codeload", "cache", "webhooks", "upstream":
 					// Handle 3-level nesting for logging.file.*
 					if section == "logging" && strings.HasPrefix(field, "file_") {
 						return "logging.file." + field[len("file_"):], v
@@ -597,6 +675,10 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("server.client_ip_header: %w", err)
 	}
 	cfg.Server.ClientIPHeader = string(clientIPHeader)
+
+	if err := cfg.Upstream.Validate(); err != nil {
+		return nil, err
+	}
 
 	// Comma-separated list env vars for slice fields. koanf unmarshals
 	// a single env var string into a one-element slice, so we split on

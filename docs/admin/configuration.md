@@ -159,6 +159,42 @@ See [Codeload Redirect](../features/codeload.md) for details.
 Forward proxy *rulesets* are runtime configuration managed via the admin API,
 not this file. See [Forward Proxy Rulesets](../features/forward-proxy-rulesets.md).
 
+### Upstream Transport
+
+These settings tune every HTTP transport ghp uses to reach GitHub: the
+proxied API, `github.com` and `codeload` traffic, Copilot, and ghp's own
+control-plane calls. Each egress proxy keeps its own transport and
+connection pool, and every pool gets the same settings. Zero for a numeric
+field means the Go standard library default. Changes need a restart.
+
+The default is HTTP/1.1 (`upstream.http2: false`). The number of
+connections per host has no limit unless `max_conns_per_host` is set. Up to
+`max_idle_conns_per_host` idle connections stay open per host for each egress
+proxy. To use HTTP/2, set `upstream.http2: true` (`GHP_UPSTREAM_HTTP2=true`).
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GHP_UPSTREAM_HTTP2` | Negotiate HTTP/2 with GitHub. When `false`, upstream requests use HTTP/1.1 and concurrent requests use separate TCP connections. Replaces the `GODEBUG=http2client=0` workaround. | `false` |
+| `GHP_UPSTREAM_MAX_IDLE_CONNS_PER_HOST` | Idle connections kept per upstream host. `0` means the Go default of 2. | `32` |
+| `GHP_UPSTREAM_MAX_CONNS_PER_HOST` | Maximum connections per upstream host, idle and in use. `0` means no limit. Must not be lower than `max_idle_conns_per_host`. | `0` |
+| `GHP_UPSTREAM_IDLE_CONN_TIMEOUT` | Close an idle upstream connection after this duration. `0` means the Go default of `90s`. | `90s` |
+| `GHP_UPSTREAM_HTTP2_MAX_READ_FRAME_SIZE` | Largest HTTP/2 frame ghp accepts from GitHub, 16384 to 16777215 bytes. `0` means the Go default (1 MiB). Only used when `http2` is `true`. | `0` |
+| `GHP_UPSTREAM_HTTP2_MAX_RECEIVE_BUFFER_PER_CONNECTION` | HTTP/2 connection receive window, 65536 to 2147483647 bytes. `0` means the Go default (1 GiB). Only used when `http2` is `true`. | `0` |
+| `GHP_UPSTREAM_HTTP2_MAX_RECEIVE_BUFFER_PER_STREAM` | HTTP/2 per-request receive window, 65536 to 2147483647 bytes. `0` means the Go default (4 MiB). One download cannot go faster than this value divided by the round-trip time. Only used when `http2` is `true`. | `0` |
+
+ghp refuses to start when a value is out of range.
+
+Why HTTP/2 is off by default: with HTTP/2, Go sends every concurrent request
+to a host over one TCP connection. All clones then share one TCP window, and
+one lost packet stalls all of them. A single download is also capped by the
+per-stream receive window divided by the round-trip time. In the transport
+benchmark, HTTP/1.1 with a 32-connection idle pool was as fast or faster than
+HTTP/2 for concurrent bulk downloads at every round-trip time tested, and up
+to 5 times faster at 200 ms. If you turn HTTP/2 on, raise
+`http2_max_receive_buffer_per_stream` (for example to 16 MiB) on
+high-latency links. A large window lets one slow client hold more buffered
+data in memory.
+
 ### Git Cache
 
 | Variable | Description | Default |
@@ -314,6 +350,15 @@ codeload:
 forward_proxy:
   allow_request_header: false  # honour X-GitHub-Proxy-Forward-* client headers (rulesets are managed via the admin API)
 
+upstream:                      # transports to GitHub (restart required); 0 = Go default for numeric fields
+  http2: false                 # negotiate HTTP/2 with GitHub; false = HTTP/1.1, one connection per concurrent request
+  max_idle_conns_per_host: 32  # idle connections kept per upstream host (Go default 2)
+  max_conns_per_host: 0        # cap on connections per upstream host; 0 = no limit
+  idle_conn_timeout: 90s       # close idle upstream connections after this long
+  http2_max_read_frame_size: 0                # 16384..16777215; 0 = 1 MiB (http2 only)
+  http2_max_receive_buffer_per_connection: 0  # 65536..2147483647; 0 = 1 GiB (http2 only)
+  http2_max_receive_buffer_per_stream: 0      # 65536..2147483647; 0 = 4 MiB (http2 only)
+
 cache:
   enabled: false               # enable git clone/fetch caching
   storage_path: "cache"        # local path for cached bare repos
@@ -376,7 +421,7 @@ The following settings can be changed without restarting the server by sending
 - `block` — border policy settings (anonymous git, token type blocking)
 - `releases` — release download policy and allow list (`mode`, `redirect_to`, `redirect_head_check`, `allow`); note that `redirect_head_check_netrc` and `redirect_not_found_template` are loaded once at startup and require a restart to change
 Settings that require a restart: database driver/DSN, server listen addresses,
-`cache` (enable/disable, storage path),
+`cache` (enable/disable, storage path), `upstream` (transport settings),
 TLS certificates, the encryption key, logging configuration, metrics
 enable/disable, OAuth broker enable/disable and signing key
 (`auth.jwt_private_key` / `auth.jwt_private_key_file`), `tokens.max_duration`,

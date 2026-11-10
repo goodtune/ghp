@@ -1038,3 +1038,64 @@ func TestSlowDecisionLog_NoTraceStillLogs(t *testing.T) {
 		t.Errorf("want slow_decision with token_type unknown, got %q", buf.String())
 	}
 }
+
+func TestUpstreamProtocol(t *testing.T) {
+	tests := []struct{ alpn, want string }{
+		{"h2", UpstreamProtocolH2},
+		{"http/1.1", UpstreamProtocolHTTP1},
+		{"", UpstreamProtocolHTTP1},
+		{"spdy/3", UpstreamProtocolUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.alpn, func(t *testing.T) {
+			if got := UpstreamProtocol(tt.alpn); got != tt.want {
+				t.Errorf("UpstreamProtocol(%q) = %q, want %q", tt.alpn, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpstreamBytesTotal(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		counter *prometheus.CounterVec
+	}{
+		{"sent", UpstreamSentBytesTotal},
+		{"received", UpstreamReceivedBytesTotal},
+	} {
+		for _, proto := range []string{UpstreamProtocolH2, UpstreamProtocolHTTP1, UpstreamProtocolUnknown} {
+			t.Run(c.name+"/"+proto, func(t *testing.T) {
+				labels := prometheus.Labels{"protocol": proto, "vhost": VhostWeb}
+				before := getCounterValue(t, c.counter, labels)
+				c.counter.With(labels).Add(1500)
+				if got := getCounterValue(t, c.counter, labels) - before; got != 1500 {
+					t.Errorf("counter grew by %v, want 1500", got)
+				}
+			})
+		}
+	}
+}
+
+func TestUpstreamConnectionsTotal(t *testing.T) {
+	for _, result := range []string{UpstreamConnOpened, UpstreamConnReused} {
+		for _, proto := range []string{UpstreamProtocolH2, UpstreamProtocolHTTP1} {
+			t.Run(result+"/"+proto, func(t *testing.T) {
+				labels := prometheus.Labels{"protocol": proto, "vhost": VhostAPI, "result": result}
+				before := getCounterValue(t, UpstreamConnectionsTotal, labels)
+				UpstreamConnectionsTotal.With(labels).Inc()
+				if got := getCounterValue(t, UpstreamConnectionsTotal, labels) - before; got != 1 {
+					t.Errorf("counter grew by %v, want 1", got)
+				}
+			})
+		}
+	}
+}
+
+func TestUpstreamFirstByteDuration(t *testing.T) {
+	labels := prometheus.Labels{"protocol": UpstreamProtocolHTTP1, "vhost": VhostCodeload}
+	before := getHistogramCount(t, UpstreamFirstByteDuration, labels)
+	UpstreamFirstByteDuration.With(labels).Observe(0.042)
+	if got := getHistogramCount(t, UpstreamFirstByteDuration, labels) - before; got != 1 {
+		t.Errorf("sample count grew by %d, want 1", got)
+	}
+}
