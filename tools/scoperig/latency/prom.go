@@ -221,6 +221,7 @@ func (c *Client) Collect(ctx context.Context, start, end time.Time) (*report.Lat
 	}, end); err != nil {
 		return nil, err
 	}
+	raw := map[key]bool{} // keys taken from raw values, not increase()
 	for k, f := range fresh {
 		if k == e2eKey {
 			if e2ePresent {
@@ -230,6 +231,7 @@ func (c *Client) Collect(ctx context.Context, start, end time.Time) (*report.Lat
 			continue
 		}
 		stages[k] = f
+		raw[k] = true
 	}
 
 	lat := &report.Latency{Status: report.LatencyOK, WindowSeconds: win, Stages: []report.StageLatency{}}
@@ -268,9 +270,15 @@ func (c *Client) Collect(ctx context.Context, start, end time.Time) (*report.Lat
 		s := stages[k]
 		lat.Stages = append(lat.Stages, Stage(k.stage, k.tokenType, s.buckets, s.sum, s.count))
 		if k.stage == "total" {
-			r := stages[key{"request_body_read", k.tokenType}]
+			rk := key{"request_body_read", k.tokenType}
+			r := stages[rk]
 			if r == nil {
 				r = &series{}
+			} else if raw[k] != raw[rk] {
+				// One series is new in the window (raw value), the other an
+				// increase(): subtracting them mixes two accountings.
+				lat.Notes = append(lat.Notes, fmt.Sprintf("%s for %s omitted: total and request_body_read come from different sources (one series first appeared in the run window)", NetTotalStage, k.tokenType))
+				continue
 			}
 			lat.Stages = append(lat.Stages, NetTotal(k.tokenType, s.buckets, s.sum, s.count, r.buckets, r.sum, r.count))
 		}

@@ -167,6 +167,7 @@ func padZero(buckets []Bucket, n float64) []Bucket {
 func NetTotal(tokenType string, total []Bucket, totalSum, totalCount float64,
 	rbr []Bucket, rbrSum, rbrCount float64) report.StageLatency {
 	row := Stage(NetTotalStage, tokenType, total, totalSum-rbrSum, totalCount)
+	row.Estimate = true
 	if row.Samples == 0 {
 		return row
 	}

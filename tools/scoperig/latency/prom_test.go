@@ -209,3 +209,48 @@ func TestCollect_NetTotalRow(t *testing.T) {
 		t.Errorf("raw = %+v, net = %+v", *raw, *net)
 	}
 }
+
+// TestCollect_NetTotalMixedSources: total is new in the window (raw) but
+// request_body_read existed at the start (increase()), so the derived row
+// is omitted with a note.
+func TestCollect_NetTotalMixedSources(t *testing.T) {
+	start := time.Date(2026, 11, 8, 4, 18, 0, 0, time.UTC)
+	end := start.Add(10 * time.Minute)
+	at := func(tm time.Time) string { return strconv.FormatInt(tm.Unix(), 10) }
+	tot := `"stage":"total","token_type":"agent"`
+	rbr := `"stage":"request_body_read","token_type":"agent"`
+	type ans struct{ q, t, v string }
+	answers := []ans{
+		{"group by (stage, token_type)", at(start), vec(rbr, "1")},
+		{"(stage, token_type, le) (increase(", at(end), vec(rbr+`,"le":"0.05"`, "3") + "," + vec(rbr+`,"le":"+Inf"`, "3")},
+		{"(stage, token_type) (increase(ghp_proxy_decision_duration_seconds_sum", at(end), vec(rbr, "0.1")},
+		{"(stage, token_type) (increase(ghp_proxy_decision_duration_seconds_count", at(end), vec(rbr, "3")},
+		{"(stage, token_type, le) (ghp_proxy_decision_duration_seconds_bucket", at(end), vec(tot+`,"le":"0.05"`, "9") + "," + vec(tot+`,"le":"+Inf"`, "9")},
+		{"(stage, token_type) (ghp_proxy_decision_duration_seconds_sum", at(end), vec(tot, "0.2")},
+		{"(stage, token_type) (ghp_proxy_decision_duration_seconds_count", at(end), vec(tot, "9")},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q, tm := r.URL.Query().Get("query"), r.URL.Query().Get("time")
+		res := ""
+		for _, a := range answers {
+			if strings.Contains(q, a.q) && tm == a.t {
+				res = a.v
+				break
+			}
+		}
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[` + res + `]}}`))
+	}))
+	defer ts.Close()
+	lat, err := (&Client{BaseURL: ts.URL, HTTP: ts.Client()}).Collect(context.Background(), start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range lat.Stages {
+		if s.Stage == NetTotalStage {
+			t.Errorf("derived row present for mixed sources: %+v", s)
+		}
+	}
+	if len(lat.Notes) != 1 || !strings.Contains(lat.Notes[0], "different sources") {
+		t.Errorf("notes = %v", lat.Notes)
+	}
+}

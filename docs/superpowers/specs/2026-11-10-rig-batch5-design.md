@@ -20,6 +20,11 @@ estimate:
   `request_body_read` sample. The estimate is exact when slow totals are the
   slow body reads (the observed case) and never negative.
 
+The rendered report marks the row "(est.)" with a footnote. The row is
+built only when total and request_body_read come from the same source
+(both increase(), or both raw first-appearance values, see below);
+otherwise it is omitted with a latency note.
+
 Problem 2. A series that first appears inside the run window (for example
 the first `token_type="agent"` samples after a deploy) shows 0 samples:
 `increase()` needs two samples and never counts a series' first value.

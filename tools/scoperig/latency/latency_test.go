@@ -115,7 +115,7 @@ func TestNetTotal(t *testing.T) {
 	total := []Bucket{{0.001, 90}, {0.0025, 90}, {0.05, 100}, {inf, 100}}
 	rbr := []Bucket{{0.001, 0}, {0.035, 0}, {0.04, 10}, {inf, 10}}
 	row := NetTotal("proxy", total, 0.09+0.4, 100, rbr, 0.38, 10)
-	if row.Stage != NetTotalStage || row.TokenType != "proxy" || row.Samples != 100 {
+	if row.Stage != NetTotalStage || row.TokenType != "proxy" || row.Samples != 100 || !row.Estimate {
 		t.Fatalf("row = %+v", row)
 	}
 	wantP99 := math.Max(0, Quantile(0.99, total)-Quantile(0.99, padZero(rbr, 100)))

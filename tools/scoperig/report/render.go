@@ -117,13 +117,26 @@ func (r *Report) writeLatency(ew *errWriter) error {
 		if s.Samples > 0 {
 			mean, p50, p95, p99 = seconds(s.Mean), seconds(s.P50), seconds(s.P95), seconds(s.P99)
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n", clean(s.Stage), clean(s.TokenType), s.Samples,
+		stage := clean(s.Stage)
+		if s.Estimate {
+			stage += " (est.)"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n", stage, clean(s.TokenType), s.Samples,
 			mean, p50, p95, p99, budget, flags)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
 	ew.printf("latency warnings: %d over budget, %d low samples (< 100)\n", over, low)
+	for _, s := range l.Stages {
+		if s.Estimate {
+			ew.printf("(est.) quantiles estimated from histograms (total minus request_body_read); the mean is exact\n")
+			break
+		}
+	}
+	for _, n := range l.Notes {
+		ew.printf("latency note: %s\n", clean(redact.String(n)))
+	}
 	return ew.err
 }
 
@@ -233,6 +246,7 @@ type jsonStageLatency struct {
 	P99Seconds       float64  `json:"p99_seconds"`
 	BudgetP99Seconds float64  `json:"budget_p99_seconds"`
 	Flags            []string `json:"flags"`
+	Estimate         bool     `json:"estimate,omitempty"`
 }
 
 type jsonLatency struct {
@@ -242,6 +256,7 @@ type jsonLatency struct {
 	Revision      string             `json:"revision"`
 	WindowSeconds int                `json:"window_seconds"`
 	Stages        []jsonStageLatency `json:"stages"`
+	Notes         []string           `json:"notes,omitempty"`
 }
 
 func latencyJSON(l *Latency) jsonLatency {
@@ -254,7 +269,10 @@ func latencyJSON(l *Latency) jsonLatency {
 	for _, s := range l.Stages {
 		j.Stages = append(j.Stages, jsonStageLatency{Stage: redact.String(s.Stage), TokenType: redact.String(s.TokenType),
 			Samples: s.Samples, MeanSeconds: s.Mean, P50Seconds: s.P50, P95Seconds: s.P95, P99Seconds: s.P99,
-			BudgetP99Seconds: s.BudgetP99, Flags: cleanList(s.Flags)})
+			BudgetP99Seconds: s.BudgetP99, Flags: cleanList(s.Flags), Estimate: s.Estimate})
+	}
+	for _, n := range l.Notes {
+		j.Notes = append(j.Notes, redact.String(n))
 	}
 	return j
 }

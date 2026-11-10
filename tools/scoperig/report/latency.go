@@ -25,6 +25,9 @@ type Latency struct {
 	// Window is the run window in seconds that the increase was taken over.
 	WindowSeconds int
 	Stages        []StageLatency
+	// Notes are advisory remarks on the section (for example why a
+	// derived row was omitted).
+	Notes []string
 }
 
 // StageLatency is one stage (or the end-to-end request) for one token type.
@@ -37,4 +40,7 @@ type StageLatency struct {
 	BudgetP99 float64
 	// Flags are advisory warnings: FlagOverBudget, FlagLowSamples.
 	Flags []string
+	// Estimate marks a derived row whose quantiles are estimated, not
+	// measured (total_excl_body_read, #360).
+	Estimate bool
 }
