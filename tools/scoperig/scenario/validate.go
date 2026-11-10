@@ -67,8 +67,9 @@ func PlaceholderVars() *Vars {
 		Fixture: map[string]FixtureVals{"A": f, "B": f, "W": f},
 		Instance: InstanceVals{Host: PlaceholderHost,
 			DefaultDuration: time.Hour, MaxDuration: 168 * time.Hour},
-		Agent: AgentVals{AppRecordID: "00000000-0000-4000-8000-0000000000a6", InstallationID: 900000404},
-		Step:  map[string]map[string]string{},
+		Agent:      AgentVals{AppRecordID: "00000000-0000-4000-8000-0000000000a6", InstallationID: 900000404},
+		Step:       map[string]map[string]string{},
+		Enterprise: placeholderEnterprise,
 	}
 }
 
@@ -267,8 +268,11 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	// Rule 3: capabilities.
 	for _, r := range s.Requires {
 		if !validCapabilities[r] {
-			add("requires %q is not one of repo_w_push, repo_create, github_vhost, codeload_vhost, agent_installation, non_admin_session, default_app, border_block_ghp, border_block_gho, border_block_github_pat, no_expiry_disallowed, ghp_cli", r)
+			add("requires %q is not one of %s", r, strings.Join(sortedCapabilities(), ", "))
 		}
+	}
+	for _, m := range checkMetricDelta(s) {
+		add("%s", m)
 	}
 
 	// Rules 5 and 6: write targets and template expansion.
@@ -689,4 +693,14 @@ func checkGitCredential(s *Scenario, add func(string, ...any)) {
 			add("%s is not valid for kind git_credential", f.name)
 		}
 	}
+}
+
+// sortedCapabilities lists validCapabilities for error messages.
+func sortedCapabilities() []string {
+	out := make([]string, 0, len(validCapabilities))
+	for c := range validCapabilities {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
 }

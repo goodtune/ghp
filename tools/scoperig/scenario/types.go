@@ -99,6 +99,9 @@ type Scenario struct {
 	Requires    []string  `yaml:"requires"` // repo_w_push repo_create github_vhost agent_installation
 	Cleanup     []Request `yaml:"cleanup"`
 	Expect      *Expect   `yaml:"expect"`
+	// MetricDelta checks GHP metrics before and after the run (needs
+	// requires: [ghp_metrics]); see deployment.go.
+	MetricDelta []MetricDelta `yaml:"metric_delta"`
 	// kind-specific
 	Steps   []Request         `yaml:"steps"`  // rest (single request = one step)
 	Method  string            `yaml:"method"` // rest shorthand
