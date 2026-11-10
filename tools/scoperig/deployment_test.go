@@ -502,29 +502,18 @@ func TestRun_ClaimsUnknownExits3(t *testing.T) {
 	}
 }
 
-func TestWritePasteBack_ScrubsHosts(t *testing.T) {
+func TestWritePasteBack_NoDetail(t *testing.T) {
 	rep := &report.Report{RunID: "r", Claims: []report.ClaimResult{{ID: "ENT-C50", Status: report.StatusFail, Scenarios: []report.ScenarioResult{{
 		ID: "ENT-C50.header-injected", Status: report.StatusError,
 		Detail: `metric_delta (before): scrape instance.metrics_url: Get "http://metrics.corp.test:9136/metrics": dial tcp: lookup metrics.corp.test; also https://ghp.corp.test/api/v3 and api.corp.test:8443`,
 	}}}}}
 	var b strings.Builder
-	if err := writePasteBack(&b, rep, 2, pasteScrub{hosts: []string{"ghp.corp.test", "metrics.corp.test:9136", "api.corp.test:8443", ""}}); err != nil {
+	if err := writePasteBack(&b, rep, 2); err != nil {
 		t.Fatal(err)
 	}
 	for _, h := range []string{"corp.test", "9136", "8443"} {
 		if strings.Contains(b.String(), h) {
 			t.Errorf("paste-back line contains %q:\n%s", h, b.String())
-		}
-	}
-}
-
-func TestPasteBackHosts(t *testing.T) {
-	c := &Config{ServerURL: "https://ghp.corp.test", MetricsURL: "http://m.corp.test:9136/metrics",
-		Instance: scenario.InstanceVals{Host: "api.corp.test:8443"}}
-	got := strings.Join(pasteBackHosts(c), ",")
-	for _, w := range []string{"ghp.corp.test", "m.corp.test:9136", "m.corp.test", "api.corp.test:8443", "api.corp.test"} {
-		if !strings.Contains(","+got+",", ","+w+",") {
-			t.Errorf("hosts %q missing %q", got, w)
 		}
 	}
 }
@@ -566,57 +555,6 @@ func TestRun_EnterpriseConcurrentTrafficIsError(t *testing.T) {
 	}
 }
 
-func TestPasteScrub(t *testing.T) {
-	sc := pasteScrub{
-		hosts: []string{"GHP.corp.test", "m.corp.test:9136"},
-		repos: []string{"ExtOrg/Omit-Repo", "ent/restricted"},
-	}
-	tests := []struct {
-		name, in string
-		gone     []string
-		keep     []string
-	}{
-		{"transport error with repo path and IP",
-			`GET /api/v3/repos/extorg/omit-repo: Get "https://ghp.CORP.test/api/v3/repos/extorg/omit-repo": dial tcp 10.2.3.4:443: connect: connection refused`,
-			[]string{"extorg", "omit-repo", "corp.test", "10.2.3.4", ":443"}, []string{"<repo>", "<host>", "<addr>", "connection refused"}},
-		{"metrics scrape error with IP",
-			`metric_delta (before): scrape instance.metrics_url: Get "http://10.9.8.7:9136/metrics": dial tcp 10.9.8.7:9136: i/o timeout`,
-			[]string{"10.9.8.7", "9136"}, []string{"<addr>", "i/o timeout"}},
-		{"IPv6 literals",
-			`dial tcp [2001:db8::1]:443: refused; from fe80::1; ::1`,
-			[]string{"2001:db8", "fe80", "::1"}, []string{"<addr>"}},
-		{"bare owner, word-bounded",
-			`owner ENT has no access; entry stays; ExtOrg denied`,
-			[]string{"ENT ", "ExtOrg"}, []string{"<repo> has", "entry stays"}},
-		{"times and metric names untouched",
-			`at 15:04:25 metric enterprise_exception_total{outcome="team_denied"}: want change >= 1, got 0; status 403`,
-			nil, []string{"15:04:25", `enterprise_exception_total{outcome="team_denied"}`, "403"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := sc.apply(tt.in)
-			for _, g := range tt.gone {
-				if strings.Contains(got, g) {
-					t.Errorf("%q still contains %q", got, g)
-				}
-			}
-			for _, k := range tt.keep {
-				if !strings.Contains(got, k) {
-					t.Errorf("%q lost %q", got, k)
-				}
-			}
-		})
-	}
-}
-
-func TestPasteBackScrubFromConfig(t *testing.T) {
-	c := &Config{ServerURL: "https://ghp.corp.test", Enterprise: scenario.EnterpriseVals{OmitRepo: "x/o", IdentityRepo: "y/i"}}
-	sc := newPasteScrub(c)
-	if strings.Join(sc.repos, ",") != "x/o,y/i" {
-		t.Errorf("repos = %v", sc.repos)
-	}
-}
-
 // TestWritePasteBack_Allowlist: the line carries only rig-generated
 // reasons, never Detail, Error or other free text.
 func TestWritePasteBack_Allowlist(t *testing.T) {
@@ -630,7 +568,7 @@ func TestWritePasteBack_Allowlist(t *testing.T) {
 			{ID: "ENT-C50.b", Status: report.StatusError, Detail: leaky, Error: leaky},
 		}}}}
 	var b strings.Builder
-	if err := writePasteBack(&b, rep, 1, pasteScrub{hosts: []string{"ghp.corp.test"}, repos: []string{"ExtOrg/OmitRepo", "goodtune/ghp-scoperig-a"}}); err != nil {
+	if err := writePasteBack(&b, rep, 1); err != nil {
 		t.Fatal(err)
 	}
 	line := b.String()
@@ -646,16 +584,6 @@ func TestWritePasteBack_Allowlist(t *testing.T) {
 	if len(pb.Scenarios) != 2 || strings.Join(pb.Scenarios[0].Reasons, ";") != "http_status want=200 got=403" ||
 		strings.Join(pb.Scenarios[1].Reasons, ";") != "other" || pb.Note != "see the JSON report locally" {
 		t.Errorf("scenarios = %+v note = %q", pb.Scenarios, pb.Note)
-	}
-}
-
-func TestPasteScrub_Holes(t *testing.T) {
-	sc := pasteScrub{repos: []string{"O1/R1"}}
-	for _, in := range []string{"/O1/R1.git/info/refs", "Repository R1 not found", "O1%2FR1", "see O1/R1.", "r1 at end"} {
-		got := sc.apply(in)
-		if strings.Contains(asciiutil.ToLower(got), "r1") || strings.Contains(asciiutil.ToLower(got), "o1") {
-			t.Errorf("apply(%q) = %q", in, got)
-		}
 	}
 }
 
@@ -725,7 +653,7 @@ func TestWritePasteBack_RepoNamedLikeVocabulary(t *testing.T) {
 					{ID: "ENT-C50.b", Status: report.StatusPass},
 				}}}}
 			var b strings.Builder
-			if err := writePasteBack(&b, rep, 1, pasteScrub{repos: tt.repos}); err != nil {
+			if err := writePasteBack(&b, rep, 1); err != nil {
 				t.Fatal(err)
 			}
 			rest, ok := strings.CutPrefix(strings.TrimSpace(b.String()), "scoperig-result: ")
@@ -749,50 +677,35 @@ func TestWritePasteBack_RepoNamedLikeVocabulary(t *testing.T) {
 }
 
 func TestPasteBackVersion(t *testing.T) {
-	sc := pasteScrub{hosts: []string{"ghp.corp.test"}, repos: []string{"ent/api"}}
 	tests := []struct{ in, want string }{
 		{"0.28.0", "0.28.0"},
-		{"v1.2.3", "v1.2.3"},
-		{"1.2.3-rc.1", "1.2.3-rc.1"},
+		{"v1.2.3", "1.2.3"},
+		{"12345.0.99999", "12345.0.99999"},
+		{"1.2.3-rc.1", "1.2.3"},
+		{"1.2.3-corp.internal", "1.2.3"},
+		{"1.2.3-acme", "1.2.3"},
+		{"1.2.3+build.host", "1.2.3"},
+		{"v1.2.3-ghp.corp.test+x", "1.2.3"},
 		{"", "unknown"},
+		{"v", "unknown"},
 		{"1.2", "unknown"},
+		{"1.2.3.4", "unknown"},
+		{"123456.0.0", "unknown"},
 		{"1.2.corp-host-name.lan", "unknown"},
-		{"1.2.3-ghp.corp.test", "unknown"},
-		{"1.2.3-10.0.0.1", "unknown"},
-		{"1.2.3-api", "unknown"},
-		{"1.2.3+build.host", "unknown"},
-		{"1.2.3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "unknown"},
+		{"10.0.0.1", "unknown"},
 		{"1.2.3 extra", "unknown"},
+		{"1.2.3-", "unknown"},
+		{"V1.2.3", "unknown"},
+		{"vv1.2.3", "unknown"},
+		{"-1.2.3", "unknown"},
+		{"1.2.3x", "unknown"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
-			if got := pasteBackVersion(tt.in, sc); got != tt.want {
+			if got := pasteBackVersion(tt.in); got != tt.want {
 				t.Errorf("pasteBackVersion(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
-	}
-}
-
-// TestReasons_NoFreeText: response bodies, headers and error messages never
-// reach reasons, so the paste-back scrub need only cover ghp_version.
-func TestReasons_NoFreeText(t *testing.T) {
-	leak := "ghp.corp.test 10.2.3.4 ExtOrg/OmitRepo"
-	s := &scenario.Scenario{ID: "x", Expect: &scenario.Expect{Status: 200, BodyContains: []string{"y"}, BodyNotContains: []string{"ghp"},
-		Header: map[string]string{"X-A": "b"}}}
-	obs := &expect.Observation{Status: 403, Body: []byte(leak), Header: http.Header{"X-A": {leak}}}
-	cases := [][]string{
-		verdictReasons(s, obs, nil),
-		verdictReasons(s, obs, errors.New(leak)),
-		verdictReasons(s, nil, errors.New(leak)),
-	}
-	for _, rs := range cases {
-		for _, r := range rs {
-			for _, bad := range []string{"corp.test", "10.2.3.4", "ExtOrg", "OmitRepo"} {
-				if strings.Contains(r, bad) {
-					t.Errorf("reason %q contains %q", r, bad)
-				}
-			}
-		}
 	}
 }
 
@@ -808,7 +721,6 @@ func TestMetricReason_Kinds(t *testing.T) {
 		{"above max", scenario.MetricDelta{Name: "m", Max: &one}, 2, "metric m{} want_delta<=1 got_delta=2"},
 		{"range below", scenario.MetricDelta{Name: "m", Min: &one, Max: &three}, 0, "metric m{} want_delta>=1 got_delta=0"},
 		{"range above", scenario.MetricDelta{Name: "m", Min: &one, Max: &three}, 4, "metric m{} want_delta<=3 got_delta=4"},
-		{"min met, no max", scenario.MetricDelta{Name: "m", Min: &one}, 2, "metric m{} want_delta>=1 got_delta=2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -818,4 +730,154 @@ func TestMetricReason_Kinds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// pasteSentinel stands for instance data: it is put in every response body,
+// header value, error text, version suffix and configured repository, and
+// must never appear in the paste-back line.
+const pasteSentinel = "zqxsentinel"
+
+const sentinelScenarios = `
+- id: ENT-C50.verdict-and-metric
+  claim: ENT-C50
+  profile: open
+  requires: [ghp_metrics, enterprise_restriction]
+  kind: rest
+  method: GET
+  path: /repos/{{.Enterprise.OmitRepo}}
+  expect:
+    status: 200
+    body_contains: ["{{.Enterprise.OmitRepo}}"]
+    body_not_contains: ["` + pasteSentinel + `"]
+    header: {X-Rig-Echo: "{{.Enterprise.RestrictedRepo}}"}
+  metric_delta:
+    - {name: ghp_rig_sentinel_total, labels: {repo: "{{.Enterprise.OmitRepo}}"}, min: 1}
+    - {name: ghp_rig_sentinel_total, labels: {repo: "{{.Enterprise.RestrictedRepo}}"}, max: 0}
+- id: ENT-C50.gap
+  claim: ENT-C50
+  profile: open
+  requires: [ghp_metrics, enterprise_restriction, enterprise_exception_team_denied]
+  kind: rest
+  method: GET
+  path: /repos/{{.Enterprise.OmitRepo}}
+  expect: {status: 200}
+`
+
+// runSentinel runs sentinelScenarios through the real CLI against a fake
+// instance whose every response carries pasteSentinel, and returns the
+// stdout.
+func runSentinel(t *testing.T, metricsURL func(real string) string) cliResult {
+	t.Helper()
+	f := newFakeGHPVhost(t)
+	m := newFakeMetrics(t)
+	m.mu.Lock()
+	m.vals[`ghp_rig_sentinel_total{repo="`+pasteSentinel+`/omit"}`] = 0
+	m.vals[`ghp_rig_sentinel_total{repo="`+pasteSentinel+`/restricted"}`] = 0
+	m.mu.Unlock()
+	f.intercept = func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.URL.Path == "/login":
+			_, _ = io.WriteString(w, "<html>ghp version 1.2.3-"+pasteSentinel+".corp</html>")
+		case strings.Contains(r.URL.Path, pasteSentinel):
+			m.mu.Lock()
+			m.vals[`ghp_rig_sentinel_total{repo="`+pasteSentinel+`/restricted"}`]++
+			m.mu.Unlock()
+			w.Header().Set("X-Rig-Echo", pasteSentinel+" ghp."+pasteSentinel+".test")
+			w.Header().Set("X-GitHub-Request-Id", pasteSentinel)
+			writeJSONResp(w, 403, map[string]string{"message": "denied for " + pasteSentinel + "/omit at 10.2.3.4"})
+		default:
+			return false
+		}
+		return true
+	}
+	root := t.TempDir()
+	cfgBody := fmt.Sprintf(`instance:
+  host: %s
+  token_create_rate: 20/min
+  metrics_url: %s
+  enterprise_restriction:
+    restricted_repo: %s/restricted
+    omit_repo: %s/omit
+fixtures:
+  repo_a: goodtune/ghp-scoperig-a
+  repo_b: goodtune/ghp-scoperig-b
+  repo_w: goodtune/ghp-scoperig-w
+`, f.host(), metricsURL(m.ts.URL+"/metrics"), pasteSentinel, pasteSentinel)
+	for name, body := range map[string]string{
+		"claims.yaml":      "- {id: ENT-C50, doc: d.md, claim: c, iteration: 3, testable: periodic}\n",
+		"profiles.yaml":    testProfiles,
+		"scenarios/s.yaml": sentinelScenarios,
+		"config.yaml":      cfgBody,
+	} {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := filepath.Join(t.TempDir(), "r.json")
+	return runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", filepath.Join(root, "config.yaml"), "--out", out, "--claims", "ENT-C50")
+}
+
+// pasteLine returns the scoperig-result line of stdout.
+func pasteLine(t *testing.T, stdout string) string {
+	t.Helper()
+	for _, l := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(l, "scoperig-result: ") {
+			return l
+		}
+	}
+	t.Fatalf("no scoperig-result line in:\n%s", stdout)
+	return ""
+}
+
+// TestPasteBack_NoInstanceData runs the real run path with instance data
+// (pasteSentinel) in response bodies, header values, error text, the
+// version suffix, configured hosts and repositories, templated
+// expectations, header values and metric labels. The paste-back line must
+// carry none of it, through verdict, metric, gap and error reasons.
+func TestPasteBack_NoInstanceData(t *testing.T) {
+	t.Run("verdict, metric and gap reasons", func(t *testing.T) {
+		res := runSentinel(t, func(real string) string { return real })
+		line := pasteLine(t, res.stdout)
+		if strings.Contains(asciiutil.ToLower(line), pasteSentinel) || strings.Contains(line, "10.2.3.4") {
+			t.Errorf("paste-back line carries instance data:\n%s", line)
+		}
+		pb := parsePasteBack(t, line)
+		if pb.GHPVersion != "1.2.3" {
+			t.Errorf("ghp_version = %q, want 1.2.3", pb.GHPVersion)
+		}
+		var all []string
+		for _, sc := range pb.Scenarios {
+			all = append(all, sc.ID+"="+sc.Status+":"+strings.Join(sc.Reasons, ";"))
+		}
+		got := strings.Join(all, "\n")
+		for _, w := range []string{
+			"ENT-C50.verdict-and-metric=FAIL:",
+			"http_status want=200 got=403",
+			"body_contains mismatch",
+			"body_not_contains mismatch",
+			"header X-Rig-Echo mismatch",
+			`metric ghp_rig_sentinel_total{repo="<template>"} want_delta>=1 got_delta=0`,
+			`metric ghp_rig_sentinel_total{repo="<template>"} want_delta<=0 got_delta=1`,
+			"ENT-C50.gap=GAP:capability_missing enterprise_exception_team_denied",
+		} {
+			if !strings.Contains(got, w) {
+				t.Errorf("reasons missing %q:\n%s", w, got)
+			}
+		}
+	})
+	t.Run("error reasons", func(t *testing.T) {
+		res := runSentinel(t, func(string) string { return "http://metrics." + pasteSentinel + ".invalid:9136/metrics" })
+		line := pasteLine(t, res.stdout)
+		if strings.Contains(asciiutil.ToLower(line), pasteSentinel) || strings.Contains(line, "9136") {
+			t.Errorf("paste-back line carries instance data:\n%s", line)
+		}
+		pb := parsePasteBack(t, line)
+		if pb.ExitCode != 2 {
+			t.Errorf("exit_code = %d, want 2\n%s", pb.ExitCode, line)
+		}
+	})
 }
