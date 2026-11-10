@@ -583,7 +583,7 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 	if len(missing) > 0 {
 		reason := "requires " + strings.Join(missing, ", ")
 		return report.ScenarioResult{ID: s.ID, Claim: s.Claim, KnownIssue: s.KnownIssue,
-			Status: report.StatusGap, Detail: reason, GapReason: reason}
+			Status: report.StatusGap, Detail: reason, GapReason: reason, Reasons: gapReasons(s.Requires, caps)}
 	}
 	if msg, ok := profErr[s.Profile]; ok {
 		return errResult(s, msg)
@@ -610,7 +610,9 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 	}
 	before, merr := metricsBefore(ctx, s, deps)
 	if merr != "" {
-		return errResult(s, merr)
+		r := errResult(s, merr)
+		r.Reasons = []string{reasonScrape}
+		return r
 	}
 	obs, rerr := ex.Run(ctx, s, tok, env)
 
@@ -648,6 +650,9 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 		}
 	default:
 		r = report.NewResult(s, obs, rerr)
+	}
+	if r.Status != report.StatusPass && r.Status != report.StatusKnown && r.Status != report.StatusKnownFixed {
+		r.Reasons = verdictReasons(s, obs, rerr)
 	}
 	r.Residue = exec.RunCleanup(ctx, s, env)
 	return applyMetricDeltas(ctx, s, deps, before, r)
