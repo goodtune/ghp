@@ -1,0 +1,128 @@
+# Deployment-feature scenarios: ENT-C50 (enterprise restriction) and
+# BORDER-C46 (anonymous git). They need instance settings the usual rig
+# instance does not have, so each requires an operator-declared capability
+# from rig/config.yaml (instance.metrics_url, instance.anonymous_git,
+# instance.enterprise_restriction). Undeclared, they report GAP.
+# Runbook: docs/development/scope-regression-rig-enterprise.md.
+#
+# The enterprise header goes to GitHub, not back to the client, so ENT-C50
+# is observed through GHP's own counters on instance.metrics_url, read
+# before and after each request (metric_delta). Counters are
+# instance-wide: run on a quiet instance.
+
+# Header injected: a target that matches no exception. The policy runs (one
+# enterprise_exception stage sample) and no outcome that removes the header
+# is counted.
+- id: ENT-C50.header-injected
+  claim: ENT-C50
+  doc: docs/admin/github-app.md#enterprise-restriction
+  description: A request to a repository with no exception is evaluated by the enterprise policy and keeps the header.
+  profile: open
+  requires: [ghp_metrics, enterprise_restriction]
+  kind: rest
+  method: GET
+  path: /repos/{{.Enterprise.RestrictedRepo}}
+  expect: {ghp_denial: false}
+  metric_delta:
+    - {name: ghp_proxy_decision_duration_seconds_count, labels: {stage: enterprise_exception}, min: 1}
+    - {name: ghp_enterprise_exception_total, labels: {outcome: header_omitted}, max: 0}
+    - {name: ghp_enterprise_exception_total, labels: {outcome: identity_substituted}, max: 0}
+
+# Plain exception (no teams, no identity): the header is omitted.
+- id: ENT-C50.exception-header-omitted
+  claim: ENT-C50
+  doc: docs/admin/github-app.md#exceptions
+  description: A plain exception target is forwarded with the header omitted.
+  profile: open
+  requires: [ghp_metrics, enterprise_restriction, enterprise_exception_omit]
+  kind: rest
+  method: GET
+  path: /repos/{{.Enterprise.OmitRepo}}
+  expect: {ghp_denial: false}
+  metric_delta:
+    - {name: ghp_enterprise_exception_total, labels: {outcome: header_omitted}, min: 1}
+
+# Team-gated exception whose teams do not include the operator: the
+# exception does not apply and the header stays on.
+- id: ENT-C50.exception-team-denied
+  claim: ENT-C50
+  doc: docs/admin/github-app.md#exceptions
+  description: A team-gated exception does not apply to a caller outside its teams; the header stays on.
+  profile: open
+  requires: [ghp_metrics, enterprise_restriction, enterprise_exception_team_denied]
+  kind: rest
+  method: GET
+  path: /repos/{{.Enterprise.TeamDeniedRepo}}
+  expect: {ghp_denial: false}
+  metric_delta:
+    - {name: ghp_enterprise_exception_total, labels: {outcome: team_denied}, min: 1}
+    - {name: ghp_enterprise_exception_total, labels: {outcome: header_omitted}, max: 0}
+
+# Identity exception the operator qualifies for: an installation token from
+# the referenced app replaces the caller's credential and the header is
+# omitted. The app must be installed on the target owner.
+- id: ENT-C50.exception-identity-substituted
+  claim: ENT-C50
+  doc: docs/admin/github-app.md#exceptions
+  description: An identity exception substitutes the app's installation token and the request succeeds.
+  profile: open
+  requires: [ghp_metrics, enterprise_restriction, enterprise_exception_identity]
+  kind: rest
+  method: GET
+  path: /repos/{{.Enterprise.IdentityRepo}}
+  expect: {status: 200, ghp_denial: false}
+  metric_delta:
+    - {name: ghp_enterprise_exception_total, labels: {outcome: identity_substituted}, min: 1}
+    - {name: ghp_enterprise_exception_total, labels: {outcome: identity_error}, max: 0}
+
+# Identity exception without teams, requested with no credential on the
+# github.com vhost (the management host refuses anonymous requests before
+# the policy runs). No Git-Protocol header, so anonymous_git does not apply.
+- id: ENT-C50.exception-unauthenticated-denied
+  claim: ENT-C50
+  doc: docs/admin/github-app.md#exceptions
+  description: An anonymous request never receives the managed identity; the header stays on.
+  profile: open
+  requires: [ghp_metrics, enterprise_restriction, enterprise_exception_unauthenticated, github_vhost]
+  kind: rest
+  vhost: github.com
+  method: GET
+  path: /{{.Enterprise.UnauthenticatedRepo}}
+  headers: {Authorization: ""}
+  expect: {ghp_denial: false}
+  metric_delta:
+    - {name: ghp_enterprise_exception_total, labels: {outcome: unauthenticated_denied}, min: 1}
+    - {name: ghp_enterprise_exception_total, labels: {outcome: identity_substituted}, max: 0}
+
+# BORDER-C46: GHP answers before GitHub, so any repository path works; a
+# public one keeps the control harmless.
+- id: BORDER-C46.anonymous-git-401
+  claim: BORDER-C46
+  doc: docs/how-it-works.md#blocking-anonymous-git-traffic
+  description: An unauthenticated git request carrying Git-Protocol is refused with 401.
+  profile: open
+  requires: [anonymous_git, github_vhost]
+  kind: rest
+  vhost: github.com
+  method: GET
+  path: /octocat/Hello-World.git/info/refs?service=git-upload-pack
+  headers: {Authorization: "", Git-Protocol: "version=2"}
+  expect:
+    status: 401
+    ghp_denial: true
+    body_contains: ["Anonymous git access is not permitted"]
+    header: {WWW-Authenticate: "Basic realm=\"GitHub\""}
+
+# Control: without Git-Protocol the rule does not apply (GitHub answers).
+- id: BORDER-C46.no-git-protocol-not-blocked
+  claim: BORDER-C46
+  doc: docs/how-it-works.md#blocking-anonymous-git-traffic
+  description: An unauthenticated request without Git-Protocol is not refused by the anonymous git rule.
+  profile: open
+  requires: [anonymous_git, github_vhost]
+  kind: rest
+  vhost: github.com
+  method: GET
+  path: /octocat/Hello-World.git/info/refs?service=git-upload-pack
+  headers: {Authorization: ""}
+  expect: {body_not_contains: ["Anonymous git access is not permitted"]}

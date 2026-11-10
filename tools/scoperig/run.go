@@ -13,6 +13,7 @@ import (
 	"os"
 	osexec "os/exec"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -67,6 +68,9 @@ type runDeps struct {
 	// Sleep waits d or until ctx ends (the latency scrape wait). Default
 	// a context-aware timer.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Scrape reads instance.metrics_url for metric_delta. runRig sets it
+	// when the URL is configured.
+	Scrape func(ctx context.Context) (metricSet, error)
 	// PromHTTP is the client for metrics.prometheus_url. Default: the
 	// config's client (system roots plus GHP_RIG_CA_FILE).
 	PromHTTP *http.Client
@@ -192,18 +196,27 @@ func loadTree(root string) (*scenario.Tree, []error) {
 	return t, scenario.Validate(t, nil)
 }
 
-// selectScenarios applies --only (path.Match on the ID) and --skip-known.
-func selectScenarios(t *scenario.Tree, only string, skipKnown bool) ([]*scenario.Scenario, error) {
+// selectScenarios applies --only (path.Match on the ID; a comma-separated
+// list matches any), --claims (scenario claim in the list) and --skip-known.
+func selectScenarios(t *scenario.Tree, only string, claims []string, skipKnown bool) ([]*scenario.Scenario, error) {
 	var out []*scenario.Scenario
+	globs := splitList(only)
 	for _, s := range t.Scenarios {
-		if only != "" {
-			ok, err := path.Match(only, s.ID)
-			if err != nil {
-				return nil, fmt.Errorf("--only %q: %w", only, err)
+		if len(globs) > 0 {
+			matched := false
+			for _, g := range globs {
+				ok, err := path.Match(g, s.ID)
+				if err != nil {
+					return nil, fmt.Errorf("--only %q: %w", g, err)
+				}
+				matched = matched || ok
 			}
-			if !ok {
+			if !matched {
 				continue
 			}
+		}
+		if len(claims) > 0 && !slices.Contains(claims, s.Claim) {
+			continue
 		}
 		if skipKnown && s.KnownIssue != "" {
 			continue
@@ -240,6 +253,13 @@ func configVars(c *Config) *scenario.Vars {
 	if c.AgentConfigured() {
 		v.Agent = scenario.AgentVals{AppRecordID: c.AgentAppRecordID, InstallationID: c.InstallationID}
 	}
+	e, pe := c.Enterprise, &v.Enterprise
+	for _, f := range []struct{ in, out *string }{{&e.RestrictedRepo, &pe.RestrictedRepo}, {&e.OmitRepo, &pe.OmitRepo},
+		{&e.TeamDeniedRepo, &pe.TeamDeniedRepo}, {&e.IdentityRepo, &pe.IdentityRepo}, {&e.UnauthenticatedRepo, &pe.UnauthenticatedRepo}} {
+		if *f.in != "" {
+			*f.out = *f.in
+		}
+	}
 	return v
 }
 
@@ -273,12 +293,18 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	if verrs := scenario.Validate(tree, configVars(c)); len(verrs) > 0 {
 		return nil, &exitError{code: 3, err: fmt.Errorf("validation with the configured host and fixtures failed: %w", errors.Join(verrs...))}
 	}
-	selected, err := selectScenarios(tree, c.Only, c.SkipKnown)
+	if err := checkClaims(tree, c.Claims); err != nil {
+		return nil, &exitError{code: 3, err: err}
+	}
+	selected, err := selectScenarios(tree, c.Only, c.Claims, c.SkipKnown)
 	if err != nil {
 		return nil, &exitError{code: 3, err: err}
 	}
 	if c.Only != "" && len(selected) == 0 {
 		return nil, &exitError{code: 3, err: errors.New("--only matched no scenarios")}
+	}
+	if len(c.Claims) > 0 && len(selected) == 0 {
+		return nil, &exitError{code: 3, err: errors.New("--claims matched no scenarios")}
 	}
 
 	// 2. Preflight (first network use).
@@ -298,6 +324,10 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	version, err := Preflight(ctx, c, hc)
 	if err != nil {
 		return nil, &exitError{code: 3, err: err}
+	}
+	if deps.Scrape == nil && c.MetricsURL != "" {
+		mhc, u := hc, c.MetricsURL
+		deps.Scrape = func(ctx context.Context) (metricSet, error) { return scrapeMetrics(ctx, mhc, u) }
 	}
 
 	started := deps.Now().UTC()
@@ -374,7 +404,7 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 			rep.Tokens.Created = created
 			rep.Tokens.Revoked = max(created-len(leftover), 0)
 			rep.Tokens.LeftoverIDs = append([]string{}, leftover...)
-			rep.Claims = report.RollUp(tree, results)
+			rep.Claims = restrictClaims(report.RollUp(tree, results), c.Claims)
 			rep.Summary = report.Summarise(tree, rep.Claims)
 		}
 		if p != nil {
@@ -396,9 +426,10 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 	vars := &scenario.Vars{
 		RunID: runID, Host: c.Instance.Host,
 		RepoA: repoRef(c.RepoA), RepoB: repoRef(c.RepoB), RepoW: repoRef(c.RepoW),
-		Fixture:  map[string]scenario.FixtureVals{},
-		Instance: c.Instance,
-		Step:     map[string]map[string]string{},
+		Fixture:    map[string]scenario.FixtureVals{},
+		Instance:   c.Instance,
+		Step:       map[string]map[string]string{},
+		Enterprise: c.Enterprise,
 	}
 
 	// 4. Create profile tokens (paced by the manager): open first, then
@@ -577,6 +608,10 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 	if err := scenario.CheckExpands(s, env.Vars); err != nil {
 		return errResult(s, "not run: expand expectations: "+err.Error())
 	}
+	before, merr := metricsBefore(ctx, s, deps)
+	if merr != "" {
+		return errResult(s, merr)
+	}
 	obs, rerr := ex.Run(ctx, s, tok, env)
 
 	// Expand templated matchers (e.g. json: {"$.login": "{{.Login}}"}) again
@@ -615,7 +650,7 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 		r = report.NewResult(s, obs, rerr)
 	}
 	r.Residue = exec.RunCleanup(ctx, s, env)
-	return r
+	return applyMetricDeltas(ctx, s, deps, before, r)
 }
 
 // fixtureKeys guesses which fixture repos s depends on from its templates.

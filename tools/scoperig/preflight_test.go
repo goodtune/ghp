@@ -208,7 +208,7 @@ func TestProbeCapabilities(t *testing.T) {
 					t.Errorf("%s = %v, want %v", k, got[k], w)
 				}
 			}
-			if len(got) != 12 {
+			if len(got) != 12+len(scenario.DeploymentCapabilities) {
 				t.Errorf("caps %v", got)
 			}
 		})

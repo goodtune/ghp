@@ -89,7 +89,7 @@ func exitCode(err error, stderr io.Writer) int {
 }
 
 type cliFlags struct {
-	config, out, only             string
+	config, out, only, claims     string
 	skipKnown, keepGoing, verbose bool
 	createFixtures                bool
 }
@@ -162,7 +162,13 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 					return &exitError{code: 2, err: err}
 				}
 			}
-			if code := report.ExitCode(rep); code != 0 {
+			code := report.ExitCode(rep)
+			if len(c.Claims) > 0 {
+				if err := writePasteBack(stdout, rep, code); err != nil {
+					return &exitError{code: 2, err: err}
+				}
+			}
+			if code != 0 {
 				return &exitError{code: code, err: nil}
 			}
 			return nil
@@ -170,7 +176,8 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 	}
 	run.Flags().BoolVar(&f.skipKnown, "skip-known", false, "skip scenarios with a known_issue")
 	run.Flags().StringVar(&f.out, "out", "", "write the JSON report to FILE (for example /tmp/ghp-rig/reports/run.json)")
-	run.Flags().StringVar(&f.only, "only", "", "run only scenario IDs matching GLOB (still sweeps and cleans up)")
+	run.Flags().StringVar(&f.only, "only", "", "run only scenario IDs matching GLOB; a comma-separated list matches any (still sweeps and cleans up)")
+	run.Flags().StringVar(&f.claims, "claims", "", "run only these claims' scenarios (comma-separated IDs, e.g. ENT-C50,BORDER-C46), report only them and print a one-line scoperig-result JSON summary")
 	run.Flags().BoolVar(&f.keepGoing, "keep-going", true, "continue after a FAIL or ERROR")
 
 	sweep := &cobra.Command{
@@ -233,6 +240,7 @@ func loadWithFlags(getenv func(string) string, f *cliFlags) (*Config, error) {
 		return nil, &exitError{code: 3, err: err}
 	}
 	c.Out, c.Only = f.out, f.only
+	c.Claims = splitList(f.claims)
 	c.SkipKnown, c.KeepGoing, c.Verbose = f.skipKnown, f.keepGoing, f.verbose
 	c.CreateFixtures = f.createFixtures
 	return c, nil

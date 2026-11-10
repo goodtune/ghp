@@ -47,6 +47,14 @@ type Config struct {
 	// GHPPath is the ghp CLI binary for git_credential scenarios
 	// (GHP_RIG_GHP, else ghp on PATH).
 	GHPPath string
+	// AnonymousGit, MetricsURL and Enterprise are operator-declared
+	// deployment features (instance.anonymous_git, instance.metrics_url,
+	// instance.enterprise_restriction); see deployment.go.
+	AnonymousGit bool
+	MetricsURL   string
+	Enterprise   scenario.EnterpriseVals
+	// Claims is --claims: run only these claims' scenarios and report them.
+	Claims []string
 	// Metrics configures the optional advisory latency section.
 	Metrics                                       MetricsConfig
 	ConfigFile, Out, Only                         string
@@ -90,6 +98,16 @@ type fileConfig struct {
 			AppRecordID    string `yaml:"app_record_id"`
 			InstallationID *int64 `yaml:"installation_id"`
 		} `yaml:"agent_installation"`
+		// Deployment features (ENT-C50, BORDER-C46); see deployment.go.
+		AnonymousGit          bool   `yaml:"anonymous_git"`
+		MetricsURL            string `yaml:"metrics_url"`
+		EnterpriseRestriction struct {
+			RestrictedRepo      string `yaml:"restricted_repo"`
+			OmitRepo            string `yaml:"omit_repo"`
+			TeamDeniedRepo      string `yaml:"team_denied_repo"`
+			IdentityRepo        string `yaml:"identity_repo"`
+			UnauthenticatedRepo string `yaml:"unauthenticated_repo"`
+		} `yaml:"enterprise_restriction"`
 	} `yaml:"instance"`
 	Metrics struct {
 		PrometheusURL  string `yaml:"prometheus_url"`
@@ -196,6 +214,9 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 		if c.TokenCreateRate, err = parseRate(fc.Instance.TokenCreateRate); err != nil {
 			return nil, fmt.Errorf("instance.token_create_rate: %w", err)
 		}
+	}
+	if err := loadDeployment(c, fc); err != nil {
+		return nil, err
 	}
 	if c.Metrics, err = loadMetrics(getenv, fc, c.UserToken); err != nil {
 		return nil, err
