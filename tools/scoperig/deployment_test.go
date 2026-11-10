@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
+	"github.com/goodtune/ghp/tools/scoperig/expect"
 	"github.com/goodtune/ghp/tools/scoperig/report"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
 )
@@ -355,11 +358,15 @@ func wireEnterprise(t *testing.T, f *fakeGHP, m *fakeMetrics, move bool) {
 }
 
 type pasteBack struct {
-	ExitCode  int               `json:"exit_code"`
-	Claims    map[string]string `json:"claims"`
-	Scenarios []struct {
-		ID, Status, Detail string
+	RunID      string            `json:"run_id"`
+	GHPVersion string            `json:"ghp_version"`
+	ExitCode   int               `json:"exit_code"`
+	Claims     map[string]string `json:"claims"`
+	Scenarios  []struct {
+		ID, Status string
+		Reasons    []string `json:"reasons"`
 	} `json:"scenarios"`
+	Note string `json:"note"`
 }
 
 func parsePasteBack(t *testing.T, stdout string) pasteBack {
@@ -451,6 +458,12 @@ func TestRun_EnterpriseCounterNotMovingFails(t *testing.T) {
 	if got["BORDER-C46.anonymous-git-401"]["status"] != "PASS" {
 		t.Errorf("BORDER-C46 = %v, want PASS (no metric)", got["BORDER-C46.anonymous-git-401"]["status"])
 	}
+	for _, sc := range pb.Scenarios {
+		if sc.ID == "ENT-C50.exception-header-omitted" &&
+			(len(sc.Reasons) == 0 || sc.Reasons[0] != `metric ghp_enterprise_exception_total{outcome="header_omitted"} want_delta>=1 got_delta=0`) {
+			t.Errorf("reasons = %v", sc.Reasons)
+		}
+	}
 	if pb.ExitCode != 1 || pb.Claims["ENT-C50"] != "FAIL" {
 		t.Errorf("paste-back = %+v", pb)
 	}
@@ -502,9 +515,6 @@ func TestWritePasteBack_ScrubsHosts(t *testing.T) {
 		if strings.Contains(b.String(), h) {
 			t.Errorf("paste-back line contains %q:\n%s", h, b.String())
 		}
-	}
-	if !strings.Contains(b.String(), "<host>") {
-		t.Errorf("want <host> placeholder:\n%s", b.String())
 	}
 }
 
@@ -604,5 +614,93 @@ func TestPasteBackScrubFromConfig(t *testing.T) {
 	sc := newPasteScrub(c)
 	if strings.Join(sc.repos, ",") != "x/o,y/i" {
 		t.Errorf("repos = %v", sc.repos)
+	}
+}
+
+// TestWritePasteBack_Allowlist: the line carries only rig-generated
+// reasons, never Detail, Error or other free text.
+func TestWritePasteBack_Allowlist(t *testing.T) {
+	leaky := `GET /api/v3/repos/ExtOrg/OmitRepo: Get "https://ghp.corp.test/x": dial tcp 10.2.3.4:443; ` +
+		`/ExtOrg/OmitRepo.git/info/refs; Repository OmitRepo not found; ExtOrg%2FOmitRepo; ` +
+		`my-enterprise-slug; operator octo-login; goodtune/ghp-scoperig-a`
+	rep := &report.Report{RunID: "r1", GHPVersion: "0.28.0", Claims: []report.ClaimResult{{ID: "ENT-C50", Status: report.StatusFail,
+		Scenarios: []report.ScenarioResult{
+			{ID: "ENT-C50.a", Status: report.StatusFail, Detail: leaky, Error: leaky, GHPMessage: leaky,
+				Reasons: []string{"http_status want=200 got=403"}},
+			{ID: "ENT-C50.b", Status: report.StatusError, Detail: leaky, Error: leaky},
+		}}}}
+	var b strings.Builder
+	if err := writePasteBack(&b, rep, 1, pasteScrub{hosts: []string{"ghp.corp.test"}, repos: []string{"ExtOrg/OmitRepo", "goodtune/ghp-scoperig-a"}}); err != nil {
+		t.Fatal(err)
+	}
+	line := b.String()
+	for _, bad := range []string{"corp.test", "10.2.3.4", "ExtOrg", "OmitRepo", "my-enterprise-slug", "octo-login", "ghp-scoperig-a", "goodtune"} {
+		if strings.Contains(line, bad) {
+			t.Errorf("line contains %q:\n%s", bad, line)
+		}
+	}
+	pb := parsePasteBack(t, line)
+	if pb.RunID != "r1" || pb.GHPVersion != "0.28.0" || pb.ExitCode != 1 {
+		t.Errorf("top-level fields: %+v", pb)
+	}
+	if len(pb.Scenarios) != 2 || strings.Join(pb.Scenarios[0].Reasons, ";") != "http_status want=200 got=403" ||
+		strings.Join(pb.Scenarios[1].Reasons, ";") != "other" || pb.Note != "see the JSON report locally" {
+		t.Errorf("scenarios = %+v note = %q", pb.Scenarios, pb.Note)
+	}
+}
+
+func TestPasteScrub_Holes(t *testing.T) {
+	sc := pasteScrub{repos: []string{"O1/R1"}}
+	for _, in := range []string{"/O1/R1.git/info/refs", "Repository R1 not found", "O1%2FR1", "see O1/R1.", "r1 at end"} {
+		got := sc.apply(in)
+		if strings.Contains(asciiutil.ToLower(got), "r1") || strings.Contains(asciiutil.ToLower(got), "o1") {
+			t.Errorf("apply(%q) = %q", in, got)
+		}
+	}
+}
+
+func intPtr(n int) *int { return &n }
+
+func TestVerdictReasons(t *testing.T) {
+	f, tr := false, true
+	tests := []struct {
+		name string
+		e    *scenario.Expect
+		obs  *expect.Observation
+		rerr error
+		want string
+	}{
+		{"status", &scenario.Expect{Status: 200}, &expect.Observation{Status: 403}, nil, "http_status want=200 got=403"},
+		{"status_in", &scenario.Expect{StatusIn: []int{200, 204}}, &expect.Observation{Status: 500}, nil, "http_status want_in=200,204 got=500"},
+		{"ghp_denial", &scenario.Expect{GHPDenial: &f}, &expect.Observation{Status: 403, Body: []byte(`{"message":"Anonymous git access is not permitted"}`)}, nil, "ghp_denial want=false got=true"},
+		{"ghp_denial true", &scenario.Expect{GHPDenial: &tr}, &expect.Observation{Status: 200}, nil, "ghp_denial want=true got=false"},
+		{"body", &scenario.Expect{BodyContains: []string{"secret O/R"}}, &expect.Observation{Status: 200}, nil, "body_contains mismatch"},
+		{"body not", &scenario.Expect{BodyNotContains: []string{"x"}}, &expect.Observation{Status: 200, Body: []byte("x")}, nil, "body_not_contains mismatch"},
+		{"header", &scenario.Expect{Header: map[string]string{"WWW-Authenticate": "v"}}, &expect.Observation{Status: 401, Header: http.Header{}}, nil, "header WWW-Authenticate mismatch"},
+		{"transport", &scenario.Expect{Status: 200}, nil, errors.New("dial tcp 10.0.0.1:443"), "transport_error"},
+		{"exit code is other", &scenario.Expect{ExitCode: intPtr(0)}, &expect.Observation{Status: 200}, nil, "other"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &scenario.Scenario{ID: "x", Expect: tt.e}
+			if got := strings.Join(verdictReasons(s, tt.obs, tt.rerr), ";"); got != tt.want {
+				t.Errorf("reasons = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReasonForms(t *testing.T) {
+	one, zero := 1, 0
+	d := scenario.MetricDelta{Name: "ghp_x_total", Labels: map[string]string{"outcome": "a", "repo": "{{.Enterprise.OmitRepo}}"}, Min: &one}
+	if got := metricReason(d, 0); got != `metric ghp_x_total{outcome="a",repo="<template>"} want_delta>=1 got_delta=0` {
+		t.Errorf("metricReason = %q", got)
+	}
+	d = scenario.MetricDelta{Name: "ghp_x_total", Max: &zero}
+	if got := metricReason(d, 2); got != `metric ghp_x_total{} want_delta<=0 got_delta=2` {
+		t.Errorf("metricReason max = %q", got)
+	}
+	if got := strings.Join(gapReasons([]string{"ghp_metrics", "github_vhost"}, Capabilities{"ghp_metrics": true}), ";"); got != "capability_missing github_vhost" {
+		t.Errorf("gapReasons = %q", got)
 	}
 }
