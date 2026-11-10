@@ -99,9 +99,21 @@ func roundTripInstrumented(next http.RoundTripper, req *http.Request) (*http.Res
 	// Only wrap a real body: the transport treats nil and http.NoBody as
 	// "no body", and a wrapper would make it send an empty chunked body.
 	if req.Body != nil && req.Body != http.NoBody {
-		out.Body = &countingBody{ReadCloser: req.Body, add: func(n int) {
+		add := func(n int) {
 			metrics.UpstreamSentBytesTotal.WithLabelValues(st.proto(), vhost).Add(float64(n))
-		}}
+		}
+		out.Body = &countingBody{ReadCloser: req.Body, add: add}
+		// The transport resends the body from GetBody on a retry; count
+		// those bytes as well.
+		if getBody := req.GetBody; getBody != nil {
+			out.GetBody = func() (io.ReadCloser, error) {
+				b, err := getBody()
+				if err != nil || b == nil || b == http.NoBody {
+					return b, err
+				}
+				return &countingBody{ReadCloser: b, add: add}, nil
+			}
+		}
 	}
 
 	resp, err := next.RoundTrip(out)
@@ -136,7 +148,7 @@ func (s *upstreamTrace) proto() string {
 
 // connProtocol returns the protocol label for an upstream connection: the
 // ALPN result for TLS (also through an HTTPS CONNECT tunnel), HTTP/1.1 for
-// plain TCP.
+// plain TCP, and unknown for any other connection type.
 func connProtocol(c net.Conn) string {
 	if c == nil {
 		return metrics.UpstreamProtocolUnknown
@@ -144,7 +156,10 @@ func connProtocol(c net.Conn) string {
 	if tc, ok := c.(*tls.Conn); ok {
 		return metrics.UpstreamProtocol(tc.ConnectionState().NegotiatedProtocol)
 	}
-	return metrics.UpstreamProtocolHTTP1
+	if _, ok := c.(*net.TCPConn); ok {
+		return metrics.UpstreamProtocolHTTP1
+	}
+	return metrics.UpstreamProtocolUnknown
 }
 
 // countingBody reports the bytes read through it as they are read, so long
