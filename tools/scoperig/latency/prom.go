@@ -150,20 +150,86 @@ func (c *Client) Collect(ctx context.Context, start, end time.Time) (*report.Lat
 		{"sum(increase(" + c.sel(e2e+"_count") + rng + "))",
 			func(_ sample, v float64) error { get(e2eKey).count = v; return nil }},
 	}
-	for _, sp := range specs {
-		res, err := c.query(ctx, sp.q, end)
-		if err != nil {
-			return nil, err
-		}
-		for _, s := range res {
-			v, err := s.float()
+	run := func(specs []spec, at time.Time) error {
+		for _, sp := range specs {
+			res, err := c.query(ctx, sp.q, at)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			if err := sp.apply(s, v); err != nil {
-				return nil, err
+			for _, s := range res {
+				v, err := s.float()
+				if err != nil {
+					return err
+				}
+				if err := sp.apply(s, v); err != nil {
+					return err
+				}
 			}
 		}
+		return nil
+	}
+	if err := run(specs, end); err != nil {
+		return nil, err
+	}
+
+	// #360: increase() never counts a series' first sample, so a series
+	// that first appeared inside the window (agent tokens after a deploy)
+	// shows 0. Find the series present at the start; for every other key,
+	// use the raw cumulative values at the end, since a series that did
+	// not exist at the start began at zero. A counter reset inside the
+	// window for such a series is not detected.
+	present := map[key]bool{}
+	e2ePresent := false
+	if err := run([]spec{
+		{"group by (stage, token_type) (" + c.sel(dec+"_count") + ")",
+			func(s sample, _ float64) error { present[keyOf(s)] = true; return nil }},
+		{"count(" + c.sel(e2e+"_count") + ")",
+			func(_ sample, v float64) error { e2ePresent = v > 0; return nil }},
+	}, start); err != nil {
+		return nil, err
+	}
+	fresh := map[key]*series{}
+	getFresh := func(k key) *series {
+		s, ok := fresh[k]
+		if !ok {
+			s = &series{}
+			fresh[k] = s
+		}
+		return s
+	}
+	freshBucket := func(k key, s sample, v float64) error {
+		le, err := parseLe(s.Metric["le"])
+		if err != nil {
+			return err
+		}
+		getFresh(k).buckets = append(getFresh(k).buckets, Bucket{UpperBound: le, Count: v})
+		return nil
+	}
+	if err := run([]spec{
+		{"sum by (stage, token_type, le) (" + c.sel(dec+"_bucket") + ")",
+			func(s sample, v float64) error { return freshBucket(keyOf(s), s, v) }},
+		{"sum by (stage, token_type) (" + c.sel(dec+"_sum") + ")",
+			func(s sample, v float64) error { getFresh(keyOf(s)).sum = v; return nil }},
+		{"sum by (stage, token_type) (" + c.sel(dec+"_count") + ")",
+			func(s sample, v float64) error { getFresh(keyOf(s)).count = v; return nil }},
+		{"sum by (le) (" + c.sel(e2e+"_bucket") + ")",
+			func(s sample, v float64) error { return freshBucket(e2eKey, s, v) }},
+		{"sum(" + c.sel(e2e+"_sum") + ")",
+			func(_ sample, v float64) error { getFresh(e2eKey).sum = v; return nil }},
+		{"sum(" + c.sel(e2e+"_count") + ")",
+			func(_ sample, v float64) error { getFresh(e2eKey).count = v; return nil }},
+	}, end); err != nil {
+		return nil, err
+	}
+	for k, f := range fresh {
+		if k == e2eKey {
+			if e2ePresent {
+				continue
+			}
+		} else if present[k] {
+			continue
+		}
+		stages[k] = f
 	}
 
 	lat := &report.Latency{Status: report.LatencyOK, WindowSeconds: win, Stages: []report.StageLatency{}}
@@ -201,6 +267,13 @@ func (c *Client) Collect(ctx context.Context, start, end time.Time) (*report.Lat
 	for _, k := range keys {
 		s := stages[k]
 		lat.Stages = append(lat.Stages, Stage(k.stage, k.tokenType, s.buckets, s.sum, s.count))
+		if k.stage == "total" {
+			r := stages[key{"request_body_read", k.tokenType}]
+			if r == nil {
+				r = &series{}
+			}
+			lat.Stages = append(lat.Stages, NetTotal(k.tokenType, s.buckets, s.sum, s.count, r.buckets, r.sum, r.count))
+		}
 	}
 	return lat, nil
 }
@@ -210,8 +283,8 @@ func (c *Client) Collect(ctx context.Context, start, end time.Time) (*report.Lat
 var order = []string{
 	"token_extraction", "border_policy_check", "token_resolution", "username_resolution",
 	"scope_parsing", "scope_enforcement", "graphql_analysis", "github_token_resolution",
-	"enterprise_exception", "forward_proxy_selection", "cache_lookup", "total",
-	"upstream_roundtrip", "redirect_head_check",
+	"enterprise_exception", "forward_proxy_selection", "cache_lookup", "request_body_read",
+	"request_build", "pipeline_other", "total", NetTotalStage, "upstream_roundtrip", "redirect_head_check",
 }
 
 func stageOrder(s string) int {

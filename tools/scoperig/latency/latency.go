@@ -73,7 +73,13 @@ func Quantile(q float64, buckets []Bucket) float64 {
 // resting on too few observations.
 const MinSamples = 100
 
-// Advisory p99 budgets (issue #321, from the v0.23.0 baseline).
+// NetTotalStage is the derived row "total minus request_body_read" (#360):
+// the total pipeline overhead without the client's GraphQL body upload.
+const NetTotalStage = "total_excl_body_read"
+
+// Advisory p99 budgets (issue #321, from the v0.23.0 baseline). The 15ms
+// total budget is judged on NetTotalStage, not the raw total, which
+// includes the client's body upload (request_body_read, #360).
 var budgets = map[string]time.Duration{
 	"scope_enforcement":       time.Millisecond,
 	"graphql_analysis":        2 * time.Millisecond,
@@ -84,12 +90,12 @@ var budgets = map[string]time.Duration{
 	"forward_proxy_selection": 500 * time.Microsecond,
 	"token_resolution":        10 * time.Millisecond,
 	"github_token_resolution": 15 * time.Millisecond,
-	"total":                   15 * time.Millisecond,
+	NetTotalStage:             15 * time.Millisecond,
 }
 
 // Budget returns the advisory p99 budget for stage, or 0 for none
 // (upstream_roundtrip, redirect_head_check, cache_lookup, the end-to-end
-// request and any stage added later).
+// request, the raw total and any stage added later).
 func Budget(stage string) time.Duration { return budgets[stage] }
 
 // Flag names in report.StageLatency.Flags.
@@ -123,4 +129,63 @@ func zeroNaN(f float64) float64 {
 		return 0
 	}
 	return f
+}
+
+// padZero returns buckets with zero-valued observations added to every
+// bucket so that the total count is n (no change when it already is).
+func padZero(buckets []Bucket, n float64) []Bucket {
+	var have float64
+	for _, b := range buckets {
+		if math.IsInf(b.UpperBound, 1) {
+			have = b.Count
+		}
+	}
+	extra := n - have
+	if extra <= 0 {
+		return buckets
+	}
+	out := make([]Bucket, 0, len(buckets)+1)
+	hasInf := false
+	for _, b := range buckets {
+		out = append(out, Bucket{UpperBound: b.UpperBound, Count: b.Count + extra})
+		hasInf = hasInf || math.IsInf(b.UpperBound, 1)
+	}
+	if !hasInf {
+		out = append(out, Bucket{UpperBound: math.Inf(1), Count: n})
+	}
+	return out
+}
+
+// NetTotal builds the NetTotalStage row for one token type from the total
+// and request_body_read histograms over the window (#360). Per-request
+// differences are not recorded, so it is an estimate: the mean is exact
+// ((sum total - sum body read) / count total); each quantile is the total
+// quantile minus the body-read quantile, with body reads padded with zero
+// observations up to the total count (requests that read no body record no
+// sample), clamped at 0. The estimate is exact when the slowest totals are
+// the slowest body reads. The row carries the total budget.
+func NetTotal(tokenType string, total []Bucket, totalSum, totalCount float64,
+	rbr []Bucket, rbrSum, rbrCount float64) report.StageLatency {
+	row := Stage(NetTotalStage, tokenType, total, totalSum-rbrSum, totalCount)
+	if row.Samples == 0 {
+		return row
+	}
+	if row.Mean < 0 {
+		row.Mean = 0
+	}
+	if rbrCount > 0 && len(rbr) > 0 {
+		padded := padZero(rbr, totalCount)
+		sub := func(q, v float64) float64 {
+			return math.Max(0, v-zeroNaN(Quantile(q, padded)))
+		}
+		row.P50, row.P95, row.P99 = sub(0.50, row.P50), sub(0.95, row.P95), sub(0.99, row.P99)
+	}
+	row.Flags = []string{}
+	if row.BudgetP99 > 0 && row.P99 > row.BudgetP99 {
+		row.Flags = append(row.Flags, FlagOverBudget)
+	}
+	if row.Samples < MinSamples {
+		row.Flags = append(row.Flags, FlagLowSamples)
+	}
+	return row
 }
