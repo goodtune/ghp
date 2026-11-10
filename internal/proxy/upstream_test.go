@@ -302,3 +302,127 @@ func TestRoundTripInstrumented_CountsGetBodyResend(t *testing.T) {
 		t.Errorf("sent bytes grew by %v, want 10", got)
 	}
 }
+
+// testEgressProxy is a local forward proxy: CONNECT requests are tunnelled
+// to their target and absolute-form http requests are forwarded.
+func testEgressProxy(t *testing.T) *httptest.Server {
+	t.Helper()
+	fwd := &http.Transport{}
+	t.Cleanup(fwd.CloseIdleConnections)
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			r.RequestURI = ""
+			resp, err := fwd.RoundTrip(r)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			defer resp.Body.Close()
+			for k, v := range resp.Header {
+				w.Header()[k] = v
+			}
+			w.WriteHeader(resp.StatusCode)
+			_, _ = io.Copy(w, resp.Body)
+			return
+		}
+		upstream, err := net.Dial("tcp", r.Host)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		client, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			_ = upstream.Close()
+			return
+		}
+		_, _ = io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		go func() {
+			_, _ = io.Copy(upstream, client)
+			_ = upstream.Close()
+		}()
+		go func() {
+			_, _ = io.Copy(client, upstream)
+			_ = client.Close()
+		}()
+	}))
+}
+
+// TestRoutingTransport_ProxiedProtocolLabel checks that requests sent
+// through an egress proxy record the negotiated protocol, not "unknown":
+// TLS through a CONNECT tunnel and plain http through an http proxy.
+func TestRoutingTransport_ProxiedProtocolLabel(t *testing.T) {
+	egress := testEgressProxy(t)
+	defer egress.Close()
+	proxyURL, _ := url.Parse(egress.URL)
+
+	tlsSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.WriteString(w, r.Proto)
+	}))
+	tlsSrv.EnableHTTP2 = true
+	tlsSrv.StartTLS()
+	defer tlsSrv.Close()
+	roots := tlsSrv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+
+	plainSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.WriteString(w, r.Proto)
+	}))
+	defer plainSrv.Close()
+
+	for _, tt := range []struct {
+		name   string
+		target string
+		http2  bool
+		proto  string
+	}{
+		{name: "connect_http1", target: tlsSrv.URL, http2: false, proto: metrics.UpstreamProtocolHTTP1},
+		{name: "connect_h2", target: tlsSrv.URL, http2: true, proto: metrics.UpstreamProtocolH2},
+		{name: "plain_http1", target: plainSrv.URL, http2: false, proto: metrics.UpstreamProtocolHTTP1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := newRoutingTransport(func(*http.Request) (*url.URL, error) { return proxyURL, nil }, config.UpstreamConfig{HTTP2: tt.http2})
+			base := rt.newTransport
+			rt.newTransport = func() *http.Transport {
+				tr := base()
+				if tr.TLSClientConfig == nil {
+					tr.TLSClientConfig = &tls.Config{}
+				}
+				tr.TLSClientConfig.RootCAs = roots
+				return tr
+			}
+			defer rt.CloseIdleConnections()
+
+			vhost := metrics.VhostManagement
+			opened := metrics.UpstreamConnectionsTotal.WithLabelValues(tt.proto, vhost, metrics.UpstreamConnOpened)
+			sent := metrics.UpstreamSentBytesTotal.WithLabelValues(tt.proto, vhost)
+			unknown := metrics.UpstreamConnectionsTotal.WithLabelValues(metrics.UpstreamProtocolUnknown, vhost, metrics.UpstreamConnOpened)
+			o0, s0, u0 := counterValue(t, opened), counterValue(t, sent), counterValue(t, unknown)
+
+			ctx := metrics.WithVhost(context.Background(), vhost)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, tt.target, strings.NewReader("hello"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := (&http.Client{Transport: rt}).Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if want := map[bool]string{false: "HTTP/1.1", true: "HTTP/2.0"}[tt.http2]; string(body) != want {
+				t.Fatalf("served over %s, want %s", body, want)
+			}
+
+			if got := counterValue(t, opened) - o0; got != 1 {
+				t.Errorf("%s connections opened grew by %v, want 1", tt.proto, got)
+			}
+			if got := counterValue(t, sent) - s0; got != 5 {
+				t.Errorf("%s sent bytes grew by %v, want 5", tt.proto, got)
+			}
+			if got := counterValue(t, unknown) - u0; got != 0 {
+				t.Errorf("unknown connections opened grew by %v, want 0", got)
+			}
+		})
+	}
+}

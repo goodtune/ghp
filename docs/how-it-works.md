@@ -179,8 +179,9 @@ HTTP/1.1, each concurrent request gets its own connection, and the idle pool
 
 **Behaviour change:** before this release, ghp spoke HTTP/2 to GitHub by
 default (inherited from the Go default transport). It now uses HTTP/1.1 by
-default (`upstream.http2: false`). This opens more connections to GitHub: up
-to `max_idle_conns_per_host` idle connections per host for each egress proxy.
+default (`upstream.http2: false`). HTTP/1.1 uses one connection per concurrent
+request (no limit unless `max_conns_per_host` is set); up to
+`max_idle_conns_per_host` stay open idle per host for each egress proxy.
 Set `upstream.http2: true` to restore the old protocol.
 
 The transport records bytes sent and received, connections opened and reused,

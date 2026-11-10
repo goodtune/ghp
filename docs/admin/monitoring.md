@@ -178,7 +178,7 @@ or proxy URL is used as a label.
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ghp_upstream_sent_bytes_total` | Counter | Request body bytes sent upstream (labels: `protocol`, `vhost`) |
+| `ghp_upstream_sent_bytes_total` | Counter | Request body bytes read from the request body by the transport, including bytes resent on a retry (labels: `protocol`, `vhost`) |
 | `ghp_upstream_received_bytes_total` | Counter | Response body bytes received from upstream, added while the body streams (labels: `protocol`, `vhost`) |
 | `ghp_upstream_connections_total` | Counter | Connection used by each upstream request (labels: `protocol`, `vhost`, `result` = `opened`, `reused`) |
 | `ghp_upstream_first_byte_seconds` | Histogram | Time from the start of the upstream request (after proxy selection) to the first response byte; uses the decision histogram buckets (labels: `protocol`, `vhost`) |
