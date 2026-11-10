@@ -8,7 +8,12 @@
 # The enterprise header goes to GitHub, not back to the client, so ENT-C50
 # is observed through GHP's own counters on instance.metrics_url, read
 # before and after each request (metric_delta). Counters are
-# instance-wide: run on a quiet instance.
+# instance-wide. The stage count is narrowed to this request's vhost and
+# token type and must rise by exactly 1, and each expected outcome by
+# exactly 1; a larger rise is other traffic and makes the scenario ERROR
+# (interference), never PASS. The stage sample is recorded before GHP
+# forwards, so it is always visible to the after-scrape. Run on a quiet
+# instance.
 
 # Header injected: a target that matches no exception. The policy runs (one
 # enterprise_exception stage sample) and no outcome that removes the header
@@ -24,7 +29,7 @@
   path: /repos/{{.Enterprise.RestrictedRepo}}
   expect: {ghp_denial: false}
   metric_delta:
-    - {name: ghp_proxy_decision_duration_seconds_count, labels: {stage: enterprise_exception}, min: 1}
+    - {name: ghp_proxy_decision_duration_seconds_count, labels: {stage: enterprise_exception, vhost: management, token_type: proxy}, min: 1, max: 1, interference: true}
     - {name: ghp_enterprise_exception_total, labels: {outcome: header_omitted}, max: 0}
     - {name: ghp_enterprise_exception_total, labels: {outcome: identity_substituted}, max: 0}
 
@@ -40,7 +45,8 @@
   path: /repos/{{.Enterprise.OmitRepo}}
   expect: {ghp_denial: false}
   metric_delta:
-    - {name: ghp_enterprise_exception_total, labels: {outcome: header_omitted}, min: 1}
+    - {name: ghp_enterprise_exception_total, labels: {outcome: header_omitted}, min: 1, max: 1, interference: true}
+    - {name: ghp_proxy_decision_duration_seconds_count, labels: {stage: enterprise_exception, vhost: management, token_type: proxy}, min: 1, max: 1, interference: true}
 
 # Team-gated exception whose teams do not include the operator: the
 # exception does not apply and the header stays on.
@@ -55,7 +61,8 @@
   path: /repos/{{.Enterprise.TeamDeniedRepo}}
   expect: {ghp_denial: false}
   metric_delta:
-    - {name: ghp_enterprise_exception_total, labels: {outcome: team_denied}, min: 1}
+    - {name: ghp_enterprise_exception_total, labels: {outcome: team_denied}, min: 1, max: 1, interference: true}
+    - {name: ghp_proxy_decision_duration_seconds_count, labels: {stage: enterprise_exception, vhost: management, token_type: proxy}, min: 1, max: 1, interference: true}
     - {name: ghp_enterprise_exception_total, labels: {outcome: header_omitted}, max: 0}
 
 # Identity exception the operator qualifies for: an installation token from
@@ -72,7 +79,8 @@
   path: /repos/{{.Enterprise.IdentityRepo}}
   expect: {status: 200, ghp_denial: false}
   metric_delta:
-    - {name: ghp_enterprise_exception_total, labels: {outcome: identity_substituted}, min: 1}
+    - {name: ghp_enterprise_exception_total, labels: {outcome: identity_substituted}, min: 1, max: 1, interference: true}
+    - {name: ghp_proxy_decision_duration_seconds_count, labels: {stage: enterprise_exception, vhost: management, token_type: proxy}, min: 1, max: 1, interference: true}
     - {name: ghp_enterprise_exception_total, labels: {outcome: identity_error}, max: 0}
 
 # Identity exception without teams, requested with no credential on the
@@ -91,7 +99,8 @@
   headers: {Authorization: ""}
   expect: {ghp_denial: false}
   metric_delta:
-    - {name: ghp_enterprise_exception_total, labels: {outcome: unauthenticated_denied}, min: 1}
+    - {name: ghp_enterprise_exception_total, labels: {outcome: unauthenticated_denied}, min: 1, max: 1, interference: true}
+    - {name: ghp_proxy_decision_duration_seconds_count, labels: {stage: enterprise_exception, vhost: web, token_type: unknown}, min: 1, max: 1, interference: true}
     - {name: ghp_enterprise_exception_total, labels: {outcome: identity_substituted}, max: 0}
 
 # BORDER-C46: GHP answers before GitHub, so any repository path works; a
@@ -125,4 +134,4 @@
   method: GET
   path: /octocat/Hello-World.git/info/refs?service=git-upload-pack
   headers: {Authorization: ""}
-  expect: {body_not_contains: ["Anonymous git access is not permitted"]}
+  expect: {status: 200, ghp_denial: false, body_not_contains: ["Anonymous git access is not permitted"]}
