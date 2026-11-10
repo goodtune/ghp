@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/tools/scoperig/expect"
 	"github.com/goodtune/ghp/tools/scoperig/redact"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
@@ -44,6 +45,8 @@ type listedGitCredToken struct {
 	ID           string          `json:"id"`
 	SessionID    string          `json:"session_id"`
 	TokenType    string          `json:"token_type"`
+	TokenPrefix  string          `json:"token_prefix"`
+	AppID        string          `json:"app_id"`
 	Repositories json.RawMessage `json:"repositories"`
 	RevokedAt    *string         `json:"revoked_at"`
 }
@@ -68,7 +71,12 @@ type gitCredSummary struct {
 	ClearExit          int             `json:"clear_exit"`
 	ClearOutput        string          `json:"clear_output"`
 	ClearRevoked       bool            `json:"clear_revoked"`
-	Stopped            string          `json:"stopped,omitempty"`
+	// ForeignNewTokens counts helper-session tokens that appeared during
+	// the flow but do not match a password this run's helper returned (for
+	// example the operator's own helper running concurrently). They are
+	// never revoked or counted as minted.
+	ForeignNewTokens int    `json:"foreign_new_tokens"`
+	Stopped          string `json:"stopped,omitempty"`
 }
 
 // Run implements Executor.
@@ -87,7 +95,8 @@ func (GitCredential) Run(ctx context.Context, s *scenario.Scenario, _ tokens.Han
 	}
 	defer func() { _ = os.RemoveAll(home) }()
 
-	// Backstop: revoke every token found, whatever happened.
+	var sum gitCredSummary
+	// Backstop: revoke every token attributed to this run, whatever happened.
 	var found []string
 	defer func() {
 		rctx := context.WithoutCancel(ctx)
@@ -103,8 +112,24 @@ func (GitCredential) Run(ctx context.Context, s *scenario.Scenario, _ tokens.Han
 	}()
 
 	w := env.Vars.RepoW
+	// attribute returns the new tokens that are provably this run's: the
+	// listed token_prefix is a prefix of the password the helper returned,
+	// the repositories are exactly [W] and the app is the agent app. Only
+	// these are counted and revoked; other new helper-session tokens are
+	// counted in ForeignNewTokens and left alone.
+	attribute := func(before, after []listedGitCredToken, pw string) []listedGitCredToken {
+		var mine []listedGitCredToken
+		for _, t := range newGitCredTokens(before, after) {
+			if matchesGitCred(t, pw, w.String(), env.AgentAppRecordID) {
+				mine = append(mine, t)
+				found = append(found, t.ID)
+			} else {
+				sum.ForeignNewTokens++
+			}
+		}
+		return mine
+	}
 	request := "protocol=https\nhost=github.com\npath=" + w.Owner + "/" + w.Name + ".git\n"
-	var sum gitCredSummary
 	var stderr strings.Builder
 	helper := func(op, stdin string) (int, string, error) {
 		code, out, serr, herr := runGitCredHelper(ctx, env, home, op, stdin)
@@ -138,13 +163,10 @@ func (GitCredential) Run(ctx context.Context, s *scenario.Scenario, _ tokens.Han
 	if err != nil {
 		return nil, fmt.Errorf("scenario %s: %w", s.ID, err)
 	}
-	minted := newGitCredTokens(before, after)
-	for _, t := range minted {
-		found = append(found, t.ID)
-	}
-	sum.FirstMinted = len(minted)
 	cred := parseCredential(out)
 	pw := cred["password"]
+	minted := attribute(before, after, pw)
+	sum.FirstMinted = len(minted)
 	if code != 0 || pw == "" || len(minted) != 1 {
 		return finish("first get")
 	}
@@ -158,16 +180,13 @@ func (GitCredential) Run(ctx context.Context, s *scenario.Scenario, _ tokens.Han
 		return nil, fmt.Errorf("scenario %s: %w", s.ID, err)
 	}
 	sum.SecondGetExit = code
-	sum.SecondGetSameToken = parseCredential(out)["password"] == pw
+	pw2 := parseCredential(out)["password"]
+	sum.SecondGetSameToken = sameToken(pw, pw2)
 	after2, err := listGitCredTokens(ctx, env)
 	if err != nil {
 		return nil, fmt.Errorf("scenario %s: %w", s.ID, err)
 	}
-	minted = newGitCredTokens(after, after2)
-	for _, t := range minted {
-		found = append(found, t.ID)
-	}
-	sum.SecondGetMinted = len(minted)
+	sum.SecondGetMinted = len(attribute(after, after2, pw2))
 
 	// 3. The token reads W and is refused on A.
 	auth := func(r *http.Request) { r.Header.Set("Authorization", "token "+pw) }
@@ -198,17 +217,15 @@ func (GitCredential) Run(ctx context.Context, s *scenario.Scenario, _ tokens.Han
 	if err != nil {
 		return nil, fmt.Errorf("scenario %s: %w", s.ID, err)
 	}
-	if _, _, err = helper("get", request+"\n"); err != nil {
+	_, out, err = helper("get", request+"\n")
+	if err != nil {
 		return nil, fmt.Errorf("scenario %s: %w", s.ID, err)
 	}
 	after3, err := listGitCredTokens(ctx, env)
 	if err != nil {
 		return nil, fmt.Errorf("scenario %s: %w", s.ID, err)
 	}
-	minted = newGitCredTokens(before3, after3)
-	for _, t := range minted {
-		found = append(found, t.ID)
-	}
+	minted = attribute(before3, after3, parseCredential(out)["password"])
 	sum.ThirdGetMinted = len(minted)
 	code, out, err = helper("clear", "")
 	if err != nil {
@@ -332,4 +349,24 @@ func gitCredRevoked(ctx context.Context, env *RunEnv, id string) (bool, error) {
 		return false, fmt.Errorf("decode token: %w", err)
 	}
 	return t.RevokedAt != nil, nil
+}
+
+// sameToken reports whether two helper passwords are the same token; an
+// empty password never matches.
+func sameToken(a, b string) bool { return a != "" && a == b }
+
+// matchesGitCred reports whether listed token t is the one whose value is
+// pw, pinned to exactly [repo] and minted from app.
+func matchesGitCred(t listedGitCredToken, pw, repo, app string) bool {
+	if pw == "" || len(t.TokenPrefix) < 8 || !strings.HasPrefix(pw, t.TokenPrefix) {
+		return false
+	}
+	if app == "" || !strings.EqualFold(t.AppID, app) {
+		return false
+	}
+	var repos []string
+	if json.Unmarshal(t.Repositories, &repos) != nil || len(repos) != 1 {
+		return false
+	}
+	return asciiutil.EqualFold(repos[0], repo)
 }

@@ -61,12 +61,16 @@ type fakeGitCredServer struct {
 	n         int
 	posts     []map[string]any
 	appsCalls int
+	// foreign, when set, adds a token from another helper (same session
+	// prefix, same repo and app) right after each mint, as a concurrent
+	// real `git fetch` by the operator would.
+	foreign bool
 }
 
 type fakeCredTok struct {
-	ID, Value, Type, Session string
-	Repos                    []string
-	Revoked                  bool
+	ID, Value, Type, Session, App string
+	Repos                         []string
+	Revoked                       bool
 }
 
 func (f *fakeGitCredServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -117,13 +121,19 @@ func (f *fakeGitCredServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.n++
-		t := &fakeCredTok{ID: fmt.Sprintf("tok-%d", f.n), Value: fmt.Sprintf("gha_fakevalue%04d", f.n), Type: "agent",
+		t := &fakeCredTok{ID: fmt.Sprintf("tok-%d", f.n), Value: fmt.Sprintf("gha_%04dfakevalue", f.n), Type: "agent", App: fmt.Sprint(body["app_record_id"]),
 			Session: fmt.Sprint(body["session_id"])}
 		for _, x := range body["repositories"].([]any) {
 			t.Repos = append(t.Repos, fmt.Sprint(x))
 		}
 		f.toks[t.ID] = t
 		f.order = append(f.order, t.ID)
+		if f.foreign {
+			ft := &fakeCredTok{ID: fmt.Sprintf("foreign-%d", f.n), Value: fmt.Sprintf("gha_F%03dforeignvalue", f.n),
+				Type: "agent", Session: t.Session, App: t.App, Repos: t.Repos}
+			f.toks[ft.ID] = ft
+			f.order = append(f.order, ft.ID)
+		}
 		writeJSONT(w, 201, map[string]any{"token": t.Value, "id": t.ID, "type": "agent", "repositories": t.Repos,
 			"scopes": map[string]string{"contents": "write"}, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
 	case r.Method == http.MethodGet && p == "/api/tokens":
@@ -158,7 +168,7 @@ func (f *fakeGitCredServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeGitCredServer) tokJSON(t *fakeCredTok) map[string]any {
 	m := map[string]any{"id": t.ID, "token_type": t.Type, "session_id": t.Session, "repositories": t.Repos,
-		"token_prefix": t.Value[:8]}
+		"token_prefix": t.Value[:8], "app_id": t.App}
 	if t.Revoked {
 		m["revoked_at"] = time.Now().UTC().Format(time.RFC3339)
 	}
@@ -186,12 +196,20 @@ func newGitCredEnv(t *testing.T) (*RunEnv, *fakeGitCredServer) {
 // TestGitCredential_RigScenario runs the checked-in CRED-C55 scenario with
 // the real ghp binary against the fake server.
 func TestGitCredential_RigScenario(t *testing.T) {
+	for _, foreign := range []bool{false, true} {
+		t.Run(fmt.Sprintf("foreign=%v", foreign), func(t *testing.T) { testGitCredRig(t, foreign) })
+	}
+}
+
+func testGitCredRig(t *testing.T, foreign bool) {
 	env, f := newGitCredEnv(t)
+	f.foreign = foreign
 	tree, err := scenario.Load("../../../rig")
 	if err != nil {
 		t.Fatal(err)
 	}
 	n := 0
+	lastBody := ""
 	for _, s := range tree.Scenarios {
 		if s.Kind != "git_credential" {
 			continue
@@ -206,6 +224,7 @@ func TestGitCredential_RigScenario(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Logf("%s: summary %s", s.ID, obs.Body)
+		lastBody = string(obs.Body)
 		if errs := expect.Match(want, obs); len(errs) > 0 {
 			t.Errorf("%s: %v\nbody %s\nstderr %s", s.ID, errs, obs.Body, obs.Stderr)
 		}
@@ -218,16 +237,28 @@ func TestGitCredential_RigScenario(t *testing.T) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	mine := 0
 	for _, id := range f.order {
-		if !f.toks[id].Revoked {
+		tk := f.toks[id]
+		if strings.HasPrefix(id, "foreign-") {
+			if tk.Revoked {
+				t.Errorf("foreign token %s was revoked", id)
+			}
+			continue
+		}
+		mine++
+		if !tk.Revoked {
 			t.Errorf("token %s left live", id)
 		}
+	}
+	if foreign && !strings.Contains(lastBody, `"foreign_new_tokens":2`) {
+		t.Errorf("summary %s: want foreign_new_tokens 2", lastBody)
 	}
 	if f.appsCalls != 2 {
 		t.Errorf("GET /api/apps called %d times, want 2: the cache hit must not contact the server", f.appsCalls)
 	}
-	if len(f.order) != 2 {
-		t.Errorf("minted %d tokens, want 2 (get, cache hit, get after erase)", len(f.order))
+	if mine != 2 {
+		t.Errorf("minted %d tokens, want 2 (get, cache hit, get after erase)", mine)
 	}
 	for _, b := range f.posts {
 		if b["app_record_id"] != env.AgentAppRecordID || b["type"] != "agent" {
@@ -250,6 +281,31 @@ func TestGitCredential_RequiresConfig(t *testing.T) {
 	env := &RunEnv{Vars: scenario.PlaceholderVars(), GHPPath: "/bin/true", AgentAppRecordID: "a"}
 	if _, err := (GitCredential{}).Run(context.Background(), s, tokens.Handle{}, env); err == nil || !strings.Contains(err.Error(), "only for repo W") {
 		t.Errorf("repo A: err = %v", err)
+	}
+}
+
+func TestSameTokenAndMatch(t *testing.T) {
+	if sameToken("", "") || sameToken("a", "") || !sameToken("gha_x", "gha_x") {
+		t.Error("sameToken")
+	}
+	tok := listedGitCredToken{TokenPrefix: "gha_1234", AppID: "app", Repositories: json.RawMessage(`["o/w"]`)}
+	cases := []struct {
+		name string
+		t    listedGitCredToken
+		pw   string
+		want bool
+	}{
+		{"match", tok, "gha_1234rest", true},
+		{"other value", tok, "gha_9999rest", false},
+		{"empty password", tok, "", false},
+		{"other app", listedGitCredToken{TokenPrefix: "gha_1234", AppID: "x", Repositories: tok.Repositories}, "gha_1234rest", false},
+		{"other repos", listedGitCredToken{TokenPrefix: "gha_1234", AppID: "app", Repositories: json.RawMessage(`["o/w","o/a"]`)}, "gha_1234rest", false},
+		{"short prefix", listedGitCredToken{TokenPrefix: "gha_", AppID: "app", Repositories: tok.Repositories}, "gha_1234rest", false},
+	}
+	for _, c := range cases {
+		if got := matchesGitCred(c.t, c.pw, "o/w", "app"); got != c.want {
+			t.Errorf("%s: got %v", c.name, got)
+		}
 	}
 }
 
