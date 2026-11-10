@@ -751,7 +751,7 @@ const sentinelScenarios = `
     body_not_contains: ["` + pasteSentinel + `"]
     header: {X-Rig-Echo: "{{.Enterprise.RestrictedRepo}}"}
   metric_delta:
-    - {name: ghp_rig_sentinel_total, labels: {repo: "{{.Enterprise.OmitRepo}}"}, min: 1}
+    - {name: ghp_rig_sentinel_total, labels: {repo: "none"}, min: 1}
     - {name: ghp_rig_sentinel_total, max: 0}
 - id: ENT-C50.gap
   claim: ENT-C50
@@ -837,7 +837,8 @@ func pasteLine(t *testing.T, stdout string) string {
 // TestPasteBack_NoInstanceData runs the real run path with instance data
 // (pasteSentinel) in response bodies, header values, error text, the
 // version suffix, configured hosts and repositories, templated
-// expectations, header values and metric labels. The paste-back line must
+// expectations, header values and metric label values in the scrape
+// (metric_delta itself may not be templated). The paste-back line must
 // carry none of it, through verdict, metric, gap and error reasons.
 func TestPasteBack_NoInstanceData(t *testing.T) {
 	t.Run("verdict, metric and gap reasons", func(t *testing.T) {
@@ -861,7 +862,7 @@ func TestPasteBack_NoInstanceData(t *testing.T) {
 			"body_contains mismatch",
 			"body_not_contains mismatch",
 			"header X-Rig-Echo mismatch",
-			`metric ghp_rig_sentinel_total{repo="<template>"} want_delta>=1 got_delta=0`,
+			`metric ghp_rig_sentinel_total{repo="none"} want_delta>=1 got_delta=0`,
 			`metric ghp_rig_sentinel_total{} want_delta<=0 got_delta=1`,
 			"ENT-C50.gap=GAP:capability_missing enterprise_exception_team_denied",
 		} {

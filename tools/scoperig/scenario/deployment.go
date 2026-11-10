@@ -2,8 +2,10 @@ package scenario
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
+	"strings"
 )
 
 // DeploymentCapabilities are operator-declared instance features (rig
@@ -69,8 +71,20 @@ func checkMetricDelta(s *Scenario) []string {
 		switch {
 		case d.Name == "":
 			add("%s: name is required", w)
+		case strings.Contains(d.Name, "{{"):
+			add("%s: name must not contain a template; metric_delta is matched literally", w)
 		case !metricNameRE.MatchString(d.Name):
 			add("%s: %q is not a Prometheus metric name", w, d.Name)
+		}
+		// Names and labels are matched against the scrape as written; a
+		// template would never match, so its delta would always be 0.
+		for _, k := range slices.Sorted(maps.Keys(d.Labels)) {
+			if strings.Contains(k, "{{") {
+				add("%s: label key must not contain a template; metric_delta is matched literally", w)
+			}
+			if strings.Contains(d.Labels[k], "{{") {
+				add("%s: label %q value must not contain a template; metric_delta is matched literally", w, k)
+			}
 		}
 		if d.Min == nil && d.Max == nil {
 			add("%s: min or max is required", w)
