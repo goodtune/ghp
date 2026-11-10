@@ -495,7 +495,7 @@ func TestWritePasteBack_ScrubsHosts(t *testing.T) {
 		Detail: `metric_delta (before): scrape instance.metrics_url: Get "http://metrics.corp.test:9136/metrics": dial tcp: lookup metrics.corp.test; also https://ghp.corp.test/api/v3 and api.corp.test:8443`,
 	}}}}}
 	var b strings.Builder
-	if err := writePasteBack(&b, rep, 2, []string{"ghp.corp.test", "metrics.corp.test:9136", "api.corp.test:8443", ""}); err != nil {
+	if err := writePasteBack(&b, rep, 2, pasteScrub{hosts: []string{"ghp.corp.test", "metrics.corp.test:9136", "api.corp.test:8443", ""}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, h := range []string{"corp.test", "9136", "8443"} {
@@ -553,5 +553,56 @@ func TestRun_EnterpriseConcurrentTrafficIsError(t *testing.T) {
 	if res.code != 2 || got["ENT-C50.exception-header-omitted"]["status"] != "ERROR" {
 		t.Errorf("exit=%d header-omitted=%v (%v), want 2 and ERROR", res.code,
 			got["ENT-C50.exception-header-omitted"]["status"], got["ENT-C50.exception-header-omitted"]["detail"])
+	}
+}
+
+func TestPasteScrub(t *testing.T) {
+	sc := pasteScrub{
+		hosts: []string{"GHP.corp.test", "m.corp.test:9136"},
+		repos: []string{"ExtOrg/Omit-Repo", "ent/restricted"},
+	}
+	tests := []struct {
+		name, in string
+		gone     []string
+		keep     []string
+	}{
+		{"transport error with repo path and IP",
+			`GET /api/v3/repos/extorg/omit-repo: Get "https://ghp.CORP.test/api/v3/repos/extorg/omit-repo": dial tcp 10.2.3.4:443: connect: connection refused`,
+			[]string{"extorg", "omit-repo", "corp.test", "10.2.3.4", ":443"}, []string{"<repo>", "<host>", "<addr>", "connection refused"}},
+		{"metrics scrape error with IP",
+			`metric_delta (before): scrape instance.metrics_url: Get "http://10.9.8.7:9136/metrics": dial tcp 10.9.8.7:9136: i/o timeout`,
+			[]string{"10.9.8.7", "9136"}, []string{"<addr>", "i/o timeout"}},
+		{"IPv6 literals",
+			`dial tcp [2001:db8::1]:443: refused; from fe80::1; ::1`,
+			[]string{"2001:db8", "fe80", "::1"}, []string{"<addr>"}},
+		{"bare owner, word-bounded",
+			`owner ENT has no access; entry stays; ExtOrg denied`,
+			[]string{"ENT ", "ExtOrg"}, []string{"<repo> has", "entry stays"}},
+		{"times and metric names untouched",
+			`at 15:04:25 metric enterprise_exception_total{outcome="team_denied"}: want change >= 1, got 0; status 403`,
+			nil, []string{"15:04:25", `enterprise_exception_total{outcome="team_denied"}`, "403"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sc.apply(tt.in)
+			for _, g := range tt.gone {
+				if strings.Contains(got, g) {
+					t.Errorf("%q still contains %q", got, g)
+				}
+			}
+			for _, k := range tt.keep {
+				if !strings.Contains(got, k) {
+					t.Errorf("%q lost %q", got, k)
+				}
+			}
+		})
+	}
+}
+
+func TestPasteBackScrubFromConfig(t *testing.T) {
+	c := &Config{ServerURL: "https://ghp.corp.test", Enterprise: scenario.EnterpriseVals{OmitRepo: "x/o", IdentityRepo: "y/i"}}
+	sc := newPasteScrub(c)
+	if strings.Join(sc.repos, ",") != "x/o,y/i" {
+		t.Errorf("repos = %v", sc.repos)
 	}
 }

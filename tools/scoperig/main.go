@@ -164,7 +164,7 @@ func newRootCmd(stdout, stderr io.Writer, getenv func(string) string, deps runDe
 			}
 			code := report.ExitCode(rep)
 			if len(c.Claims) > 0 {
-				if err := writePasteBack(stdout, rep, code, pasteBackHosts(c)); err != nil {
+				if err := writePasteBack(stdout, rep, code, newPasteScrub(c)); err != nil {
 					return &exitError{code: 2, err: err}
 				}
 			}

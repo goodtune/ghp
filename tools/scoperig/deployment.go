@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/tools/scoperig/redact"
 	"github.com/goodtune/ghp/tools/scoperig/report"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
@@ -316,23 +317,96 @@ func withBareHosts(hosts []string) []string {
 	return out
 }
 
-// scrubHosts replaces every host in hosts with "<host>", longest first so
-// that host:port goes before the bare host.
-func scrubHosts(s string, hosts []string) string {
-	hs := withBareHosts(hosts)
-	sort.Slice(hs, func(i, j int) bool { return len(hs[i]) > len(hs[j]) })
-	for _, h := range hs {
-		if h != "" {
-			s = strings.ReplaceAll(s, h, "<host>")
+// pasteScrub hides deployment details in the paste-back line: configured
+// hosts become <host>, configured enterprise repositories (and their bare
+// owners) become <repo>, and IP address literals become <addr>. Matching is
+// ASCII case-insensitive. The JSON report keeps the full detail.
+type pasteScrub struct {
+	hosts []string
+	repos []string // owner/name
+}
+
+func newPasteScrub(c *Config) pasteScrub {
+	e := c.Enterprise
+	var repos []string
+	for _, r := range []string{e.RestrictedRepo, e.OmitRepo, e.TeamDeniedRepo, e.IdentityRepo, e.UnauthenticatedRepo} {
+		if r != "" {
+			repos = append(repos, r)
 		}
 	}
-	return s
+	return pasteScrub{hosts: pasteBackHosts(c), repos: repos}
+}
+
+// ipCandidate finds text that may be an IP literal, with an optional port;
+// net.ParseIP confirms it, so times such as 15:04:25 are left alone.
+var ipCandidate = regexp.MustCompile(`\[[0-9A-Fa-f:.]+\](?::\d+)?|[0-9A-Fa-f]*:[0-9A-Fa-f:.]*:[0-9A-Fa-f.]*|\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?`)
+
+func (p pasteScrub) apply(s string) string {
+	hs := withBareHosts(p.hosts)
+	sort.Slice(hs, func(i, j int) bool { return len(hs[i]) > len(hs[j]) })
+	for _, h := range hs {
+		s = replaceFold(s, h, "<host>", false)
+	}
+	var owners []string
+	for _, r := range p.repos {
+		s = replaceFold(s, r, "<repo>", true)
+		if o, _, ok := strings.Cut(r, "/"); ok && o != "" {
+			owners = append(owners, o)
+		}
+	}
+	for _, o := range owners {
+		s = replaceFold(s, o, "<repo>", true)
+	}
+	return ipCandidate.ReplaceAllStringFunc(s, func(m string) string {
+		host := strings.TrimSuffix(strings.TrimPrefix(m, "["), "]")
+		if h, _, err := net.SplitHostPort(m); err == nil {
+			host = h
+		}
+		if net.ParseIP(host) != nil {
+			return "<addr>"
+		}
+		return m
+	})
+}
+
+// replaceFold replaces old in s, ASCII case-insensitively (asciiutil, never
+// Unicode folding). With bounded, a match must not touch a name character
+// (letter, digit, '-', '_' or '.') on either side.
+func replaceFold(s, old, repl string, bounded bool) string {
+	if old == "" {
+		return s
+	}
+	ls, lo := asciiutil.ToLower(s), asciiutil.ToLower(old)
+	var b strings.Builder
+	i := 0
+	for {
+		j := strings.Index(ls[i:], lo)
+		if j < 0 {
+			break
+		}
+		j += i
+		k := j + len(lo)
+		if bounded && ((j > 0 && isNameByte(s[j-1])) || (k < len(s) && isNameByte(s[k]))) {
+			b.WriteString(s[i : j+1])
+			i = j + 1
+			continue
+		}
+		b.WriteString(s[i:j])
+		b.WriteString(repl)
+		i = k
+	}
+	b.WriteString(s[i:])
+	return b.String()
+}
+
+func isNameByte(c byte) bool {
+	return c == '-' || c == '_' || c == '.' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // writePasteBack writes the one-line machine-readable result for --claims.
-// It holds no token and no host from hosts (see pasteBackHosts): only
-// statuses and redacted, host-scrubbed detail.
-func writePasteBack(w io.Writer, rep *report.Report, code int, hosts []string) error {
+// It holds no token: only statuses and redacted detail passed through
+// scrub (no configured host, enterprise repository or IP address).
+func writePasteBack(w io.Writer, rep *report.Report, code int, scrub pasteScrub) error {
 	type sc struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
@@ -350,7 +424,7 @@ func writePasteBack(w io.Writer, rep *report.Report, code int, hosts []string) e
 	for _, c := range rep.Claims {
 		out.Claims[c.ID] = string(c.Status)
 		for _, s := range c.Scenarios {
-			out.Scenarios = append(out.Scenarios, sc{ID: s.ID, Status: string(s.Status), Detail: scrubHosts(redact.String(s.Detail), hosts)})
+			out.Scenarios = append(out.Scenarios, sc{ID: s.ID, Status: string(s.Status), Detail: scrub.apply(redact.String(s.Detail))})
 		}
 	}
 	var b strings.Builder
