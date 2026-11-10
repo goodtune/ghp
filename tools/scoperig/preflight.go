@@ -128,6 +128,9 @@ func ProbeCapabilities(ctx context.Context, c *Config, hc *http.Client, open tok
 	for k, v := range borderCapabilities(c.BorderBlock) {
 		caps[k] = v
 	}
+	for k, v := range deploymentCapabilities(c) {
+		caps[k] = v
+	}
 
 	caps["github_vhost"] = probeVHost(ctx, c.Instance.Host, rootCAs(hc), exec.UserAgentOf(hc), "github.com")
 	caps["codeload_vhost"] = probeVHost(ctx, c.Instance.Host, rootCAs(hc), exec.UserAgentOf(hc), "codeload.github.com")

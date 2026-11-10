@@ -49,11 +49,12 @@ type fakeGHP struct {
 	failList   bool // fail GET /api/tokens after the preflight call
 	listCalls  int
 	pushW      bool
-	deletes    []string          // ids passed to DELETE /api/tokens/{id}, in order
-	onScenario func(path string) // called for scenario (non-fixture) GETs
-	userAgents map[string]int    // User-Agent -> request count
-	posts      []map[string]any  // POST /api/tokens bodies, in order
-	appID      string            // GET /api/apps/{appID} answers 200 when set
+	deletes    []string                                      // ids passed to DELETE /api/tokens/{id}, in order
+	onScenario func(path string)                             // called for scenario (non-fixture) GETs
+	userAgents map[string]int                                // User-Agent -> request count
+	posts      []map[string]any                              // POST /api/tokens bodies, in order
+	appID      string                                        // GET /api/apps/{appID} answers 200 when set
+	intercept  func(http.ResponseWriter, *http.Request) bool // when set and true, it served the request
 }
 
 type fakeTok struct {
@@ -107,6 +108,9 @@ func (f *fakeGHP) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Unlock()
 	p := r.URL.Path
+	if f.intercept != nil && f.intercept(w, r) {
+		return
+	}
 	switch {
 	case p == "/":
 		http.Redirect(w, r, "/login", http.StatusSeeOther)

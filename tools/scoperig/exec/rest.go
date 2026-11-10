@@ -140,9 +140,19 @@ func verbatimRequest(ctx context.Context, base, path string, r *scenario.Request
 			req.Header.Set("Content-Type", "application/json")
 		}
 		auth(req)
-		for k, v := range h {
-			req.Header.Set(k, v)
-		}
+		applyHeaders(req, h)
 		return req, nil
 	})
+}
+
+// applyHeaders sets scenario headers on req. An empty value removes the
+// header: Authorization: "" sends an anonymous request.
+func applyHeaders(req *http.Request, h map[string]string) {
+	for k, v := range h {
+		if v == "" {
+			req.Header.Del(k)
+			continue
+		}
+		req.Header.Set(k, v)
+	}
 }

@@ -28,6 +28,10 @@ type ScenarioResult struct {
 	Error                 string
 	GapReason             string   // unmet requires
 	Residue               []string // cleanup failures (object URLs)
+	// Reasons are rig-generated, fixed-vocabulary reasons (no response,
+	// error or config text) for the --claims paste-back line. Not in the
+	// JSON report.
+	Reasons []string
 }
 
 // ClaimResult is the roll-up of all scenarios for one claim.

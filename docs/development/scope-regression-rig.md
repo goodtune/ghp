@@ -10,7 +10,7 @@ It is an operator tool. It is not shipped in the `ghp` binary and it does not ru
 
 What iteration 1 does not cover:
 
-- Git smart-HTTP, enterprise exceptions, border-policy reload, anonymous git, audit logs, hard delete.
+- Git smart-HTTP, border-policy reload, audit logs, hard delete. Enterprise exceptions (ENT-C50) and anonymous git (BORDER-C46) are covered only when the operator declares them; see [Enterprise deployment runbook](scope-regression-rig-enterprise.md).
 - Load or performance testing. The optional latency section (see [Latency](#latency)) measures the run's own requests only.
 - Fixing product defects. The rig finds them; fixes are separate pull requests.
 
@@ -117,6 +117,10 @@ The preflight step sets these capabilities. A scenario that needs a capability t
 | `border_block_github_pat` | `github_pat_` is in `instance.border_block`. |
 | `no_expiry_disallowed` | `instance.allow_no_expiry` is declared `false`. |
 | `ghp_cli` | The `ghp` binary (`GHP_RIG_GHP`, else `ghp` on `PATH`) exits 0 for `auth git-credential --help`. |
+| `anonymous_git` | `instance.anonymous_git` is true (declared, not probed). |
+| `ghp_metrics` | `instance.metrics_url` is set. Needed by every scenario with `metric_delta`. |
+| `enterprise_restriction` | `instance.metrics_url` and `instance.enterprise_restriction.restricted_repo` are set. |
+| `enterprise_exception_omit`, `_team_denied`, `_identity`, `_unauthenticated` | `enterprise_restriction`, and the matching `instance.enterprise_restriction.*_repo` is set. |
 
 ### Global flags
 
@@ -180,13 +184,18 @@ make scoperig
 `run` flags:
 
 - `--out FILE` — write the JSON report. Write reports under `/tmp/ghp-rig/reports/`; reports are never checked in.
-- `--only GLOB` — run only scenario IDs that match. The run still sweeps and cleans up.
+- `--only GLOB` — run only scenario IDs that match. A comma-separated list matches any of its globs. The run still sweeps and cleans up.
+- `--claims ID,ID` — run only the scenarios of these claims, show only these claims in the table and JSON report, and print a one-line `scoperig-result: {...}` JSON summary (no host, no token) to paste into an issue. An unknown claim ID exits 3.
 - `--skip-known` — skip scenarios that have a `known_issue`. By default KNOWN scenarios run, so they can report KNOWN-FIXED or KNOWN-CHANGED.
 - `--keep-going` — continue after a FAIL or ERROR (default true).
 
 Every HTTP request the rig itself sends (preflight, token management, proxied REST and GraphQL, fixture discovery and seeding, the `github.com` virtual-host probe) carries the User-Agent `ghp-scoperig/<version> (run=<run-id>)`. `<version>` is the first 12 characters of the commit that `make scoperig` stamps into the binary (with `-dirty` for a modified tree); a binary built another way falls back to the module version, then the first 12 characters of the Go VCS revision, then `dev`; `<run-id>` is the run id printed in the report (for `sweep` and `fixtures ensure`, the id of their own token session). Filter the instance's access logs on it to isolate one run. `gh` runs keep the GitHub CLI's own User-Agent: `gh` has no setting to change it.
 
 A run starts by sweeping: it revokes every unrevoked token whose session id starts with `scoperig-`. Because of this, **concurrent runs against one instance are not supported** — a second run revokes the first run's tokens.
+
+A rest or graphql request header with an empty value is removed, so `headers: {Authorization: ""}` sends an anonymous request.
+
+A scenario may add `metric_delta`, a list of `{name, labels, min, max}` checks on GHP's own Prometheus metrics. The rig reads `instance.metrics_url` before and after the scenario, sums every sample of `name` whose labels include `labels` (a histogram's sample count is `<name>_count`), and turns a PASS into FAIL when the change is below `min` or above `max`. With `interference: true` (needs `max`), a change above `max` is taken as other traffic on the instance and the scenario is ERROR, never PASS or FAIL. A failed read is ERROR. The scenario must require `ghp_metrics`. Names, label keys and label values are matched literally and must not contain `{{...}}` templates; the validator rejects them, because a templated label never matches a real series. Report lines drop the `ghp_` prefix from metric names, because report text is redacted and `ghp_` followed by eight word characters looks like a token.
 
 ## Matchers
 
@@ -291,7 +300,7 @@ Limitations: the histograms are instance-wide, so other traffic in the window (i
 - **coverage = covered / base**, where covered is the number of base claims with at least one runnable (not GAP) scenario result. Coverage tells you how much of base the run exercised; confidence tells you how much of that holds. The text report prints both lines; the JSON report has `summary.covered` and `summary.coverage`.
 - The coverage-gap list names every base claim with no scenario at all.
 
-Iteration 1 covered 28 claims (about 55% predicted at the time). Base is now 61 periodic claims; batch 5 added CRED-C55 (the git credential helper) and scenarios for GIT-C48, PERM-C18 and LIFE-C39. 59 of the 61 base claims have at least one scenario. The two without one are BORDER-C46 (anonymous git) and ENT-C50 (enterprise restriction header): both need instance configuration that affects real traffic. Some claims that have scenarios still report GAP until a capability is true: BORDER-C43, BORDER-C44 and BORDER-C47 need `instance.border_block`; LIFE-C39 needs `instance.allow_no_expiry: false`; agent scenarios and CRED-C55 need `agent_installation` (CRED-C55 also `ghp_cli`); the non-admin half of TOK-C02 needs `non_admin_session`, which is never set. This branch has not been run live; on an instance with an agent installation and the `ghp` CLI but no border block or `allow_no_expiry` declaration, the expected result is about 56/61. Planned iterations:
+Iteration 1 covered 28 claims (about 55% predicted at the time). Base is now 61 periodic claims; batch 5 added CRED-C55 (the git credential helper) and scenarios for GIT-C48, PERM-C18 and LIFE-C39. All 61 base claims have at least one scenario. BORDER-C46 (anonymous git) and ENT-C50 (enterprise restriction header) gained theirs in `rig/scenarios/enterprise.yaml`; both need instance configuration that affects real traffic, so they report GAP unless `instance.anonymous_git` (BORDER-C46) or `instance.metrics_url` and `instance.enterprise_restriction` (ENT-C50) are set. Other claims that have scenarios also report GAP until a capability is true: BORDER-C43, BORDER-C44 and BORDER-C47 need `instance.border_block`; LIFE-C39 needs `instance.allow_no_expiry: false`; agent scenarios and CRED-C55 need `agent_installation` (CRED-C55 also `ghp_cli`); the non-admin half of TOK-C02 needs `non_admin_session`, which is never set. This branch has not been run live; on an instance with an agent installation and the `ghp` CLI but no border block, `allow_no_expiry` declaration or enterprise settings, the expected result is about 56/61. Planned iterations:
 
 | Iteration | Adds | Target |
 |---|---|---|

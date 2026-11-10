@@ -59,3 +59,4 @@ nav:
   - Development:
     - Overview: development.md
     - Scope Regression Rig: development/scope-regression-rig.md
+    - Rig Enterprise Runbook: development/scope-regression-rig-enterprise.md

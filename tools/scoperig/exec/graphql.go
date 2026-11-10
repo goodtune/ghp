@@ -81,9 +81,7 @@ func postGraphQL(ctx context.Context, r *scenario.Request, payload any, tok toke
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
 		tok.Authorize(req)
-		for k, v := range h {
-			req.Header.Set(k, v)
-		}
+		applyHeaders(req, h)
 		return req, nil
 	})
 }

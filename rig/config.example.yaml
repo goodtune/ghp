@@ -25,6 +25,23 @@ instance:
   agent_installation:
     app_record_id: ""      # e.g. 00000000-0000-0000-0000-000000000000
     installation_id:       # e.g. 12345678
+  # Optional deployment features (ENT-C50, BORDER-C46). Operator-declared:
+  # the rig does not probe them. Leave them empty and those scenarios
+  # report GAP. Runbook: docs/development/scope-regression-rig-enterprise.md.
+  # anonymous_git: true when the instance sets block.anonymous_git.
+  anonymous_git: false
+  # The GHP metrics listener itself (metrics.listen, default :9136), not
+  # Prometheus. Read with no credential before and after each ENT-C50
+  # request. e.g. http://ghp.internal:9136/metrics
+  metrics_url: ""
+  # owner/name targets that match github.enterprise_exceptions on the
+  # instance. Each one you set turns on one ENT-C50 scenario.
+  enterprise_restriction:
+    restricted_repo: ""       # matches no exception (header injected)
+    omit_repo: ""             # plain exception: no teams, no identity
+    team_denied_repo: ""      # team-gated exception; you are NOT in its teams
+    identity_repo: ""         # identity exception; you are in its teams (if any)
+    unauthenticated_repo: ""  # identity exception with no teams
 # Optional: advisory per-stage latency from Prometheus (issue #321). Leave
 # prometheus_url empty to skip it (the report says "not configured").
 metrics:
