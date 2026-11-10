@@ -24,6 +24,9 @@ func TestValidate_MetricDelta(t *testing.T) {
 		{"min above max", []string{"ghp_metrics"}, []MetricDelta{{Name: "ghp_x", Min: intp(2), Max: intp(1)}}, "min 2 is above max 1"},
 		{"interference needs max", []string{"ghp_metrics"}, []MetricDelta{{Name: "ghp_x", Min: intp(1), Interference: true}}, "interference needs max"},
 		{"negative", []string{"ghp_metrics"}, []MetricDelta{{Name: "ghp_x", Max: intp(-1)}}, "must not be negative"},
+		{"templated name", []string{"ghp_metrics"}, []MetricDelta{{Name: "ghp_{{.X}}", Max: intp(0)}}, "metric_delta[0]: name must not contain a template"},
+		{"templated label value", []string{"ghp_metrics"}, []MetricDelta{{Name: "ghp_x", Labels: map[string]string{"repo": "{{.Enterprise.OmitRepo}}"}, Max: intp(0)}}, `metric_delta[0]: label "repo" value must not contain a template`},
+		{"templated label key", []string{"ghp_metrics"}, []MetricDelta{{Name: "ghp_x", Labels: map[string]string{"{{.X}}": "v"}, Min: intp(1)}}, "metric_delta[0]: label key must not contain a template"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
