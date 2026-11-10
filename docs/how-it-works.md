@@ -161,6 +161,31 @@ Anything not matched by a ruleset continues to use the ambient environment.
 
 See [Forward Proxy Rulesets](features/forward-proxy-rulesets.md) for details.
 
+### Upstream Transport
+
+ghp keeps one HTTP transport for each egress path (direct, or each selected
+forward proxy). Separate transports keep per-request proxy routing correct:
+an HTTP/2 connection pool is keyed by host only, so one shared transport would
+send every later request through the first request's proxy. The `upstream`
+settings ([configuration](admin/configuration.md#upstream-transport)) apply to
+each of these transports.
+
+HTTP/2 to GitHub is off by default. With HTTP/2, all concurrent requests to a
+host share one TCP connection, so they share one TCP window, and one lost
+packet stalls all of them. One download is also limited to the per-stream
+receive window divided by the round-trip time (4 MiB by default). With
+HTTP/1.1, each concurrent request gets its own connection, and the idle pool
+(32 per host by default) keeps those connections for reuse.
+
+The transport records bytes sent and received, connections opened and reused,
+and time to first response byte, by negotiated protocol and vhost (see
+[Monitoring](admin/monitoring.md#upstream-transport-metrics)). Limitations:
+the byte counters count body bytes only (no headers, HTTP/2 framing or TLS
+overhead), and a request body that the transport replays after a retry is
+not counted again. The git cache's background `FetchUpstream` uses go-git's
+own HTTP client, not these transports, so neither the settings nor the
+metrics apply to it.
+
 ### Webhook Ingress
 
 ghp can be the single receiving point for GitHub webhooks across every

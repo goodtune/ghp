@@ -145,6 +145,9 @@ Never record a hard-coded zero duration. If a stage does not run on a code path,
 - `ghp_forward_proxy_select_total` — forward proxy routing decisions by matched `ruleset` and `layer` (`header`, `token`, `app`, `net`, `system`, `control`, `ambient`, `direct`)
 - `ghp_forward_proxy_client_specified_total` — requests routed through a client-specified proxy via `X-GitHub-Proxy-Forward-*` headers (`scheme`, `token_type` labels; gated by `forward_proxy.allow_request_header`)
 - `ghp_forward_proxy_rulesets_active` — gauge of enabled forward proxy rulesets compiled into the route table
+- `ghp_upstream_sent_bytes_total` / `ghp_upstream_received_bytes_total` — upstream request and response body bytes by `protocol` (`h2`, `http/1.1`, `unknown`) and `vhost`, recorded by the routing transport
+- `ghp_upstream_connections_total` — connection used by each upstream request (`protocol`, `vhost`, `result` = `opened`, `reused`; via `httptrace`)
+- `ghp_upstream_first_byte_seconds` — histogram of upstream request start (after proxy selection) to first response byte (`protocol`, `vhost`)
 - `ghp_passthrough_scope_denied_total` — scoped client-token denials on the `github.com` and `codeload.github.com` vhosts by `vhost` and `reason` (`unmapped`, `repo`, `permission`)
 - `ghp_cache_fetch_total` / `ghp_cache_lsrefs_total` / `ghp_cache_warm_total` — cache operation counters
 - `ghp_cache_packfile_total` / `ghp_cache_packfile_bytes_total` — packfile response cache hit/miss counts and bytes served
