@@ -8,7 +8,7 @@ enterprise restriction and anonymous git blocking turned on:
 - **BORDER-C46**: with `block.anonymous_git`, an unauthenticated git request
   that carries `Git-Protocol` gets `401`.
 
-The run sends only GET requests. It changes nothing on GitHub.
+The run sends only GET requests to GitHub. It changes nothing on GitHub. On GHP's management API it creates and revokes one rig token (POST and DELETE).
 
 ## What the rig can and cannot see
 
@@ -19,17 +19,21 @@ rig reads GHP's own metrics before and after each request:
   shows that the enterprise policy ran on the request.
 - `ghp_enterprise_exception_total{outcome=...}` shows which exception
   branch ran: `header_omitted`, `team_denied`, `identity_substituted` or
-  `unauthenticated_denied`.
+  `unauthenticated_denied`. GHP also counts `team_denied` when it cannot
+  resolve the caller's login, not only when the caller is outside the teams.
 
 The rig cannot see the header bytes, the slug value, GitHub's own decision,
 or which identity GitHub saw. Unit tests in `internal/proxy` cover those
-parts. The counters are for the whole instance, so other traffic during the
-run can change the result. Run it when the instance is quiet.
+parts. The counters are for the whole instance. The rig narrows the stage
+count to the request's virtual host and token type, and expects each
+counter to rise by exactly one. If a counter rises by more, other traffic
+reached the instance during the request, and the scenario reports ERROR,
+not PASS. Run it when the instance is quiet.
 
 ## Steps
 
 1. **Check the prerequisites.**
-    - Go 1.24 and a checkout of the `ghp` repository.
+    - Go 1.26 or later (the toolchain in go.mod is downloaded automatically) and a checkout of the `ghp` repository.
     - The GHP deployment has `github.enterprise_slug` set and
       `block.anonymous_git: true`.
     - The GHP metrics listener (`metrics.listen`, default `:9136`) is
@@ -40,9 +44,10 @@ run can change the result. Run it when the instance is quiet.
     - You have an admin session token (`ghpr_...`) for the deployment, from
       `ghp auth login`.
 
-2. **Choose one repository for each exception type.** Each must match an
-   entry in the deployment's `github.enterprise_exceptions`. You can leave
-   out any type; its scenario then reports GAP.
+2. **Choose one repository for each exception type.** Each repository
+   except `restricted_repo` must match an entry in the deployment's
+   `github.enterprise_exceptions`; `restricted_repo` must match none. You
+   can leave out any type; its scenario then reports GAP.
 
     | Field | The repository must be |
     |---|---|
@@ -100,7 +105,8 @@ run can change the result. Run it when the instance is quiet.
 6. **Send back the result.** Copy the last line of the output, which starts
    with `scoperig-result:`, and the exit code (`echo $?`). The line holds the
    run id, the GHP version, a status for each claim and scenario, and the
-   token counts. It holds no host name and no token. Do not paste the JSON
+   token counts. It holds no token, and the rig replaces the instance and
+   metrics host names with `<host>`. Do not paste the JSON
    file: it holds response details.
 
 ## What the run creates and removes
@@ -112,7 +118,7 @@ run can change the result. Run it when the instance is quiet.
   does not, run `./scoperig sweep`.
 - The identity scenario makes GHP mint one GitHub App installation token
   for `identity_repo`. GitHub expires it after one hour.
-- It sends no write request.
+- It sends no write request to GitHub.
 
 ## Reading the result
 
@@ -120,7 +126,7 @@ run can change the result. Run it when the instance is quiet.
 |---|---|
 | PASS | The scenario saw the documented behaviour. |
 | FAIL | It did not. The detail names the metric or the response field. Metric names in the detail have no `ghp_` prefix. |
-| ERROR | The rig could not decide, for example `metrics_url` did not answer. |
+| ERROR | The rig could not decide, for example `metrics_url` did not answer, or other traffic moved a counter during the request. Rerun when the instance is quiet. |
 | GAP | A field in step 2 or 3 is empty, or the `github.com` virtual host did not answer. The detail names the missing capability. |
 
 Exit code 0 means no FAIL or ERROR, 1 means a FAIL, 2 means an ERROR or a

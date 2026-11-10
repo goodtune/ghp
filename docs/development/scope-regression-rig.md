@@ -193,9 +193,9 @@ Every HTTP request the rig itself sends (preflight, token management, proxied RE
 
 A run starts by sweeping: it revokes every unrevoked token whose session id starts with `scoperig-`. Because of this, **concurrent runs against one instance are not supported** — a second run revokes the first run's tokens.
 
-A rest request header with an empty value is removed, so `headers: {Authorization: ""}` sends an anonymous request.
+A rest or graphql request header with an empty value is removed, so `headers: {Authorization: ""}` sends an anonymous request.
 
-A scenario may add `metric_delta`, a list of `{name, labels, min, max}` checks on GHP's own Prometheus metrics. The rig reads `instance.metrics_url` before and after the scenario, sums every sample of `name` whose labels include `labels` (a histogram's sample count is `<name>_count`), and turns a PASS into FAIL when the change is below `min` or above `max`. A failed read is ERROR. The scenario must require `ghp_metrics`. Report lines drop the `ghp_` prefix from metric names, because report text is redacted and `ghp_` followed by eight word characters looks like a token.
+A scenario may add `metric_delta`, a list of `{name, labels, min, max}` checks on GHP's own Prometheus metrics. The rig reads `instance.metrics_url` before and after the scenario, sums every sample of `name` whose labels include `labels` (a histogram's sample count is `<name>_count`), and turns a PASS into FAIL when the change is below `min` or above `max`. With `interference: true` (needs `max`), a change above `max` is taken as other traffic on the instance and the scenario is ERROR, never PASS or FAIL. A failed read is ERROR. The scenario must require `ghp_metrics`. Report lines drop the `ghp_` prefix from metric names, because report text is redacted and `ghp_` followed by eight word characters looks like a token.
 
 ## Matchers
 
