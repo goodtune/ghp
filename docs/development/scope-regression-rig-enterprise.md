@@ -108,18 +108,24 @@ instance is quiet.
     The run takes less than one minute.
 
 6. **Send back the result.** Copy the last line of the output, which starts
-   with `scoperig-result:`, and the exit code (`echo $?`). The line can
-   contain:
-    - the run id, the GHP version and the exit code;
-    - a status for each claim and scenario, and the token counts;
-    - in each scenario detail: HTTP statuses, GHP and GitHub error text, and
-      metric names with their labels.
+   with `scoperig-result:`, and the exit code (`echo $?`). The line holds
+   only:
+    - the run id, the GHP version, the exit code and the token counts;
+    - a status for each claim;
+    - for each scenario: its id, its status, and reasons that the rig builds
+      from a fixed list. The reasons are `http_status want=... got=...`,
+      `ghp_denial want=... got=...`, `body_contains mismatch`,
+      `body_not_contains mismatch`, `header <name> mismatch`,
+      `metric <name>{<labels>} want_delta... got_delta=...` (names and labels
+      from the scenario file only), `capability_missing <name>`,
+      `transport_error`, `metrics_scrape_error`, `interference ...` and
+      `other`. A line with `other` adds the note "see the JSON report
+      locally".
 
-    The rig replaces the instance, server and metrics host names with
-    `<host>`, IP addresses with `<addr>`, and the configured
-    `enterprise_restriction` repositories and their owners with `<repo>`.
-    The line holds no token. Do not paste the JSON file: it keeps the full
-    detail.
+    The line holds no response text, error message, host, address,
+    repository name or token. As a second safeguard, the rig also replaces
+    any configured host, IP address or repository name in it. The full
+    detail is only in the local JSON file (`--out`). Do not paste that file.
 
 ## What the run creates and removes
 
@@ -151,3 +157,5 @@ Exit codes:
 - 1: a FAIL or KNOWN-CHANGED.
 - 2: an ERROR, cleanup residue, or a token left live.
 - 3: the run could not start.
+
+A run with both a FAIL and an ERROR exits 1.
