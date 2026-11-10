@@ -22,6 +22,7 @@ func TestValidate_MetricDelta(t *testing.T) {
 		{"bad name", []string{"ghp_metrics"}, []MetricDelta{{Name: "x{y}", Min: intp(1)}}, "not a Prometheus metric name"},
 		{"needs a bound", []string{"ghp_metrics"}, []MetricDelta{{Name: "ghp_x"}}, "min or max is required"},
 		{"min above max", []string{"ghp_metrics"}, []MetricDelta{{Name: "ghp_x", Min: intp(2), Max: intp(1)}}, "min 2 is above max 1"},
+		{"interference needs max", []string{"ghp_metrics"}, []MetricDelta{{Name: "ghp_x", Min: intp(1), Interference: true}}, "interference needs max"},
 		{"negative", []string{"ghp_metrics"}, []MetricDelta{{Name: "ghp_x", Max: intp(-1)}}, "must not be negative"},
 	}
 	for _, tt := range tests {

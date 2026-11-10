@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -161,19 +162,24 @@ func hasLabels(s *dto.Metric, want map[string]string) bool {
 	return true
 }
 
-// checkMetricDeltas returns one message per delta outside its bounds.
-func checkMetricDeltas(before, after metricSet, deltas []scenario.MetricDelta) []string {
-	var msgs []string
+// checkMetricDeltas returns one message per delta outside its bounds:
+// fails are defects; interference holds changes above max on a delta
+// marked interference (other traffic on the instance).
+func checkMetricDeltas(before, after metricSet, deltas []scenario.MetricDelta) (fails, interference []string) {
 	for _, d := range deltas {
 		got := after.sum(d.Name, d.Labels) - before.sum(d.Name, d.Labels)
 		if d.Min != nil && got < float64(*d.Min) {
-			msgs = append(msgs, fmt.Sprintf("metric %s: want change >= %d, got %g", series(d), *d.Min, got))
+			fails = append(fails, fmt.Sprintf("metric %s: want change >= %d, got %g", series(d), *d.Min, got))
 		}
 		if d.Max != nil && got > float64(*d.Max) {
-			msgs = append(msgs, fmt.Sprintf("metric %s: want change <= %d, got %g", series(d), *d.Max, got))
+			if d.Interference {
+				interference = append(interference, fmt.Sprintf("metric %s: changed by %g, more than this request's %d: other traffic on the instance; rerun when it is quiet", series(d), got, *d.Max))
+			} else {
+				fails = append(fails, fmt.Sprintf("metric %s: want change <= %d, got %g", series(d), *d.Max, got))
+			}
 		}
 	}
-	return msgs
+	return fails, interference
 }
 
 // series names d for a report line. The "ghp_" prefix is dropped: report
@@ -224,7 +230,13 @@ func applyMetricDeltas(ctx context.Context, s *scenario.Scenario, deps runDeps, 
 		}
 		return r
 	}
-	msgs := checkMetricDeltas(before, after, s.MetricDelta)
+	msgs, inter := checkMetricDeltas(before, after, s.MetricDelta)
+	if len(inter) > 0 {
+		// The counters cannot be attributed to this request: not a verdict.
+		detail := strings.Join(inter, "; ")
+		r.Status, r.Detail, r.Error = report.StatusError, detail, detail
+		return r
+	}
 	if len(msgs) == 0 {
 		return r
 	}
@@ -276,9 +288,51 @@ func restrictClaims(claims []report.ClaimResult, ids []string) []report.ClaimRes
 	return out
 }
 
+// pasteBackHosts lists the hosts writePasteBack must hide: the instance
+// host, the GHP_SERVER_URL host and the metrics_url host, each with and
+// without its port.
+func pasteBackHosts(c *Config) []string {
+	out := []string{c.Instance.Host}
+	for _, raw := range []string{c.ServerURL, c.MetricsURL} {
+		if u, err := url.Parse(raw); err == nil {
+			out = append(out, u.Host)
+		}
+	}
+	return withBareHosts(out)
+}
+
+// withBareHosts adds the port-less name of every host:port entry.
+func withBareHosts(hosts []string) []string {
+	var out []string
+	for _, h := range hosts {
+		if h == "" {
+			continue
+		}
+		out = append(out, h)
+		if name, _, err := net.SplitHostPort(h); err == nil && name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// scrubHosts replaces every host in hosts with "<host>", longest first so
+// that host:port goes before the bare host.
+func scrubHosts(s string, hosts []string) string {
+	hs := withBareHosts(hosts)
+	sort.Slice(hs, func(i, j int) bool { return len(hs[i]) > len(hs[j]) })
+	for _, h := range hs {
+		if h != "" {
+			s = strings.ReplaceAll(s, h, "<host>")
+		}
+	}
+	return s
+}
+
 // writePasteBack writes the one-line machine-readable result for --claims.
-// It holds no instance host and no token: only statuses and redacted detail.
-func writePasteBack(w io.Writer, rep *report.Report, code int) error {
+// It holds no token and no host from hosts (see pasteBackHosts): only
+// statuses and redacted, host-scrubbed detail.
+func writePasteBack(w io.Writer, rep *report.Report, code int, hosts []string) error {
 	type sc struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
@@ -296,13 +350,15 @@ func writePasteBack(w io.Writer, rep *report.Report, code int) error {
 	for _, c := range rep.Claims {
 		out.Claims[c.ID] = string(c.Status)
 		for _, s := range c.Scenarios {
-			out.Scenarios = append(out.Scenarios, sc{ID: s.ID, Status: string(s.Status), Detail: redact.String(s.Detail)})
+			out.Scenarios = append(out.Scenarios, sc{ID: s.ID, Status: string(s.Status), Detail: scrubHosts(redact.String(s.Detail), hosts)})
 		}
 	}
-	b, err := json.Marshal(out)
-	if err != nil {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false) // keep "<host>" readable when pasted
+	if err := enc.Encode(out); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "\nscoperig-result: %s\n", b)
+	_, err := fmt.Fprintf(w, "\nscoperig-result: %s", b.String())
 	return err
 }

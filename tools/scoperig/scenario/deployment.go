@@ -46,6 +46,10 @@ type MetricDelta struct {
 	Labels map[string]string `yaml:"labels"`
 	Min    *int              `yaml:"min"`
 	Max    *int              `yaml:"max"`
+	// Interference marks a change above Max as other traffic on the
+	// instance, not a defect: the scenario is ERROR (rerun on a quiet
+	// instance) instead of FAIL. Needs Max.
+	Interference bool `yaml:"interference"`
 }
 
 var metricNameRE = regexp.MustCompile(`^[a-zA-Z_:][a-zA-Z0-9_:]*$`)
@@ -73,6 +77,9 @@ func checkMetricDelta(s *Scenario) []string {
 		}
 		if (d.Min != nil && *d.Min < 0) || (d.Max != nil && *d.Max < 0) {
 			add("%s: min and max must not be negative", w)
+		}
+		if d.Interference && d.Max == nil {
+			add("%s: interference needs max", w)
 		}
 		if d.Min != nil && d.Max != nil && *d.Min > *d.Max {
 			add("%s: min %d is above max %d", w, *d.Min, *d.Max)

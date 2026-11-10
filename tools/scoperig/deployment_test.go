@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goodtune/ghp/tools/scoperig/report"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
 )
 
@@ -180,7 +181,7 @@ func TestCheckMetricDeltas(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := checkMetricDeltas(before, after, []scenario.MetricDelta{tt.d})
+			got, _ := checkMetricDeltas(before, after, []scenario.MetricDelta{tt.d})
 			switch {
 			case tt.want == "" && len(got) != 0:
 				t.Errorf("got %v, want none", got)
@@ -224,10 +225,12 @@ func newFakeMetrics(t *testing.T) *fakeMetrics {
 	return m
 }
 
-func (m *fakeMetrics) inc(outcome string) {
+func (m *fakeMetrics) inc(outcome string) { m.incAt("management", "proxy", outcome) }
+
+func (m *fakeMetrics) incAt(vhost, tokenType, outcome string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.vals[`ghp_proxy_decision_duration_seconds_count{stage="enterprise_exception",token_type="proxy",vhost="management"}`]++
+	m.vals[fmt.Sprintf(`ghp_proxy_decision_duration_seconds_count{stage="enterprise_exception",token_type=%q,vhost=%q}`, tokenType, vhost)]++
 	if outcome != "" {
 		m.vals[fmt.Sprintf(`ghp_enterprise_exception_total{outcome=%q}`, outcome)]++
 	}
@@ -341,7 +344,7 @@ func wireEnterprise(t *testing.T, f *fakeGHP, m *fakeMetrics, move bool) {
 			writeJSONResp(w, 401, map[string]string{"message": "Anonymous git access is not permitted"})
 		case r.URL.Path == "/ext/anon":
 			if move {
-				m.inc("unauthenticated_denied")
+				m.incAt("web", "unknown", "unauthenticated_denied")
 			}
 			_, _ = io.WriteString(w, "<html>repo</html>")
 		default:
@@ -483,5 +486,72 @@ func TestRun_ClaimsUnknownExits3(t *testing.T) {
 	res := runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--claims", "NOPE-C1")
 	if res.code != 3 || !strings.Contains(res.stderr, "unknown claim NOPE-C1") {
 		t.Errorf("exit = %d stderr = %s, want 3 and unknown claim", res.code, res.stderr)
+	}
+}
+
+func TestWritePasteBack_ScrubsHosts(t *testing.T) {
+	rep := &report.Report{RunID: "r", Claims: []report.ClaimResult{{ID: "ENT-C50", Status: report.StatusFail, Scenarios: []report.ScenarioResult{{
+		ID: "ENT-C50.header-injected", Status: report.StatusError,
+		Detail: `metric_delta (before): scrape instance.metrics_url: Get "http://metrics.corp.test:9136/metrics": dial tcp: lookup metrics.corp.test; also https://ghp.corp.test/api/v3 and api.corp.test:8443`,
+	}}}}}
+	var b strings.Builder
+	if err := writePasteBack(&b, rep, 2, []string{"ghp.corp.test", "metrics.corp.test:9136", "api.corp.test:8443", ""}); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"corp.test", "9136", "8443"} {
+		if strings.Contains(b.String(), h) {
+			t.Errorf("paste-back line contains %q:\n%s", h, b.String())
+		}
+	}
+	if !strings.Contains(b.String(), "<host>") {
+		t.Errorf("want <host> placeholder:\n%s", b.String())
+	}
+}
+
+func TestPasteBackHosts(t *testing.T) {
+	c := &Config{ServerURL: "https://ghp.corp.test", MetricsURL: "http://m.corp.test:9136/metrics",
+		Instance: scenario.InstanceVals{Host: "api.corp.test:8443"}}
+	got := strings.Join(pasteBackHosts(c), ",")
+	for _, w := range []string{"ghp.corp.test", "m.corp.test:9136", "m.corp.test", "api.corp.test:8443", "api.corp.test"} {
+		if !strings.Contains(","+got+",", ","+w+",") {
+			t.Errorf("hosts %q missing %q", got, w)
+		}
+	}
+}
+
+func TestCheckMetricDeltas_Interference(t *testing.T) {
+	before, _ := parseMetrics(strings.NewReader("ghp_x_total 1\n"))
+	after, _ := parseMetrics(strings.NewReader("ghp_x_total 3\n"))
+	one := 1
+	d := scenario.MetricDelta{Name: "ghp_x_total", Min: &one, Max: &one, Interference: true}
+	fails, inter := checkMetricDeltas(before, after, []scenario.MetricDelta{d})
+	if len(fails) != 0 || len(inter) != 1 || !strings.Contains(inter[0], "other traffic") {
+		t.Errorf("fails=%v interference=%v", fails, inter)
+	}
+	d.Interference = false
+	if fails, inter = checkMetricDeltas(before, after, []scenario.MetricDelta{d}); len(fails) != 1 || len(inter) != 0 {
+		t.Errorf("without interference: fails=%v interference=%v", fails, inter)
+	}
+}
+
+func TestRun_EnterpriseConcurrentTrafficIsError(t *testing.T) {
+	f := newFakeGHPVhost(t)
+	m := newFakeMetrics(t)
+	wireEnterprise(t, f, m, true)
+	inner := f.intercept
+	f.intercept = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path == "/api/v3/repos/ext/omit" {
+			m.inc("header_omitted") // a second, concurrent request
+		}
+		return inner(w, r)
+	}
+	root, cfg := writeEnterpriseTree(t, f.host(), fmt.Sprintf(entDecl, m.ts.URL))
+	out := filepath.Join(t.TempDir(), "r.json")
+	res := runCLI(t, fakeEnv(f, root), fakeDeps(f, nil), "run", "--config", cfg, "--out", out, "--claims", "ENT-C50")
+	raw, _ := os.ReadFile(out)
+	got := statusesByID(t, raw)
+	if res.code != 2 || got["ENT-C50.exception-header-omitted"]["status"] != "ERROR" {
+		t.Errorf("exit=%d header-omitted=%v (%v), want 2 and ERROR", res.code,
+			got["ENT-C50.exception-header-omitted"]["status"], got["ENT-C50.exception-header-omitted"]["detail"])
 	}
 }
