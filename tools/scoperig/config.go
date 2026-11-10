@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/goodtune/ghp/internal/asciiutil"
 	"github.com/goodtune/ghp/tools/scoperig/redact"
 	"github.com/goodtune/ghp/tools/scoperig/scenario"
 )
@@ -134,6 +135,14 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 		Instance: scenario.InstanceVals{
 			Host: strings.TrimSpace(fc.Instance.Host),
 		},
+	}
+	c.RepoA, c.RepoB, c.RepoW = normaliseRepo(c.RepoA), normaliseRepo(c.RepoB), normaliseRepo(c.RepoW)
+	for _, p := range []struct{ n1, v1, n2, v2 string }{
+		{"repo_w", c.RepoW, "repo_a", c.RepoA}, {"repo_w", c.RepoW, "repo_b", c.RepoB}, {"repo_a", c.RepoA, "repo_b", c.RepoB},
+	} {
+		if p.v1 != "" && asciiutil.EqualFold(p.v1, p.v2) {
+			return nil, fmt.Errorf("fixtures: %s and %s must differ (both %q): W receives writes and A/B must stay read-only", p.n1, p.n2, p.v1)
+		}
 	}
 	if c.GHPath == "" {
 		if p, err := lookPath("gh"); err == nil {
@@ -398,4 +407,13 @@ func firstNonEmpty(vs ...string) string {
 		}
 	}
 	return ""
+}
+
+// normaliseRepo trims spaces and a trailing ".git" from an owner/name.
+func normaliseRepo(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 4 && asciiutil.EqualFold(s[len(s)-4:], ".git") {
+		s = s[:len(s)-4]
+	}
+	return s
 }

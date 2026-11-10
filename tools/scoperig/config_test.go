@@ -367,3 +367,23 @@ func TestLoadConfig_AllowNoExpiryAndGHP(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfig_FixtureRepos(t *testing.T) {
+	cfg := writeCfg(t)
+	c, err := LoadConfig(envMap(map[string]string{"GHP_RIG_REPO_A": " o/a.git ", "GHP_RIG_REPO_W": "o/w.git"}), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RepoA != "o/a" || c.RepoW != "o/w" {
+		t.Errorf("repos %q %q, want .git stripped", c.RepoA, c.RepoW)
+	}
+	for _, env := range []map[string]string{
+		{"GHP_RIG_REPO_W": "O/A"},
+		{"GHP_RIG_REPO_W": "o/b.git"},
+		{"GHP_RIG_REPO_B": "o/A"},
+	} {
+		if _, err := LoadConfig(envMap(env), cfg); err == nil || !strings.Contains(err.Error(), "must differ") {
+			t.Errorf("%v: err = %v, want must differ", env, err)
+		}
+	}
+}
