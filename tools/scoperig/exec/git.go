@@ -26,9 +26,10 @@ const GitTimeout = 120 * time.Second
 // Git runs kind git scenarios (GIT-C48): a clone or a push through the
 // instance's github.com virtual host, as a git client that resolves
 // github.com to the instance would. Each run gets a throwaway HOME, no
-// system or global git config and no credential helper. The token reaches
-// git only through an http.extraHeader set in the environment
-// (GIT_CONFIG_COUNT/KEY/VALUE), never on the command line.
+// system config and no credential helper. The token reaches git only
+// through an http.extraHeader in a 0600 gitconfig file inside that HOME
+// (GIT_CONFIG_GLOBAL), never on the command line or in the environment.
+// Redirects are not followed, so the header cannot reach another host.
 type Git struct{}
 
 // Kind implements Executor.
@@ -73,15 +74,16 @@ func gitTarget(ctx context.Context, apiBase, owner, name string) (cloneURL, reso
 	return "https://" + authority + "/" + owner + "/" + name + ".git", "github.com:" + port + ":" + addr, nil
 }
 
-// gitEnv builds the child environment: config is a list of key=value git
-// config entries passed through GIT_CONFIG_COUNT.
-func gitEnv(home, caFile string, config [][2]string) []string {
+// gitEnv builds the child environment. globalConfig is the
+// GIT_CONFIG_GLOBAL file.
+func gitEnv(home, caFile, globalConfig string) []string {
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + home,
 		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
 		"TMPDIR=" + os.TempDir(),
 		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=" + globalConfig,
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=",
 		"SSH_ASKPASS=",
@@ -91,11 +93,35 @@ func gitEnv(home, caFile string, config [][2]string) []string {
 	if caFile != "" {
 		env = append(env, "GIT_SSL_CAINFO="+caFile)
 	}
-	env = append(env, "GIT_CONFIG_COUNT="+strconv.Itoa(len(config)))
-	for i, kv := range config {
-		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, kv[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, kv[1]))
-	}
 	return env
+}
+
+// writeGitConfig writes config entries ("section.key", value) to a new
+// 0600 gitconfig file at path, quoting each value.
+func writeGitConfig(path string, config [][2]string) error {
+	var b strings.Builder
+	for _, kv := range config {
+		i := strings.LastIndexByte(kv[0], '.')
+		if i <= 0 || strings.ContainsAny(kv[1], "\n\r\x00") {
+			return fmt.Errorf("bad git config entry %q", kv[0])
+		}
+		v := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(kv[1])
+		fmt.Fprintf(&b, "[%s]\n\t%s = \"%s\"\n", kv[0][:i], kv[0][i+1:], v)
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o600)
+}
+
+// gitConfigEntries is the configuration every rig git network command
+// uses: no credential helper, github.com resolved to the instance, the
+// token header, and no redirects (the header must not follow one).
+func gitConfigEntries(resolve, header string) [][2]string {
+	return [][2]string{
+		{"credential.helper", ""},
+		{"http.curloptResolve", resolve},
+		{"http.extraHeader", header},
+		{"http.followRedirects", "false"},
+		{"protocol.version", "2"},
+	}
 }
 
 // runGit runs git with args in dir and returns the exit code and the
@@ -148,12 +174,7 @@ func (Git) Run(ctx context.Context, s *scenario.Scenario, tok tokens.Handle, env
 	if err != nil {
 		return nil, fmt.Errorf("scenario %s: %w", s.ID, err)
 	}
-	config := [][2]string{
-		{"credential.helper", ""},
-		{"http.curloptResolve", resolve},
-		{"http.extraHeader", tok.GitExtraHeader()},
-		{"protocol.version", "2"},
-	}
+	config := gitConfigEntries(resolve, tok.GitExtraHeader())
 
 	for attempt := 0; ; attempt++ {
 		obs, err := runGitOnce(ctx, s, cloneURL, config, env)
@@ -186,9 +207,16 @@ func runGitOnce(ctx context.Context, s *scenario.Scenario, cloneURL string, conf
 		return nil, fmt.Errorf("git temp dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(home) }()
-	genv := gitEnv(home, env.CAFile, config)
+	netCfg, localCfg := filepath.Join(home, "net.gitconfig"), filepath.Join(home, "local.gitconfig")
+	if err := writeGitConfig(netCfg, config); err != nil {
+		return nil, fmt.Errorf("scenario %s: %w", s.ID, err)
+	}
+	if err := writeGitConfig(localCfg, nil); err != nil {
+		return nil, fmt.Errorf("scenario %s: %w", s.ID, err)
+	}
+	genv := gitEnv(home, env.CAFile, netCfg)
 	// Local commands get no token or resolve entry.
-	lenv := gitEnv(home, "", nil)
+	lenv := gitEnv(home, "", localCfg)
 	work := filepath.Join(home, "work")
 
 	var exit int

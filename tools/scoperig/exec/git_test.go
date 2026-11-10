@@ -278,3 +278,32 @@ func TestGit_RigScenarios(t *testing.T) {
 		t.Errorf("git scenarios = %d, want 4", n)
 	}
 }
+
+func TestGitConfigFile(t *testing.T) {
+	cfg := gitConfigEntries("github.com:443:10.0.0.1", "Authorization: Basic c2VjcmV0")
+	want := map[string]string{"http.followRedirects": "false", "credential.helper": "",
+		"http.extraHeader": "Authorization: Basic c2VjcmV0", "http.curloptResolve": "github.com:443:10.0.0.1"}
+	p := filepath.Join(t.TempDir(), "g")
+	if err := writeGitConfig(p, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(p); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v %v", st, err)
+	}
+	gitPath(t)
+	for k, v := range want {
+		cmd := osexec.Command("git", "config", "--file", p, "--get", k)
+		out, _ := cmd.Output()
+		if got := strings.TrimRight(string(out), "\n"); got != v {
+			t.Errorf("%s = %q, want %q", k, got, v)
+		}
+	}
+	if err := writeGitConfig(p, [][2]string{{"http.extraHeader", "a\nb"}}); err == nil {
+		t.Error("newline in value: want error")
+	}
+	for _, e := range gitEnv(t.TempDir(), "", p) {
+		if strings.Contains(e, "c2VjcmV0") {
+			t.Errorf("token in environment: %s", e)
+		}
+	}
+}

@@ -41,8 +41,10 @@ throwaway HOME, `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, against
 `-c http.curloptResolve=github.com:<port>:<instance address>` so the
 connection goes to the instance with SNI and Host github.com (the same
 vhost dialing the rest `vhost:` requests use). The token goes in an
-`http.extraHeader` Basic credential (`x-access-token:<token>`) passed through
-`GIT_CONFIG_COUNT/KEY/VALUE` environment entries, never on the command line.
+`http.extraHeader` Basic credential (`x-access-token:<token>`) written to a
+0600 gitconfig file in the throwaway HOME (`GIT_CONFIG_GLOBAL`), never on
+the command line or in the environment. `http.followRedirects=false` keeps
+the header from following a redirect to another host.
 `GHP_RIG_CA_FILE` becomes `GIT_SSL_CAINFO`.
 
 The observation: exit code, redacted stdout/stderr, and `status` parsed from
