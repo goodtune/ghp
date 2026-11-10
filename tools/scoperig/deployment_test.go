@@ -704,3 +704,118 @@ func TestReasonForms(t *testing.T) {
 		t.Errorf("gapReasons = %q", got)
 	}
 }
+
+// TestWritePasteBack_RepoNamedLikeVocabulary: a configured repo whose owner
+// or name is a JSON key or a fixed-vocabulary label value must not corrupt
+// the line.
+func TestWritePasteBack_RepoNamedLikeVocabulary(t *testing.T) {
+	tests := []struct {
+		name  string
+		repos []string
+	}{
+		{"status/api", []string{"status/api"}},
+		{"web/other", []string{"web/other"}},
+		{"reasons/id", []string{"reasons/id", "claims/scenarios"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rep := &report.Report{RunID: "r1", GHPVersion: "0.28.0", Claims: []report.ClaimResult{{ID: "ENT-C50", Status: report.StatusFail,
+				Scenarios: []report.ScenarioResult{
+					{ID: "ENT-C50.a", Status: report.StatusFail, Reasons: []string{`metric ghp_x_total{vhost="api",outcome="other"} want_delta>=1 got_delta=0`}},
+					{ID: "ENT-C50.b", Status: report.StatusPass},
+				}}}}
+			var b strings.Builder
+			if err := writePasteBack(&b, rep, 1, pasteScrub{repos: tt.repos}); err != nil {
+				t.Fatal(err)
+			}
+			rest, ok := strings.CutPrefix(strings.TrimSpace(b.String()), "scoperig-result: ")
+			if !ok {
+				t.Fatalf("no line: %q", b.String())
+			}
+			var raw map[string]any
+			if err := json.Unmarshal([]byte(rest), &raw); err != nil {
+				t.Fatalf("line is not JSON: %v\n%s", err, rest)
+			}
+			pb := parsePasteBack(t, b.String())
+			if len(pb.Scenarios) != 2 || pb.Scenarios[0].Status != "FAIL" || pb.Scenarios[1].Status != "PASS" ||
+				!strings.Contains(pb.Scenarios[0].Reasons[0], `vhost="api"`) || !strings.Contains(pb.Scenarios[0].Reasons[0], `outcome="other"`) {
+				t.Errorf("scenarios corrupted: %s", rest)
+			}
+			if _, ok := raw["claims"].(map[string]any)["ENT-C50"]; !ok || raw["run_id"] != "r1" {
+				t.Errorf("keys corrupted: %s", rest)
+			}
+		})
+	}
+}
+
+func TestPasteBackVersion(t *testing.T) {
+	sc := pasteScrub{hosts: []string{"ghp.corp.test"}, repos: []string{"ent/api"}}
+	tests := []struct{ in, want string }{
+		{"0.28.0", "0.28.0"},
+		{"v1.2.3", "v1.2.3"},
+		{"1.2.3-rc.1", "1.2.3-rc.1"},
+		{"", "unknown"},
+		{"1.2", "unknown"},
+		{"1.2.corp-host-name.lan", "unknown"},
+		{"1.2.3-ghp.corp.test", "unknown"},
+		{"1.2.3-10.0.0.1", "unknown"},
+		{"1.2.3-api", "unknown"},
+		{"1.2.3+build.host", "unknown"},
+		{"1.2.3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "unknown"},
+		{"1.2.3 extra", "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := pasteBackVersion(tt.in, sc); got != tt.want {
+				t.Errorf("pasteBackVersion(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestReasons_NoFreeText: response bodies, headers and error messages never
+// reach reasons, so the paste-back scrub need only cover ghp_version.
+func TestReasons_NoFreeText(t *testing.T) {
+	leak := "ghp.corp.test 10.2.3.4 ExtOrg/OmitRepo"
+	s := &scenario.Scenario{ID: "x", Expect: &scenario.Expect{Status: 200, BodyContains: []string{"y"}, BodyNotContains: []string{"ghp"},
+		Header: map[string]string{"X-A": "b"}}}
+	obs := &expect.Observation{Status: 403, Body: []byte(leak), Header: http.Header{"X-A": {leak}}}
+	cases := [][]string{
+		verdictReasons(s, obs, nil),
+		verdictReasons(s, obs, errors.New(leak)),
+		verdictReasons(s, nil, errors.New(leak)),
+	}
+	for _, rs := range cases {
+		for _, r := range rs {
+			for _, bad := range []string{"corp.test", "10.2.3.4", "ExtOrg", "OmitRepo"} {
+				if strings.Contains(r, bad) {
+					t.Errorf("reason %q contains %q", r, bad)
+				}
+			}
+		}
+	}
+}
+
+func TestMetricReason_Kinds(t *testing.T) {
+	one, three := 1, 3
+	tests := []struct {
+		name string
+		d    scenario.MetricDelta
+		got  float64
+		want string
+	}{
+		{"below min", scenario.MetricDelta{Name: "m", Min: &one}, 0, "metric m{} want_delta>=1 got_delta=0"},
+		{"above max", scenario.MetricDelta{Name: "m", Max: &one}, 2, "metric m{} want_delta<=1 got_delta=2"},
+		{"range below", scenario.MetricDelta{Name: "m", Min: &one, Max: &three}, 0, "metric m{} want_delta>=1 got_delta=0"},
+		{"range above", scenario.MetricDelta{Name: "m", Min: &one, Max: &three}, 4, "metric m{} want_delta<=3 got_delta=4"},
+		{"min met, no max", scenario.MetricDelta{Name: "m", Min: &one}, 2, "metric m{} want_delta>=1 got_delta=2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := metricReason(tt.d, tt.got)
+			if got != tt.want || strings.Contains(got, "  ") {
+				t.Errorf("metricReason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
