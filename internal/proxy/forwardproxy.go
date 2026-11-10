@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goodtune/ghp/internal/config"
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
 )
@@ -551,14 +552,19 @@ type routingTransport struct {
 	// (or, for the ambient-backed selectors, whatever the environment said).
 	selector func(*http.Request) (*url.URL, error)
 
+	// newTransport builds the base transport for a new egress path. Each
+	// call returns a distinct transport so connection pools stay per proxy.
+	newTransport func() *http.Transport
+
 	mu         sync.Mutex
 	transports map[string]*http.Transport
 }
 
-func newRoutingTransport(selector func(*http.Request) (*url.URL, error)) *routingTransport {
+func newRoutingTransport(selector func(*http.Request) (*url.URL, error), upstream config.UpstreamConfig) *routingTransport {
 	return &routingTransport{
-		selector:   selector,
-		transports: make(map[string]*http.Transport),
+		selector:     selector,
+		newTransport: func() *http.Transport { return newUpstreamTransport(upstream) },
+		transports:   make(map[string]*http.Transport),
 	}
 }
 
@@ -569,7 +575,7 @@ func (rt *routingTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	if err != nil {
 		return nil, err
 	}
-	return rt.transportFor(u).RoundTrip(req)
+	return roundTripInstrumented(rt.transportFor(u), req)
 }
 
 // transportFor returns the transport dedicated to proxy u, creating it on
@@ -587,7 +593,7 @@ func (rt *routingTransport) transportFor(u *url.URL) *http.Transport {
 		return t
 	}
 
-	t := http.DefaultTransport.(*http.Transport).Clone()
+	t := rt.newTransport()
 	if u == nil {
 		t.Proxy = nil
 	} else {
@@ -623,22 +629,22 @@ func (rt *routingTransport) CloseIdleConnections() {
 // the selected proxy. All outbound GitHub backends (API proxy, github.com
 // passthrough, codeload, Copilot) share one instance so connection pools are
 // reused per selected egress path.
-func NewForwardProxyTransport(fr *ForwardProxyRouter) http.RoundTripper {
-	return newRoutingTransport(fr.ProxyFunc())
+func NewForwardProxyTransport(fr *ForwardProxyRouter, upstream config.UpstreamConfig) http.RoundTripper {
+	return newRoutingTransport(fr.ProxyFunc(), upstream)
 }
 
 // NewForwardProxyControlTransport returns a transport that routes every
 // request as control-plane traffic (control rule → system rule → ambient).
 // It is installed on ghp's internal clients so operators can pin the proxy's
 // own GitHub traffic to a dedicated egress path.
-func NewForwardProxyControlTransport(fr *ForwardProxyRouter) http.RoundTripper {
-	return newRoutingTransport(fr.ControlProxyFunc())
+func NewForwardProxyControlTransport(fr *ForwardProxyRouter, upstream config.UpstreamConfig) http.RoundTripper {
+	return newRoutingTransport(fr.ControlProxyFunc(), upstream)
 }
 
 // NewForwardProxyNonGitHubControlTransport returns a transport for ghp
 // control calls whose destination is not GitHub (release redirect HEAD
 // probes). Requests are sent direct unless a control rule sets
 // include_non_github, in which case they follow the control ruleset.
-func NewForwardProxyNonGitHubControlTransport(fr *ForwardProxyRouter) http.RoundTripper {
-	return newRoutingTransport(fr.nonGitHubControlProxy)
+func NewForwardProxyNonGitHubControlTransport(fr *ForwardProxyRouter, upstream config.UpstreamConfig) http.RoundTripper {
+	return newRoutingTransport(fr.nonGitHubControlProxy, upstream)
 }
