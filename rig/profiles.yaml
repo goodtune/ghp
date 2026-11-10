@@ -40,6 +40,11 @@
   repositories: ["{{.RepoW}}"]
   scopes: "contents:read"
   duration: 2h
+- name: perm-contents-rw-W
+  type: proxy
+  repositories: ["{{.RepoW}}"]
+  scopes: "contents:write"
+  duration: 2h
 - name: lifecycle-default
   type: proxy
 - name: lifecycle-revoke

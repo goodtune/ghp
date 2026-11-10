@@ -226,3 +226,18 @@
   method: GET
   path: /repos/{{.RepoA}}/issues
   expect: {status: 200}
+
+# PERM-C18: the CLI embeds no permission list; the web UI offers the list
+# from GET /api/github/permissions (permission -> highest level the
+# credential allows). pull_requests:write must be offered and accepted at
+# token creation. If the server returns 201 the manager revokes the token.
+- id: PERM-C18.pull-requests-write-offered
+  claim: PERM-C18
+  doc: docs/cli/token.md#ghp-token-create
+  description: >-
+    GET /api/github/permissions lists pull_requests at write, and a token
+    with scopes pull_requests:write is created (201).
+  kind: token_api
+  steps:
+    - {name: list, method: GET, path: /api/github/permissions, expect: {status: 200, json: {"$.pull_requests": write}}}
+    - {name: create, method: POST, path: /api/tokens, body: {type: proxy, scopes: "pull_requests:write", duration: 1h, session_id: "scoperig-{{.RunID}}"}, expect: {status: 201, json: {"$.scopes.pull_requests": write}}}

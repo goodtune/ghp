@@ -39,6 +39,13 @@ type Config struct {
 	// instance's border policy blocks (instance.border_block). The rig does
 	// not probe it; ProbeCapabilities turns it into border_block_* capabilities.
 	BorderBlock []string
+	// AllowNoExpiry is the operator-declared instance tokens.allow_no_expiry
+	// (instance.allow_no_expiry); nil when not declared. The instance does
+	// not expose it, so it is never probed.
+	AllowNoExpiry *bool
+	// GHPPath is the ghp CLI binary for git_credential scenarios
+	// (GHP_RIG_GHP, else ghp on PATH).
+	GHPPath string
 	// Metrics configures the optional advisory latency section.
 	Metrics                                       MetricsConfig
 	ConfigFile, Out, Only                         string
@@ -75,6 +82,7 @@ type fileConfig struct {
 		MaxDuration     string   `yaml:"max_duration"`
 		TokenCreateRate string   `yaml:"token_create_rate"`
 		BorderBlock     []string `yaml:"border_block"`
+		AllowNoExpiry   *bool    `yaml:"allow_no_expiry"`
 		// AgentInstallation is the GitHub App installation agent (gha_)
 		// profiles mint against (issue #306).
 		AgentInstallation struct {
@@ -111,16 +119,18 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 		return nil, fmt.Errorf("parse config %s: %w", configFile, err)
 	}
 	c := &Config{
-		ServerURL:   strings.TrimRight(strings.TrimSpace(getenv("GHP_SERVER_URL")), "/"),
-		UserToken:   strings.TrimSpace(getenv("GHP_USER_TOKEN")),
-		RepoA:       firstNonEmpty(getenv("GHP_RIG_REPO_A"), fc.Fixtures.RepoA),
-		RepoB:       firstNonEmpty(getenv("GHP_RIG_REPO_B"), fc.Fixtures.RepoB),
-		RepoW:       firstNonEmpty(getenv("GHP_RIG_REPO_W"), fc.Fixtures.RepoW),
-		GHPath:      getenv("GHP_RIG_GH"),
-		Root:        firstNonEmpty(getenv("GHP_RIG_SCENARIOS"), "rig"),
-		CAFile:      getenv("GHP_RIG_CA_FILE"),
-		ConfigFile:  configFile,
-		BorderBlock: fc.Instance.BorderBlock,
+		ServerURL:     strings.TrimRight(strings.TrimSpace(getenv("GHP_SERVER_URL")), "/"),
+		UserToken:     strings.TrimSpace(getenv("GHP_USER_TOKEN")),
+		RepoA:         firstNonEmpty(getenv("GHP_RIG_REPO_A"), fc.Fixtures.RepoA),
+		RepoB:         firstNonEmpty(getenv("GHP_RIG_REPO_B"), fc.Fixtures.RepoB),
+		RepoW:         firstNonEmpty(getenv("GHP_RIG_REPO_W"), fc.Fixtures.RepoW),
+		GHPath:        getenv("GHP_RIG_GH"),
+		Root:          firstNonEmpty(getenv("GHP_RIG_SCENARIOS"), "rig"),
+		CAFile:        getenv("GHP_RIG_CA_FILE"),
+		ConfigFile:    configFile,
+		BorderBlock:   fc.Instance.BorderBlock,
+		AllowNoExpiry: fc.Instance.AllowNoExpiry,
+		GHPPath:       getenv("GHP_RIG_GHP"),
 		Instance: scenario.InstanceVals{
 			Host: strings.TrimSpace(fc.Instance.Host),
 		},
@@ -128,6 +138,11 @@ func LoadConfig(getenv func(string) string, configFile string) (*Config, error) 
 	if c.GHPath == "" {
 		if p, err := lookPath("gh"); err == nil {
 			c.GHPath = p
+		}
+	}
+	if c.GHPPath == "" {
+		if p, err := lookPath("ghp"); err == nil {
+			c.GHPPath = p
 		}
 	}
 	if c.ServerURL != "" {

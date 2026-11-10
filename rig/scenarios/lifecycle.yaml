@@ -70,3 +70,18 @@
   steps:
     - {name: probe, method: GET, path: /api/v3/user, expect: {status: 401, body_contains: ["token has expired"], ghp_denial: true}}
   poll: {interval: 5s, timeout: 150s}
+
+# LIFE-C39: the instance does not expose tokens.allow_no_expiry, so the
+# operator declares it (instance.allow_no_expiry: false in rig/config.yaml)
+# and the scenario reports GAP until then. If the server returns 201 the
+# manager revokes the never-expiring token.
+- id: LIFE-C39.never-refused
+  claim: LIFE-C39
+  doc: docs/features/token-scoping.md#expiration-and-revocation
+  description: >-
+    A token with duration "never" is refused with 400 on an instance
+    without tokens.allow_no_expiry.
+  kind: token_api
+  requires: [no_expiry_disallowed]
+  request: {method: POST, path: /api/tokens, body: {type: proxy, duration: never, session_id: "scoperig-{{.RunID}}"}}
+  expect: {status: 400, body_contains: ["no-expiry tokens are not allowed"]}

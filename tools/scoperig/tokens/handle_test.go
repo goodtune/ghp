@@ -50,3 +50,11 @@ func TestHandle_AuthorizeAndEnv(t *testing.T) {
 		t.Fatalf("GHEnv = %v", env)
 	}
 }
+
+func TestHandle_GitExtraHeader(t *testing.T) {
+	h := Handle{id: "id-1", value: "ghx_test0000"}
+	// base64("x-access-token:ghx_test0000")
+	if got, want := h.GitExtraHeader(), "Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2h4X3Rlc3QwMDAw"; got != want {
+		t.Errorf("GitExtraHeader = %q, want %q", got, want)
+	}
+}

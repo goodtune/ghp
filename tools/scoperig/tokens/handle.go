@@ -4,6 +4,7 @@
 package tokens
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -35,3 +36,10 @@ func (h Handle) Authorize(r *http.Request) { r.Header.Set("Authorization", "toke
 
 // GHEnv returns the environment entries that make gh use this token.
 func (h Handle) GHEnv() []string { return []string{"GH_ENTERPRISE_TOKEN=" + h.value} }
+
+// GitExtraHeader returns the git http.extraHeader value that makes git send
+// this token as a Basic credential (username x-access-token), the form git
+// clients use for GitHub tokens.
+func (h Handle) GitExtraHeader() string {
+	return "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+h.value))
+}

@@ -158,17 +158,19 @@ func TestLoadConfig_GHPathFallback(t *testing.T) {
 	old := lookPath
 	t.Cleanup(func() { lookPath = old })
 	lookPath = func(name string) (string, error) {
-		if name != "gh" {
-			t.Fatalf("lookPath(%q)", name)
+		switch name {
+		case "gh", "ghp":
+			return "/opt/bin/" + name, nil
 		}
-		return "/opt/bin/gh", nil
+		t.Fatalf("lookPath(%q)", name)
+		return "", nil
 	}
 	c, err := LoadConfig(envMap(nil), writeCfg(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.GHPath != "/opt/bin/gh" {
-		t.Errorf("GHPath = %q, want PATH fallback", c.GHPath)
+	if c.GHPath != "/opt/bin/gh" || c.GHPPath != "/opt/bin/ghp" {
+		t.Errorf("GHPath = %q, GHPPath = %q, want PATH fallback", c.GHPath, c.GHPPath)
 	}
 	c, err = LoadConfig(envMap(map[string]string{"GHP_RIG_GH": "/x/gh"}), writeCfg(t))
 	if err != nil {
@@ -333,6 +335,34 @@ func TestLoadConfig_AgentInstallation(t *testing.T) {
 			_, err := LoadConfig(envMap(nil), writeAgentCfg(t, tc.block))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("want error naming %s, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_AllowNoExpiryAndGHP(t *testing.T) {
+	for _, tt := range []struct {
+		name, yaml string
+		want       *bool
+	}{
+		{"unset", "", nil},
+		{"false", "  allow_no_expiry: false\n", new(bool)},
+		{"true", "  allow_no_expiry: true\n", func() *bool { b := true; return &b }()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(p, []byte("instance:\n  host: h.test\n"+tt.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := LoadConfig(envMap(map[string]string{"GHP_RIG_GHP": "/opt/ghp"}), p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (c.AllowNoExpiry == nil) != (tt.want == nil) || (c.AllowNoExpiry != nil && *c.AllowNoExpiry != *tt.want) {
+				t.Errorf("AllowNoExpiry = %v, want %v", c.AllowNoExpiry, tt.want)
+			}
+			if c.GHPPath != "/opt/ghp" {
+				t.Errorf("GHPPath = %q", c.GHPPath)
 			}
 		})
 	}

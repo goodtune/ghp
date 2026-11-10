@@ -490,6 +490,11 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 		GHPath:         c.GHPath,
 		Session:        c.UserToken,
 		InstallationID: c.InstallationID,
+		CAFile:         c.CAFile,
+		GHPPath:        c.GHPPath,
+	}
+	if caps["agent_installation"] {
+		env.AgentAppRecordID = c.AgentAppRecordID
 	}
 	if c.Verbose {
 		env.Verbose = out

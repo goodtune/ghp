@@ -913,3 +913,77 @@ func TestValidate_TokenAPIAgentBody(t *testing.T) {
 	requireErr(t, Validate(mk(body("{{.Agent.AppRecordID}}", nil), "agent_installation"), nil), "T", "installation_id")
 	requireErr(t, Validate(mk(body("{{.Agent.AppRecordID}}", "$int:InstallationID")), nil), "T", "requires: [agent_installation]")
 }
+
+func TestValidate_TokenAPIPermissionsGET(t *testing.T) {
+	// PERM-C18: the web UI's permission list is a session GET.
+	requireNoErr(t, Validate(withScenarios(&Scenario{ID: "P1", Claim: "C1", Kind: "token_api",
+		Request: &Request{Method: "GET", Path: "/api/github/permissions"}}), nil))
+	for _, r := range []*Request{
+		{Method: "POST", Path: "/api/github/permissions", Body: map[string]any{}},
+		{Method: "GET", Path: "/api/github/repositories"},
+		{Method: "GET", Path: "/api/github/permissions/x"},
+		{Method: "GET", Path: "/api/github/permissions?x=1"},
+	} {
+		requireErr(t, Validate(withScenarios(&Scenario{ID: "P2", Claim: "C1", Kind: "token_api", Request: r}), nil), "P2", "/api/tokens")
+	}
+}
+
+func TestValidate_NewCapabilities(t *testing.T) {
+	for _, c := range []string{"no_expiry_disallowed", "ghp_cli"} {
+		s := &Scenario{ID: "N1", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user", Requires: []string{c}}
+		requireNoErr(t, Validate(withScenarios(s), nil))
+	}
+}
+
+func TestValidate_Git(t *testing.T) {
+	del := []Request{{Method: "DELETE", Path: "/repos/{{.RepoW}}/git/refs/heads/scoperig-{{.RunID}}-push"}}
+	push := func() *Scenario {
+		return &Scenario{ID: "G1", Claim: "C1", Profile: "w", Kind: "git", GitOp: "push", Repo: "W",
+			Branch: "scoperig-{{.RunID}}-push", Requires: []string{"github_vhost", "repo_w_push"},
+			Cleanup: append([]Request(nil), del...), Expect: &Expect{ExitCode: new(int)}}
+	}
+	clone := func() *Scenario {
+		return &Scenario{ID: "G2", Claim: "C1", Profile: "p", Kind: "git", GitOp: "clone", Repo: "A",
+			Requires: []string{"github_vhost"}, Expect: &Expect{ExitCode: new(int)}}
+	}
+	requireNoErr(t, Validate(withScenarios(push()), nil))
+	requireNoErr(t, Validate(withScenarios(clone()), nil))
+
+	tests := []struct {
+		name string
+		mod  func(s *Scenario)
+		base func() *Scenario
+		want string
+	}{
+		{"push to A", func(s *Scenario) { s.Repo = "A" }, push, "push only to W"},
+		{"push to B", func(s *Scenario) { s.Repo = "B" }, push, "push only to W"},
+		{"push without branch", func(s *Scenario) { s.Branch = "" }, push, "branch"},
+		{"push branch not run-unique", func(s *Scenario) {
+			s.Branch = "main"
+			s.Cleanup = []Request{{Method: "DELETE", Path: "/repos/{{.RepoW}}/git/refs/heads/main"}}
+		}, push, "{{.RunID}}"},
+		{"push without cleanup", func(s *Scenario) { s.Cleanup = nil }, push, "cleanup"},
+		{"push cleanup deletes another ref", func(s *Scenario) {
+			s.Cleanup = []Request{{Method: "DELETE", Path: "/repos/{{.RepoW}}/git/refs/heads/other-{{.RunID}}"}}
+		}, push, "cleanup"},
+		{"push without repo_w_push", func(s *Scenario) { s.Requires = []string{"github_vhost"} }, push, "repo_w_push"},
+		{"clone without github_vhost", func(s *Scenario) { s.Requires = nil }, clone, "github_vhost"},
+		{"unknown op", func(s *Scenario) { s.GitOp = "fetch" }, clone, "git_op"},
+		{"unknown repo", func(s *Scenario) { s.Repo = "Z" }, clone, "repo"},
+		{"no repo", func(s *Scenario) { s.Repo = "" }, clone, "repo"},
+		{"clone with branch", func(s *Scenario) { s.Branch = "x-{{.RunID}}" }, clone, "branch"},
+		{"git with args", func(s *Scenario) { s.Args = []string{"x"} }, clone, "args"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := tt.base()
+			tt.mod(s)
+			requireErr(t, Validate(withScenarios(s), nil), s.ID, tt.want)
+		})
+	}
+	t.Run("git fields on another kind", func(t *testing.T) {
+		s := &Scenario{ID: "G3", Claim: "C1", Profile: "p", Kind: "rest", Method: "GET", Path: "/user", GitOp: "clone", Branch: "b"}
+		requireErr(t, Validate(withScenarios(s), nil), "G3", "git_op")
+		requireErr(t, Validate(withScenarios(s), nil), "G3", "branch")
+	})
+}
