@@ -36,6 +36,7 @@ What iteration 1 does not cover:
 | `GHP_RIG_REPO_B` | no | `fixtures.repo_b` | Read fixture B (the "other" repository) |
 | `GHP_RIG_REPO_W` | no | `fixtures.repo_w` | Write sandbox; the only repository the rig changes |
 | `GHP_RIG_GH` | no | `gh` on `PATH` | Path to the `gh` binary |
+| `GHP_RIG_GHP` | no | `ghp` on `PATH` | Path to the `ghp` CLI for `kind: git_credential` (build it with `make build`) |
 | `GHP_RIG_SCENARIOS` | no | `rig` | Root of claims, profiles and scenarios |
 | `GHP_RIG_INSTALLATION_ID` | no | `instance.agent_installation.installation_id` | Positive integer; overrides the agent installation (see [Agent tokens](#agent-tokens)) |
 | `GHP_RIG_CA_FILE` | no | system pool | Extra PEM CA bundle |
@@ -56,6 +57,10 @@ Select another file with the global `--config FILE` flag (default `rig/config.ya
 The file holds the proxy API host (`host`), token durations, the token-create rate limit (the token manager paces at 75% of it), and the default fixture repositories. When `host` is empty, the rig uses the host of `GHP_SERVER_URL`. Management calls (token create, revoke and sweep) always use `GHP_SERVER_URL`.
 
 `instance.border_block` lists the token prefixes that the instance's border policy blocks, for example `[ghp_, gho_, github_pat_]`. The rig does not probe this value. It must match the border policy of the instance. If a prefix is missing from the list, the BORDER-C43 scenarios for that prefix are GAP.
+
+Fixture repositories are normalised when the config loads: spaces and a trailing `.git` are removed. `repo_a`, `repo_b` and `repo_w` must all differ (compared ASCII case-insensitively); the rig refuses to start when W equals A or B, or A equals B, because W receives every write and A and B must stay read-only.
+
+`instance.allow_no_expiry` declares the instance's `tokens.allow_no_expiry`. The instance does not expose it, so the rig never probes it. Set it to `false` (the server default) to run LIFE-C39; leave it unset and LIFE-C39 is GAP.
 
 `instance.agent_installation` names the GitHub App installation that agent (`gha_`) profiles use. See [Agent tokens](#agent-tokens).
 
@@ -110,6 +115,8 @@ The preflight step sets these capabilities. A scenario that needs a capability t
 | `border_block_ghp` | `ghp_` is in `instance.border_block`. |
 | `border_block_gho` | `gho_` is in `instance.border_block`. |
 | `border_block_github_pat` | `github_pat_` is in `instance.border_block`. |
+| `no_expiry_disallowed` | `instance.allow_no_expiry` is declared `false`. |
+| `ghp_cli` | The `ghp` binary (`GHP_RIG_GHP`, else `ghp` on `PATH`) exits 0 for `auth git-credential --help`. |
 
 ### Global flags
 
@@ -146,6 +153,12 @@ make scoperig-validate
 ```
 
 A rest request may set `vhost: github.com` (needs `requires: [github_vhost]`) or `vhost: codeload.github.com` (needs `requires: [codeload_vhost]`); the request goes to the instance with that TLS SNI and Host header and no `/api/v3` prefix, and must be a GET or HEAD. A graphql scenario may set `operation_name`, sent as the request's `operationName`. Templates have the functions `add` (duration arithmetic), `upper` and `base64` (standard encoding, for a Basic credential). `{{.Agent.AppRecordID}}` and `{{.Agent.InstallationID}}` hold the configured agent installation; in a request body, `"$int:InstallationID"` sends the installation ID as a JSON number.
+
+A token_api scenario may also GET `/api/github/permissions` (session token, exact path, no query): the permission list the web UI offers, used by PERM-C18 because the CLI embeds no list.
+
+A `kind: git` scenario runs the system `git` through the instance's `github.com` virtual host. `git_op` is `clone` or `push`, and `repo` is `A`, `B` or `W`. Every git scenario needs `requires: [github_vhost]`. The rig resolves `github.com` to the instance with `http.curloptResolve`, so TLS SNI and Host are `github.com`. Each run has a throwaway `HOME`, no system config, no credential helper and no prompt. The token is an `http.extraHeader` Basic credential (`x-access-token`) in a 0600 gitconfig file in that `HOME` (`GIT_CONFIG_GLOBAL`), never on the command line or in the environment; `http.followRedirects=false` keeps it from following a redirect. `GHP_RIG_CA_FILE` is passed as `GIT_SSL_CAINFO`. The observation is git's exit code, redacted output, and `status` parsed from git's `The requested URL returned error: NNN` line (0 when absent). A clone is retried on a transport error; a push never is. A push goes only to W, on a `branch` that contains `{{.RunID}}`, needs `requires: [github_vhost, repo_w_push]` and a cleanup `DELETE /repos/{{.RepoW}}/git/refs/heads/<branch>`; validation and the executor both refuse a push to A or B.
+
+A `kind: git_credential` scenario (CRED-C55) runs `ghp auth git-credential` from `GHP_RIG_GHP` with a throwaway `HOME`, `--cache-backend file`, `--type agent` and `--app <instance.agent_installation app record ID>` (never the default app), and the rig's own `GHP_SERVER_URL` and `GHP_USER_TOKEN` in the environment (no config file, so no dotvault). It needs `repo: W`, `requires: [agent_installation, ghp_cli]`, no profile and no cleanup. For W it runs `get`, `get` again, uses the token on W and A, `erase`, `get`, `clear`, and returns a JSON summary as the body: `get_exit`, `first_minted`, `token_prefix` (`gha_`, never more), `username`, `token_type`, `repositories`, `second_get_exit`, `second_get_same_token` (false when either password is empty), `second_get_minted`, `w_status`, `a_status`, `erase_exit`, `erase_revoked`, `third_get_minted`, `clear_exit`, `clear_output`, `clear_revoked`, `foreign_new_tokens` and `stopped` (when the flow ended early). The helper's tokens carry the session `git-credential:<hostname>`, the same as the operator's own helper, so the rig attributes a new token by value: its `token_prefix` must be a prefix of the password the helper printed, its repositories exactly `[W]` and its `app_id` the agent app. Only attributed tokens are counted and revoked. Any other new `git-credential:` token is counted in `foreign_new_tokens` and never revoked.
 
 A `kind: corpus` entry replays a `gh` query corpus live. `Load` replaces it with one graphql scenario per corpus query and corpus profile, with the ID `<id>.<file>.<operation>.<corpus profile>`; `validate` then checks each generated scenario like any other. `corpus` is the corpus directory relative to the rig root, and `corpus_profiles` maps every corpus profile (`open`, `perm-ro`, `repo`) to a rig profile; an unmapped profile is a load error. The corpus placeholders `OWNER`, `REPO` and `NODE_ID` in variables become fixture A's owner, name and node ID. A `verdict: allow` expects 200 and no GHP denial (GitHub may still report a GraphQL error for the placeholder numbers); a `deny:*` verdict expects 403, a GHP denial and the message for that reason. An entry with `known_issue` gets `observed:` from its `current` verdict. Run one command's queries with `--only 'GAP-A9.gh-2.102.0.pr_view.*'`.
 
@@ -252,9 +265,13 @@ Advisory p99 budgets (from the v0.23.0 baseline):
 | `token_extraction`, `border_policy_check`, `scope_parsing`, `username_resolution`, `forward_proxy_selection` | < 500 µs |
 | `token_resolution` | < 10 ms |
 | `github_token_resolution` | < 15 ms |
-| `total` | < 15 ms |
+| `total_excl_body_read` | < 15 ms |
 
-A row over its budget has the flag `WARN over-budget`. A row with fewer than 100 samples has `WARN low-samples`: its p99 rests on one or two observations. Other stages (`upstream_roundtrip`, `cache_lookup`, `enterprise_exception`, `redirect_head_check`, `end_to_end`) have no budget.
+A row over its budget has the flag `WARN over-budget`. A row with fewer than 100 samples has `WARN low-samples`: its p99 rests on one or two observations. The raw `total` row has no budget, because it includes `request_body_read`, the time the client takes to upload a GraphQL body. The derived row `total_excl_body_read` (one per token type, after `total`) holds the 15 ms budget. It is shown as `total_excl_body_read (est.)` with a footnote: per-request differences are not recorded, so its quantiles are an estimate (total minus `request_body_read`, with requests that read no body counted as zero, never below 0); the mean is exact. It is built only when `total` and `request_body_read` come from the same source (both `increase()`, or both raw values, see below); otherwise it is omitted and the section prints `latency note: total_excl_body_read for <type> omitted: ...`. The JSON row has `estimate: true` and the section has `notes`.
+
+A series that first appears inside the window (for example agent tokens after a deploy) is counted from its raw cumulative value at the end, because `increase()` never counts a series' first sample. The rig finds such series by querying which existed at the run start. A counter reset inside the window on such a series is not detected.
+
+Other stages (`upstream_roundtrip`, `cache_lookup`, `enterprise_exception`, `redirect_head_check`, `end_to_end`) have no budget.
 
 Limitations: the histograms are instance-wide, so other traffic in the window (including during the scrape wait) is counted with the rig's own requests; use `selector` to pick the instance's job. Quantiles cannot resolve changes smaller than one bucket. A Prometheus error or an interrupted wait makes the section `unavailable` with the reason.
 
@@ -274,7 +291,7 @@ Limitations: the histograms are instance-wide, so other traffic in the window (i
 - **coverage = covered / base**, where covered is the number of base claims with at least one runnable (not GAP) scenario result. Coverage tells you how much of base the run exercised; confidence tells you how much of that holds. The text report prints both lines; the JSON report has `summary.covered` and `summary.coverage`.
 - The coverage-gap list names every base claim with no scenario at all.
 
-Iteration 1 covered 28 claims (27 PASS and 22 GAP predicted, about 55%). Base is now 60 periodic claims. After batch 4 (gaps the rig could test with no new fixtures or operator setup: GraphQL claims C22, C23, C30 and C34 to C36, PERM-C17, PERM-C19, REPO-C09, TOK-C01, LIFE-C41, BORDER-C47, the codeload probe GAP-A4 and the live corpus replay GAP-A9), 50 base claims have a scenario. On an instance with no border block and no agent installation, 47 of them run (BORDER-C43, BORDER-C47 and GAP-A6 are GAP), so coverage is 47/60, about 78%. The other 10 need agent tokens, git smart-HTTP, enterprise or anonymous-git setup, or token API checks that are not written yet. Planned iterations:
+Iteration 1 covered 28 claims (27 PASS and 22 GAP predicted, about 55%). Base is now 61 periodic claims (batch 5 added CRED-C55, the git credential helper, and scenarios for GIT-C48, PERM-C18 and LIFE-C39). After batch 4 (gaps the rig could test with no new fixtures or operator setup: GraphQL claims C22, C23, C30 and C34 to C36, PERM-C17, PERM-C19, REPO-C09, TOK-C01, LIFE-C41, BORDER-C47, the codeload probe GAP-A4 and the live corpus replay GAP-A9), 50 base claims have a scenario. On an instance with no border block and no agent installation, 47 of them run (BORDER-C43, BORDER-C47 and GAP-A6 are GAP), so coverage is 47/60, about 78%. The other 10 need agent tokens, git smart-HTTP, enterprise or anonymous-git setup, or token API checks that are not written yet. Planned iterations:
 
 | Iteration | Adds | Target |
 |---|---|---|
@@ -354,7 +371,9 @@ Existing expectations in the output directory are kept per operation.
 
 ## Known limitations
 
-- No git smart-HTTP scenarios.
+- git does not print the response body of a failed request, so `GIT-C48.push-w-contents-read-denied` cannot check GHP's denial text. Its 403 is attributed to GHP scope enforcement only because `GIT-C48.push-w-contents-write` proves the same credential can write to W. Treat the denied result as meaningful only when the write scenario passed in the same run.
+- `kind: git_credential` revokes only tokens it can attribute by value. A rig token whose value the helper never printed (for example a mint whose output was lost) is counted in `foreign_new_tokens` and not revoked. A non-zero `foreign_new_tokens` needs a manual check of the token list (session `git-credential:<hostname>`); it may also be the operator's own helper running at the same time.
+- LIFE-C39 relies on the operator's `instance.allow_no_expiry` declaration.
 - Agent (`gha_`) scenarios cannot test GitHub-side narrowing of the installation token or the non-admin refusal (TOK-C02), and check the CLI's `--app` / `--installation` resolution through the API data only (see [Agent tokens](#agent-tokens)).
 - `LIFE-C41.expired-rejected` waits for a 1-minute token to expire, so a run that starts with it polls for up to 150 s.
 - `gh` must run outside a github.com checkout, or it ignores `GH_HOST`. The rig runs it in a fresh temporary directory for this reason.

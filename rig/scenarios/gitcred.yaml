@@ -2,10 +2,13 @@
 # GHP_RIG_GHP (else ghp on PATH) with a throwaway HOME, the file cache tier,
 # agent tokens from instance.agent_installation's app (never the default
 # app) and the rig's own GHP_SERVER_URL and GHP_USER_TOKEN. The executor
-# runs get, get (cache hit), uses the token on W and A, erase, get, clear,
-# and revokes every token it found. The helper's tokens carry session
-# git-credential:<hostname>, not the rig's session, so the executor finds
-# them by diffing the token list.
+# runs get, get (cache hit), uses the token on W and A, erase, get, clear.
+# The helper's tokens carry session git-credential:<hostname>, the same as
+# the operator's own helper, so a new token is the rig's only when its
+# token_prefix starts the password the helper printed, its repositories are
+# [W] and its app is the agent app. Only those are counted and revoked;
+# other new helper tokens are counted in foreign_new_tokens and left alone
+# (a non-zero value needs a manual check of the token list).
 - id: CRED-C55.agent-token-pinned-cached-revoked
   claim: CRED-C55
   doc: docs/features/git-credential-helper.md#what-it-does

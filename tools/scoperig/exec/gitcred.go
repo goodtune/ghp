@@ -361,7 +361,7 @@ func matchesGitCred(t listedGitCredToken, pw, repo, app string) bool {
 	if pw == "" || len(t.TokenPrefix) < 8 || !strings.HasPrefix(pw, t.TokenPrefix) {
 		return false
 	}
-	if app == "" || !strings.EqualFold(t.AppID, app) {
+	if app == "" || !asciiutil.EqualFold(t.AppID, app) {
 		return false
 	}
 	var repos []string

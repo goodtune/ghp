@@ -83,9 +83,9 @@ config `instance.allow_no_expiry` (true/false; unset = unknown). Capability
 (`requires no_expiry_disallowed`) when undeclared. A 201 is revoked by the
 manager.
 
-## Git credential helper: `kind: git_credential`, claim CRED-C51
+## Git credential helper: `kind: git_credential`, claim CRED-C55
 
-New claim CRED-C51 (docs/features/git-credential-helper.md). The executor
+New claim CRED-C55 (docs/features/git-credential-helper.md). The executor
 runs `ghp auth git-credential` (binary from `GHP_RIG_GHP`, else `ghp` on
 PATH; capability `ghp_cli` when `<ghp> auth git-credential --help` exits 0)
 with a throwaway HOME, `GHP_SERVER_URL`/`GHP_USER_TOKEN` in the environment
@@ -105,7 +105,7 @@ the token manager. Requires `agent_installation` and `ghp_cli`.
 
 ## Expected confidence
 
-Base grows from 60 to 61 (CRED-C51). GIT-C48, PERM-C18 and CRED-C51 should
+Base grows from 60 to 61 (CRED-C55). GIT-C48, PERM-C18 and CRED-C55 should
 PASS; LIFE-C39 is GAP until the operator declares
 `instance.allow_no_expiry: false`. From 53/60 that is about 56/61 (57/61
 with the declaration).

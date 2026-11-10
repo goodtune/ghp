@@ -28,7 +28,11 @@
 - id: GIT-C48.push-w-contents-read-denied
   claim: GIT-C48
   doc: docs/how-it-works.md#virtualhost-routing
-  description: A contents:read token for W cannot push to W (403).
+  description: >-
+    A contents:read token for W cannot push to W (403). git does not print
+    the response body, so the 403 is attributed to GHP scope enforcement
+    only because GIT-C48.push-w-contents-write proves the same credential
+    can write to W: read this result together with that one in the same run.
   profile: perm-contents-ro-W
   kind: git
   git_op: push
