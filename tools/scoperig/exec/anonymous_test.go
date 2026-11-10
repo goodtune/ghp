@@ -39,3 +39,18 @@ func TestREST_EmptyHeaderRemovesIt(t *testing.T) {
 		})
 	}
 }
+
+func TestGraphQL_EmptyHeaderRemovesIt(t *testing.T) {
+	var hasAuth bool
+	env, _, tok := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, hasAuth = r.Header["Authorization"]
+	}))
+	s := &scenario.Scenario{ID: "x", Kind: "graphql", Query: "query { viewer { login } }",
+		Headers: map[string]string{"Authorization": ""}}
+	if _, err := (graphqlExecutor{}).Run(context.Background(), s, tok, env); err != nil {
+		t.Fatal(err)
+	}
+	if hasAuth {
+		t.Error("Authorization sent; want it removed by the empty value")
+	}
+}
