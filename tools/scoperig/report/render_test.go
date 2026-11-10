@@ -128,3 +128,21 @@ func TestLatency_DoesNotChangeExitCode(t *testing.T) {
 		t.Errorf("ExitCode with over-budget latency = %d, want %d", got, want)
 	}
 }
+
+func TestLatency_EstimateAndNotes(t *testing.T) {
+	r := &Report{Latency: &Latency{Status: LatencyOK, WindowSeconds: 10, Notes: []string{"omitted x"},
+		Stages: []StageLatency{{Stage: "total_excl_body_read", TokenType: "proxy", Samples: 1, Estimate: true, Flags: []string{}}}}}
+	var b bytes.Buffer
+	if err := r.writeLatency(&errWriter{w: &b}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"total_excl_body_read (est.)", "(est.) quantiles estimated", "latency note: omitted x"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, b.String())
+		}
+	}
+	j := latencyJSON(r.Latency)
+	if !j.Stages[0].Estimate || len(j.Notes) != 1 {
+		t.Errorf("json = %+v", j)
+	}
+}

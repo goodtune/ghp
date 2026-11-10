@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goodtune/ghp/tools/scoperig/latency"
 	"github.com/goodtune/ghp/tools/scoperig/report"
 )
 
@@ -125,7 +126,9 @@ func TestCollectLatency(t *testing.T) {
 		if slept != 45*time.Second || !strings.Contains(out.String(), "waiting 45s") {
 			t.Errorf("slept %s, out %q", slept, out.String())
 		}
-		if len(got.Stages) != 1 || got.Stages[0].Samples != 150 || got.Stages[0].P99 != 0.005*0.99 {
+		// The raw total row, then the derived total_excl_body_read row (#360).
+		if len(got.Stages) != 2 || got.Stages[0].Samples != 150 || got.Stages[0].P99 != 0.005*0.99 ||
+			got.Stages[1].Stage != latency.NetTotalStage {
 			t.Errorf("stages = %+v", got.Stages)
 		}
 		if gotUA != "ghp-scoperig/abc (run=20261107T0749Z-b03f)" {

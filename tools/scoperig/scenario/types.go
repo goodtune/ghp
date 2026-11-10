@@ -93,7 +93,7 @@ type Scenario struct {
 	Doc         string    `yaml:"doc"`
 	Description string    `yaml:"description"`
 	Profile     string    `yaml:"profile"` // "" allowed for token_api
-	Kind        string    `yaml:"kind"`    // rest | graphql | gh | token_api
+	Kind        string    `yaml:"kind"`    // rest | graphql | gh | token_api | git | git_credential
 	KnownIssue  string    `yaml:"known_issue"`
 	Observed    *Expect   `yaml:"observed"`
 	Requires    []string  `yaml:"requires"` // repo_w_push repo_create github_vhost agent_installation
@@ -110,10 +110,14 @@ type Scenario struct {
 	// OperationName is sent as the GraphQL operationName (graphql only).
 	OperationName string         `yaml:"operation_name"`
 	Variables     map[string]any `yaml:"variables"`
-	Args          []string       `yaml:"args"`    // gh
-	Repo          string         `yaml:"repo"`    // gh: A | B | W
-	Request       *Request       `yaml:"request"` // token_api
-	Poll          *Poll          `yaml:"poll"`    // LIFE-C40
+	Args          []string       `yaml:"args"` // gh
+	Repo          string         `yaml:"repo"` // gh, git: A | B | W
+	// GitOp is the git operation of a kind git scenario: clone or push.
+	GitOp string `yaml:"git_op"`
+	// Branch is the run-unique branch a git push creates on W (templated).
+	Branch  string   `yaml:"branch"`
+	Request *Request `yaml:"request"` // token_api
+	Poll    *Poll    `yaml:"poll"`    // LIFE-C40
 	// Corpus and CorpusProfiles make a kind "corpus" generator: Load
 	// replaces it with one graphql scenario per corpus entry and profile
 	// (see expandCorpus). Corpus is a directory relative to the rig root.

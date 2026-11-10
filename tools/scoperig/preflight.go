@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	osexec "os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -27,7 +29,8 @@ var ErrPreflight = errors.New("preflight failed")
 // Capabilities records what the instance and fixtures allow. Missing entries
 // are not errors: they feed scenario `requires:` and become coverage gaps.
 // Keys: repo_w_push, repo_create, github_vhost, codeload_vhost,
-// agent_installation, non_admin_session, default_app, border_block_*.
+// agent_installation, non_admin_session, default_app, border_block_*,
+// no_expiry_disallowed, ghp_cli.
 type Capabilities map[string]bool
 
 var versionRe = regexp.MustCompile(`(?i)version\W{0,10}(v?\d+\.\d+[0-9A-Za-z.\-+]*)`)
@@ -131,6 +134,10 @@ func ProbeCapabilities(ctx context.Context, c *Config, hc *http.Client, open tok
 
 	caps["agent_installation"] = ProbeAgentInstallation(ctx, c, hc)
 	caps["default_app"] = probeDefaultApp(ctx, c, hc)
+	// Operator-declared, like border_block: the instance does not expose
+	// tokens.allow_no_expiry. Undeclared means unknown (false).
+	caps["no_expiry_disallowed"] = c.AllowNoExpiry != nil && !*c.AllowNoExpiry
+	caps["ghp_cli"] = probeGHPCLI(ctx, c.GHPPath)
 	return caps, nil
 }
 
@@ -273,4 +280,18 @@ func get(ctx context.Context, hc *http.Client, u string, auth func(*http.Request
 		return 0, nil, nil, err
 	}
 	return resp.StatusCode, body, resp.Header, nil
+}
+
+// probeGHPCLI reports the ghp_cli capability: path is set and
+// `<path> auth git-credential --help` exits 0 (a ghp with the git
+// credential helper, #363).
+func probeGHPCLI(ctx context.Context, path string) bool {
+	if path == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := osexec.CommandContext(ctx, path, "auth", "git-credential", "--help")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.TempDir()}
+	return cmd.Run() == nil
 }

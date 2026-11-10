@@ -1,0 +1,58 @@
+# Git over the github.com virtual host (GIT-C48). The rig runs the system
+# git with github.com resolved to the instance (http.curloptResolve), so
+# TLS SNI and Host are github.com as for a real client. Clones read A, B
+# and W; pushes write only to W, on a run-unique branch that cleanup
+# deletes with the open token (404 when the push was refused).
+- id: GIT-C48.clone-a-contents-read
+  claim: GIT-C48
+  doc: docs/how-it-works.md#virtualhost-routing
+  description: A token for A with contents:read clones A.
+  profile: repo-A-perm-ro
+  kind: git
+  git_op: clone
+  repo: A
+  requires: [github_vhost]
+  expect: {exit_code: 0}
+
+- id: GIT-C48.clone-b-wrong-repo
+  claim: GIT-C48
+  doc: docs/how-it-works.md#virtualhost-routing
+  description: A token for A cannot clone B (403).
+  profile: repo-A-perm-ro
+  kind: git
+  git_op: clone
+  repo: B
+  requires: [github_vhost]
+  expect: {status: 403, exit_code_in: [1, 128]}
+
+- id: GIT-C48.push-w-contents-read-denied
+  claim: GIT-C48
+  doc: docs/how-it-works.md#virtualhost-routing
+  description: >-
+    A contents:read token for W cannot push to W (403). git does not print
+    the response body, so the 403 is attributed to GHP scope enforcement
+    only because GIT-C48.push-w-contents-write proves the same credential
+    can write to W: read this result together with that one in the same run.
+  profile: perm-contents-ro-W
+  kind: git
+  git_op: push
+  repo: W
+  branch: "scoperig-{{.RunID}}-push-ro"
+  requires: [github_vhost, repo_w_push]
+  expect: {status: 403, exit_code_in: [1, 128]}
+  cleanup:
+    - {method: DELETE, path: "/repos/{{.RepoW}}/git/refs/heads/scoperig-{{.RunID}}-push-ro"}
+
+- id: GIT-C48.push-w-contents-write
+  claim: GIT-C48
+  doc: docs/how-it-works.md#virtualhost-routing
+  description: A contents:write token for W pushes a new branch to W.
+  profile: perm-contents-rw-W
+  kind: git
+  git_op: push
+  repo: W
+  branch: "scoperig-{{.RunID}}-push-rw"
+  requires: [github_vhost, repo_w_push]
+  expect: {exit_code: 0}
+  cleanup:
+    - {method: DELETE, path: "/repos/{{.RepoW}}/git/refs/heads/scoperig-{{.RunID}}-push-rw", expect: {status_in: [204]}}

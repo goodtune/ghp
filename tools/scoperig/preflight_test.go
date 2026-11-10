@@ -208,7 +208,7 @@ func TestProbeCapabilities(t *testing.T) {
 					t.Errorf("%s = %v, want %v", k, got[k], w)
 				}
 			}
-			if len(got) != 10 {
+			if len(got) != 12 {
 				t.Errorf("caps %v", got)
 			}
 		})
@@ -229,6 +229,30 @@ func TestProbeCapabilities(t *testing.T) {
 			if b, ok := got[k]; !ok || b != w {
 				t.Errorf("%s = %v (present %v), want %v", k, b, ok, w)
 			}
+		}
+	})
+	t.Run("allow_no_expiry declared", func(t *testing.T) {
+		f, tr := false, true
+		for _, tt := range []struct {
+			name string
+			v    *bool
+			want bool
+		}{{"unset", nil, false}, {"false", &f, true}, {"true", &tr, false}} {
+			t.Run(tt.name, func(t *testing.T) {
+				srv := probeServer(t, probeOpts{appCode: 200})
+				defer srv.Close()
+				host := strings.TrimPrefix(srv.URL, "https://")
+				c := &Config{ServerURL: srv.URL, UserToken: "ghpr_test0000", RepoW: "octo/w",
+					Instance: scenario.InstanceVals{Host: host}, AllowNoExpiry: tt.v}
+				v := &scenario.Vars{}
+				got, err := ProbeCapabilities(context.Background(), c, srv.Client(), mintOpen(t, srv, v), v)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if b, ok := got["no_expiry_disallowed"]; !ok || b != tt.want {
+					t.Errorf("no_expiry_disallowed = %v (present %v), want %v", b, ok, tt.want)
+				}
+			})
 		}
 	})
 	t.Run("empty host", func(t *testing.T) {

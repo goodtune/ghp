@@ -43,6 +43,12 @@ type RunEnv struct {
 	Session string
 	// InstallationID is the typed value for "$int:InstallationID".
 	InstallationID int64
+	// CAFile is GHP_RIG_CA_FILE ("" for the system roots), passed to git.
+	CAFile string
+	// GHPPath is the ghp CLI for git_credential scenarios.
+	GHPPath string
+	// AgentAppRecordID is the app record git_credential mints against.
+	AgentAppRecordID string
 }
 
 // Executor runs one kind of scenario.
@@ -77,6 +83,10 @@ func For(kind string) (Executor, error) {
 		return tokenAPIExecutor{}, nil
 	case "gh":
 		return GH{}, nil
+	case "git":
+		return Git{}, nil
+	case "git_credential":
+		return GitCredential{}, nil
 	}
 	return nil, fmt.Errorf("exec: no executor for kind %q", kind)
 }

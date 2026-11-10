@@ -12,6 +12,10 @@ instance:
   # Leave it empty unless the instance sets block.*; BORDER-C43 then
   # reports GAP.
   border_block: []
+  # The instance's tokens.allow_no_expiry. Operator-declared: the instance
+  # does not expose it. Set false (the server default) to run LIFE-C39
+  # (a "never" duration is refused); leave unset and LIFE-C39 reports GAP.
+  allow_no_expiry:
   # Optional: the GitHub App installation agent (gha_) profiles mint
   # against (issue #306). app_record_id is the GHP app record UUID (GET
   # /api/apps), not the GitHub App ID; installation_id is the numeric

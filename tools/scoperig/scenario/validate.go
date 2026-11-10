@@ -12,9 +12,10 @@ import (
 )
 
 var (
-	validKinds        = map[string]bool{"rest": true, "graphql": true, "gh": true, "token_api": true}
+	validKinds        = map[string]bool{"rest": true, "graphql": true, "gh": true, "token_api": true, "git": true, "git_credential": true}
 	validCapabilities = map[string]bool{"repo_w_push": true, "repo_create": true, "github_vhost": true, "codeload_vhost": true, "agent_installation": true,
-		"non_admin_session": true, "default_app": true, "border_block_ghp": true, "border_block_gho": true, "border_block_github_pat": true}
+		"non_admin_session": true, "default_app": true, "border_block_ghp": true, "border_block_gho": true, "border_block_github_pat": true,
+		"no_expiry_disallowed": true, "ghp_cli": true}
 	knownIssueRE = regexp.MustCompile(`^https://github\.com/goodtune/ghp/issues/\d+$`)
 )
 
@@ -37,6 +38,10 @@ const (
 // appsReadRE is the token_api read allowance for app records: the list, one
 // app, or one app's installations (the CLI's --app/--installation lookups).
 var appsReadRE = regexp.MustCompile(`^/api/apps(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(/installations)?)?$`)
+
+// permissionsPath is the token_api read allowance for the valid-permission
+// list (GET /api/github/permissions).
+const permissionsPath = "/api/github/permissions"
 
 // maxProfileDuration bounds every profile so leaked tokens expire quickly.
 const maxProfileDuration = 2 * time.Hour
@@ -157,7 +162,12 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		add("claim %q not found in claims.yaml", s.Claim)
 	}
 	var prof *Profile
-	if s.Kind != "token_api" {
+	if s.Kind == "git_credential" {
+		// The helper mints its own tokens; no profile token is used.
+		if s.Profile != "" {
+			add("profile is not valid for kind git_credential")
+		}
+	} else if s.Kind != "token_api" {
 		if s.Profile == "" {
 			add("profile is required for kind %q", s.Kind)
 		} else if p, ok := t.Profiles[s.Profile]; !ok {
@@ -182,7 +192,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 		}
 	}
 	if !validKinds[s.Kind] {
-		add("kind %q must be one of rest, graphql, gh, token_api", s.Kind)
+		add("kind %q must be one of rest, graphql, gh, token_api, git, git_credential", s.Kind)
 	}
 
 	// The method/path/body/vhost shorthand is only read for kind rest;
@@ -196,6 +206,20 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 				add("%s is only valid for kind rest (shorthand)", f.name)
 			}
 		}
+	}
+	if s.Kind != "git" {
+		if s.GitOp != "" {
+			add("git_op is only valid for kind git")
+		}
+		if s.Branch != "" {
+			add("branch is only valid for kind git")
+		}
+	}
+	if s.Kind == "git" {
+		checkGit(s, v, add)
+	}
+	if s.Kind == "git_credential" {
+		checkGitCredential(s, add)
 	}
 	if s.OperationName != "" && (s.Kind != "graphql" || len(s.Steps) > 0) {
 		add("operation_name is only valid for a kind graphql scenario with a query (not steps)")
@@ -243,7 +267,7 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 	// Rule 3: capabilities.
 	for _, r := range s.Requires {
 		if !validCapabilities[r] {
-			add("requires %q is not one of repo_w_push, repo_create, github_vhost, codeload_vhost, agent_installation, non_admin_session, default_app, border_block_ghp, border_block_gho, border_block_github_pat", r)
+			add("requires %q is not one of repo_w_push, repo_create, github_vhost, codeload_vhost, agent_installation, non_admin_session, default_app, border_block_ghp, border_block_gho, border_block_github_pat, no_expiry_disallowed, ghp_cli", r)
 		}
 	}
 
@@ -341,6 +365,11 @@ func validateScenario(t *Tree, s *Scenario, base *Vars) []string {
 			// endpoints the CLI resolves --app and --installation with
 			// (TOK-C03, TOK-C04). Sent with the session token.
 			if (method == "GET" || method == "HEAD") && appsReadRE.MatchString(path) {
+				return
+			}
+			// The permission list the web UI offers (PERM-C18). Sent with
+			// the session token; exact path, no query.
+			if (method == "GET" || method == "HEAD") && path == permissionsPath {
 				return
 			}
 			if clean != "/api/tokens" && !strings.HasPrefix(clean, "/api/tokens/") {
@@ -571,4 +600,93 @@ func hasString(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+// checkGit applies the kind git rules (GIT-C48). A clone reads A, B or W.
+// A push writes only to W, on a run-unique branch ({{.RunID}} in branch)
+// that a cleanup DELETE of refs/heads/<branch> removes, and requires
+// repo_w_push. Both go through the github.com vhost (requires
+// github_vhost). Nothing else may be set: the executor builds the git
+// command itself.
+func checkGit(s *Scenario, v *Vars, add func(string, ...any)) {
+	for _, f := range []struct {
+		name string
+		set  bool
+	}{{"args", len(s.Args) > 0}, {"steps", len(s.Steps) > 0}, {"request", s.Request != nil},
+		{"query", s.Query != ""}, {"poll", s.Poll != nil}, {"headers", len(s.Headers) > 0}} {
+		if f.set {
+			add("%s is not valid for kind git", f.name)
+		}
+	}
+	switch s.Repo {
+	case "A", "B", "W":
+	default:
+		add("kind git needs repo: A, B or W (got %q)", s.Repo)
+	}
+	if !hasString(s.Requires, "github_vhost") {
+		add("kind git goes through the github.com vhost: requires: [github_vhost]")
+	}
+	switch s.GitOp {
+	case "clone":
+		if s.Branch != "" {
+			add("branch is only valid for git_op push")
+		}
+	case "push":
+		if s.Repo != "W" {
+			add("git_op push only to W (got repo %q)", s.Repo)
+		}
+		if !hasString(s.Requires, "repo_w_push") {
+			add("git_op push needs requires: [repo_w_push]")
+		}
+		if !strings.Contains(s.Branch, "{{.RunID}}") {
+			add("git_op push needs a run-unique branch containing {{.RunID}} (got %q)", s.Branch)
+			return
+		}
+		branch, err := Expand(s.Branch, v)
+		if err != nil {
+			add("branch: %v", err)
+			return
+		}
+		if strings.ContainsAny(branch, " ~^:?*[\\") || strings.Contains(branch, "..") || strings.HasPrefix(branch, "-") {
+			add("branch %q is not a safe ref name", branch)
+			return
+		}
+		want := "/repos/" + v.RepoW.String() + "/git/refs/heads/" + branch
+		found := false
+		for _, c := range s.Cleanup {
+			p, err := Expand(c.Path, v)
+			if err == nil && strings.EqualFold(strings.TrimSpace(c.Method), "DELETE") && p == want {
+				found = true
+			}
+		}
+		if !found {
+			add("git_op push needs a cleanup DELETE %s", want)
+		}
+	default:
+		add("git_op must be clone or push (got %q)", s.GitOp)
+	}
+}
+
+// checkGitCredential applies the kind git_credential rules (CRED-C55): the
+// executor runs a fixed flow for W with the agent installation app and the
+// ghp CLI, and revokes every token itself, so nothing else may be set.
+func checkGitCredential(s *Scenario, add func(string, ...any)) {
+	if s.Repo != "W" {
+		add("kind git_credential needs repo: W (got %q)", s.Repo)
+	}
+	for _, c := range []string{"agent_installation", "ghp_cli"} {
+		if !hasString(s.Requires, c) {
+			add("kind git_credential needs requires: [%s]", c)
+		}
+	}
+	for _, f := range []struct {
+		name string
+		set  bool
+	}{{"args", len(s.Args) > 0}, {"steps", len(s.Steps) > 0}, {"request", s.Request != nil},
+		{"query", s.Query != ""}, {"poll", s.Poll != nil}, {"headers", len(s.Headers) > 0},
+		{"cleanup", len(s.Cleanup) > 0}} {
+		if f.set {
+			add("%s is not valid for kind git_credential", f.name)
+		}
+	}
 }

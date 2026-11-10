@@ -490,6 +490,11 @@ func runRig(ctx context.Context, c *Config, deps runDeps) (rep *report.Report, e
 		GHPath:         c.GHPath,
 		Session:        c.UserToken,
 		InstallationID: c.InstallationID,
+		CAFile:         c.CAFile,
+		GHPPath:        c.GHPPath,
+	}
+	if caps["agent_installation"] {
+		env.AgentAppRecordID = c.AgentAppRecordID
 	}
 	if c.Verbose {
 		env.Verbose = out
@@ -558,7 +563,7 @@ func runScenario(ctx context.Context, s *scenario.Scenario, env *exec.RunEnv, de
 		}
 	}
 	tok, ok := handles[s.Profile]
-	if !ok && s.Kind != "token_api" {
+	if !ok && s.Kind != "token_api" && s.Kind != "git_credential" {
 		return errResult(s, fmt.Sprintf("no token for profile %q", s.Profile))
 	}
 	ex, err := deps.Exec(s.Kind)
