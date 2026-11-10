@@ -167,6 +167,12 @@ control-plane calls. Each egress proxy keeps its own transport and
 connection pool, and every pool gets the same settings. Zero for a numeric
 field means the Go standard library default. Changes need a restart.
 
+**Behaviour change:** before this release, ghp spoke HTTP/2 to GitHub by
+default (inherited from the Go default transport). It now uses HTTP/1.1 by
+default (`upstream.http2: false`). This opens more connections to GitHub: up
+to `max_idle_conns_per_host` idle connections per host for each egress proxy.
+Set `upstream.http2: true` to restore the old protocol.
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GHP_UPSTREAM_HTTP2` | Negotiate HTTP/2 with GitHub. When `false`, upstream requests use HTTP/1.1 and concurrent requests use separate TCP connections. Replaces the `GODEBUG=http2client=0` workaround. | `false` |

@@ -177,12 +177,18 @@ receive window divided by the round-trip time (4 MiB by default). With
 HTTP/1.1, each concurrent request gets its own connection, and the idle pool
 (32 per host by default) keeps those connections for reuse.
 
+**Behaviour change:** before this release, ghp spoke HTTP/2 to GitHub by
+default (inherited from the Go default transport). It now uses HTTP/1.1 by
+default (`upstream.http2: false`). This opens more connections to GitHub: up
+to `max_idle_conns_per_host` idle connections per host for each egress proxy.
+Set `upstream.http2: true` to restore the old protocol.
+
 The transport records bytes sent and received, connections opened and reused,
 and time to first response byte, by negotiated protocol and vhost (see
 [Monitoring](admin/monitoring.md#upstream-transport-metrics)). Limitations:
 the byte counters count body bytes only (no headers, HTTP/2 framing or TLS
-overhead), and a request body that the transport replays after a retry is
-not counted again. The git cache's background `FetchUpstream` uses go-git's
+overhead). A request body that the transport sends again on a retry is
+counted again. The git cache's background `FetchUpstream` uses go-git's
 own HTTP client, not these transports, so neither the settings nor the
 metrics apply to it.
 
