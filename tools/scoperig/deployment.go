@@ -344,12 +344,18 @@ func metricReason(d scenario.MetricDelta, got float64) string {
 	for i, k := range keys {
 		parts[i] = fmt.Sprintf("%s=%q", yamlToken(k), yamlToken(d.Labels[k]))
 	}
-	want := ""
+	// The bound printed is the one violated: Max when got exceeds it,
+	// otherwise Min when set, otherwise Max. Never empty while either is set.
+	var want string
 	switch {
-	case d.Min != nil && got < float64(*d.Min):
+	case d.Max != nil && got > float64(*d.Max):
+		want = fmt.Sprintf("want_delta<=%d", *d.Max)
+	case d.Min != nil:
 		want = fmt.Sprintf("want_delta>=%d", *d.Min)
 	case d.Max != nil:
 		want = fmt.Sprintf("want_delta<=%d", *d.Max)
+	default:
+		want = "want_delta=unset"
 	}
 	return fmt.Sprintf("metric %s{%s} %s got_delta=%g", yamlToken(d.Name), strings.Join(parts, ","), want, got)
 }
@@ -536,11 +542,36 @@ func isNameByte(c byte) bool {
 	return c == '-' || c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
+// pasteVersionRe is strict semver with a short pre-release and no build
+// metadata.
+var pasteVersionRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-[0-9A-Za-z.]{1,20})?$`)
+
+// pasteBackVersion is the GHP version as printed in the paste-back line:
+// the version if it is strict semver of at most 32 characters and the scrub
+// leaves it unchanged (no configured host, repository, owner or IP literal
+// in it),
+// otherwise "unknown".
+func pasteBackVersion(v string, scrub pasteScrub) string {
+	// The spaced form also catches a repo or owner name used as a
+	// pre-release identifier ("1.2.3-api"), which the bounded match skips.
+	spaced := strings.NewReplacer("-", " ", ".", " ").Replace(v)
+	if len(v) > 32 || !pasteVersionRe.MatchString(v) || scrub.apply(v) != v || scrub.apply(spaced) != spaced {
+		return "unknown"
+	}
+	return v
+}
+
 // writePasteBack writes the one-line machine-readable result for --claims.
 // It is an allowlist: run id, GHP version, exit code, token counts, and per
 // scenario only its id, status and rig-generated reasons (Reasons, else
-// "other"). No Detail, Error or other free text. The finished line also
-// passes through scrub as a second layer.
+// "other"). No Detail, Error or other free text.
+//
+// The scrub applies to ghp_version only, never to the encoded line (a repo
+// named "status/api" would otherwise rewrite JSON keys and label values).
+// Reasons need no scrub: they are built only from constants, ints, bools,
+// floats and scenario YAML tokens (yamlToken hides templated values), never
+// from a response, error or config value; TestReasons_NoFreeText holds this.
+// Claim and scenario ids, statuses and the run id are rig or YAML values.
 func writePasteBack(w io.Writer, rep *report.Report, code int, scrub pasteScrub) error {
 	type sc struct {
 		ID      string   `json:"id"`
@@ -555,7 +586,7 @@ func writePasteBack(w io.Writer, rep *report.Report, code int, scrub pasteScrub)
 		Scenarios  []sc              `json:"scenarios"`
 		Tokens     string            `json:"tokens"`
 		Note       string            `json:"note,omitempty"`
-	}{RunID: rep.RunID, GHPVersion: rep.GHPVersion, ExitCode: code, Claims: map[string]string{}, Scenarios: []sc{},
+	}{RunID: rep.RunID, GHPVersion: pasteBackVersion(rep.GHPVersion, scrub), ExitCode: code, Claims: map[string]string{}, Scenarios: []sc{},
 		Tokens: fmt.Sprintf("%d created, %d revoked, %d leftover", rep.Tokens.Created, rep.Tokens.Revoked, len(rep.Tokens.LeftoverIDs))}
 	for _, c := range rep.Claims {
 		out.Claims[c.ID] = string(c.Status)
@@ -576,6 +607,6 @@ func writePasteBack(w io.Writer, rep *report.Report, code int, scrub pasteScrub)
 	if err := enc.Encode(out); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(w, "\nscoperig-result: %s", scrub.apply(b.String()))
+	_, err := fmt.Fprintf(w, "\nscoperig-result: %s", b.String())
 	return err
 }

@@ -110,7 +110,10 @@ instance is quiet.
 6. **Send back the result.** Copy the last line of the output, which starts
    with `scoperig-result:`, and the exit code (`echo $?`). The line holds
    only:
-    - the run id, the GHP version, the exit code and the token counts;
+    - the run id, the GHP version, the exit code and the token counts. The
+      version is `unknown` if it is not a short semantic version (for
+      example `0.28.0` or `1.2.3-rc.1`) or if it contains a configured
+      host, IP address, repository or owner name;
     - a status for each claim;
     - for each scenario: its id, its status, and reasons that the rig builds
       from a fixed list. The reasons are `http_status want=... got=...`,
@@ -123,8 +126,7 @@ instance is quiet.
       locally".
 
     The line holds no response text, error message, host, address,
-    repository name or token. As a second safeguard, the rig also replaces
-    any configured host, IP address or repository name in it. The full
+    repository name or token. The full
     detail is only in the local JSON file (`--out`). Do not paste that file.
 
 ## What the run creates and removes
