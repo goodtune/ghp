@@ -18,8 +18,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -767,7 +769,11 @@ const sentinelScenarios = `
 // instance whose every response carries pasteSentinel. Each request moves
 // a counter whose label value is the sentinel; the label-less max: 0 delta
 // sums it, so a metric reason is built from sentinel-labelled samples.
-func runSentinel(t *testing.T, metricsURL func(real string) string) cliResult {
+//
+// scenarios replaces sentinelScenarios when not empty. tweak, when set,
+// runs after the fakes are set up and before the run, so a subtest can
+// break the vhost or the metrics server.
+func runSentinel(t *testing.T, metricsURL func(real string) string, scenarios string, tweak func(f *fakeGHP, m *fakeMetrics)) cliResult {
 	t.Helper()
 	f := newFakeGHPVhost(t)
 	m := newFakeMetrics(t)
@@ -791,6 +797,12 @@ func runSentinel(t *testing.T, metricsURL func(real string) string) cliResult {
 		}
 		return true
 	}
+	if tweak != nil {
+		tweak(f, m)
+	}
+	if scenarios == "" {
+		scenarios = sentinelScenarios
+	}
 	root := t.TempDir()
 	cfgBody := fmt.Sprintf(`instance:
   host: %s
@@ -807,7 +819,7 @@ fixtures:
 	for name, body := range map[string]string{
 		"claims.yaml":      "- {id: ENT-C50, doc: d.md, claim: c, iteration: 3, testable: periodic}\n",
 		"profiles.yaml":    testProfiles,
-		"scenarios/s.yaml": sentinelScenarios,
+		"scenarios/s.yaml": scenarios,
 		"config.yaml":      cfgBody,
 	} {
 		p := filepath.Join(root, name)
@@ -842,7 +854,7 @@ func pasteLine(t *testing.T, stdout string) string {
 // carry none of it, through verdict, metric, gap and error reasons.
 func TestPasteBack_NoInstanceData(t *testing.T) {
 	t.Run("verdict, metric and gap reasons", func(t *testing.T) {
-		res := runSentinel(t, func(real string) string { return real })
+		res := runSentinel(t, func(real string) string { return real }, "", nil)
 		line := pasteLine(t, res.stdout)
 		if strings.Contains(asciiutil.ToLower(line), pasteSentinel) || strings.Contains(line, "10.2.3.4") {
 			t.Errorf("paste-back line carries instance data:\n%s", line)
@@ -872,7 +884,7 @@ func TestPasteBack_NoInstanceData(t *testing.T) {
 		}
 	})
 	t.Run("error reasons", func(t *testing.T) {
-		res := runSentinel(t, func(string) string { return "http://metrics." + pasteSentinel + ".invalid:9136/metrics" })
+		res := runSentinel(t, func(string) string { return "http://metrics." + pasteSentinel + ".invalid:9136/metrics" }, "", nil)
 		line := pasteLine(t, res.stdout)
 		if strings.Contains(asciiutil.ToLower(line), pasteSentinel) || strings.Contains(line, "9136") {
 			t.Errorf("paste-back line carries instance data:\n%s", line)
@@ -882,4 +894,114 @@ func TestPasteBack_NoInstanceData(t *testing.T) {
 			t.Errorf("exit_code = %d, want 2\n%s", pb.ExitCode, line)
 		}
 	})
+	// hijackClose drops the connection without a response, so the client
+	// sees a transport error whose text carries the request URL.
+	hijackClose := func(t *testing.T, w http.ResponseWriter) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("response writer %T cannot hijack", w)
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}
+	for _, tc := range []struct {
+		name       string
+		metricsURL func(real string) string
+		scenarios  string
+		tweak      func(t *testing.T) func(f *fakeGHP, m *fakeMetrics)
+		id, reason string
+	}{
+		{
+			// The scenario request path holds the sentinel; the vhost
+			// closes the connection, so the *url.Error text carries it.
+			name:       "transport error",
+			metricsURL: func(real string) string { return real },
+			tweak: func(t *testing.T) func(f *fakeGHP, m *fakeMetrics) {
+				return func(f *fakeGHP, m *fakeMetrics) {
+					inner := f.intercept
+					f.intercept = func(w http.ResponseWriter, r *http.Request) bool {
+						if strings.Contains(r.URL.Path, pasteSentinel) {
+							hijackClose(t, w)
+							return true
+						}
+						return inner(w, r)
+					}
+				}
+			},
+			id:     "ENT-C50.verdict-and-metric",
+			reason: reasonTransport,
+		},
+		{
+			// The verdict must be PASS for the after-scrape reason, so
+			// this uses its own scenario and the vhost answers 200. The
+			// before scrape succeeds; once the scenario request has been
+			// seen, the metrics server closes the connection, so the
+			// after scrape fails with the sentinel (in the URL path) in
+			// its error text. The handler strips the sentinel path segment.
+			name: "after-scrape error",
+			metricsURL: func(real string) string {
+				return strings.TrimSuffix(real, "/metrics") + "/" + pasteSentinel + "/metrics"
+			},
+			scenarios: `
+- id: ENT-C50.after-scrape
+  claim: ENT-C50
+  profile: open
+  requires: [ghp_metrics, enterprise_restriction]
+  kind: rest
+  method: GET
+  path: /repos/{{.Enterprise.OmitRepo}}
+  expect: {status: 200}
+  metric_delta:
+    - {name: ghp_rig_sentinel_total, max: 0}
+`,
+			tweak: func(t *testing.T) func(f *fakeGHP, m *fakeMetrics) {
+				return func(f *fakeGHP, m *fakeMetrics) {
+					var seen atomic.Bool
+					inner := f.intercept
+					f.intercept = func(w http.ResponseWriter, r *http.Request) bool {
+						if strings.Contains(r.URL.Path, pasteSentinel) {
+							seen.Store(true)
+							writeJSONResp(w, 200, map[string]string{"full_name": pasteSentinel + "/omit"})
+							return true
+						}
+						return inner(w, r)
+					}
+					h := m.ts.Config.Handler
+					m.ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if seen.Load() {
+							hijackClose(t, w)
+							return
+						}
+						r.URL.Path = strings.Replace(r.URL.Path, "/"+pasteSentinel, "", 1)
+						h.ServeHTTP(w, r)
+					})
+				}
+			},
+			id:     "ENT-C50.after-scrape",
+			reason: reasonScrape,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runSentinel(t, tc.metricsURL, tc.scenarios, tc.tweak(t))
+			line := pasteLine(t, res.stdout)
+			if strings.Contains(asciiutil.ToLower(line), pasteSentinel) {
+				t.Errorf("paste-back line carries instance data:\n%s", line)
+			}
+			pb := parsePasteBack(t, line)
+			found := false
+			for _, sc := range pb.Scenarios {
+				if sc.ID == tc.id {
+					found = slices.Contains(sc.Reasons, tc.reason)
+				}
+			}
+			if !found {
+				t.Errorf("%s reasons lack %s:\n%s", tc.id, tc.reason, line)
+			}
+		})
+	}
 }
