@@ -442,6 +442,8 @@ golang.ngrok.com/muxado/v2 v2.0.1 h1:jM9i6Pom6GGmnPrHKNR6OJRrUoHFkSZlJ3/S0zqdVpY
 golang.ngrok.com/muxado/v2 v2.0.1/go.mod h1:wzxJYX4xiAtmwumzL+QsukVwFRXmPNv86vB8RPpOxyM=
 golang.ngrok.com/ngrok/v2 v2.4.0 h1:LbiyYoexxW6BqAbskGeto0V/UmlGUDAp+xsRBH5xLjA=
 golang.ngrok.com/ngrok/v2 v2.4.0/go.mod h1:1bwK0+ZB4RJCJdqaXs2mvdsjeSk+x4YrrLn8IqOrIGo=
+golang.ngrok.com/ngrok/v2 v2.5.0 h1:3SK3iJcdUOEDfrjBfkZJBUpKrJem03iwR7hzx2LORi0=
+golang.ngrok.com/ngrok/v2 v2.5.0/go.mod h1:1bwK0+ZB4RJCJdqaXs2mvdsjeSk+x4YrrLn8IqOrIGo=
 golang.org/x/crypto v0.0.0-20220622213112-05595931fe9d/go.mod h1:IxCIyHEi3zRg3s0A5j5BB6A9Jmi73HwBIUl50j+osU4=
 golang.org/x/crypto v0.57.0 h1:3ZVCjf8Ggz7zneR/EHRVx68Ctf+2pmIMP2UFhh9cC6M=
 golang.org/x/crypto v0.57.0/go.mod h1:Fdz0i5U6CoizGwLda9DttjSk6qlZo25zYNtR+ycvuZA=
