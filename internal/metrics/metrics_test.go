@@ -708,6 +708,19 @@ func TestWebhookPublishDuration(t *testing.T) {
 	}
 }
 
+func TestWebhookStreamAckTotal(t *testing.T) {
+	for _, result := range []string{"acked", "ack_error", "wrong_sequence", "invalid_session", "bad_request", "nak_disconnect", "nak_shutdown", "nak_evicted"} {
+		t.Run(result, func(t *testing.T) {
+			labels := prometheus.Labels{"result": result}
+			before := getCounterValue(t, WebhookStreamAckTotal, labels)
+			WebhookStreamAckTotal.WithLabelValues(result).Inc()
+			if d := getCounterValue(t, WebhookStreamAckTotal, labels) - before; d != 1 {
+				t.Errorf("expected counter to increment by 1, got %f", d)
+			}
+		})
+	}
+}
+
 func TestWebhookGauges(t *testing.T) {
 	WebhookNgrokTunnelUp.Set(1)
 	if v := getGaugeValue(t, WebhookNgrokTunnelUp); v != 1 {

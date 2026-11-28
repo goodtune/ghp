@@ -26,12 +26,23 @@ type webhookService struct {
 	secrets *webhook.StoreSecretSource
 	baseURL string
 
+	// acks holds the live client-ack stream sessions.
+	acks *streamAckRegistry
+	// ackWait and inProgressEvery override the durable AckWait and the
+	// InProgress interval for client-ack streams (zero = defaults). Tests
+	// shorten them.
+	ackWait         time.Duration
+	inProgressEvery time.Duration
+	// writeTimeout overrides the per-chunk SSE write deadline (zero =
+	// sseFlushTimeout).
+	writeTimeout time.Duration
+
 	mu     sync.RWMutex
 	tunnel *webhook.Tunnel
 }
 
 func newWebhookService(cfg config.WebhooksConfig, bus *webhook.Bus, secrets *webhook.StoreSecretSource, baseURL string) *webhookService {
-	return &webhookService{cfg: cfg, bus: bus, secrets: secrets, baseURL: baseURL}
+	return &webhookService{cfg: cfg, bus: bus, secrets: secrets, baseURL: baseURL, acks: newStreamAckRegistry()}
 }
 
 func (s *webhookService) setTunnel(t *webhook.Tunnel) {
@@ -96,7 +107,10 @@ type webhookStatusResponse struct {
 	IngressPath  string `json:"ingress_path,omitempty"`
 	IngressURL   string `json:"ingress_url,omitempty"`
 	GlobalSecret bool   `json:"global_secret_configured"`
-	Ngrok        struct {
+	// MaxPayloadBytes is the ingest body cap; the relay sizes its stream
+	// reader from it.
+	MaxPayloadBytes int64 `json:"max_payload_bytes,omitempty"`
+	Ngrok           struct {
 		Enabled   bool   `json:"enabled"`
 		Connected bool   `json:"connected"`
 		URL       string `json:"url,omitempty"`
@@ -139,6 +153,7 @@ func (a *API) handleWebhookStatus(w http.ResponseWriter, r *http.Request) {
 	resp.IngressPath = ws.cfg.Path
 	resp.IngressURL = ws.IngressURL()
 	resp.GlobalSecret = ws.cfg.Secret != ""
+	resp.MaxPayloadBytes = ws.cfg.MaxPayloadBytes
 	resp.Ngrok.Enabled = ws.cfg.Ngrok.Enabled
 	resp.Ngrok.Domain = ws.cfg.Ngrok.Domain
 	resp.Ngrok.URL = ws.tunnelURL()
@@ -247,9 +262,11 @@ func (a *API) handleWebhookDelivery(w http.ResponseWriter, r *http.Request) {
 }
 
 const (
-	sseHeartbeat    = 15 * time.Second
-	maxDurableName  = 64
-	sseRetryMillis  = 3000
+	sseHeartbeat   = 15 * time.Second
+	maxDurableName = 64
+	sseRetryMillis = 3000
+	// sseFlushTimeout is the write deadline for one chunk of an SSE frame
+	// (see writeSSE), not for a whole event.
 	sseFlushTimeout = 10 * time.Second
 )
 
@@ -294,6 +311,11 @@ func parseStreamOptions(r *http.Request, prefix string) (webhook.SubscribeOption
 // Envelope as data. Clients reconnecting with Last-Event-ID resume after the
 // last sequence they saw; the durable query parameter gives the same
 // guarantee server-side via a named JetStream consumer.
+//
+// raw=1 adds payload_base64, the exact stored message bytes, to each event.
+// ack=client (requires durable) sends a session event first and then holds
+// each delivery until the client acknowledges it via
+// POST /api/webhooks/stream/ack (see webhook_stream_ack.go).
 func (a *API) handleWebhookStream(w http.ResponseWriter, r *http.Request) {
 	if a.webhookDisabled(w) {
 		return
@@ -302,6 +324,14 @@ func (a *API) handleWebhookStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
+	}
+	raw, clientAck, err := parseStreamModes(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	}
+	if clientAck {
+		opts.AckWait = a.webhooks.ackWait
 	}
 	rc := http.NewResponseController(w)
 
@@ -320,13 +350,54 @@ func (a *API) handleWebhookStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
+	// A client-ack session is opened before subscribing: it may first
+	// evict an older session on the same durable and wait for it to hand
+	// back its pending delivery.
+	var (
+		sessToken string
+		sess      *streamAckSession
+	)
+	if clientAck {
+		sessToken, sess, err = a.webhooks.acks.open(ctx, sessionUserID(r.Context()), sessionLogin(r.Context()), webhook.SanitizeToken(opts.Durable), cancel, a.webhooks.evictWait())
+		if err != nil {
+			a.logger.Error("webhook_stream_session_failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to open stream session"})
+			return
+		}
+		defer a.webhooks.acks.close(sessToken, sess)
+		if sess.evicted.Load() {
+			// Another client took the durable while this one waited.
+			a.respondEvicted(w, rc, sess)
+			return
+		}
+		if ctx.Err() != nil {
+			// The client went away (or the server is shutting down)
+			// while waiting for the evicted session.
+			return
+		}
+	}
 	sub, err := a.webhooks.bus.Subscribe(ctx, opts)
 	if err != nil {
+		if sess != nil && sess.evicted.Load() {
+			a.respondEvicted(w, rc, sess)
+			return
+		}
 		a.logger.Error("webhook_subscribe_failed", "error", err, "filter", opts.Filter, "durable", opts.Durable)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Failed to subscribe"})
 		return
 	}
 	defer sub.Close()
+
+	streaming, frameCut := false, false
+	if clientAck {
+		// Runs after the pending delivery has been Nak'd and before the
+		// session is closed (which releases the evicting session).
+		defer func() {
+			if streaming && sess.evicted.Load() {
+				a.writeEvicted(w, rc, sess, frameCut)
+			}
+		}()
+	}
 
 	gauge := metrics.WebhookSubscribersActive.WithLabelValues("sse")
 	gauge.Inc()
@@ -337,9 +408,19 @@ func (a *API) handleWebhookStream(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
+	// Lets a client confirm it reached a server whose stream honours
+	// ack=client before it reads any event.
+	h.Set(webhook.ClientAckHeader, "1")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "retry: %d\n\n: connected filter=%s\n\n", sseRetryMillis, opts.Filter)
-	_ = rc.Flush()
+	preamble := fmt.Sprintf("retry: %d\n\n: connected filter=%s\n\n", sseRetryMillis, opts.Filter)
+	if clientAck {
+		sessData, _ := json.Marshal(map[string]string{"session": sessToken})
+		preamble += fmt.Sprintf("event: %s\ndata: %s\n\n", webhook.EventSession, sessData)
+	}
+	streaming = true
+	if err := a.writeSSE(ctx, w, rc, []byte(preamble)); err != nil {
+		return
+	}
 
 	for {
 		nctx, cancel := context.WithTimeout(ctx, sseHeartbeat)
@@ -350,31 +431,46 @@ func (a *API) handleWebhookStream(w http.ResponseWriter, r *http.Request) {
 				return // client went away or server shutting down
 			}
 			if errors.Is(err, context.DeadlineExceeded) {
-				if _, werr := fmt.Fprint(w, ": ping\n\n"); werr != nil {
-					return
-				}
-				if ferr := rc.Flush(); ferr != nil {
+				if werr := a.writeSSE(ctx, w, rc, []byte(": ping\n\n")); werr != nil {
 					return
 				}
 				continue
 			}
 			a.logger.Warn("webhook_stream_next_failed", "error", err)
-			fmt.Fprintf(w, "event: error\ndata: %s\n\n", jsonString(err.Error()))
-			_ = rc.Flush()
+			_ = a.writeSSE(ctx, w, rc, fmt.Appendf(nil, "event: error\ndata: %s\n\n", jsonString(err.Error())))
 			return
+		}
+		if raw {
+			// The exact bytes replace the decoded payload: sending both
+			// would more than double the event (json.Marshal also escapes
+			// <, > and & in the decoded copy).
+			env.PayloadBase64 = msg.Data()
+			env.Payload = nil
 		}
 		data, merr := json.Marshal(env)
 		if merr != nil {
 			_ = sub.Nak(msg)
 			continue
 		}
-		if _, werr := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", env.Sequence, sseEventName(env.Event), data); werr != nil {
-			_ = sub.Nak(msg)
+		if clientAck {
+			// Pending before the event is written: the client may ack as
+			// soon as it reads it.
+			sess.setPending(env.Sequence, msg)
+		}
+		if werr := a.writeSSE(ctx, w, rc, fmt.Appendf(nil, "id: %d\nevent: %s\ndata: %s\n\n", env.Sequence, sseEventName(env.Event), data)); werr != nil {
+			frameCut = errors.Is(werr, errFrameCut)
+			if clientAck {
+				a.nakPending(sess, env.Sequence)
+			} else {
+				_ = sub.Nak(msg)
+			}
 			return
 		}
-		if ferr := rc.Flush(); ferr != nil {
-			_ = sub.Nak(msg)
-			return
+		if clientAck {
+			if !a.awaitClientAck(ctx, w, rc, sess, msg, env.Sequence) {
+				return
+			}
+			continue
 		}
 		// Only acknowledge after the bytes have been handed to the client.
 		if aerr := sub.Ack(msg); aerr != nil {

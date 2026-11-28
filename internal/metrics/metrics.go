@@ -495,6 +495,27 @@ var (
 		Help: "Number of active webhook subscribers by kind (sse, nats).",
 	}, []string{"kind"})
 
+	// WebhookStreamAckTotal counts client acknowledgements on the webhook
+	// SSE stream in client-ack mode (ack=client), and the Naks the server
+	// sends when a client-ack stream ends with a delivery unacknowledged:
+	//   "acked"           — the client acknowledged the pending sequence and
+	//                       the JetStream ack was confirmed
+	//   "ack_error"       — the client ack matched but the JetStream ack
+	//                       failed; the delivery is redelivered after AckWait
+	//   "wrong_sequence"  — the session exists but has a different (or no)
+	//                       pending sequence (409)
+	//   "invalid_session" — no live stream session with that token for the
+	//                       caller (404)
+	//   "bad_request"     — malformed ack body (400/413)
+	//   "nak_disconnect"  — the client disconnected with a delivery pending
+	//   "nak_shutdown"    — the server shut down with a delivery pending
+	//   "nak_evicted"     — a newer client-ack session on the same durable
+	//                       replaced this one with a delivery pending
+	WebhookStreamAckTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ghp_webhook_stream_ack_total",
+		Help: "Client-ack outcomes on the webhook SSE stream (ack=client), by result.",
+	}, []string{"result"})
+
 	// BuildInfo is a gauge with a constant value of 1 labeled by build
 	// metadata. It follows the node_exporter_build_info convention.
 	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{

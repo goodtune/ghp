@@ -331,7 +331,15 @@ type SubscribeOptions struct {
 	// own acknowledged position regardless of what the reconnecting client
 	// asks for.
 	Durable string
+	// AckWait overrides the durable consumer's AckWait (default
+	// DefaultAckWait). Like StartSeq it only applies when the consumer is
+	// first created.
+	AckWait time.Duration
 }
+
+// DefaultAckWait is how long JetStream waits for a durable subscriber to
+// acknowledge a delivery before redelivering it.
+const DefaultAckWait = 10 * time.Second
 
 // durablePullWait bounds each durable pull so that cancelling Next (client
 // disconnect, heartbeat deadline, shutdown) takes effect within this long.
@@ -461,6 +469,10 @@ func (b *Bus) Subscribe(ctx context.Context, opts SubscribeOptions) (*Subscripti
 		err  error
 	)
 	if opts.Durable != "" {
+		ackWait := opts.AckWait
+		if ackWait <= 0 {
+			ackWait = DefaultAckWait
+		}
 		name := SanitizeToken(opts.Durable)
 		cons, err = b.stream.Consumer(ctx, name)
 		if errors.Is(err, jetstream.ErrConsumerNotFound) {
@@ -473,8 +485,9 @@ func (b *Bus) Subscribe(ctx context.Context, opts SubscribeOptions) (*Subscripti
 				// Subscribers ack as soon as the event is flushed to the
 				// client, so a short AckWait keeps redelivery prompt when a
 				// client disconnects mid-fetch without over-delivering to
-				// healthy ones.
-				AckWait:       10 * time.Second,
+				// healthy ones. Client-ack streams hold a delivery longer
+				// and keep it alive with InProgress.
+				AckWait:       ackWait,
 				MaxAckPending: 256,
 				// Durable position survives reconnects but is
 				// garbage-collected after a long absence so abandoned CLIs

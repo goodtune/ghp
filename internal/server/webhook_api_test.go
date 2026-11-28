@@ -116,6 +116,9 @@ func TestWebhookStatus_Enabled(t *testing.T) {
 	if !st.Enabled || st.IngressPath != "/webhooks/github" {
 		t.Errorf("unexpected status: %+v", st)
 	}
+	if st.MaxPayloadBytes != 25*1024*1024 {
+		t.Errorf("max_payload_bytes = %d", st.MaxPayloadBytes)
+	}
 	if st.IngressURL != "https://ghp.example.com/webhooks/github" {
 		t.Errorf("ingress_url = %q", st.IngressURL)
 	}

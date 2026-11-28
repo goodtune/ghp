@@ -28,6 +28,7 @@ import (
 	"github.com/goodtune/ghp/internal/permissions"
 	"github.com/goodtune/ghp/internal/proxy"
 	"github.com/goodtune/ghp/internal/token"
+	"github.com/goodtune/ghp/internal/webhook"
 )
 
 // maxRequestBodySize is the maximum allowed request body size for API endpoints.
@@ -178,6 +179,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/webhooks/deliveries", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleWebhookDeliveries)))
 	mux.Handle("GET /api/webhooks/deliveries/{seq}", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleWebhookDelivery)))
 	mux.Handle("GET /api/webhooks/stream", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleWebhookStream)))
+	mux.Handle("POST "+webhook.StreamAckPath, a.authHandler.RequireAdmin(http.HandlerFunc(a.handleWebhookStreamAck)))
 
 	mux.Handle("GET /api/cached-repos", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleListCachedRepos)))
 	mux.Handle("POST /api/cached-repos", a.authHandler.RequireAdmin(http.HandlerFunc(a.handleCreateCachedRepo)))

@@ -39,6 +39,33 @@ const (
 	HdrUserAgent    = "GHP-Original-User-Agent"
 )
 
+// Client-ack stream protocol, shared by the server (internal/server) and
+// the relay (internal/webhook/relay) so the two cannot drift apart.
+const (
+	// ClientAckHeader is set to "1" on every response of the ack endpoint
+	// and on client-ack stream responses, so a client can tell a server
+	// that honours ack=client from an older one (or a proxy).
+	ClientAckHeader = "GHP-Webhook-Client-Ack"
+	// StreamAckPath is the client-ack endpoint.
+	StreamAckPath = "/api/webhooks/stream/ack"
+	// EventSession is the SSE event that opens a client-ack stream; its
+	// data is {"session": "<token>"}.
+	EventSession = "session"
+	// EventEvicted ends a client-ack stream that another one took over;
+	// its data is {"reason", "durable", "by"}.
+	EventEvicted = "evicted"
+	// AckCodeAcked (409): that sequence was already acknowledged.
+	AckCodeAcked = "acked"
+	// AckCodeReleased (409): that sequence was returned to the durable and
+	// will be redelivered.
+	AckCodeReleased = "released"
+	// AckCodeWrongSequence (409): that sequence was never pending.
+	AckCodeWrongSequence = "wrong_sequence"
+	// AckCodeAckError (502): the JetStream ack failed; the server has
+	// released the delivery for redelivery, so the client must not retry.
+	AckCodeAckError = "ack_error"
+)
+
 // Envelope is the subscriber-facing representation of one stored delivery.
 // It is what the admin SSE stream emits as the event data and what the
 // ghp webhooks tail command prints. Payload is omitted for headers-only
