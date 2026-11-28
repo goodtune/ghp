@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -371,6 +372,56 @@ func TestHandler_EdgeCasePayloads(t *testing.T) {
 			}
 			if fp.lastSubject != tt.wantSubject {
 				t.Errorf("subject = %q, want %q", fp.lastSubject, tt.wantSubject)
+			}
+		})
+	}
+}
+
+// TestHandler_StoresReplayHeaders checks that ingest keeps what a faithful
+// replay needs: the original signatures and User-Agent.
+func TestHandler_StoresReplayHeaders(t *testing.T) {
+	secret := []byte("app-secret")
+	tests := []struct {
+		name    string
+		sha1    string
+		ua      string
+		wantSHA string
+	}{
+		{name: "sha256 and sha1", sha1: "sha1=0123456789abcdef0123456789abcdef01234567", ua: "GitHub-Hookshot/abc123", wantSHA: "sha1=0123456789abcdef0123456789abcdef01234567"},
+		{name: "sha256 only", ua: "GitHub-Hookshot/def456"},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, b := newTestHandler(t, StaticSecretSource{{Secret: secret}})
+			extra := map[string]string{"User-Agent": tt.ua}
+			if tt.sha1 != "" {
+				extra[HeaderSignature] = tt.sha1
+			}
+			body := `{"zen":"replay"}`
+			req := deliveryRequest(t, body, "ping", "replay-"+strconv.Itoa(i), "application/json", secret, extra)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+			}
+			env, err := b.Get(context.Background(), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := Sign(secret, []byte(body)); env.Signature256 != want || env.Headers[HdrSignature256] != want {
+				t.Errorf("signature_256 = %q (header %q), want %q", env.Signature256, env.Headers[HdrSignature256], want)
+			}
+			if env.SignatureSHA1 != tt.wantSHA {
+				t.Errorf("signature_sha1 = %q, want %q", env.SignatureSHA1, tt.wantSHA)
+			}
+			if _, ok := env.Headers[HdrSignature]; ok != (tt.sha1 != "") {
+				t.Errorf("sha1 header present = %v, want %v", ok, tt.sha1 != "")
+			}
+			if env.UserAgent != tt.ua || env.Headers[HdrUserAgent] != tt.ua {
+				t.Errorf("user_agent = %q, want %q", env.UserAgent, tt.ua)
+			}
+			if env.OriginalContentType != "application/json" {
+				t.Errorf("original_content_type = %q", env.OriginalContentType)
 			}
 		})
 	}

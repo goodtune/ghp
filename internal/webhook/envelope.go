@@ -28,6 +28,15 @@ const (
 	HdrReceivedAt      = "GHP-Received-At"
 	HdrOriginalContent = "GHP-Original-Content-Type"
 	HdrContentType     = "Content-Type"
+	// HdrSignature256 and HdrSignature keep GitHub's original
+	// X-Hub-Signature-256 and (when sent) X-Hub-Signature values, and
+	// HdrUserAgent the original User-Agent, so that a delivery can be
+	// replayed to another receiver exactly as GitHub sent it (ghp webhooks
+	// tail --relay). Deliveries stored before these headers existed do not
+	// have them.
+	HdrSignature256 = "Hub-Signature-256"
+	HdrSignature    = "Hub-Signature"
+	HdrUserAgent    = "GHP-Original-User-Agent"
 )
 
 // Envelope is the subscriber-facing representation of one stored delivery.
@@ -35,23 +44,36 @@ const (
 // ghp webhooks tail command prints. Payload is omitted for headers-only
 // listings.
 type Envelope struct {
-	Subject        string            `json:"subject"`
-	Sequence       uint64            `json:"sequence"`
-	StoredAt       time.Time         `json:"stored_at"`
-	Delivery       string            `json:"delivery"`
-	Event          string            `json:"event"`
-	Action         string            `json:"action,omitempty"`
-	HookID         string            `json:"hook_id,omitempty"`
-	TargetType     string            `json:"target_type,omitempty"`
-	TargetID       string            `json:"target_id,omitempty"`
-	AppRecordID    string            `json:"app_record_id,omitempty"`
-	AppName        string            `json:"app_name,omitempty"`
-	Repository     string            `json:"repository,omitempty"`
-	InstallationID int64             `json:"installation_id,omitempty"`
-	Sender         string            `json:"sender,omitempty"`
-	ReceivedAt     time.Time         `json:"received_at"`
-	Headers        map[string]string `json:"headers,omitempty"`
-	Payload        json.RawMessage   `json:"payload,omitempty"`
+	Subject        string    `json:"subject"`
+	Sequence       uint64    `json:"sequence"`
+	StoredAt       time.Time `json:"stored_at"`
+	Delivery       string    `json:"delivery"`
+	Event          string    `json:"event"`
+	Action         string    `json:"action,omitempty"`
+	HookID         string    `json:"hook_id,omitempty"`
+	TargetType     string    `json:"target_type,omitempty"`
+	TargetID       string    `json:"target_id,omitempty"`
+	AppRecordID    string    `json:"app_record_id,omitempty"`
+	AppName        string    `json:"app_name,omitempty"`
+	Repository     string    `json:"repository,omitempty"`
+	InstallationID int64     `json:"installation_id,omitempty"`
+	Sender         string    `json:"sender,omitempty"`
+	ReceivedAt     time.Time `json:"received_at"`
+	// Signature256 and SignatureSHA1 are GitHub's original X-Hub-Signature-256
+	// and X-Hub-Signature header values. UserAgent and OriginalContentType
+	// are the original User-Agent and Content-Type request headers. They are
+	// empty for deliveries stored before ghp kept them.
+	Signature256        string            `json:"signature_256,omitempty"`
+	SignatureSHA1       string            `json:"signature_sha1,omitempty"`
+	UserAgent           string            `json:"user_agent,omitempty"`
+	OriginalContentType string            `json:"original_content_type,omitempty"`
+	Headers             map[string]string `json:"headers,omitempty"`
+	Payload             json.RawMessage   `json:"payload,omitempty"`
+	// PayloadBase64 is the exact stored message data, base64-encoded. It is
+	// only set when a stream subscriber asks for it (raw=1). Unlike Payload,
+	// which encoding/json re-encodes, it is byte-for-byte what GitHub signed
+	// for JSON deliveries.
+	PayloadBase64 []byte `json:"payload_base64,omitempty"`
 }
 
 // envelopeFromHeader builds the shared part of an Envelope from a message
@@ -77,6 +99,11 @@ func envelopeFromHeader(subject string, seq uint64, storedAt time.Time, h nats.H
 		AppName:     get(HdrAppName),
 		Repository:  get(HdrRepository),
 		Sender:      get(HdrSender),
+
+		Signature256:        get(HdrSignature256),
+		SignatureSHA1:       get(HdrSignature),
+		UserAgent:           get(HdrUserAgent),
+		OriginalContentType: get(HdrOriginalContent),
 	}
 	if v := get(HdrInstallationID); v != "" {
 		e.InstallationID, _ = strconv.ParseInt(v, 10, 64)

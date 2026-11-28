@@ -15,6 +15,10 @@ const (
 	HeaderInstallationTargetType = "X-GitHub-Hook-Installation-Target-Type"
 	HeaderInstallationTargetID   = "X-GitHub-Hook-Installation-Target-ID"
 	HeaderSignature256           = "X-Hub-Signature-256"
+	// HeaderSignature is the legacy HMAC-SHA1 signature. GitHub still sends
+	// it alongside X-Hub-Signature-256; ghp never verifies it but stores it
+	// so a relayed delivery carries every header GitHub sent.
+	HeaderSignature = "X-Hub-Signature"
 
 	// TargetTypeIntegration is the installation target type GitHub sets on
 	// deliveries from a GitHub App's webhook. The target ID is then the
