@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/goodtune/ghp/internal/webhook"
+	"github.com/goodtune/ghp/internal/webhook/relay"
 )
 
 func newWebhooksCmd() *cobra.Command {
@@ -152,12 +153,14 @@ func newWebhooksStatusCmd() *cobra.Command {
 
 func newWebhooksTailCmd() *cobra.Command {
 	var (
-		filter  string
-		from    string
-		durable string
-		asJSON  bool
-		payload bool
-		count   int
+		filter   string
+		from     string
+		durable  string
+		asJSON   bool
+		payload  bool
+		count    int
+		relayURL string
+		relayTO  time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "tail",
@@ -182,7 +185,22 @@ position: deliveries are acknowledged only after they have been printed, so a
 restarted tail with the same name resumes where the previous one stopped.
 
 The connection is retried automatically on network errors, resuming after the
-last delivery seen.`,
+last delivery seen.
+
+--relay URL replays each delivery to URL as if GitHub had sent it directly:
+the exact body GitHub signed and GitHub's original headers (X-GitHub-Event,
+X-GitHub-Delivery, X-Hub-Signature-256, X-Hub-Signature, X-GitHub-Hook-ID,
+X-GitHub-Hook-Installation-Target-Type/-ID, Content-Type and User-Agent), so
+a receiver that verifies X-Hub-Signature-256 with the GitHub App's webhook
+secret accepts it. --relay requires --durable and cannot be combined with
+--json or --payload. A delivery is acknowledged only after URL answers 2xx;
+any other answer, a redirect or a connection error is retried with
+exponential backoff (1s doubling to 60s, with jitter) until it succeeds or
+the command is interrupted, so a target that keeps failing stalls the relay
+by design. Deliveries that cannot be replayed with a valid signature
+(stored before ghp kept signatures, or form-encoded) are skipped with a
+warning and acknowledged. --count counts successful relays. Progress is
+printed to stderr, one line per delivery outcome.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadCLIConfigAuthed(cmd.Context())
 			if err != nil {
@@ -190,6 +208,22 @@ last delivery seen.`,
 			}
 			if asJSON && payload {
 				return errors.New("--json and --payload are mutually exclusive")
+			}
+			if relayURL != "" {
+				switch {
+				case durable == "":
+					return errors.New("--relay requires --durable NAME so deliveries survive restarts of the relay")
+				case asJSON:
+					return errors.New("--relay cannot be combined with --json")
+				case payload:
+					return errors.New("--relay cannot be combined with --payload")
+				}
+				if err := relay.ValidateTargetURL(relayURL); err != nil {
+					return err
+				}
+				if relayTO <= 0 {
+					return fmt.Errorf("--relay-timeout must be positive (got %s)", relayTO)
+				}
 			}
 			switch from {
 			case "", "new", "all":
@@ -200,6 +234,13 @@ last delivery seen.`,
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			if relayURL != "" {
+				return relay.Run(ctx, relay.Options{
+					ServerURL: cfg.ServerURL, Token: cfg.UserToken,
+					Target: relayURL, Durable: durable, Filter: filter, From: from,
+					Count: count, Timeout: relayTO,
+				}, cmd.ErrOrStderr())
+			}
 			return tailWebhooks(ctx, cfg, tailOptions{
 				filter: filter, from: from, durable: durable, asJSON: asJSON, payloadOnly: payload, count: count,
 			}, cmd.OutOrStdout(), cmd.ErrOrStderr())
@@ -210,7 +251,9 @@ last delivery seen.`,
 	cmd.Flags().StringVar(&durable, "durable", "", "Durable consumer name; resumes from the last acknowledged delivery")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print one JSON envelope per delivery")
 	cmd.Flags().BoolVar(&payload, "payload", false, "Print only the GitHub payload JSON per delivery")
-	cmd.Flags().IntVar(&count, "count", 0, "Exit after this many deliveries (0 = run until interrupted)")
+	cmd.Flags().IntVar(&count, "count", 0, "Exit after this many deliveries (0 = run until interrupted); with --relay, successful relays")
+	cmd.Flags().StringVar(&relayURL, "relay", "", "POST each delivery to this http(s) URL exactly as GitHub sent it (requires --durable)")
+	cmd.Flags().DurationVar(&relayTO, "relay-timeout", relay.DefaultTimeout, "Timeout for each --relay attempt")
 	return cmd
 }
 

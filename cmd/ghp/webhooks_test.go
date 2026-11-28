@@ -29,7 +29,7 @@ func TestHelpOutput_Webhooks(t *testing.T) {
 	cmd.SetErr(buf)
 	cmd.SetArgs([]string{"tail", "--help"})
 	_ = cmd.Execute()
-	for _, want := range []string{"--filter", "--from", "--durable", "--json", "--payload", "--count"} {
+	for _, want := range []string{"--filter", "--from", "--durable", "--json", "--payload", "--count", "--relay", "--relay-timeout"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("expected %q in tail help:\n%s", want, buf.String())
 		}
@@ -235,5 +235,33 @@ func TestWebhooksTailCmd_ServerError(t *testing.T) {
 	cmd.SetArgs([]string{"tail", "--from", "yesterday"})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--from") {
 		t.Errorf("expected --from validation error, got %v", err)
+	}
+}
+
+func TestWebhooksTailCmd_RelayFlagValidation(t *testing.T) {
+	t.Setenv("GHP_SERVER_URL", "http://127.0.0.1:1")
+	t.Setenv("GHP_USER_TOKEN", "ghpr_test")
+	setTestHome(t, t.TempDir())
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--relay", "http://127.0.0.1:9/hook"}, "--durable"},
+		{[]string{"--relay", "http://127.0.0.1:9/hook", "--durable", "x", "--json"}, "--json"},
+		{[]string{"--relay", "http://127.0.0.1:9/hook", "--durable", "x", "--payload"}, "--payload"},
+		{[]string{"--relay", "ftp://127.0.0.1:9/hook", "--durable", "x"}, "scheme"},
+		{[]string{"--relay", "http://127.0.0.1:9/hook", "--durable", "x", "--relay-timeout", "0s"}, "--relay-timeout"},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			cmd := newWebhooksCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(append([]string{"tail"}, tt.args...))
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %v, want mention of %q", err, tt.want)
+			}
+		})
 	}
 }

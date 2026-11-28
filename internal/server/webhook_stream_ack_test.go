@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/goodtune/ghp/internal/database"
 	"github.com/goodtune/ghp/internal/metrics"
 	"github.com/goodtune/ghp/internal/webhook"
+	"github.com/goodtune/ghp/internal/webhook/relay"
 )
 
 type sseTestEvent struct {
@@ -601,6 +603,75 @@ func TestWebhookStream_ClientAckFailures(t *testing.T) {
 	})
 }
 
+// TestRelay_AgainstRealStream runs the relay engine against the real
+// stream, ack and status handlers backed by an embedded JetStream bus.
+func TestRelay_AgainstRealStream(t *testing.T) {
+	a, h, secret := newWebhookTestAPI(t)
+	sess := adminSession()
+	withSession := func(fn http.HandlerFunc) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fn(w, r.WithContext(auth.NewContextWithSession(r.Context(), sess)))
+		})
+	}
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/webhooks/status", withSession(a.handleWebhookStatus))
+	mux.Handle("GET /api/webhooks/stream", withSession(a.handleWebhookStream))
+	mux.Handle("POST /api/webhooks/stream/ack", withSession(a.handleWebhookStreamAck))
+	ghp := httptest.NewServer(mux)
+	defer ghp.Close()
+
+	bodies := []string{
+		"{ \"action\" : \"opened\",\n  \"z\": [ 1 ,2 ] }",
+		`{"action":"edited","b":"` + strings.Repeat("<>&", 300<<10/3) + `"}`,
+	}
+	for i, b := range bodies {
+		postDelivery(t, h, secret, "issues", fmt.Sprintf("d-real-%d", i), b)
+	}
+
+	var mu sync.Mutex
+	var got [][]byte
+	var hits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		defer mu.Unlock()
+		hits++
+		if !webhook.VerifySignature(secret, body, r.Header.Get("X-Hub-Signature-256")) || r.Header.Get("Authorization") != "" {
+			http.Error(w, "rejected", http.StatusUnauthorized)
+			return
+		}
+		if hits == 1 {
+			http.Error(w, "warming up", http.StatusInternalServerError)
+			return
+		}
+		got = append(got, body)
+	}))
+	defer target.Close()
+
+	acked := ackCounter(t, "acked")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var log bytes.Buffer
+	err := relay.Run(ctx, relay.Options{
+		ServerURL: ghp.URL, Token: "ghpr_test", Target: target.URL + "/hook",
+		Durable: "real-relay", From: "all", Count: 2,
+		Backoff: 10 * time.Millisecond, ReconnectDelay: 10 * time.Millisecond,
+	}, &log)
+	if err != nil {
+		t.Fatalf("relay: %v\n%s", err, log.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 || string(got[0]) != bodies[0] || string(got[1]) != bodies[1] {
+		t.Fatalf("target got %d bodies (hits %d)\n%s", len(got), hits, log.String())
+	}
+	if d := ackCounter(t, "acked") - acked; d != 2 {
+		t.Errorf("acked delta %v, want 2", d)
+	}
+}
+
+// newLargeWebhookTestAPI is newWebhookTestAPI with the bus sized for the
+// default 25 MiB ingest cap, for large-delivery tests.
 func newLargeWebhookTestAPI(t *testing.T) (*API, *webhook.Handler, []byte) {
 	t.Helper()
 	a := newTestAPIWithStore(t)
@@ -1207,4 +1278,189 @@ func TestWebhookStream_CapabilityHeaderOnStream(t *testing.T) {
 		cancel()
 	}
 	waitExited(t)
+}
+
+// slowBodyTransport throttles stream response bodies, so a relay stays in
+// the middle of a large frame for a while, and counts the bytes read.
+type slowBodyTransport struct{ read *atomic.Int64 }
+
+func (tr slowBodyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultTransport.RoundTrip(r)
+	if err == nil && strings.HasSuffix(r.URL.Path, "/stream") {
+		resp.Body = &slowBody{ReadCloser: resp.Body, read: tr.read}
+	}
+	return resp, err
+}
+
+type slowBody struct {
+	io.ReadCloser
+	read *atomic.Int64
+}
+
+func (b *slowBody) Read(p []byte) (int, error) {
+	time.Sleep(10 * time.Millisecond)
+	n, err := b.ReadCloser.Read(p[:min(len(p), 32<<10)])
+	b.read.Add(int64(n))
+	return n, err
+}
+
+// ackedOn reports whether the session that owns durable has recorded the
+// acknowledgement of seq. After that the server never redelivers seq.
+func ackedOn(a *API, durable string, seq uint64) bool {
+	s := durableSession(a, durable)
+	return s != nil && !s.hasPending() && s.resolution(seq) == webhook.AckCodeAcked
+}
+
+// Two relays on one durable: the newer one takes over, the older one stops
+// for good instead of evicting it back, and nothing is posted twice.
+func TestRelay_TakeoverStopsTheOldRelay(t *testing.T) {
+	a, h, secret := newWebhookTestAPI(t)
+	sess := adminSession()
+	withSession := func(fn http.HandlerFunc) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fn(w, r.WithContext(auth.NewContextWithSession(r.Context(), sess)))
+		})
+	}
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/webhooks/status", withSession(a.handleWebhookStatus))
+	mux.Handle("GET /api/webhooks/stream", withSession(a.handleWebhookStream))
+	mux.Handle("POST /api/webhooks/stream/ack", withSession(a.handleWebhookStreamAck))
+	ghp := httptest.NewServer(mux)
+	defer ghp.Close()
+
+	var mu sync.Mutex
+	seen := map[string]int{}
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.Header.Get("X-GitHub-Delivery")]++
+		mu.Unlock()
+	}))
+	defer target.Close()
+	opts := relay.Options{
+		ServerURL: ghp.URL, Token: "ghpr_test", Target: target.URL, Durable: "shared", From: "all",
+		Backoff: 10 * time.Millisecond, ReconnectDelay: 50 * time.Millisecond,
+	}
+
+	postDelivery(t, h, secret, "issues", "d-to-0", `{"n":0}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var logA, logB syncLog
+	errA := make(chan error, 1)
+	go func() { errA <- relay.Run(ctx, opts, &logA) }()
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return seen["d-to-0"] == 1 }, "relay A to relay d-to-0")
+	waitFor(t, func() bool { return ackedOn(a, "shared", 1) }, "the server to record A's ack of d-to-0")
+
+	doneB := make(chan error, 1)
+	go func() { doneB <- relay.Run(ctx, opts, &logB) }()
+	select {
+	case err := <-errA:
+		if !errors.Is(err, relay.ErrTakenOver) || !strings.Contains(err.Error(), "durable shared was taken over by another relay") {
+			t.Errorf("relay A returned %v, want ErrTakenOver", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("relay A kept running after the takeover\n%s", logA.String())
+	}
+	for i := 1; i <= 3; i++ {
+		postDelivery(t, h, secret, "issues", fmt.Sprintf("d-to-%d", i), fmt.Sprintf(`{"n":%d}`, i))
+	}
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return seen["d-to-3"] == 1 }, "relay B to relay d-to-3")
+	waitFor(t, func() bool { return ackedOn(a, "shared", 4) }, "the server to record B's ack of d-to-3")
+	select {
+	case err := <-doneB:
+		t.Fatalf("relay B stopped: %v\n%s", err, logB.String())
+	default:
+	}
+	mu.Lock()
+	for d, n := range seen {
+		if n != 1 {
+			t.Errorf("%s reached the target %d times", d, n)
+		}
+	}
+	if len(seen) != 4 {
+		t.Errorf("target saw %d deliveries, want 4: %v", len(seen), seen)
+	}
+	mu.Unlock()
+	cancel()
+	<-doneB
+}
+
+type syncLog struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncLog) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
+func (s *syncLog) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// A takeover that cuts relay A in the middle of a large frame still stops
+// A with ErrTakenOver, and the delivery reaches the target once, from B.
+func TestRelay_TakeoverMidFrame(t *testing.T) {
+	a, h, secret := newLargeWebhookTestAPI(t)
+	sess := adminSession()
+	withSession := func(fn http.HandlerFunc) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fn(w, r.WithContext(auth.NewContextWithSession(r.Context(), sess)))
+		})
+	}
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/webhooks/status", withSession(a.handleWebhookStatus))
+	mux.Handle("GET /api/webhooks/stream", withSession(a.handleWebhookStream))
+	mux.Handle("POST /api/webhooks/stream/ack", withSession(a.handleWebhookStreamAck))
+	ghp := httptest.NewServer(mux)
+	defer ghp.Close()
+
+	var mu sync.Mutex
+	seen := map[string]int{}
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		mu.Lock()
+		seen[r.Header.Get("X-GitHub-Delivery")]++
+		mu.Unlock()
+	}))
+	defer target.Close()
+	postDelivery(t, h, secret, "issues", "d-mid", `{"b":"`+strings.Repeat("<>&", (12<<20)/3)+`"}`)
+
+	opts := relay.Options{
+		ServerURL: ghp.URL, Token: "ghpr_test", Target: target.URL, Durable: "mid", From: "all",
+		Backoff: 10 * time.Millisecond, ReconnectDelay: 50 * time.Millisecond,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	slow := opts
+	var readA atomic.Int64
+	slow.Client = &http.Client{Transport: slowBodyTransport{read: &readA}}
+	var logA, logB syncLog
+	errA := make(chan error, 1)
+	go func() { errA <- relay.Run(ctx, slow, &logA) }()
+	// A is part way through the 16 MiB frame: the server holds d-mid and A
+	// has read some of it.
+	waitFor(t, func() bool {
+		s := durableSession(a, "mid")
+		return s != nil && s.hasPending() && readA.Load() > 1<<20
+	}, "relay A to be part way through the frame")
+	if readA.Load() > 12<<20 {
+		t.Fatal("relay A read almost the whole frame before the takeover; slow it down")
+	}
+	doneB := make(chan error, 1)
+	go func() { doneB <- relay.Run(ctx, opts, &logB) }()
+	select {
+	case err := <-errA:
+		if !errors.Is(err, relay.ErrTakenOver) || !strings.Contains(err.Error(), "admin") {
+			t.Errorf("relay A returned %v, want ErrTakenOver naming admin\n%s", err, logA.String())
+		}
+		if strings.Contains(logA.String(), "reconnecting") {
+			t.Errorf("relay A claimed it would reconnect:\n%s", logA.String())
+		}
+	case <-time.After(45 * time.Second):
+		t.Fatalf("relay A kept running after the takeover\n%s", logA.String())
+	}
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return seen["d-mid"] == 1 }, "relay B to relay d-mid")
+	waitFor(t, func() bool { return ackedOn(a, "mid", 1) }, "the server to record B's ack of d-mid")
+	mu.Lock()
+	if seen["d-mid"] != 1 {
+		t.Errorf("d-mid reached the target %d times", seen["d-mid"])
+	}
+	mu.Unlock()
+	cancel()
+	<-doneB
 }
