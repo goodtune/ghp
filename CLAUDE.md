@@ -71,6 +71,7 @@ internal/
   config/         Configuration loading via koanf
   web/            Web UI handlers, templates, static assets, middleware
   webhook/        GitHub webhook ingress: signature verification, embedded NATS JetStream bus, ngrok tunnel
+  webhook/relay/  Webhook relay engine (ghp webhooks tail --relay): client-ack replay of stored deliveries to a receiver
   metrics/        Prometheus metric registration
   github/         GitHub App JWT/installation handling
   backend/        Database abstraction interface
@@ -160,6 +161,7 @@ Never record a hard-coded zero duration. If a stage does not run on a code path,
 - `ghp_webhook_ngrok_tunnel_up` — 1 while the embedded ngrok tunnel session is connected
 - `ghp_webhook_stream_messages` / `ghp_webhook_stream_bytes` — current webhook stream size (refreshed every 30s)
 - `ghp_webhook_subscribers_active` — open webhook subscribers by `kind` (`sse`, `nats`)
+- `ghp_webhook_stream_ack_total` — client-ack SSE stream (`ack=client`) outcomes by `result` (`acked`, `ack_error`, `wrong_sequence`, `invalid_session`, `bad_request`, `nak_disconnect`, `nak_shutdown`, `nak_evicted`)
 
 ## Coding Conventions
 
