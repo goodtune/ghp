@@ -192,6 +192,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hdr.Set(HdrReceivedAt, time.Now().UTC().Format(time.RFC3339Nano))
 	hdr.Set(HdrContentType, "application/json")
 	setIf(hdr, HdrOriginalContent, origContentType)
+	setIf(hdr, HdrSignature256, sig)
+	setIf(hdr, HdrSignature, r.Header.Get(HeaderSignature))
+	setIf(hdr, HdrUserAgent, r.Header.Get("User-Agent"))
 
 	pctx, cancel := context.WithTimeout(r.Context(), h.publishTimeout)
 	defer cancel()

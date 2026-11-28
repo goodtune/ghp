@@ -207,8 +207,12 @@ or repository with ordinary NATS wildcards. GitHub redeliveries are
 deduplicated by delivery GUID. Subscribers consume through native NATS clients
 (when a listener is configured), the authenticated server-sent-events stream
 on the admin API, or `ghp webhooks tail`; durable consumers resume where they
-left off. Both embedded services are optional and off by default, and ghp
-remains a single static binary.
+left off. Both embedded services (the NATS stream and the ngrok tunnel) are
+optional and off by default, and ghp remains a single static binary.
+
+`ghp webhooks tail --relay URL` replays each delivery to an existing webhook
+receiver with GitHub's original body and signature headers, and acknowledges
+it only after the receiver answers 2xx.
 
 See [Webhooks](features/webhooks.md) for details.
 

@@ -115,6 +115,8 @@ payload:
 | `GHP-Action`, `GHP-Repository` (`owner/repo`), `GHP-Installation-ID`, `GHP-Sender` | extracted from the payload when present |
 | `GHP-Received-At` | RFC 3339 timestamp of receipt |
 | `Content-Type` / `GHP-Original-Content-Type` | always `application/json` / the inbound content type |
+| `Hub-Signature-256`, `Hub-Signature` | GitHub's original `X-Hub-Signature-256` and (when sent) `X-Hub-Signature` values |
+| `GHP-Original-User-Agent` | GitHub's original `User-Agent` |
 | `Nats-Msg-Id` | the delivery GUID (JetStream deduplication key) |
 
 ## Configuration
@@ -175,6 +177,8 @@ data: {"subject":"github.webhooks.3f1c….pull_request.opened.goodtune.ghp","seq
 | `filter` | subject filter under the prefix, e.g. `github.webhooks.*.push.>` (default: everything) |
 | `from` | `new` (default), `all`, or a stream sequence number |
 | `durable` | name of a server-side consumer that remembers its position; events are acknowledged only after they are flushed to the client |
+| `raw` | `1` replaces `payload` with `payload_base64`: the exact stored message bytes, base64-encoded. For JSON deliveries these are the bytes GitHub signed (`payload` is re-encoded JSON and is not byte-faithful). `payload_base64` is omitted for an empty body |
+| `ack` | `client` (requires `durable`) holds each delivery until the client acknowledges it; see below. `server` (default) acknowledges on flush, so an event written to a connection that is closing can be lost (see [Limitations](#limitations)) |
 
 Reconnecting with the standard `Last-Event-ID` header resumes after that
 sequence. A `: ping` comment is sent every 15 seconds while idle.
@@ -184,6 +188,84 @@ Durable names are sanitised to `[A-Za-z0-9_-]` (so `review agent` and
 when the consumer is first created: afterwards the consumer's own
 acknowledged position is authoritative, which is what makes a restarted
 subscriber resume correctly.
+
+The envelope also carries `signature_256`, `signature_sha1`, `user_agent` and
+`original_content_type`: GitHub's original `X-Hub-Signature-256`,
+`X-Hub-Signature`, `User-Agent` and `Content-Type`. They are empty for
+deliveries stored before ghp kept them.
+
+#### Client acknowledgement (`ack=client`)
+
+With `ack=client&durable=NAME` the stream first sends a session event:
+
+```
+event: session
+data: {"session":"<64 hex characters>"}
+```
+
+Each delivery is then held unacknowledged until the client confirms it:
+
+```
+POST /api/webhooks/stream/ack      (admin session)
+{"session": "<token>", "sequence": 42}
+```
+
+The server does not fetch the next delivery until the pending one is
+acknowledged. While it waits it sends `InProgress` to JetStream every third
+of the 10-second ack timeout, so a slow client does not cause a redelivery.
+When the stream ends with a delivery still pending (client disconnect or
+server shutdown) the server Naks it, and the durable consumer redelivers it
+at once. If ghp itself dies, JetStream redelivers after the ack timeout.
+Events are written in 64 KiB chunks, and the 10-second write deadline is
+reset before each chunk. A slow client that keeps reading receives an event
+of any size; a client that stops reading for 10 seconds is cut off, and its
+pending delivery is Nak'd. This applies to every stream mode.
+
+The stream response carries the header `GHP-Webhook-Client-Ack: 1`. A
+client must check it before it reads events: an older server ignores
+`ack=client` and acknowledges each delivery as soon as it sends it.
+
+Only one client-ack stream may consume a durable at a time. A new
+`ack=client` stream on the same durable ends the older one. The older
+stream Naks its pending delivery, sends an evicted event and closes, and
+the new stream subscribes only after that, so it receives the held
+delivery first and order is kept:
+
+```
+event: evicted
+data: {"reason":"another client-ack stream took over this durable","durable":"<name>","by":"<github login>"}
+```
+
+`by` is the GitHub login of the admin who opened the new stream. If the
+older stream was cut in the middle of a large event, the server first ends
+that partial event with a blank line, so the client discards it and still
+reads the evicted event. A stream that is itself replaced while it is still
+opening (before its session event) receives only the evicted event. The new stream waits at most 25 seconds
+(twice the chunk write deadline, plus 5 seconds) for the older one to let
+go; if the older stream has not released by then, the new stream
+subscribes anyway and order is not guaranteed. A plain
+(`ack=server`) stream or a native NATS client on the same durable is not
+detected; do not share a client-ack durable with them, because they would
+take deliveries the client-ack stream then never sees.
+
+The session token is random, bound to the stream connection and to the
+admin user who opened it, and ends with the stream. Every response from
+the ack endpoint carries the header `GHP-Webhook-Client-Ack: 1`, so a
+client can tell it from a 400 or 404 produced by an older server or a
+proxy. Responses:
+
+| Status | Meaning |
+|---|---|
+| 200 | acknowledged; JetStream confirmed the ack |
+| 400 | malformed body, session not 64 hex characters, or `sequence` not positive |
+| 404 | no open stream of the caller has that session |
+| 409 | the session's pending delivery is not that sequence. The body `code` says why: `acked` (that sequence was already acknowledged; only the answer was lost), `released` (the server returned it to the durable, for example after an `ack_error`, and redelivers it), or `wrong_sequence` |
+| 413 | body larger than 4 KiB |
+| 502 | the JetStream ack failed (body `"code": "ack_error"`); the server has released the stream and redelivers the delivery after the ack timeout, so the client must not retry |
+
+`GET /api/webhooks/status` reports the ingest body cap as
+`max_payload_bytes`; `ghp webhooks tail --relay` sizes its stream reader
+from it.
 
 `GET /api/webhooks/deliveries?limit=N` lists the most recent deliveries
 (newest first, without payloads; default 50, maximum 200) and
@@ -198,8 +280,24 @@ The `apps` list in `GET /api/webhooks/status` names the GitHub App ID
     ghp webhooks tail --filter 'github.webhooks.*.pull_request.>'
     ghp webhooks tail --from all --json | jq .payload.pull_request.title
     ghp webhooks tail --durable review-agent --payload
+    ghp webhooks tail --durable skipper --relay http://127.0.0.1:3000/github/webhook
 
 See [ghp webhooks](../cli/webhooks.md).
+
+### Relaying to a local receiver
+
+`ghp webhooks tail --relay URL --durable NAME` turns ghp into a forwarder
+for an application that already has a GitHub webhook receiver. Each
+delivery is POSTed to `URL` with the exact body GitHub signed and GitHub's
+original headers, so a receiver that verifies `X-Hub-Signature-256` with the
+GitHub App's webhook secret cannot tell it from a direct delivery. The relay
+uses client acknowledgement (`ack=client`) and the raw payload (`raw=1`): a
+delivery is acknowledged only after the receiver answers 2xx, and is retried
+with backoff until then. See [ghp webhooks](../cli/webhooks.md#relaying-to-a-receiver).
+
+The signature is GitHub's, made with the secret GitHub used. Configure the
+receiver with the same secret as the GitHub App (or as the server-wide
+`webhooks.secret`, for deliveries verified by it).
 
 ### Native NATS clients
 
@@ -248,6 +346,7 @@ secret (the edit form can also remove it).
 | `ghp_webhook_ngrok_tunnel_up` | — | 1 while the ngrok session is connected |
 | `ghp_webhook_stream_messages`, `ghp_webhook_stream_bytes` | — | current stream size (refreshed every 30 s) |
 | `ghp_webhook_subscribers_active` | `kind` | open SSE streams (`sse`) and native NATS clients (`nats`) |
+| `ghp_webhook_stream_ack_total` | `result` | client-ack stream outcomes: `acked`, `ack_error`, `wrong_sequence`, `invalid_session`, `bad_request`, `nak_disconnect`, `nak_shutdown`, `nak_evicted` |
 
 The `event` label is bounded by GitHub's event catalogue; unrecognised names
 are reported as `unknown` (the real name is still stored on the message).
@@ -255,7 +354,8 @@ are reported as `unknown` (the real name is still stored on the message).
 ## Limitations
 
 - **SHA-256 only.** GitHub's legacy `X-Hub-Signature` (SHA-1) header is
-  ignored; a delivery carrying only that header is rejected.
+  never verified; a delivery carrying only that header is rejected. Its
+  value is stored, unverified, only so that `--relay` can pass it on.
 - **Single instance.** The JetStream store is local to one ghp process.
   In HA deployments point GitHub (or ngrok) at one instance; the admin API
   on other instances reports the feature as enabled but reads their own
@@ -279,10 +379,51 @@ are reported as `unknown` (the real name is still stored on the message).
   gets it without waiting for the 10-second ack timeout. The server checks
   for a disconnect at least once a second, so a durable stream ends within
   about one second of the client going away.
-- **SSE has no client acknowledgement.** The server acknowledges a
-  delivery when the bytes are flushed to the connection, not when the
-  client reads them. The server detects a closed connection
+- **SSE acknowledges on flush unless `ack=client`.** By default the server
+  acknowledges a delivery when the bytes are flushed to the connection, not
+  when the client reads them. The server detects a closed connection
   asynchronously; an event written in that short window can land in the
   dead connection's buffers, be acknowledged, and not be replayed on
-  reconnect. Clients that need every event should connect to NATS
-  directly and acknowledge each message themselves.
+  reconnect. Clients that need every event should use `ack=client` (as
+  `ghp webhooks tail --relay` does) or connect to NATS directly and
+  acknowledge each message themselves.
+- **Relay replays only what can verify.** Deliveries stored before ghp kept
+  the original signature headers have no signature to send; the relay skips
+  them with a warning and acknowledges them so the stream does not wedge.
+  Form-encoded deliveries (`application/x-www-form-urlencoded`) are stored
+  as the unwrapped JSON payload, not the signed form body, and the original
+  form encoding cannot be rebuilt byte for byte, so they are skipped the
+  same way. GitHub App webhooks are always JSON.
+- **A rejecting relay target stalls the relay.** Nothing is skipped on a
+  non-2xx answer: the relay retries the same delivery until the target
+  accepts it or the command is interrupted, and later deliveries wait.
+  Delivery to the target is at-least-once; a receiver should deduplicate on
+  `X-GitHub-Delivery`.
+- **A relay durable must not be shared.** Run one relay per durable name,
+  and do not use the same name for a plain `ghp webhooks tail --durable` or
+  a native NATS consumer. A second relay on the name takes over: the first
+  relay receives `event: evicted` and stops with "durable NAME was taken
+  over by another relay (opened by LOGIN)". A delivery the first relay was
+  posting at that moment can reach the target twice. Under a supervisor
+  that restarts relays (for example systemd `Restart=always`), two relays
+  on one durable alternate at the restart interval. A plain consumer would
+  take deliveries away from the relay.
+- **Any admin can take over a relay durable.** Durable names are shared
+  by all admins, not kept per user. An admin who opens a client-ack stream
+  (for example a relay) with another admin's durable name takes it over;
+  the evicted relay stops and prints that admin's GitHub login (`by` in the
+  evicted event). Give each relay a distinct name.
+- **The relay posts to any host its operator names.** `--relay` accepts any
+  `http` or `https` URL, including loopback and private addresses. ghp does
+  not restrict the target: the relay runs on the machine where the command
+  runs, with the rights of whoever runs it, so loopback means that machine.
+  It sends the delivery body and GitHub's headers, never the ghp session
+  token, and it redacts the URL's query string in its output.
+- **Relay delivery is bounded by stream retention.** `webhooks.nats.max_age`
+  and `webhooks.nats.max_bytes` discard the oldest deliveries even when a
+  stalled or stopped relay has not relayed them. A durable with no
+  subscriber for 7 days is deleted; a relay started later with the same
+  name recreates it at its `--from` position (default `new`) and skips the
+  backlog without a warning. Size retention for the longest outage you must
+  survive, alert on stalled relays, and restart an expired relay with
+  `--from SEQ` or `--from all` (see [the CLI page](../cli/webhooks.md)).
